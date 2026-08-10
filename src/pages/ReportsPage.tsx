@@ -118,7 +118,7 @@ export function ReportsPage() {
 
       <PageTip moduleKey="crm.reports" />
 
-      {loading && <Card className="p-6 text-sm text-text-secondary">Loading live reports from Supabase…</Card>}
+      {loading && <Card className="p-6 text-sm text-text-secondary">Loading live reports…</Card>}
       {error && !loading && <Card className="p-6 text-sm text-accent-red">{error}</Card>}
 
       {data && !loading && (

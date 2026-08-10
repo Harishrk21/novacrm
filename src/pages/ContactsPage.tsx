@@ -174,7 +174,7 @@ export function ContactsPage() {
       setOpen(false)
       setForm(emptyForm)
       setErrors({})
-      addToast({ type: 'success', message: 'Contact saved to Supabase' })
+      addToast({ type: 'success', message: 'Contact saved' })
       navigate(`/contacts/${created.id as string}`)
     } catch (err) {
       addToast({

@@ -96,7 +96,7 @@ export function TicketsPage() {
         slaHours: Number(form.slaHours) || 24,
       })
       setOpen(false)
-      addToast({ type: 'success', message: 'Ticket created in Supabase' })
+      addToast({ type: 'success', message: 'Ticket created' })
       await load()
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Create failed' })

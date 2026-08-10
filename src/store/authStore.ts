@@ -63,7 +63,7 @@ export const useAuthStore = create<AuthState>()(
           password,
           ...(tenantSlug ? { tenantSlug } : {}),
         })
-        // Drop local mock CRM cache so UI always uses Supabase for tenant sessions
+        // Drop local mock CRM cache so UI always uses the live API for tenant sessions
         try {
           localStorage.removeItem('novacrm-data')
         } catch {

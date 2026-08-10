@@ -295,7 +295,7 @@ function AdminShell() {
           <div className="space-y-5">
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-2xl font-bold">Platform Overview</h1>
-              <Badge color={liveMode ? 'green' : 'amber'}>{liveMode ? 'Live Supabase API' : 'Local demo'}</Badge>
+              <Badge color={liveMode ? 'green' : 'amber'}>{liveMode ? 'Live API' : 'Local demo'}</Badge>
             </div>
             <FeatureTip
               title="Your control center"
@@ -616,7 +616,7 @@ function AdminShell() {
                   password: created.login.temporaryPassword,
                 })
               }
-              addToast({ type: 'success', message: `Client ${mapped.name} created in Supabase` })
+              addToast({ type: 'success', message: `Client ${mapped.name} created` })
               return
             } catch (err) {
               addToast({ type: 'error', message: err instanceof Error ? err.message : 'Create failed' })
@@ -771,7 +771,7 @@ function CreateClientModal({
       open={open}
       onClose={onClose}
       title="Create client"
-      subtitle="Pick the industry template, then we provision CRM/ERP modules, pipeline and an admin login in Supabase."
+      subtitle="Pick the industry template, then we provision CRM/ERP modules, pipeline and an admin login."
       size="xl"
       footer={
         <>
@@ -832,7 +832,7 @@ function CreateClientModal({
           <div className="font-semibold" style={{ color: preview.color }}>
             {preview.name}
           </div>
-          <p className="mt-1 text-text-secondary">{preview.description || 'Industry template from Supabase'}</p>
+          <p className="mt-1 text-text-secondary">{preview.description || 'Industry template from catalog'}</p>
           <p className="mt-2 text-xs text-text-secondary">
             Creates tenant + admin user + pipeline + lead sources + warehouse + invoice/PO sequences.
           </p>

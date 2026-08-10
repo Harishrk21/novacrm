@@ -506,7 +506,7 @@ export function LeadsPage() {
         open={open}
         onClose={() => setOpen(false)}
         title="Add lead"
-        subtitle="Capture the full enquiry — company, budget, interest and owner. Saved to Supabase."
+        subtitle="Capture the full enquiry — company, budget, interest and owner."
         size="xl"
         footer={
           <>
@@ -583,7 +583,7 @@ export function LeadsPage() {
           options={stages.map((s) => ({ value: s.id, label: s.name }))}
         />
         <p className="mt-3 text-sm text-text-secondary">
-          Creates Contact + Account + Deal in Supabase and marks the lead CONVERTED.
+          Creates Contact + Account + Deal and marks the lead CONVERTED.
         </p>
       </Modal>
     </div>

@@ -48,7 +48,7 @@ function isRetryableStatus(status: number) {
   return status === 503 || status === 502 || status === 504 || status === 429
 }
 
-/** Retry transient Supabase pool / network failures so lists don't flash empty. */
+/** Retry transient DB pool / network failures so lists don't flash empty. */
 async function fetchWithRetry(url: string, options: RequestInit, maxAttempts = 4): Promise<Response> {
   let lastError: unknown
   for (let attempt = 0; attempt < maxAttempts; attempt++) {

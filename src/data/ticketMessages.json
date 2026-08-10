@@ -1,0 +1,92 @@
+[
+  {
+    "id": "tmsg-1",
+    "ticketId": "ticket-1",
+    "contactId": "con-1",
+    "userId": null,
+    "message": "I uploaded the CSV, but the import stops at 62%. Can you help?",
+    "isInternal": false,
+    "createdAt": "2026-02-08T10:00:00+05:30"
+  },
+  {
+    "id": "tmsg-2",
+    "ticketId": "ticket-1",
+    "contactId": null,
+    "userId": "user-4",
+    "message": "Thanks, Sundar. We found an invalid date column and shared a corrected template.",
+    "isInternal": false,
+    "createdAt": "2026-02-08T12:00:00+05:30"
+  },
+  {
+    "id": "tmsg-3",
+    "ticketId": "ticket-1",
+    "contactId": null,
+    "userId": "user-4",
+    "message": "Import logs reviewed; no platform-side outage detected.",
+    "isInternal": true,
+    "createdAt": "2026-02-09T13:00:00+05:30"
+  },
+  {
+    "id": "tmsg-4",
+    "ticketId": "ticket-2",
+    "contactId": "con-2",
+    "userId": null,
+    "message": "New customer emails are taking about twenty minutes to appear.",
+    "isInternal": false,
+    "createdAt": "2026-02-09T10:00:00+05:30"
+  },
+  {
+    "id": "tmsg-5",
+    "ticketId": "ticket-2",
+    "contactId": null,
+    "userId": "user-5",
+    "message": "We are checking the mailbox sync queue and will update you shortly.",
+    "isInternal": false,
+    "createdAt": "2026-02-10T11:00:00+05:30"
+  },
+  {
+    "id": "tmsg-6",
+    "ticketId": "ticket-3",
+    "contactId": "con-3",
+    "userId": null,
+    "message": "The dashboard shows a different total from the pipeline report.",
+    "isInternal": false,
+    "createdAt": "2026-02-10T10:00:00+05:30"
+  },
+  {
+    "id": "tmsg-7",
+    "ticketId": "ticket-3",
+    "contactId": null,
+    "userId": "user-6",
+    "message": "The dashboard includes reopened deals; we are preparing a filter fix.",
+    "isInternal": false,
+    "createdAt": "2026-02-11T14:00:00+05:30"
+  },
+  {
+    "id": "tmsg-8",
+    "ticketId": "ticket-4",
+    "contactId": "con-4",
+    "userId": null,
+    "message": "Please confirm whether custom roles can restrict export access.",
+    "isInternal": false,
+    "createdAt": "2026-02-11T10:00:00+05:30"
+  },
+  {
+    "id": "tmsg-9",
+    "ticketId": "ticket-4",
+    "contactId": null,
+    "userId": "user-7",
+    "message": "Yes. We have sent the role configuration steps and marked this resolved.",
+    "isInternal": false,
+    "createdAt": "2026-02-12T15:00:00+05:30"
+  },
+  {
+    "id": "tmsg-10",
+    "ticketId": "ticket-5",
+    "contactId": "con-5",
+    "userId": null,
+    "message": "I receive an error after entering the OTP in the mobile app.",
+    "isInternal": false,
+    "createdAt": "2026-02-12T10:00:00+05:30"
+  }
+]

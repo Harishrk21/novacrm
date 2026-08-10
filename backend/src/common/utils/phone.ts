@@ -1,0 +1,1 @@
+export function normalizePhone(value?: string | null): string | null { if (!value) return null; let digits = value.replace(/\D/g, ""); if (digits.length === 10) digits = `91${digits}`; if (digits.startsWith("0") && digits.length === 11) digits = `91${digits.slice(1)}`; return digits.slice(-15) || null; }

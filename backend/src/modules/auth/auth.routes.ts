@@ -1,0 +1,13 @@
+import { Router } from "express";
+import { authenticate } from "../../middleware/auth.middleware.js";
+import { validate } from "../../middleware/validate.middleware.js";
+import * as c from "./auth.controller.js";
+import * as s from "./auth.schema.js";
+export const authRouter = Router();
+authRouter.post("/platform/login", validate(s.platformLoginSchema), c.platformLogin);
+authRouter.post("/login", validate(s.tenantLoginSchema), c.tenantLogin);
+authRouter.post("/refresh", validate(s.refreshSchema), c.refresh);
+authRouter.get("/me", authenticate, c.me);
+authRouter.patch("/me", authenticate, validate(s.updateProfileSchema), c.updateProfile);
+authRouter.post("/me/password", authenticate, validate(s.changePasswordSchema), c.changePassword);
+authRouter.post("/logout", validate(s.logoutSchema), c.logout);

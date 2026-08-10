@@ -1,0 +1,982 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum PlatformAdminRole {
+  SUPER_ADMIN
+  SUPPORT
+  BILLING
+}
+enum PlatformAdminStatus {
+  ACTIVE
+  INACTIVE
+}
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+enum TenantPlan {
+  STARTER
+  GROWTH
+  BUSINESS
+  ENTERPRISE
+}
+enum IsolationLevel {
+  SHARED
+  DEDICATED_SCHEMA
+}
+enum ModuleGroup {
+  CRM
+  ERP
+  ENGAGEMENT
+  SETTINGS
+  REPORTS
+}
+enum CustomFieldType {
+  TEXT
+  NUMBER
+  DECIMAL
+  DATE
+  DATETIME
+  BOOLEAN
+  SELECT
+  MULTI_SELECT
+  PHONE
+  EMAIL
+  URL
+  TEXTAREA
+  CURRENCY
+}
+enum TipType {
+  TIP
+  NOTE
+  WARNING
+  BEST_PRACTICE
+}
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  INVITED
+  LOCKED
+}
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  UNQUALIFIED
+  LOST
+  CONVERTED
+}
+enum DealPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+enum ActivityType {
+  CALL
+  EMAIL
+  MEETING
+  TASK
+  NOTE
+  WHATSAPP
+  VISIT
+  DEMO
+}
+enum ActivityStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+  OVERDUE
+}
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  PENDING
+  RESOLVED
+  CLOSED
+}
+enum ProductType {
+  GOODS
+  SERVICE
+  BUNDLE
+}
+enum StockMovementType {
+  IN
+  OUT
+  ADJUST
+  TRANSFER
+  RETURN
+}
+enum PurchaseOrderStatus {
+  DRAFT
+  SENT
+  PARTIAL
+  RECEIVED
+  CANCELLED
+}
+enum SalesOrderStatus {
+  DRAFT
+  CONFIRMED
+  PACKED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PARTIAL
+  PAID
+  OVERDUE
+  VOID
+}
+enum PaymentDirection {
+  INBOUND
+  OUTBOUND
+}
+enum PaymentMethod {
+  CASH
+  UPI
+  NEFT
+  RTGS
+  CHEQUE
+  CARD
+  OTHER
+}
+enum EmployeeStatus {
+  ACTIVE
+  ON_LEAVE
+  RESIGNED
+}
+enum IntegrationStatus {
+  DISCONNECTED
+  CONNECTED
+  ERROR
+}
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+enum WhatsappMessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+enum AuditActorType {
+  PLATFORM_ADMIN
+  USER
+  SYSTEM
+}
+
+model PlatformAdmin {
+  id           String              @id @db.Char(36)
+  name         String              @db.VarChar(120)
+  email        String              @unique @db.VarChar(191)
+  passwordHash String              @map("password_hash") @db.VarChar(255)
+  phone        String?             @db.VarChar(32)
+  role         PlatformAdminRole   @default(SUPER_ADMIN)
+  status       PlatformAdminStatus @default(ACTIVE)
+  lastLoginAt  DateTime?           @map("last_login_at") @db.DateTime(3)
+  mfaSecret    String?             @map("mfa_secret") @db.VarChar(64)
+  createdAt    DateTime            @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime            @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt    DateTime?           @map("deleted_at") @db.DateTime(3)
+  @@map("platform_admins")
+}
+
+model BusinessCategory {
+  id               String   @id @db.Char(36)
+  code             String   @unique @db.VarChar(64)
+  name             String   @db.VarChar(120)
+  description      String?  @db.Text
+  icon             String   @default("scale") @db.VarChar(64)
+  colorHex         String   @default("#2563EB") @map("color_hex") @db.Char(7)
+  defaultCurrency  String   @default("INR") @map("default_currency") @db.Char(3)
+  defaultTimezone  String   @default("Asia/Kolkata") @map("default_timezone") @db.VarChar(64)
+  defaultModules   Json     @map("default_modules")
+  terminology      Json
+  templateConfig   Json     @map("template_config")
+  isActive         Boolean  @default(true) @map("is_active")
+  sortOrder        Int      @default(0) @map("sort_order")
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt        DateTime? @map("deleted_at") @db.DateTime(3)
+  @@index([isActive, sortOrder])
+  @@map("business_categories")
+}
+
+model Tenant {
+  id                   String         @id @db.Char(36)
+  code                 String         @unique @db.VarChar(32)
+  name                 String         @db.VarChar(191)
+  slug                 String         @unique @db.VarChar(64)
+  businessCategoryId   String         @map("business_category_id") @db.Char(36)
+  status               TenantStatus   @default(TRIAL)
+  plan                 TenantPlan     @default(STARTER)
+  isolationLevel       IsolationLevel @default(SHARED) @map("isolation_level")
+  logoUrl              String?        @map("logo_url") @db.VarChar(512)
+  website              String?        @db.VarChar(255)
+  email                String?        @db.VarChar(191)
+  phone                String?        @db.VarChar(32)
+  gstin                String?        @db.VarChar(32)
+  pan                  String?        @db.VarChar(16)
+  addressLine1         String?        @map("address_line1") @db.VarChar(255)
+  addressLine2         String?        @map("address_line2") @db.VarChar(255)
+  city                 String?        @db.VarChar(100)
+  state                String?        @db.VarChar(100)
+  postalCode           String?        @map("postal_code") @db.VarChar(20)
+  country              String         @default("IN") @db.Char(2)
+  currency             String         @default("INR") @db.Char(3)
+  timezone             String         @default("Asia/Kolkata") @db.VarChar(64)
+  fiscalYearStartMonth Int            @default(4) @map("fiscal_year_start_month") @db.SmallInt
+  maxUsers             Int            @default(10) @map("max_users")
+  maxStorageMb         Int            @default(5120) @map("max_storage_mb")
+  trialEndsAt          DateTime?      @map("trial_ends_at") @db.DateTime(3)
+  activatedAt          DateTime?      @map("activated_at") @db.DateTime(3)
+  suspendedAt          DateTime?      @map("suspended_at") @db.DateTime(3)
+  modulesEnabled       Json           @map("modules_enabled")
+  terminology          Json?
+  branding             Json?
+  settings             Json?
+  createdByAdminId     String?        @map("created_by_admin_id") @db.Char(36)
+  createdAt            DateTime       @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt            DateTime       @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt            DateTime?      @map("deleted_at") @db.DateTime(3)
+  @@index([status])
+  @@index([businessCategoryId])
+  @@map("tenants")
+}
+
+model TenantModule {
+  id          String      @id @db.Char(36)
+  tenantId    String      @map("tenant_id") @db.Char(36)
+  moduleKey   String      @map("module_key") @db.VarChar(64)
+  moduleGroup ModuleGroup @map("module_group")
+  label       String      @db.VarChar(120)
+  isEnabled   Boolean     @default(true) @map("is_enabled")
+  sortOrder   Int         @default(0) @map("sort_order")
+  config      Json?
+  createdAt   DateTime    @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime    @updatedAt @map("updated_at") @db.DateTime(3)
+  @@unique([tenantId, moduleKey])
+  @@index([tenantId, moduleGroup, isEnabled])
+  @@map("tenant_modules")
+}
+
+model CustomFieldDefinition {
+  id           String          @id @db.Char(36)
+  tenantId     String          @map("tenant_id") @db.Char(36)
+  entityType   String          @map("entity_type") @db.VarChar(64)
+  fieldKey     String          @map("field_key") @db.VarChar(64)
+  label        String          @db.VarChar(120)
+  fieldType    CustomFieldType @map("field_type")
+  optionsJson  Json?           @map("options_json")
+  isRequired   Boolean         @default(false) @map("is_required")
+  isUnique     Boolean         @default(false) @map("is_unique")
+  isSearchable Boolean         @default(true) @map("is_searchable")
+  isVisible    Boolean         @default(true) @map("is_visible")
+  sortOrder    Int             @default(0) @map("sort_order")
+  helpText     String?         @map("help_text") @db.VarChar(255)
+  validation   Json?
+  createdAt    DateTime        @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime        @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt    DateTime?       @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, entityType, fieldKey])
+  @@index([tenantId, entityType, isVisible])
+  @@map("custom_field_definitions")
+}
+
+model FeatureTip {
+  id         String   @id @db.Char(36)
+  tenantId   String?  @map("tenant_id") @db.Char(36)
+  moduleKey  String   @map("module_key") @db.VarChar(64)
+  sectionKey String   @map("section_key") @db.VarChar(64)
+  title      String   @db.VarChar(160)
+  body       String   @db.Text
+  tipType    TipType  @default(TIP) @map("tip_type")
+  sortOrder  Int      @default(0) @map("sort_order")
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  @@index([tenantId, moduleKey, sectionKey, isActive])
+  @@map("feature_tips")
+}
+
+model Role {
+  id          String    @id @db.Char(36)
+  tenantId    String    @map("tenant_id") @db.Char(36)
+  code        String    @db.VarChar(64)
+  name        String    @db.VarChar(120)
+  description String?   @db.VarChar(255)
+  isSystem    Boolean   @default(false) @map("is_system")
+  permissions Json
+  createdAt   DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt   DateTime? @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, code])
+  @@map("roles")
+}
+
+model User {
+  id           String     @id @db.Char(36)
+  tenantId     String     @map("tenant_id") @db.Char(36)
+  roleId       String     @map("role_id") @db.Char(36)
+  name         String     @db.VarChar(120)
+  email        String     @db.VarChar(191)
+  passwordHash String     @map("password_hash") @db.VarChar(255)
+  phone        String?    @db.VarChar(32)
+  avatarUrl    String?    @map("avatar_url") @db.VarChar(512)
+  status       UserStatus @default(INVITED)
+  timezone     String     @default("Asia/Kolkata") @db.VarChar(64)
+  locale       String     @default("en-IN") @db.VarChar(16)
+  lastLoginAt  DateTime?  @map("last_login_at") @db.DateTime(3)
+  invitedAt    DateTime?  @map("invited_at") @db.DateTime(3)
+  invitedBy    String?    @map("invited_by") @db.Char(36)
+  preferences  Json?
+  createdAt    DateTime   @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt    DateTime?  @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, email])
+  @@index([tenantId, status])
+  @@index([roleId])
+  @@map("users")
+}
+
+model RefreshToken {
+  id              String    @id @db.Char(36)
+  userId          String?   @map("user_id") @db.Char(36)
+  platformAdminId String?   @map("platform_admin_id") @db.Char(36)
+  tokenHash       String    @unique @map("token_hash") @db.VarChar(128)
+  userAgent       String?   @map("user_agent") @db.VarChar(255)
+  ipAddress       String?   @map("ip_address") @db.VarChar(64)
+  expiresAt       DateTime  @map("expires_at") @db.DateTime(3)
+  revokedAt       DateTime? @map("revoked_at") @db.DateTime(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  @@index([userId])
+  @@index([platformAdminId])
+  @@map("refresh_tokens")
+}
+
+model PipelineStage {
+  id          String   @id @db.Char(36)
+  tenantId    String   @map("tenant_id") @db.Char(36)
+  name        String   @db.VarChar(80)
+  code        String   @db.VarChar(40)
+  colorHex    String   @default("#2563EB") @map("color_hex") @db.Char(7)
+  probability Int      @default(20) @db.SmallInt
+  sortOrder   Int      @default(0) @map("sort_order")
+  isWon       Boolean  @default(false) @map("is_won")
+  isLost      Boolean  @default(false) @map("is_lost")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  @@unique([tenantId, code])
+  @@index([tenantId, sortOrder])
+  @@map("pipeline_stages")
+}
+
+model LeadSource {
+  id        String   @id @db.Char(36)
+  tenantId  String   @map("tenant_id") @db.Char(36)
+  name      String   @db.VarChar(80)
+  code      String   @db.VarChar(40)
+  colorHex  String   @default("#64748B") @map("color_hex") @db.Char(7)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  @@unique([tenantId, code])
+  @@map("lead_sources")
+}
+
+model Account {
+  id              String    @id @db.Char(36)
+  tenantId        String    @map("tenant_id") @db.Char(36)
+  name            String    @db.VarChar(191)
+  accountType     String?   @map("account_type") @db.VarChar(64)
+  industry        String?   @db.VarChar(100)
+  website         String?   @db.VarChar(255)
+  phone           String?   @db.VarChar(32)
+  email           String?   @db.VarChar(191)
+  gstin           String?   @db.VarChar(32)
+  pan             String?   @db.VarChar(16)
+  billingAddress  Json?     @map("billing_address")
+  shippingAddress Json?     @map("shipping_address")
+  city            String?   @db.VarChar(100)
+  state           String?   @db.VarChar(100)
+  country         String    @default("IN") @db.Char(2)
+  ownerUserId     String?   @map("owner_user_id") @db.Char(36)
+  annualRevenue   Decimal?  @map("annual_revenue") @db.Decimal(15, 2)
+  employeeCount   Int?      @map("employee_count")
+  description     String?   @db.Text
+  tags            Json?
+  customFields    Json?     @map("custom_fields")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt       DateTime? @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, name])
+  @@index([tenantId, ownerUserId])
+  @@index([tenantId, phone])
+  @@map("accounts")
+}
+
+model Contact {
+  id              String    @id @db.Char(36)
+  tenantId        String    @map("tenant_id") @db.Char(36)
+  accountId       String?   @map("account_id") @db.Char(36)
+  name            String    @db.VarChar(120)
+  email           String?   @db.VarChar(191)
+  phone           String?   @db.VarChar(32)
+  mobile          String?   @db.VarChar(32)
+  phoneNormalized String?   @map("phone_normalized") @db.VarChar(20)
+  title           String?   @db.VarChar(120)
+  department      String?   @db.VarChar(120)
+  city            String?   @db.VarChar(100)
+  state           String?   @db.VarChar(100)
+  country         String    @default("IN") @db.Char(2)
+  ownerUserId     String?   @map("owner_user_id") @db.Char(36)
+  tags            Json?
+  description     String?   @db.Text
+  customFields    Json?     @map("custom_fields")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt       DateTime? @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, name])
+  @@index([tenantId, phoneNormalized])
+  @@index([tenantId, email])
+  @@index([tenantId, accountId])
+  @@map("contacts")
+}
+
+model Lead {
+  id                 String     @id @db.Char(36)
+  tenantId           String     @map("tenant_id") @db.Char(36)
+  name               String     @db.VarChar(120)
+  email              String?    @db.VarChar(191)
+  phone              String?    @db.VarChar(32)
+  phoneNormalized    String?    @map("phone_normalized") @db.VarChar(20)
+  company            String?    @db.VarChar(191)
+  website            String?    @db.VarChar(255)
+  city               String?    @db.VarChar(100)
+  state              String?    @db.VarChar(100)
+  country            String     @default("IN") @db.Char(2)
+  sourceId           String?    @map("source_id") @db.Char(36)
+  status             LeadStatus @default(NEW)
+  score              Int        @default(0) @db.SmallInt
+  assignedToId       String?    @map("assigned_to_id") @db.Char(36)
+  createdById        String     @map("created_by_id") @db.Char(36)
+  convertedContactId String?    @map("converted_contact_id") @db.Char(36)
+  convertedAccountId String?    @map("converted_account_id") @db.Char(36)
+  convertedDealId    String?    @map("converted_deal_id") @db.Char(36)
+  convertedAt        DateTime?  @map("converted_at") @db.DateTime(3)
+  description        String?    @db.Text
+  tags               Json?
+  customFields       Json?      @map("custom_fields")
+  lastActivityAt     DateTime?  @map("last_activity_at") @db.DateTime(3)
+  createdAt          DateTime   @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt          DateTime   @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt          DateTime?  @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, phoneNormalized])
+  @@index([tenantId, assignedToId])
+  @@index([tenantId, sourceId])
+  @@map("leads")
+}
+
+model Deal {
+  id                String       @id @db.Char(36)
+  tenantId          String       @map("tenant_id") @db.Char(36)
+  name              String       @db.VarChar(191)
+  amount            Decimal      @default(0) @db.Decimal(15, 2)
+  currency          String       @default("INR") @db.Char(3)
+  stageId           String       @map("stage_id") @db.Char(36)
+  priority          DealPriority @default(MEDIUM)
+  probability       Int          @default(20) @db.SmallInt
+  expectedCloseDate DateTime?    @map("expected_close_date") @db.Date
+  closedAt          DateTime?    @map("closed_at") @db.DateTime(3)
+  lostReason        String?      @map("lost_reason") @db.VarChar(255)
+  contactId         String?      @map("contact_id") @db.Char(36)
+  accountId         String?      @map("account_id") @db.Char(36)
+  ownerUserId       String?      @map("owner_user_id") @db.Char(36)
+  description       String?      @db.Text
+  customFields      Json?        @map("custom_fields")
+  createdAt         DateTime     @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt         DateTime     @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt         DateTime?    @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, stageId])
+  @@index([tenantId, ownerUserId])
+  @@index([tenantId, expectedCloseDate])
+  @@map("deals")
+}
+
+model Activity {
+  id              String         @id @db.Char(36)
+  tenantId        String         @map("tenant_id") @db.Char(36)
+  type            ActivityType
+  title           String         @db.VarChar(191)
+  description     String?        @db.Text
+  status          ActivityStatus @default(PENDING)
+  scheduledAt     DateTime?      @map("scheduled_at") @db.DateTime(3)
+  completedAt     DateTime?      @map("completed_at") @db.DateTime(3)
+  durationMinutes Int?           @map("duration_minutes")
+  outcome         String?        @db.VarChar(255)
+  leadId          String?        @map("lead_id") @db.Char(36)
+  contactId       String?        @map("contact_id") @db.Char(36)
+  dealId          String?        @map("deal_id") @db.Char(36)
+  accountId       String?        @map("account_id") @db.Char(36)
+  assignedToId    String?        @map("assigned_to_id") @db.Char(36)
+  customFields    Json?          @map("custom_fields")
+  createdAt       DateTime       @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime       @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt       DateTime?      @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, scheduledAt])
+  @@index([tenantId, contactId])
+  @@index([tenantId, leadId])
+  @@index([tenantId, type, status])
+  @@map("activities")
+}
+
+model Ticket {
+  id           String         @id @db.Char(36)
+  tenantId     String         @map("tenant_id") @db.Char(36)
+  ticketNo     Int            @map("ticket_no") @db.Int
+  subject      String         @db.VarChar(255)
+  description  String         @db.Text
+  priority     TicketPriority @default(MEDIUM)
+  status       TicketStatus   @default(OPEN)
+  slaDueAt     DateTime?      @map("sla_due_at") @db.DateTime(3)
+  slaBreached  Boolean        @default(false) @map("sla_breached")
+  contactId    String?        @map("contact_id") @db.Char(36)
+  accountId    String?        @map("account_id") @db.Char(36)
+  assignedToId String?        @map("assigned_to_id") @db.Char(36)
+  productId    String?        @map("product_id") @db.Char(36)
+  customFields Json?          @map("custom_fields")
+  resolvedAt   DateTime?      @map("resolved_at") @db.DateTime(3)
+  closedAt     DateTime?      @map("closed_at") @db.DateTime(3)
+  createdAt    DateTime       @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime       @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt    DateTime?      @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, ticketNo])
+  @@index([tenantId, status, priority])
+  @@map("tickets")
+}
+
+model TicketMessage {
+  id           String   @id @db.Char(36)
+  tenantId     String   @map("tenant_id") @db.Char(36)
+  ticketId     String   @map("ticket_id") @db.Char(36)
+  content      String   @db.Text
+  isInternal   Boolean  @default(false) @map("is_internal")
+  authorUserId String?  @map("author_user_id") @db.Char(36)
+  authorName   String   @map("author_name") @db.VarChar(120)
+  attachments  Json?
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  @@index([tenantId, ticketId, createdAt])
+  @@map("ticket_messages")
+}
+
+model Note {
+  id          String    @id @db.Char(36)
+  tenantId    String    @map("tenant_id") @db.Char(36)
+  content     String    @db.Text
+  isPinned    Boolean   @default(false) @map("is_pinned")
+  entityType  String    @map("entity_type") @db.VarChar(64)
+  entityId    String    @map("entity_id") @db.Char(36)
+  createdById String    @map("created_by_id") @db.Char(36)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt   DateTime? @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, entityType, entityId])
+  @@map("notes")
+}
+
+model Notification {
+  id         String    @id @db.Char(36)
+  tenantId   String    @map("tenant_id") @db.Char(36)
+  userId     String    @map("user_id") @db.Char(36)
+  title      String    @db.VarChar(160)
+  message    String    @db.VarChar(512)
+  type       String    @db.VarChar(64)
+  entityType String?   @map("entity_type") @db.VarChar(64)
+  entityId   String?   @map("entity_id") @db.Char(36)
+  isRead     Boolean   @default(false) @map("is_read")
+  readAt     DateTime? @map("read_at") @db.DateTime(3)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  @@index([tenantId, userId, isRead, createdAt])
+  @@map("notifications")
+}
+
+model ProductCategory {
+  id        String    @id @db.Char(36)
+  tenantId  String    @map("tenant_id") @db.Char(36)
+  parentId  String?   @map("parent_id") @db.Char(36)
+  name      String    @db.VarChar(120)
+  code      String?   @db.VarChar(64)
+  createdAt DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, name])
+  @@map("product_categories")
+}
+
+model Product {
+  id             String      @id @db.Char(36)
+  tenantId       String      @map("tenant_id") @db.Char(36)
+  categoryId     String?     @map("category_id") @db.Char(36)
+  sku            String      @db.VarChar(64)
+  name           String      @db.VarChar(191)
+  description    String?     @db.Text
+  productType    ProductType @default(GOODS) @map("product_type")
+  unit           String      @default("NOS") @db.VarChar(32)
+  hsnSac         String?     @map("hsn_sac") @db.VarChar(16)
+  salePrice      Decimal     @default(0) @map("sale_price") @db.Decimal(15, 2)
+  purchasePrice  Decimal     @default(0) @map("purchase_price") @db.Decimal(15, 2)
+  mrp            Decimal?    @db.Decimal(15, 2)
+  taxPercent     Decimal     @default(18) @map("tax_percent") @db.Decimal(5, 2)
+  trackInventory Boolean     @default(true) @map("track_inventory")
+  reorderLevel   Decimal     @default(0) @map("reorder_level") @db.Decimal(15, 3)
+  isActive       Boolean     @default(true) @map("is_active")
+  imageUrl       String?     @map("image_url") @db.VarChar(512)
+  attributes     Json?
+  customFields   Json?       @map("custom_fields")
+  createdAt      DateTime    @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime    @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt      DateTime?   @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, sku])
+  @@index([tenantId, name])
+  @@index([tenantId, categoryId])
+  @@map("products")
+}
+
+model Warehouse {
+  id        String    @id @db.Char(36)
+  tenantId  String    @map("tenant_id") @db.Char(36)
+  code      String    @db.VarChar(32)
+  name      String    @db.VarChar(120)
+  address   Json?
+  isDefault Boolean   @default(false) @map("is_default")
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, code])
+  @@map("warehouses")
+}
+
+model StockLevel {
+  id               String   @id @db.Char(36)
+  tenantId         String   @map("tenant_id") @db.Char(36)
+  productId        String   @map("product_id") @db.Char(36)
+  warehouseId      String   @map("warehouse_id") @db.Char(36)
+  quantityOnHand   Decimal  @default(0) @map("quantity_on_hand") @db.Decimal(15, 3)
+  quantityReserved Decimal  @default(0) @map("quantity_reserved") @db.Decimal(15, 3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  @@unique([tenantId, productId, warehouseId])
+  @@map("stock_levels")
+}
+
+model StockMovement {
+  id            String            @id @db.Char(36)
+  tenantId      String            @map("tenant_id") @db.Char(36)
+  productId     String            @map("product_id") @db.Char(36)
+  warehouseId   String            @map("warehouse_id") @db.Char(36)
+  movementType  StockMovementType @map("movement_type")
+  quantity      Decimal           @db.Decimal(15, 3)
+  referenceType String?           @map("reference_type") @db.VarChar(64)
+  referenceId   String?           @map("reference_id") @db.Char(36)
+  notes         String?           @db.VarChar(255)
+  performedBy   String?           @map("performed_by") @db.Char(36)
+  movedAt       DateTime          @default(now()) @map("moved_at") @db.DateTime(3)
+  createdAt     DateTime          @default(now()) @map("created_at") @db.DateTime(3)
+  @@index([tenantId, productId, movedAt])
+  @@map("stock_movements")
+}
+
+model Vendor {
+  id           String    @id @db.Char(36)
+  tenantId     String    @map("tenant_id") @db.Char(36)
+  name         String    @db.VarChar(191)
+  email        String?   @db.VarChar(191)
+  phone        String?   @db.VarChar(32)
+  gstin        String?   @db.VarChar(32)
+  address      Json?
+  paymentTerms String?   @map("payment_terms") @db.VarChar(64)
+  customFields Json?     @map("custom_fields")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, name])
+  @@map("vendors")
+}
+
+model PurchaseOrder {
+  id              String              @id @db.Char(36)
+  tenantId        String              @map("tenant_id") @db.Char(36)
+  poNumber        String              @map("po_number") @db.VarChar(40)
+  vendorId        String              @map("vendor_id") @db.Char(36)
+  warehouseId     String?             @map("warehouse_id") @db.Char(36)
+  status          PurchaseOrderStatus @default(DRAFT)
+  orderDate       DateTime            @map("order_date") @db.Date
+  expectedDate    DateTime?           @map("expected_date") @db.Date
+  subtotal        Decimal             @default(0) @db.Decimal(15, 2)
+  taxTotal        Decimal             @default(0) @map("tax_total") @db.Decimal(15, 2)
+  grandTotal      Decimal             @default(0) @map("grand_total") @db.Decimal(15, 2)
+  notes           String?             @db.Text
+  createdById     String?             @map("created_by_id") @db.Char(36)
+  customFields    Json?               @map("custom_fields")
+  createdAt       DateTime            @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime            @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt       DateTime?           @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, poNumber])
+  @@index([tenantId, vendorId, status])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id              String  @id @db.Char(36)
+  tenantId        String  @map("tenant_id") @db.Char(36)
+  purchaseOrderId String  @map("purchase_order_id") @db.Char(36)
+  productId       String  @map("product_id") @db.Char(36)
+  description     String? @db.VarChar(255)
+  quantity        Decimal @db.Decimal(15, 3)
+  receivedQty     Decimal @default(0) @map("received_qty") @db.Decimal(15, 3)
+  unitPrice       Decimal @map("unit_price") @db.Decimal(15, 2)
+  taxPercent      Decimal @default(0) @map("tax_percent") @db.Decimal(5, 2)
+  lineTotal       Decimal @map("line_total") @db.Decimal(15, 2)
+  @@index([tenantId, purchaseOrderId])
+  @@map("purchase_order_lines")
+}
+
+model SalesOrder {
+  id             String           @id @db.Char(36)
+  tenantId       String           @map("tenant_id") @db.Char(36)
+  soNumber       String           @map("so_number") @db.VarChar(40)
+  accountId      String?          @map("account_id") @db.Char(36)
+  contactId      String?          @map("contact_id") @db.Char(36)
+  dealId         String?          @map("deal_id") @db.Char(36)
+  status         SalesOrderStatus @default(DRAFT)
+  orderDate      DateTime         @map("order_date") @db.Date
+  deliveryDate   DateTime?        @map("delivery_date") @db.Date
+  subtotal       Decimal          @default(0) @db.Decimal(15, 2)
+  taxTotal       Decimal          @default(0) @map("tax_total") @db.Decimal(15, 2)
+  discountTotal  Decimal          @default(0) @map("discount_total") @db.Decimal(15, 2)
+  grandTotal     Decimal          @default(0) @map("grand_total") @db.Decimal(15, 2)
+  notes          String?          @db.Text
+  customFields   Json?            @map("custom_fields")
+  createdById    String?          @map("created_by_id") @db.Char(36)
+  createdAt      DateTime         @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt      DateTime?        @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, soNumber])
+  @@index([tenantId, accountId, status])
+  @@map("sales_orders")
+}
+
+model SalesOrderLine {
+  id              String  @id @db.Char(36)
+  tenantId        String  @map("tenant_id") @db.Char(36)
+  salesOrderId    String  @map("sales_order_id") @db.Char(36)
+  productId       String  @map("product_id") @db.Char(36)
+  description     String? @db.VarChar(255)
+  quantity        Decimal @db.Decimal(15, 3)
+  unitPrice       Decimal @map("unit_price") @db.Decimal(15, 2)
+  taxPercent      Decimal @default(0) @map("tax_percent") @db.Decimal(5, 2)
+  discountPercent Decimal @default(0) @map("discount_percent") @db.Decimal(5, 2)
+  lineTotal       Decimal @map("line_total") @db.Decimal(15, 2)
+  @@index([tenantId, salesOrderId])
+  @@map("sales_order_lines")
+}
+
+model Invoice {
+  id             String        @id @db.Char(36)
+  tenantId       String        @map("tenant_id") @db.Char(36)
+  invoiceNumber  String        @map("invoice_number") @db.VarChar(40)
+  salesOrderId   String?       @map("sales_order_id") @db.Char(36)
+  accountId      String        @map("account_id") @db.Char(36)
+  contactId      String?       @map("contact_id") @db.Char(36)
+  status         InvoiceStatus @default(DRAFT)
+  invoiceDate    DateTime      @map("invoice_date") @db.Date
+  dueDate        DateTime?     @map("due_date") @db.Date
+  subtotal       Decimal       @default(0) @db.Decimal(15, 2)
+  taxTotal       Decimal       @default(0) @map("tax_total") @db.Decimal(15, 2)
+  discountTotal  Decimal       @default(0) @map("discount_total") @db.Decimal(15, 2)
+  grandTotal     Decimal       @default(0) @map("grand_total") @db.Decimal(15, 2)
+  amountPaid     Decimal       @default(0) @map("amount_paid") @db.Decimal(15, 2)
+  currency       String        @default("INR") @db.Char(3)
+  notes          String?       @db.Text
+  customFields   Json?         @map("custom_fields")
+  createdById    String?       @map("created_by_id") @db.Char(36)
+  createdAt      DateTime      @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime      @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt      DateTime?     @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId, accountId, status])
+  @@index([tenantId, dueDate, status])
+  @@map("invoices")
+}
+
+model InvoiceLine {
+  id          String  @id @db.Char(36)
+  tenantId    String  @map("tenant_id") @db.Char(36)
+  invoiceId   String  @map("invoice_id") @db.Char(36)
+  productId   String? @map("product_id") @db.Char(36)
+  description String  @db.VarChar(255)
+  quantity    Decimal @db.Decimal(15, 3)
+  unitPrice   Decimal @map("unit_price") @db.Decimal(15, 2)
+  taxPercent  Decimal @default(0) @map("tax_percent") @db.Decimal(5, 2)
+  lineTotal   Decimal @map("line_total") @db.Decimal(15, 2)
+  @@index([tenantId, invoiceId])
+  @@map("invoice_lines")
+}
+
+model Payment {
+  id            String           @id @db.Char(36)
+  tenantId      String           @map("tenant_id") @db.Char(36)
+  paymentNumber String           @map("payment_number") @db.VarChar(40)
+  invoiceId     String?          @map("invoice_id") @db.Char(36)
+  accountId     String?          @map("account_id") @db.Char(36)
+  vendorId      String?          @map("vendor_id") @db.Char(36)
+  direction     PaymentDirection
+  method        PaymentMethod    @default(UPI)
+  amount        Decimal          @db.Decimal(15, 2)
+  currency      String           @default("INR") @db.Char(3)
+  paidAt        DateTime         @map("paid_at") @db.DateTime(3)
+  referenceNo   String?          @map("reference_no") @db.VarChar(80)
+  notes         String?          @db.VarChar(255)
+  createdById   String?          @map("created_by_id") @db.Char(36)
+  createdAt     DateTime         @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt     DateTime         @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt     DateTime?        @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, paymentNumber])
+  @@index([tenantId, invoiceId])
+  @@map("payments")
+}
+
+model Employee {
+  id           String         @id @db.Char(36)
+  tenantId     String         @map("tenant_id") @db.Char(36)
+  userId       String?        @map("user_id") @db.Char(36)
+  employeeCode String         @map("employee_code") @db.VarChar(40)
+  name         String         @db.VarChar(120)
+  email        String?        @db.VarChar(191)
+  phone        String?        @db.VarChar(32)
+  department   String?        @db.VarChar(80)
+  designation  String?        @db.VarChar(80)
+  joinDate     DateTime?      @map("join_date") @db.Date
+  status       EmployeeStatus @default(ACTIVE)
+  salary       Decimal?       @db.Decimal(15, 2)
+  customFields Json?          @map("custom_fields")
+  createdAt    DateTime       @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime       @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt    DateTime?      @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, employeeCode])
+  @@map("employees")
+}
+
+model Integration {
+  id           String            @id @db.Char(36)
+  tenantId     String            @map("tenant_id") @db.Char(36)
+  provider     String            @db.VarChar(64)
+  status       IntegrationStatus @default(DISCONNECTED)
+  config       Json?
+  secretsEnc   String?           @map("secrets_enc") @db.Text
+  lastSyncedAt DateTime?         @map("last_synced_at") @db.DateTime(3)
+  createdAt    DateTime          @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime          @updatedAt @map("updated_at") @db.DateTime(3)
+  @@unique([tenantId, provider])
+  @@map("integrations")
+}
+
+model WhatsappConversation {
+  id              String   @id @db.Char(36)
+  tenantId        String   @map("tenant_id") @db.Char(36)
+  provider        String   @default("ASKMEISTER") @db.VarChar(64)
+  externalId      String?  @map("external_id") @db.VarChar(128)
+  phone           String   @db.VarChar(32)
+  phoneNormalized String   @map("phone_normalized") @db.VarChar(20)
+  contactId       String?  @map("contact_id") @db.Char(36)
+  leadId          String?  @map("lead_id") @db.Char(36)
+  contactName     String?  @map("contact_name") @db.VarChar(120)
+  lastMessage     String?  @map("last_message") @db.VarChar(512)
+  unreadCount     Int      @default(0) @map("unread_count")
+  meta            Json?
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  createdAt       DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  @@index([tenantId, phoneNormalized])
+  @@map("whatsapp_conversations")
+}
+
+model WhatsappMessage {
+  id             String                @id @db.Char(36)
+  tenantId       String                @map("tenant_id") @db.Char(36)
+  conversationId String                @map("conversation_id") @db.Char(36)
+  direction      MessageDirection
+  body           String                @db.Text
+  status         WhatsappMessageStatus @default(SENT)
+  externalId     String?               @map("external_id") @db.VarChar(128)
+  sentByUserId   String?               @map("sent_by_user_id") @db.Char(36)
+  createdAt      DateTime              @default(now()) @map("created_at") @db.DateTime(3)
+  @@index([tenantId, conversationId, createdAt])
+  @@map("whatsapp_messages")
+}
+
+model AutomationRule {
+  id            String   @id @db.Char(36)
+  tenantId      String   @map("tenant_id") @db.Char(36)
+  name          String   @db.VarChar(160)
+  isActive      Boolean  @default(true) @map("is_active")
+  triggerModule String   @map("trigger_module") @db.VarChar(64)
+  triggerField  String   @map("trigger_field") @db.VarChar(64)
+  triggerOp     String   @map("trigger_op") @db.VarChar(32)
+  triggerValue  String   @map("trigger_value") @db.VarChar(255)
+  actionType    String   @map("action_type") @db.VarChar(64)
+  actionConfig  Json     @map("action_config")
+  runCount      Int      @default(0) @map("run_count")
+  createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  @@index([tenantId, isActive])
+  @@map("automation_rules")
+}
+
+model AuditLog {
+  id         String         @id @db.Char(36)
+  tenantId   String?        @map("tenant_id") @db.Char(36)
+  actorType  AuditActorType @map("actor_type")
+  actorId    String?        @map("actor_id") @db.Char(36)
+  action     String         @db.VarChar(64)
+  entityType String?        @map("entity_type") @db.VarChar(64)
+  entityId   String?        @map("entity_id") @db.Char(36)
+  ipAddress  String?        @map("ip_address") @db.VarChar(64)
+  userAgent  String?        @map("user_agent") @db.VarChar(255)
+  beforeJson Json?          @map("before_json")
+  afterJson  Json?          @map("after_json")
+  createdAt  DateTime       @default(now()) @map("created_at") @db.DateTime(3)
+  @@index([tenantId, createdAt])
+  @@index([tenantId, entityType, entityId])
+  @@map("audit_logs")
+}
+
+model NumberSequence {
+  tenantId    String   @map("tenant_id") @db.Char(36)
+  sequenceKey String   @map("sequence_key") @db.VarChar(40)
+  prefix      String   @default("") @db.VarChar(20)
+  nextValue   Int      @default(1) @map("next_value") @db.Int
+  padding     Int      @default(5) @db.SmallInt
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  @@id([tenantId, sequenceKey])
+  @@map("number_sequences")
+}

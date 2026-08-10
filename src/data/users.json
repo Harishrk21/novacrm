@@ -1,0 +1,90 @@
+[
+  {
+    "id": "user-1",
+    "name": "Priya Rajan",
+    "email": "priya@novacrm.com",
+    "phone": "+91 98400 12001",
+    "role": "ADMIN",
+    "status": "ACTIVE",
+    "timezone": "Asia/Kolkata",
+    "lastLoginAt": "2026-07-28T09:15:00+05:30",
+    "createdAt": "2025-01-17T09:00:00+05:30"
+  },
+  {
+    "id": "user-2",
+    "name": "Arjun Mehta",
+    "email": "arjun@novacrm.com",
+    "phone": "+91 98201 34002",
+    "role": "MANAGER",
+    "status": "ACTIVE",
+    "timezone": "Asia/Kolkata",
+    "lastLoginAt": "2026-07-28T10:15:00+05:30",
+    "createdAt": "2025-01-26T09:00:00+05:30"
+  },
+  {
+    "id": "user-3",
+    "name": "Kavya Reddy",
+    "email": "kavya@novacrm.com",
+    "phone": "+91 99890 56003",
+    "role": "MANAGER",
+    "status": "ACTIVE",
+    "timezone": "Asia/Kolkata",
+    "lastLoginAt": "2026-07-28T11:15:00+05:30",
+    "createdAt": "2025-02-04T09:00:00+05:30"
+  },
+  {
+    "id": "user-4",
+    "name": "Rahul Sharma",
+    "email": "rahul@novacrm.com",
+    "phone": "+91 98110 78004",
+    "role": "AGENT",
+    "status": "ACTIVE",
+    "timezone": "Asia/Kolkata",
+    "lastLoginAt": "2026-07-28T12:15:00+05:30",
+    "createdAt": "2025-02-13T09:00:00+05:30"
+  },
+  {
+    "id": "user-5",
+    "name": "Meera Iyer",
+    "email": "meera@novacrm.com",
+    "phone": "+91 99020 91005",
+    "role": "AGENT",
+    "status": "ACTIVE",
+    "timezone": "Asia/Kolkata",
+    "lastLoginAt": "2026-07-28T13:15:00+05:30",
+    "createdAt": "2025-02-22T09:00:00+05:30"
+  },
+  {
+    "id": "user-6",
+    "name": "Vikram Naidu",
+    "email": "vikram@novacrm.com",
+    "phone": "+91 98490 23006",
+    "role": "AGENT",
+    "status": "ACTIVE",
+    "timezone": "Asia/Kolkata",
+    "lastLoginAt": "2026-07-28T14:15:00+05:30",
+    "createdAt": "2025-03-03T09:00:00+05:30"
+  },
+  {
+    "id": "user-7",
+    "name": "Ananya Singh",
+    "email": "ananya@novacrm.com",
+    "phone": "+91 98730 45007",
+    "role": "AGENT",
+    "status": "ACTIVE",
+    "timezone": "Asia/Kolkata",
+    "lastLoginAt": "2026-07-28T15:15:00+05:30",
+    "createdAt": "2025-03-12T09:00:00+05:30"
+  },
+  {
+    "id": "user-8",
+    "name": "Suresh Babu",
+    "email": "suresh@novacrm.com",
+    "phone": "+91 94440 67008",
+    "role": "READ_ONLY",
+    "status": "ACTIVE",
+    "timezone": "Asia/Kolkata",
+    "lastLoginAt": "2026-07-28T16:15:00+05:30",
+    "createdAt": "2025-03-21T09:00:00+05:30"
+  }
+]

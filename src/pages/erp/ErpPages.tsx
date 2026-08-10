@@ -1,0 +1,6 @@
+export { ProductsPage } from './ProductsPage'
+export { ProductCreatePage } from './ProductCreatePage'
+export { ProductDetailPage } from './ProductDetailPage'
+export { InventoryPage } from './InventoryPage'
+export { InvoicesPage } from './InvoicesPage'
+export { PurchaseOrdersPage } from './PurchaseOrdersPage'

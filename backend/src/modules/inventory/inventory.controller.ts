@@ -1,0 +1,1 @@
+import type{Request,Response}from"express";import{success}from"../../common/utils/response.js";import * as s from"./inventory.service.js";export const levels=async(q:Request,r:Response)=>success(r,await s.levels(q.auth!.tenantId!,q.query));export const adjust=async(q:Request,r:Response)=>success(r,await s.adjust(q.auth!.tenantId!,q.auth!.userId,q.body),"Stock adjusted",201);

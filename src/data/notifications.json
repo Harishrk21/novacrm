@@ -1,0 +1,167 @@
+[
+  {
+    "id": "notif-1",
+    "userId": "user-1",
+    "title": "New lead assigned",
+    "message": "A new website lead has been assigned to you.",
+    "type": "LEAD_ASSIGNED",
+    "entityType": "LEAD",
+    "entityId": "lead-1",
+    "isRead": false,
+    "createdAt": "2026-07-11T09:00:00+05:30"
+  },
+  {
+    "id": "notif-2",
+    "userId": "user-1",
+    "title": "Deal moved to negotiation",
+    "message": "A high-value deal entered negotiation.",
+    "type": "DEAL_STAGE_CHANGED",
+    "entityType": "DEAL",
+    "entityId": "deal-4",
+    "isRead": false,
+    "createdAt": "2026-07-12T10:00:00+05:30"
+  },
+  {
+    "id": "notif-3",
+    "userId": "user-1",
+    "title": "Task overdue",
+    "message": "Follow-up task for Aadhya Textiles is overdue.",
+    "type": "ACTIVITY_OVERDUE",
+    "entityType": "ACTIVITY",
+    "entityId": "act-4",
+    "isRead": true,
+    "createdAt": "2026-07-13T11:00:00+05:30"
+  },
+  {
+    "id": "notif-4",
+    "userId": "user-1",
+    "title": "Ticket SLA at risk",
+    "message": "Ticket #1003 is approaching its SLA deadline.",
+    "type": "SLA_WARNING",
+    "entityType": "TICKET",
+    "entityId": "ticket-3",
+    "isRead": false,
+    "createdAt": "2026-07-14T12:00:00+05:30"
+  },
+  {
+    "id": "notif-5",
+    "userId": "user-1",
+    "title": "Meeting reminder",
+    "message": "Customer meeting starts in 30 minutes.",
+    "type": "MEETING_REMINDER",
+    "entityType": "ACTIVITY",
+    "entityId": "act-8",
+    "isRead": false,
+    "createdAt": "2026-07-15T13:00:00+05:30"
+  },
+  {
+    "id": "notif-6",
+    "userId": "user-1",
+    "title": "Deal won",
+    "message": "The annual platform renewal has been marked won.",
+    "type": "DEAL_WON",
+    "entityType": "DEAL",
+    "entityId": "deal-5",
+    "isRead": true,
+    "createdAt": "2026-07-16T08:00:00+05:30"
+  },
+  {
+    "id": "notif-7",
+    "userId": "user-1",
+    "title": "New ticket response",
+    "message": "A customer replied to ticket #1002.",
+    "type": "TICKET_REPLY",
+    "entityType": "TICKET",
+    "entityId": "ticket-2",
+    "isRead": false,
+    "createdAt": "2026-07-17T09:00:00+05:30"
+  },
+  {
+    "id": "notif-8",
+    "userId": "user-1",
+    "title": "Lead score increased",
+    "message": "A lead score increased after email engagement.",
+    "type": "LEAD_SCORE_CHANGED",
+    "entityType": "LEAD",
+    "entityId": "lead-9",
+    "isRead": false,
+    "createdAt": "2026-07-18T10:00:00+05:30"
+  },
+  {
+    "id": "notif-9",
+    "userId": "user-1",
+    "title": "Proposal viewed",
+    "message": "The proposal for Chola Foods was viewed.",
+    "type": "PROPOSAL_VIEWED",
+    "entityType": "DEAL",
+    "entityId": "deal-3",
+    "isRead": true,
+    "createdAt": "2026-07-19T11:00:00+05:30"
+  },
+  {
+    "id": "notif-10",
+    "userId": "user-1",
+    "title": "Contact updated",
+    "message": "Sundar Kumar contact details were updated.",
+    "type": "CONTACT_UPDATED",
+    "entityType": "CONTACT",
+    "entityId": "con-1",
+    "isRead": false,
+    "createdAt": "2026-07-20T12:00:00+05:30"
+  },
+  {
+    "id": "notif-11",
+    "userId": "user-1",
+    "title": "Daily pipeline summary",
+    "message": "Your pipeline summary is ready to review.",
+    "type": "SYSTEM",
+    "entityType": "USER",
+    "entityId": "user-1",
+    "isRead": false,
+    "createdAt": "2026-07-21T13:00:00+05:30"
+  },
+  {
+    "id": "notif-12",
+    "userId": "user-1",
+    "title": "Ticket resolved",
+    "message": "Ticket #1004 has been resolved.",
+    "type": "TICKET_RESOLVED",
+    "entityType": "TICKET",
+    "entityId": "ticket-4",
+    "isRead": true,
+    "createdAt": "2026-07-22T08:00:00+05:30"
+  },
+  {
+    "id": "notif-13",
+    "userId": "user-1",
+    "title": "Account activity",
+    "message": "New activity was logged for Kaveri Cloud Labs.",
+    "type": "ACCOUNT_ACTIVITY",
+    "entityType": "ACCOUNT",
+    "entityId": "acc-11",
+    "isRead": false,
+    "createdAt": "2026-07-23T09:00:00+05:30"
+  },
+  {
+    "id": "notif-14",
+    "userId": "user-1",
+    "title": "Follow-up due today",
+    "message": "Three customer follow-ups are due today.",
+    "type": "TASK_REMINDER",
+    "entityType": "ACTIVITY",
+    "entityId": "act-20",
+    "isRead": false,
+    "createdAt": "2026-07-24T10:00:00+05:30"
+  },
+  {
+    "id": "notif-15",
+    "userId": "user-1",
+    "title": "Security alert",
+    "message": "A new login to your NovaCRM account was detected.",
+    "type": "SECURITY",
+    "entityType": "USER",
+    "entityId": "user-1",
+    "isRead": true,
+    "createdAt": "2026-07-25T11:00:00+05:30"
+  }
+]

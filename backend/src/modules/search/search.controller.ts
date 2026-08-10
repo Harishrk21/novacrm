@@ -1,0 +1,1 @@
+import type{Request,Response}from"express";import{success}from"../../common/utils/response.js";import{search as run}from"./search.service.js";export const search=async(q:Request,r:Response)=>success(r,await run(q.auth!.tenantId!,String(q.query.q),Number(q.query.limit)));

@@ -1,0 +1,187 @@
+export type UserRole = 'ADMIN' | 'MANAGER' | 'AGENT' | 'READ_ONLY'
+export type UserStatus = 'ACTIVE' | 'INACTIVE' | 'INVITED'
+
+export type LeadStatus = 'NEW' | 'CONTACTED' | 'QUALIFIED' | 'UNQUALIFIED' | 'LOST' | 'CONVERTED'
+export type LeadSource = 'WEB' | 'REFERRAL' | 'COLD_CALL' | 'SOCIAL' | 'CAMPAIGN' | 'EVENT' | 'PARTNER' | 'OTHER'
+
+export type DealStage = 'PROSPECT' | 'QUALIFIED' | 'PROPOSAL' | 'NEGOTIATION' | 'WON' | 'LOST'
+export type DealPriority = 'LOW' | 'MEDIUM' | 'HIGH'
+
+export type ActivityType = 'CALL' | 'EMAIL' | 'MEETING' | 'TASK' | 'NOTE' | 'WHATSAPP'
+export type ActivityStatus = 'PENDING' | 'COMPLETED' | 'CANCELLED' | 'OVERDUE'
+
+export type TicketPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+export type TicketStatus = 'OPEN' | 'IN_PROGRESS' | 'PENDING' | 'RESOLVED' | 'CLOSED'
+export type SlaStatus = 'ON_TRACK' | 'AT_RISK' | 'BREACHED'
+
+export interface User {
+  id: string
+  name: string
+  email: string
+  phone?: string
+  avatar?: string
+  role: UserRole
+  status: UserStatus
+  timezone: string
+  lastLoginAt?: string
+  createdAt: string
+}
+
+export interface Lead {
+  id: string
+  name: string
+  email?: string
+  phone?: string
+  company?: string
+  website?: string
+  address?: string
+  city?: string
+  state?: string
+  country: string
+  source: LeadSource
+  status: LeadStatus
+  score: number
+  description?: string
+  tags: string[]
+  assignedToId?: string
+  createdById: string
+  lastActivityAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Account {
+  id: string
+  name: string
+  industry?: string
+  website?: string
+  phone?: string
+  email?: string
+  address?: string
+  city?: string
+  state?: string
+  country: string
+  description?: string
+  logo?: string
+  ownerId?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Contact {
+  id: string
+  name: string
+  email?: string
+  phone?: string
+  mobile?: string
+  title?: string
+  department?: string
+  address?: string
+  city?: string
+  state?: string
+  country: string
+  tags: string[]
+  description?: string
+  accountId?: string
+  ownerId?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Deal {
+  id: string
+  name: string
+  value: number
+  stage: DealStage
+  priority: DealPriority
+  probability: number
+  expectedCloseDate?: string
+  closedAt?: string
+  description?: string
+  lostReason?: string
+  contactId?: string
+  accountId?: string
+  ownerId?: string
+  daysInStage: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Activity {
+  id: string
+  type: ActivityType
+  title: string
+  description?: string
+  status: ActivityStatus
+  scheduledAt?: string
+  completedAt?: string
+  duration?: number
+  outcome?: string
+  leadId?: string
+  contactId?: string
+  dealId?: string
+  accountId?: string
+  assignedToId?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Ticket {
+  id: string
+  ticketNo: number
+  subject: string
+  description: string
+  priority: TicketPriority
+  status: TicketStatus
+  slaStatus: SlaStatus
+  slaBreached: boolean
+  resolvedAt?: string
+  closedAt?: string
+  contactId?: string
+  assignedToId?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface TicketMessage {
+  id: string
+  ticketId: string
+  content: string
+  isInternal: boolean
+  authorId?: string
+  authorName: string
+  attachments: string[]
+  createdAt: string
+}
+
+export interface Note {
+  id: string
+  content: string
+  isPinned: boolean
+  leadId?: string
+  contactId?: string
+  dealId?: string
+  ticketId?: string
+  createdById: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Notification {
+  id: string
+  userId: string
+  title: string
+  message: string
+  type: string
+  entityType?: string
+  entityId?: string
+  isRead: boolean
+  readAt?: string
+  createdAt: string
+}
+
+export interface Toast {
+  id: string
+  type: 'success' | 'error' | 'warning' | 'info'
+  message: string
+}

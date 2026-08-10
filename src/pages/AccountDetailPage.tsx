@@ -197,8 +197,8 @@ export function AccountDetailPage() {
               ['LinkedIn', cf.linkedin],
             ].map(([k, v]) => (
               <div key={String(k)}>
-                <dt className="text-xs text-text-secondary">{k}</dt>
-                <dd className="font-medium break-all">{v ? String(v) : '—'}</dd>
+                <dt className="text-xs text-text-secondary">{String(k)}</dt>
+                <dd className="font-medium break-all">{v != null && v !== '' ? String(v) : '—'}</dd>
               </div>
             ))}
           </dl>
@@ -214,8 +214,8 @@ export function AccountDetailPage() {
               ['Credit limit', cf.credit_limit != null ? formatCurrency(num(cf.credit_limit)) : null],
             ].map(([k, v]) => (
               <div key={String(k)}>
-                <dt className="text-xs text-text-secondary">{k}</dt>
-                <dd className="font-medium font-mono text-sm">{v ? String(v) : '—'}</dd>
+                <dt className="text-xs text-text-secondary">{String(k)}</dt>
+                <dd className="font-medium font-mono text-sm">{v != null && v !== '' ? String(v) : '—'}</dd>
               </div>
             ))}
           </dl>

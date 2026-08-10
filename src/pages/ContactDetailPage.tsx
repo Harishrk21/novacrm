@@ -173,21 +173,21 @@ export function ContactDetailPage() {
               {[contact.title, contact.department].filter(Boolean).join(' · ') || 'No title set'}
             </p>
             <div className="mt-3 flex flex-wrap gap-4 text-sm">
-              {(contact.phone || contact.mobile) && (
+              {contact.phone || contact.mobile ? (
                 <span className="inline-flex items-center gap-1.5">
                   <Phone size={14} /> {formatPhone(String(contact.phone || contact.mobile))}
                 </span>
-              )}
+              ) : null}
               {contact.email ? (
                 <span className="inline-flex items-center gap-1.5">
                   <Mail size={14} /> {String(contact.email)}
                 </span>
               ) : null}
-              {(contact.city || contact.state) && (
+              {contact.city || contact.state ? (
                 <span className="inline-flex items-center gap-1.5">
                   <MapPin size={14} /> {[contact.city, contact.state].filter(Boolean).join(', ')}
                 </span>
-              )}
+              ) : null}
               {account ? (
                 <Link
                   to={`/accounts/${account.id}`}
@@ -565,7 +565,7 @@ function ContactAnalytics({
                   <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                   <XAxis dataKey="month" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip formatter={(v: number) => formatCurrency(v)} />
+                  <Tooltip formatter={(v) => formatCurrency(num(v))} />
                   <Line type="monotone" dataKey="spend" stroke="#3B82F6" strokeWidth={2} dot={{ r: 3 }} />
                 </LineChart>
               </ResponsiveContainer>
@@ -658,8 +658,8 @@ function ContactAnalytics({
             ['Created', contact.createdAt ? formatDate(String(contact.createdAt)) : '—'],
           ].map(([label, value]) => (
             <div key={String(label)}>
-              <dt className="text-xs text-text-secondary">{label}</dt>
-              <dd className="text-sm font-medium text-text-primary">{String(value || '—')}</dd>
+              <dt className="text-xs text-text-secondary">{String(label)}</dt>
+              <dd className="text-sm font-medium text-text-primary">{String(value ?? '—')}</dd>
             </div>
           ))}
         </dl>

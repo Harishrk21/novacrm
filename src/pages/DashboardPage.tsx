@@ -35,7 +35,7 @@ import { Card } from '@/components/ui/Card'
 import { Select } from '@/components/ui/Select'
 import { PALETTES } from '@/lib/theme'
 import { api, isTenantSession, num } from '@/lib/api'
-import { formatCurrency, formatCurrencyFull, formatDate, timeAgo } from '@/lib/utils'
+import { formatCurrency, formatDate, timeAgo } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { EmployeeDashboardPage } from '@/pages/EmployeeDashboardPage'
@@ -307,14 +307,6 @@ function AdminDashboardPage() {
     .reduce((s, d) => s + d.value * (d.probability / 100), 0)
   const revenueTarget = Number(analytics?.salesTargets?.revenueTarget ?? 0) || 0
   const targetPct = revenueTarget > 0 ? Math.min(100, Math.round((wonRevenue / revenueTarget) * 100)) : 0
-  const lastYearRevenue = analytics
-    ? analytics.monthlyRevenue.reduce((s, m) => s + m.last, 0)
-    : 0
-  const revenueGrowth = analytics
-    ? String(analytics.kpis.dealGrowth ?? 0)
-    : lastYearRevenue > 0
-      ? (((wonRevenue - lastYearRevenue) / lastYearRevenue) * 100).toFixed(1)
-      : '0'
   const leadGrowthLabel = analytics ? `${analytics.kpis.leadGrowth >= 0 ? '+' : ''}${analytics.kpis.leadGrowth}%` : '+0%'
   const dealGrowthLabel = analytics ? `${analytics.kpis.dealGrowth >= 0 ? '+' : ''}${analytics.kpis.dealGrowth}%` : '+0%'
   const qualified = filteredLeads.filter((l) => l.status === 'QUALIFIED' || l.status === 'CONVERTED').length
@@ -1437,48 +1429,6 @@ function KpiCard({
     <Link to={to} className="block focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40 rounded-[8px]">
       {inner}
     </Link>
-  )
-}
-
-function RevenueKpi({
-  value,
-  growth,
-  lastYear,
-  actual,
-  target,
-}: {
-  value: number
-  growth: string
-  lastYear: number
-  actual: number
-  target: number
-}) {
-  return (
-    <Card hover className="relative overflow-hidden">
-      <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-accent-green via-emerald-400 to-accent-blue" />
-      <div className="flex items-start justify-between">
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-50 text-accent-green">
-          <TrendingUp size={18} />
-        </div>
-        <span className="flex items-center gap-0.5 text-xs font-medium text-accent-green">
-          <ArrowUpRight size={14} />
-          {growth}%
-        </span>
-      </div>
-      <div className="mt-3 text-sm text-text-secondary">Revenue This Month</div>
-      <div className="mt-1 text-2xl font-bold text-accent-green">{formatCurrencyFull(value)}</div>
-      <div className="mt-1 text-xs text-text-secondary">Last year: {formatCurrency(lastYear)}</div>
-      <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border pt-3 text-xs">
-        <div>
-          <div className="text-text-secondary">Actual</div>
-          <div className="font-semibold text-accent-green">{formatCurrency(actual)}</div>
-        </div>
-        <div>
-          <div className="text-text-secondary">Target</div>
-          <div className="font-semibold">{target > 0 ? formatCurrency(target) : 'Not set'}</div>
-        </div>
-      </div>
-    </Card>
   )
 }
 

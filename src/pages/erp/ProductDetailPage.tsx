@@ -204,7 +204,7 @@ export function ProductDetailPage() {
               ['Warranty (months)', attrs.warranty_months],
             ].map(([k, v]) => (
               <div key={String(k)}>
-                <dt className="text-xs text-text-secondary">{k}</dt>
+                <dt className="text-xs text-text-secondary">{String(k)}</dt>
                 <dd className="font-medium">{v != null && v !== '' ? String(v) : '—'}</dd>
               </div>
             ))}

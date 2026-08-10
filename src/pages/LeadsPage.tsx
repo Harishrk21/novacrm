@@ -409,8 +409,8 @@ export function LeadsPage() {
                 ['Created', selected.createdAt ? formatDate(String(selected.createdAt)) : '—'],
               ].map(([k, v]) => (
                 <div key={String(k)} className="flex justify-between gap-4 border-b border-border py-2">
-                  <dt className="text-text-secondary">{k}</dt>
-                  <dd className="text-right font-medium">{String(v || '—')}</dd>
+                  <dt className="text-text-secondary">{String(k)}</dt>
+                  <dd className="text-right font-medium">{String(v ?? '—')}</dd>
                 </div>
               ))}
             </dl>
@@ -454,9 +454,9 @@ export function LeadsPage() {
               ) : null}
             </div>
 
-            {(selected.convertedContactId ||
-              selected.convertedAccountId ||
-              selected.convertedDealId) && (
+            {selected.convertedContactId ||
+            selected.convertedAccountId ||
+            selected.convertedDealId ? (
               <div className="rounded-[8px] border border-emerald-200 bg-emerald-50/50 p-3">
                 <div className="mb-2 text-xs font-semibold uppercase text-accent-green">
                   Converted records
@@ -491,7 +491,7 @@ export function LeadsPage() {
                   ) : null}
                 </div>
               </div>
-            )}
+            ) : null}
 
             {selected.status !== 'CONVERTED' && (
               <Button className="w-full" onClick={() => setConvertOpen(true)}>

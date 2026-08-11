@@ -4,6 +4,10 @@ import { normalizePhone } from "../../common/utils/phone.js";
 import { pagination, pageResult } from "../../common/utils/pagination.js";
 import { cacheDelPattern, cacheGet, cacheSet } from "../../config/redis.js";
 import { AppError, notFound } from "../../common/errors.js";
+import {
+  allocateCustomerIdentity,
+  assertContactIdentityAvailable,
+} from "../contacts/customerIdentity.js";
 
 const invalidate = (t: string) => cacheDelPattern(`leads:${t}:*`);
 
@@ -194,21 +198,48 @@ export async function convert(t: string, id: string, user: string, data: any) {
       });
       accountId = account.id;
     }
-    const contact = await tx.contact.create({
-      data: {
-        id: newId(),
-        tenantId: t,
-        accountId,
-        name: lead.name,
-        email: lead.email,
-        phone: lead.phone,
-        phoneNormalized: lead.phoneNormalized,
-        city: lead.city,
-        state: lead.state,
-        ownerUserId: lead.assignedToId,
-        customFields: lead.customFields ?? undefined,
-      },
-    });
+    const phoneNorm = lead.phoneNormalized || normalizePhone(lead.phone || "") || null;
+    let contact = phoneNorm
+      ? await tx.contact.findFirst({
+          where: { tenantId: t, phoneNormalized: phoneNorm, deletedAt: null },
+        })
+      : null;
+
+    if (!contact) {
+      await assertContactIdentityAvailable(
+        t,
+        {
+          phone: lead.phone,
+          email: lead.email,
+          requirePhone: Boolean(lead.phone),
+        },
+        tx,
+      );
+      const identity = await allocateCustomerIdentity(t, tx);
+      contact = await tx.contact.create({
+        data: {
+          id: newId(),
+          tenantId: t,
+          accountId,
+          customerNo: identity.customerNo,
+          customerCode: identity.customerCode,
+          name: lead.name,
+          email: lead.email,
+          phone: lead.phone,
+          phoneNormalized: phoneNorm,
+          city: lead.city,
+          state: lead.state,
+          ownerUserId: lead.assignedToId,
+          customFields: lead.customFields ?? undefined,
+        },
+      });
+    } else if (accountId && !contact.accountId) {
+      contact = await tx.contact.update({
+        where: { id: contact.id },
+        data: { accountId },
+      });
+    }
+
     const deal = await tx.deal.create({
       data: {
         id: newId(),
@@ -218,7 +249,7 @@ export async function convert(t: string, id: string, user: string, data: any) {
         stageId: stage.id,
         probability: stage.probability,
         contactId: contact.id,
-        accountId,
+        accountId: accountId ?? contact.accountId ?? undefined,
         ownerUserId: lead.assignedToId ?? user,
         customFields: lead.customFields ?? undefined,
       },
@@ -229,7 +260,7 @@ export async function convert(t: string, id: string, user: string, data: any) {
         status: "CONVERTED",
         convertedAt: new Date(),
         convertedContactId: contact.id,
-        convertedAccountId: accountId,
+        convertedAccountId: accountId ?? contact.accountId,
         convertedDealId: deal.id,
       },
     });
@@ -243,7 +274,7 @@ export async function convert(t: string, id: string, user: string, data: any) {
       },
       data: { status: "COMPLETED", completedAt: new Date(), outcome: "Lead converted" },
     });
-    return { contact, accountId, deal };
+    return { contact, accountId: accountId ?? contact.accountId, deal };
   });
   await invalidate(t);
   return result;

@@ -7,8 +7,9 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Input } from '@/components/ui/Input'
-import { Modal } from '@/components/ui/Modal'
+import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { assetUrl } from '@/lib/formValidation'
@@ -57,7 +58,7 @@ export function InventoryPage() {
   const [warehouses, setWarehouses] = useState<Array<{ id: string; name: string }>>([])
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState<'all' | 'low'>('all')
-  const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState<'list' | 'adjust'>('list')
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [form, setForm] = useState({
@@ -87,7 +88,7 @@ export function InventoryPage() {
         warehouseId: f.warehouseId || lookups.warehouses[0]?.id || '',
         productId: f.productId || preselectProduct || lookups.products[0]?.id || '',
       }))
-      if (preselectProduct) setOpen(true)
+      if (preselectProduct) setTab('adjust')
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Failed to load inventory' })
     }
@@ -131,6 +132,18 @@ export function InventoryPage() {
     }
   }, [form.productId, form.warehouseId, levels, products])
 
+  function openAdjust(defaults?: Partial<typeof form>) {
+    setForm((f) => ({
+      ...f,
+      movementType: 'IN',
+      quantity: '',
+      notes: '',
+      ...defaults,
+    }))
+    setErrors({})
+    setTab('adjust')
+  }
+
   async function adjust() {
     const next: Record<string, string> = {}
     if (!form.productId) next.productId = 'Select a product'
@@ -154,7 +167,7 @@ export function InventoryPage() {
         quantity: Math.abs(qty),
         notes: form.notes.trim() || 'Stock adjustment',
       })
-      setOpen(false)
+      setTab('list')
       setForm((f) => ({ ...f, quantity: '', notes: '', movementType: 'IN' }))
       setErrors({})
       addToast({ type: 'success', message: 'Stock updated' })
@@ -184,7 +197,7 @@ export function InventoryPage() {
                 <ShoppingCart size={16} /> Purchase orders
               </Button>
             </Link>
-            <Button onClick={() => setOpen(true)}>
+            <Button onClick={() => openAdjust()}>
               <Plus size={16} /> Adjust stock
             </Button>
           </div>
@@ -208,229 +221,245 @@ export function InventoryPage() {
         ))}
       </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <Input className="max-w-sm" placeholder="Search product or warehouse…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <div className="flex gap-2">
-          <Button variant={filter === 'all' ? 'primary' : 'outline'} size="sm" onClick={() => setFilter('all')}>
-            All
-          </Button>
-          <Button variant={filter === 'low' ? 'primary' : 'outline'} size="sm" onClick={() => setFilter('low')}>
-            <AlertTriangle size={14} /> Low stock
-          </Button>
-        </div>
-      </div>
+      <PageTabs
+        accent="amber"
+        active={tab}
+        onChange={(id) => {
+          if (id === 'adjust') openAdjust()
+          else setTab('list')
+        }}
+        tabs={[
+          { id: 'list', label: 'All stock', count: filtered.length },
+          { id: 'adjust', label: 'Adjust stock' },
+        ]}
+      />
 
-      <Card padding={false}>
-        {filtered.length === 0 ? (
-          <EmptyState
-            icon={<WarehouseIcon size={22} />}
-            title="No stock rows yet"
-            subtitle="Create products, then adjust stock or receive a purchase order."
-            actionLabel="Adjust stock"
-            onAction={() => setOpen(true)}
-          />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1100px] text-left text-sm">
-              <thead className="bg-muted text-xs text-text-secondary">
-                <tr>
-                  {[
-                    'Product',
-                    'Warehouse',
-                    'Type',
-                    'Unit',
-                    'On hand',
-                    'Reserved',
-                    'Available',
-                    'Reorder',
-                    'Unit cost',
-                    'Stock value',
-                    'Updated',
-                    'Actions',
-                  ].map((h) => (
-                    <th key={h} className="px-4 py-3 font-medium">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((row) => {
-                  const p = row.product
-                  const img = assetUrl(p?.imageUrl)
-                  const available = num(row.quantityAvailable ?? num(row.quantityOnHand) - num(row.quantityReserved))
-                  return (
-                    <tr key={String(row.id)} className={`border-t border-border ${row.isLowStock ? 'bg-red-50/40' : ''}`}>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-3">
-                          {img ? (
-                            <img src={img} alt="" className="h-9 w-9 rounded object-cover ring-1 ring-border" />
-                          ) : (
-                            <div className="flex h-9 w-9 items-center justify-center rounded bg-muted">
-                              <Package size={14} />
-                            </div>
-                          )}
-                          <div>
-                            <div className="font-medium">{p?.name ?? '—'}</div>
-                            <div className="font-mono text-xs text-text-secondary">{p?.sku ?? '—'}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">{row.warehouse?.name ?? '—'}</td>
-                      <td className="px-4 py-3">
-                        {p?.productType ? <Badge color="blue">{p.productType}</Badge> : '—'}
-                      </td>
-                      <td className="px-4 py-3">{p?.unit ?? '—'}</td>
-                      <td className="px-4 py-3 font-medium">{num(row.quantityOnHand)}</td>
-                      <td className="px-4 py-3">{num(row.quantityReserved)}</td>
-                      <td className="px-4 py-3">
-                        <Badge color={row.isLowStock ? 'red' : 'green'}>{available}</Badge>
-                      </td>
-                      <td className="px-4 py-3">{p?.reorderLevel ?? '—'}</td>
-                      <td className="px-4 py-3">{formatCurrency(num(p?.purchasePrice))}</td>
-                      <td className="px-4 py-3 font-semibold">{formatCurrency(num(row.stockValue))}</td>
-                      <td className="px-4 py-3 text-text-secondary">
-                        {row.updatedAt ? formatDate(String(row.updatedAt)) : '—'}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => navigate(`/erp/products/${row.productId}`)}
-                          >
-                            <Eye size={14} />
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setForm((f) => ({
-                                ...f,
-                                productId: row.productId,
-                                warehouseId: row.warehouseId,
-                                movementType: 'IN',
-                                quantity: '',
-                                notes: '',
-                              }))
-                              setErrors({})
-                              setOpen(true)
-                            }}
-                          >
-                            Adjust
-                          </Button>
-                          {row.isLowStock ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => navigate('/erp/purchase-orders')}
-                            >
-                              Reorder
-                            </Button>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+      {tab === 'list' ? (
+        <>
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <Input className="max-w-sm" placeholder="Search product or warehouse…" value={q} onChange={(e) => setQ(e.target.value)} />
+            <div className="flex gap-2">
+              <Button variant={filter === 'all' ? 'primary' : 'outline'} size="sm" onClick={() => setFilter('all')}>
+                All
+              </Button>
+              <Button variant={filter === 'low' ? 'primary' : 'outline'} size="sm" onClick={() => setFilter('low')}>
+                <AlertTriangle size={14} /> Low stock
+              </Button>
+            </div>
           </div>
-        )}
-      </Card>
 
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title="Adjust stock"
-        subtitle={
-          currentStock
-            ? `Current: ${currentStock.available} ${currentStock.unit} available (${currentStock.onHand} on hand · ${currentStock.reserved} reserved)`
-            : 'Stock in adds quantity. Stock out removes it. Always leave a short reason.'
-        }
-        size="lg"
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={() => void adjust()} disabled={saving}>
-              {saving ? 'Saving…' : 'Save adjustment'}
-            </Button>
-          </>
-        }
-      >
-        <div className="grid gap-3">
-          {currentStock && (
-            <div className="grid grid-cols-3 gap-2 rounded-[8px] border border-border bg-surface p-3 text-center text-sm">
-              <div>
-                <div className="text-xs text-text-secondary">On hand</div>
-                <div className="text-lg font-semibold tabular-nums">{currentStock.onHand}</div>
+          <Card padding={false}>
+            {filtered.length === 0 ? (
+              <EmptyState
+                icon={<WarehouseIcon size={22} />}
+                title="No stock rows yet"
+                subtitle="Create products, then adjust stock or receive a purchase order."
+                actionLabel="Adjust stock"
+                onAction={() => openAdjust()}
+              />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1100px] text-left text-sm">
+                  <thead className="bg-muted text-xs text-text-secondary">
+                    <tr>
+                      {[
+                        'Product',
+                        'Warehouse',
+                        'Type',
+                        'Unit',
+                        'On hand',
+                        'Reserved',
+                        'Available',
+                        'Reorder',
+                        'Unit cost',
+                        'Stock value',
+                        'Updated',
+                        'Actions',
+                      ].map((h) => (
+                        <th key={h} className="px-4 py-3 font-medium">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((row) => {
+                      const p = row.product
+                      const img = assetUrl(p?.imageUrl)
+                      const available = num(row.quantityAvailable ?? num(row.quantityOnHand) - num(row.quantityReserved))
+                      return (
+                        <tr key={String(row.id)} className={`border-t border-border ${row.isLowStock ? 'bg-red-50/40' : ''}`}>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              {img ? (
+                                <img src={img} alt="" className="h-9 w-9 rounded object-cover ring-1 ring-border" />
+                              ) : (
+                                <div className="flex h-9 w-9 items-center justify-center rounded bg-muted">
+                                  <Package size={14} />
+                                </div>
+                              )}
+                              <div>
+                                <div className="font-medium">{p?.name ?? '—'}</div>
+                                <div className="font-mono text-xs text-text-secondary">{p?.sku ?? '—'}</div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">{row.warehouse?.name ?? '—'}</td>
+                          <td className="px-4 py-3">
+                            {p?.productType ? <Badge color="blue">{p.productType}</Badge> : '—'}
+                          </td>
+                          <td className="px-4 py-3">{p?.unit ?? '—'}</td>
+                          <td className="px-4 py-3 font-medium">{num(row.quantityOnHand)}</td>
+                          <td className="px-4 py-3">{num(row.quantityReserved)}</td>
+                          <td className="px-4 py-3">
+                            <Badge color={row.isLowStock ? 'red' : 'green'}>{available}</Badge>
+                          </td>
+                          <td className="px-4 py-3">{p?.reorderLevel ?? '—'}</td>
+                          <td className="px-4 py-3">{formatCurrency(num(p?.purchasePrice))}</td>
+                          <td className="px-4 py-3 font-semibold">{formatCurrency(num(row.stockValue))}</td>
+                          <td className="px-4 py-3 text-text-secondary">
+                            {row.updatedAt ? formatDate(String(row.updatedAt)) : '—'}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex flex-wrap gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => navigate(`/erp/products/${row.productId}`)}
+                              >
+                                <Eye size={14} />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                  openAdjust({
+                                    productId: row.productId,
+                                    warehouseId: row.warehouseId,
+                                  })
+                                }
+                              >
+                                Adjust
+                              </Button>
+                              {row.isLowStock ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => navigate('/erp/purchase-orders')}
+                                >
+                                  Reorder
+                                </Button>
+                              ) : null}
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
               </div>
-              <div>
-                <div className="text-xs text-text-secondary">Reserved</div>
-                <div className="text-lg font-semibold tabular-nums">{currentStock.reserved}</div>
-              </div>
-              <div>
-                <div className="text-xs text-text-secondary">Available</div>
-                <div className="text-lg font-semibold tabular-nums text-accent-green">
-                  {currentStock.available}
+            )}
+          </Card>
+        </>
+      ) : (
+        <FormPanel
+          open
+          accent="amber"
+          eyebrow="Inventory"
+          title="Adjust stock"
+          subtitle={
+            currentStock
+              ? `Current: ${currentStock.available} ${currentStock.unit} available (${currentStock.onHand} on hand · ${currentStock.reserved} reserved)`
+              : 'Stock in adds quantity. Stock out removes it. Always leave a short reason.'
+          }
+          onClose={() => setTab('list')}
+          footer={
+            <>
+              <FormPanelCancel onClick={() => setTab('list')} />
+              <Button onClick={() => void adjust()} disabled={saving}>
+                {saving ? 'Saving…' : 'Save adjustment'}
+              </Button>
+            </>
+          }
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            {currentStock && (
+              <div className="grid grid-cols-3 gap-2 rounded-[8px] border border-amber-100 bg-amber-50/40 p-3 text-center text-sm sm:col-span-2">
+                <div>
+                  <div className="text-xs text-text-secondary">On hand</div>
+                  <div className="text-lg font-semibold tabular-nums">{currentStock.onHand}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-text-secondary">Reserved</div>
+                  <div className="text-lg font-semibold tabular-nums">{currentStock.reserved}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-text-secondary">Available</div>
+                  <div className="text-lg font-semibold tabular-nums text-accent-green">
+                    {currentStock.available}
+                  </div>
                 </div>
               </div>
+            )}
+            <div>
+              <Select
+                label="Product *"
+                value={form.productId}
+                onChange={(e) => setForm({ ...form, productId: e.target.value })}
+                options={[
+                  { value: '', label: 'Select product' },
+                  ...products.map((p) => ({ value: p.id, label: `${p.sku} — ${p.name}` })),
+                ]}
+              />
+              {errors.productId && <p className="mt-1 text-xs text-accent-red">{errors.productId}</p>}
             </div>
-          )}
-          <Select
-            label="Product *"
-            value={form.productId}
-            onChange={(e) => setForm({ ...form, productId: e.target.value })}
-            options={[
-              { value: '', label: 'Select product' },
-              ...products.map((p) => ({ value: p.id, label: `${p.sku} — ${p.name}` })),
-            ]}
-          />
-          {errors.productId && <p className="-mt-2 text-xs text-accent-red">{errors.productId}</p>}
-          <Select
-            label="Warehouse *"
-            value={form.warehouseId}
-            onChange={(e) => setForm({ ...form, warehouseId: e.target.value })}
-            options={[
-              { value: '', label: 'Select warehouse' },
-              ...warehouses.map((w) => ({ value: w.id, label: w.name })),
-            ]}
-          />
-          {errors.warehouseId && <p className="-mt-2 text-xs text-accent-red">{errors.warehouseId}</p>}
-          <Select
-            label="Movement *"
-            value={form.movementType}
-            onChange={(e) => setForm({ ...form, movementType: e.target.value })}
-            options={[
-              { value: 'IN', label: 'Stock in (+)' },
-              { value: 'OUT', label: 'Stock out (−)' },
-              { value: 'ADJUST', label: 'Adjustment (+ qty)' },
-              { value: 'RETURN', label: 'Return to vendor (−)' },
-            ]}
-          />
-          <Input
-            label={
-              currentStock
-                ? `Quantity to ${form.movementType === 'OUT' || form.movementType === 'RETURN' ? 'remove' : 'add'} * (available ${currentStock.available} ${currentStock.unit})`
-                : 'Quantity *'
-            }
-            type="number"
-            min={1}
-            value={form.quantity}
-            error={errors.quantity}
-            onChange={(e) => setForm({ ...form, quantity: e.target.value })}
-          />
-          <Input
-            label="Reason / notes"
-            value={form.notes}
-            error={errors.notes}
-            onChange={(e) => setForm({ ...form, notes: e.target.value })}
-            placeholder="e.g. Opening stock / Damaged / Cycle count"
-          />
-        </div>
-      </Modal>
+            <div>
+              <Select
+                label="Warehouse *"
+                value={form.warehouseId}
+                onChange={(e) => setForm({ ...form, warehouseId: e.target.value })}
+                options={[
+                  { value: '', label: 'Select warehouse' },
+                  ...warehouses.map((w) => ({ value: w.id, label: w.name })),
+                ]}
+              />
+              {errors.warehouseId && <p className="mt-1 text-xs text-accent-red">{errors.warehouseId}</p>}
+            </div>
+            <Select
+              label="Movement *"
+              value={form.movementType}
+              onChange={(e) => setForm({ ...form, movementType: e.target.value })}
+              options={[
+                { value: 'IN', label: 'Stock in (+)' },
+                { value: 'OUT', label: 'Stock out (−)' },
+                { value: 'ADJUST', label: 'Adjustment (+ qty)' },
+                { value: 'RETURN', label: 'Return to vendor (−)' },
+              ]}
+            />
+            <Input
+              label={
+                currentStock
+                  ? `Quantity to ${form.movementType === 'OUT' || form.movementType === 'RETURN' ? 'remove' : 'add'} * (available ${currentStock.available} ${currentStock.unit})`
+                  : 'Quantity *'
+              }
+              type="number"
+              min={1}
+              value={form.quantity}
+              error={errors.quantity}
+              onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+            />
+            <div className="sm:col-span-2">
+              <Input
+                label="Reason / notes"
+                value={form.notes}
+                error={errors.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                placeholder="e.g. Opening stock / Damaged / Cycle count"
+              />
+            </div>
+          </div>
+        </FormPanel>
+      )}
     </div>
   )
 }

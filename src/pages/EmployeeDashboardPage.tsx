@@ -5,17 +5,18 @@ import {
   CheckCircle2,
   CheckSquare,
   ChevronRight,
-  Phone,
+  Play,
   RefreshCw,
   Ticket,
   UserPlus,
+  Users,
 } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
-import { Avatar } from '@/components/ui/Avatar'
 import { Badge, activityStatusColor, leadStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
+import { Modal } from '@/components/ui/Modal'
 import { api, ApiClientError, isTenantSession, num } from '@/lib/api'
 import { formatCurrency, formatDateTime, timeAgo } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
@@ -27,9 +28,9 @@ function labelize(value: string) {
   return value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-function sortPending(a: Row, b: Row) {
-  const as = a.scheduledAt ? new Date(String(a.scheduledAt)).getTime() : Number.MAX_SAFE_INTEGER
-  const bs = b.scheduledAt ? new Date(String(b.scheduledAt)).getTime() : Number.MAX_SAFE_INTEGER
+function sortSla(a: Row, b: Row) {
+  const as = a.slaDueAt ? new Date(String(a.slaDueAt)).getTime() : Number.MAX_SAFE_INTEGER
+  const bs = b.slaDueAt ? new Date(String(b.slaDueAt)).getTime() : Number.MAX_SAFE_INTEGER
   if (as !== bs) return as - bs
   return new Date(String(a.createdAt)).getTime() - new Date(String(b.createdAt)).getTime()
 }
@@ -38,12 +39,14 @@ export function EmployeeDashboardPage() {
   const user = useAuthStore((s) => s.user)
   const addToast = useUIStore((s) => s.addToast)
   const [loading, setLoading] = useState(true)
-  const [completing, setCompleting] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [leads, setLeads] = useState<Row[]>([])
   const [deals, setDeals] = useState<Row[]>([])
   const [activities, setActivities] = useState<Row[]>([])
   const [tickets, setTickets] = useState<Row[]>([])
+  const [summary, setSummary] = useState({ open: 0, overdue: 0, resolvedToday: 0 })
   const [focusId, setFocusId] = useState<string | null>(null)
+  const [completeOpen, setCompleteOpen] = useState(false)
 
   const load = useCallback(async () => {
     if (!isTenantSession() || !user?.id) {
@@ -52,16 +55,22 @@ export function EmployeeDashboardPage() {
     }
     setLoading(true)
     try {
-      const [leadsPage, dealsPage, actsPage, ticketsPage] = await Promise.all([
+      const [leadsPage, dealsPage, actsPage, ticketsPage, sum] = await Promise.all([
         api.leads({ limit: 50, assignedToId: user.id }),
         api.deals({ limit: 50, ownerUserId: user.id }),
         api.activities({ limit: 100, assignedToId: user.id }),
-        api.tickets({ limit: 50, assignedToId: user.id }),
+        api.tickets({ limit: 100, assignedToId: user.id, sort: 'sla' }),
+        api.ticketsSummary(),
       ])
       setLeads(leadsPage.items)
       setDeals(dealsPage.items)
       setActivities(actsPage.items)
       setTickets(ticketsPage.items)
+      setSummary({
+        open: sum.open,
+        overdue: sum.overdue,
+        resolvedToday: sum.resolvedToday,
+      })
     } catch (e) {
       addToast({
         type: 'error',
@@ -76,91 +85,109 @@ export function EmployeeDashboardPage() {
     void load()
   }, [load])
 
+  const openTickets = useMemo(
+    () =>
+      tickets
+        .filter((t) => ['OPEN', 'IN_PROGRESS', 'PENDING'].includes(String(t.status)))
+        .slice()
+        .sort(sortSla),
+    [tickets],
+  )
+
   const pendingActs = useMemo(
     () =>
       activities
         .filter((a) => ['PENDING', 'OVERDUE'].includes(String(a.status)))
         .slice()
-        .sort(sortPending),
+        .sort((a, b) => {
+          const as = a.scheduledAt ? new Date(String(a.scheduledAt)).getTime() : Number.MAX_SAFE_INTEGER
+          const bs = b.scheduledAt ? new Date(String(b.scheduledAt)).getTime() : Number.MAX_SAFE_INTEGER
+          return as - bs
+        }),
     [activities],
   )
 
-  const completedToday = useMemo(() => {
-    const start = new Date()
-    start.setHours(0, 0, 0, 0)
-    return activities.filter(
-      (a) =>
-        String(a.status) === 'COMPLETED' &&
-        a.completedAt &&
-        new Date(String(a.completedAt)) >= start,
-    ).length
-  }, [activities])
-
   useEffect(() => {
-    if (!pendingActs.length) {
+    if (!openTickets.length) {
       setFocusId(null)
       return
     }
-    if (!focusId || !pendingActs.some((a) => String(a.id) === focusId)) {
-      setFocusId(String(pendingActs[0].id))
+    if (!focusId || !openTickets.some((t) => String(t.id) === focusId)) {
+      setFocusId(String(openTickets[0].id))
     }
-  }, [pendingActs, focusId])
+  }, [openTickets, focusId])
 
-  const currentTask = pendingActs.find((a) => String(a.id) === focusId) ?? pendingActs[0] ?? null
-  const queue = pendingActs.filter((a) => String(a.id) !== String(currentTask?.id))
-  const openTickets = tickets.filter((t) => !['RESOLVED', 'CLOSED'].includes(String(t.status)))
+  const current = openTickets.find((t) => String(t.id) === focusId) ?? openTickets[0] ?? null
+  const queue = openTickets.filter((t) => String(t.id) !== String(current?.id))
   const openDeals = deals.filter((d) => !d.closedAt)
   const pipelineValue = openDeals.reduce((sum, d) => sum + num(d.amount), 0)
 
-  async function completeCurrent() {
-    if (!currentTask) return
-    setCompleting(true)
+  async function startWork() {
+    if (!current) return
+    setBusy(true)
     try {
-      await api.completeActivity(String(currentTask.id))
-      const remaining = pendingActs.filter((a) => String(a.id) !== String(currentTask.id))
-      const next = remaining[0]
-      addToast({
-        type: 'success',
-        message: next
-          ? `Done — next up: ${String(next.title)}`
-          : 'All assigned tasks completed. Nice work!',
-      })
-      setFocusId(next ? String(next.id) : null)
+      await api.updateTicket(String(current.id), { status: 'IN_PROGRESS' })
+      addToast({ type: 'success', message: 'Work started' })
       await load()
     } catch (e) {
       addToast({
         type: 'error',
-        message: e instanceof ApiClientError ? e.message : 'Could not complete task',
+        message: e instanceof ApiClientError ? e.message : 'Could not update ticket',
       })
     } finally {
-      setCompleting(false)
+      setBusy(false)
     }
   }
 
-  function relatedLink(task: Row) {
-    if (task.dealId) return { to: `/deals/${task.dealId}`, label: 'Open linked deal' }
-    if (task.contactId) return { to: `/contacts/${task.contactId}`, label: 'Open contact' }
-    if (task.accountId) return { to: `/accounts/${task.accountId}`, label: 'Open account' }
-    if (task.leadId) return { to: '/leads', label: 'View leads' }
-    return null
+  async function completeService() {
+    if (!current) return
+    setCompleteOpen(false)
+    setBusy(true)
+    try {
+      const updated = await api.updateTicket(String(current.id), { status: 'RESOLVED' })
+      addToast({ type: 'success', message: 'Service completed' })
+      if (updated.whatsapp?.fallbackWaLink && !updated.whatsapp.notified) {
+        window.open(updated.whatsapp.fallbackWaLink, '_blank', 'noopener,noreferrer')
+      }
+      await load()
+    } catch (e) {
+      addToast({
+        type: 'error',
+        message: e instanceof ApiClientError ? e.message : 'Could not complete ticket',
+      })
+    } finally {
+      setBusy(false)
+    }
   }
 
   const stats = [
-    { label: 'My leads', value: leads.length, icon: UserPlus, to: '/leads', tint: 'bg-blue-50 text-accent-blue' },
-    { label: 'Open deals', value: openDeals.length, icon: Briefcase, to: '/deals', tint: 'bg-violet-50 text-accent-purple' },
+    {
+      label: 'Open tickets',
+      value: summary.open || openTickets.length,
+      icon: Ticket,
+      to: '/tickets',
+      tint: 'bg-amber-50 text-accent-amber',
+    },
+    {
+      label: 'SLA overdue',
+      value: summary.overdue,
+      icon: CheckSquare,
+      to: '/tickets?slaBreached=1',
+      tint: 'bg-red-50 text-accent-red',
+    },
+    {
+      label: 'Resolved today',
+      value: summary.resolvedToday,
+      icon: CheckCircle2,
+      to: '/tickets?status=RESOLVED',
+      tint: 'bg-emerald-50 text-accent-green',
+    },
     {
       label: 'Pending tasks',
       value: pendingActs.length,
       icon: CheckSquare,
       to: '/my-tasks',
-      tint: 'bg-amber-50 text-accent-amber',
-    },
-    {
-      label: 'Open tickets',
-      value: openTickets.length,
-      icon: Ticket,
-      to: '/tickets',
-      tint: 'bg-emerald-50 text-accent-green',
+      tint: 'bg-blue-50 text-accent-blue',
     },
   ]
 
@@ -168,12 +195,17 @@ export function EmployeeDashboardPage() {
     <div className="space-y-5">
       <PageHeader
         title={`Hi, ${user?.name?.split(' ')[0] ?? 'there'}`}
-        breadcrumbs={[{ label: 'Employee desk' }, { label: 'My work' }]}
+        breadcrumbs={[{ label: 'Service desk' }, { label: 'My work' }]}
         actions={
           <div className="flex flex-wrap gap-2">
-            <Link to="/my-tasks">
+            <Link to="/contacts">
               <Button variant="outline">
-                <CheckSquare size={16} /> My Tasks
+                <Users size={16} /> Contacts
+              </Button>
+            </Link>
+            <Link to="/tickets?open=1">
+              <Button>
+                <Ticket size={16} /> New ticket
               </Button>
             </Link>
             <Button variant="outline" onClick={() => void load()} disabled={loading}>
@@ -186,9 +218,8 @@ export function EmployeeDashboardPage() {
       <PageTip moduleKey="crm.employee" />
 
       <div className="rounded-[10px] border border-sky-200 bg-sky-50/70 px-4 py-3 text-sm text-text-secondary">
-        <span className="font-semibold text-text-primary">Employee desk</span> — this is not the company
-        analytics dashboard. You only see work assigned to you. Complete tasks so your admin can track Team
-        work.{' '}
+        <span className="font-semibold text-text-primary">Service desk</span> — look up the customer in
+        Contacts, work your tickets by SLA, then Complete service (WhatsApp notifies the customer).{' '}
         <Link to="/help" className="font-medium text-accent-blue hover:underline">
           How it works →
         </Link>
@@ -212,61 +243,64 @@ export function EmployeeDashboardPage() {
         ))}
       </div>
 
-      <Card className="border-accent-blue/30 bg-gradient-to-br from-blue-50/80 to-white">
+      <Card className="border-accent-blue/30 bg-gradient-to-br from-amber-50/80 to-white">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h2 className="text-lg font-semibold text-text-primary">Focus — current task</h2>
+            <h2 className="text-lg font-semibold text-text-primary">Focus — next service ticket</h2>
             <p className="text-sm text-text-secondary">
-              {completedToday} completed today · {pendingActs.length} still open
+              {summary.resolvedToday} resolved today · {openTickets.length} still open
             </p>
           </div>
-          {currentTask ? (
-            <Badge color={activityStatusColor[String(currentTask.status)] ?? 'amber'}>
-              {labelize(String(currentTask.type))} · {labelize(String(currentTask.status))}
+          {current ? (
+            <Badge color={current.slaBreached ? 'red' : 'amber'}>
+              {labelize(String(current.status))}
+              {current.slaBreached ? ' · overdue' : ''}
             </Badge>
           ) : null}
         </div>
 
-        {!loading && !currentTask ? (
+        {!loading && !current ? (
           <div className="rounded-[8px] border border-dashed border-border bg-white p-8 text-center">
             <CheckCircle2 className="mx-auto text-accent-green" size={28} />
-            <p className="mt-2 font-medium">No pending tasks assigned to you</p>
+            <p className="mt-2 font-medium">No open tickets assigned to you</p>
             <p className="mt-1 text-sm text-text-secondary">
-              When an admin assigns a lead or activity to you, it appears here and under My Tasks.
+              Look up a walk-in customer in Contacts, then create a service ticket.
             </p>
-            <Link to="/my-tasks" className="mt-3 inline-block text-sm text-accent-blue hover:underline">
-              Open My Tasks →
-            </Link>
+            <div className="mt-3 flex flex-wrap justify-center gap-3">
+              <Link to="/contacts" className="text-sm text-accent-blue hover:underline">
+                Open Contacts →
+              </Link>
+              <Link to="/tickets?open=1" className="text-sm text-accent-blue hover:underline">
+                New ticket →
+              </Link>
+            </div>
           </div>
-        ) : currentTask ? (
+        ) : current ? (
           <div className="rounded-[10px] border border-border bg-white p-5 shadow-sm">
-            <h3 className="text-xl font-semibold text-text-primary">{String(currentTask.title)}</h3>
-            {currentTask.description ? (
-              <p className="mt-2 text-sm text-text-secondary">{String(currentTask.description)}</p>
+            <h3 className="text-xl font-semibold text-text-primary">
+              #{String(current.ticketNo)} — {String(current.subject)}
+            </h3>
+            {current.description ? (
+              <p className="mt-2 line-clamp-3 text-sm text-text-secondary">{String(current.description)}</p>
             ) : null}
             <div className="mt-3 flex flex-wrap gap-3 text-sm text-text-secondary">
               <span>
-                Due:{' '}
-                {currentTask.scheduledAt
-                  ? formatDateTime(String(currentTask.scheduledAt))
-                  : 'No schedule'}
+                SLA:{' '}
+                {current.slaDueAt ? formatDateTime(String(current.slaDueAt)) : 'No deadline'}
               </span>
-              {currentTask.durationMinutes != null ? (
-                <span>{num(currentTask.durationMinutes)} min</span>
-              ) : null}
+              <span>Priority: {labelize(String(current.priority))}</span>
             </div>
             <div className="mt-5 flex flex-wrap gap-2">
-              <Button onClick={() => void completeCurrent()} disabled={completing}>
-                <CheckCircle2 size={16} />
-                {completing ? 'Completing…' : 'Mark completed → next'}
-              </Button>
-              {relatedLink(currentTask) ? (
-                <Link to={relatedLink(currentTask)!.to}>
-                  <Button variant="outline">{relatedLink(currentTask)!.label}</Button>
-                </Link>
+              {String(current.status) === 'OPEN' ? (
+                <Button onClick={() => void startWork()} disabled={busy}>
+                  <Play size={16} /> {busy ? 'Updating…' : 'Start work'}
+                </Button>
               ) : null}
-              <Link to="/my-tasks">
-                <Button variant="ghost">All my tasks</Button>
+              <Button onClick={() => setCompleteOpen(true)} disabled={busy}>
+                <CheckCircle2 size={16} /> Complete service
+              </Button>
+              <Link to={`/tickets/${current.id}`}>
+                <Button variant="outline">Open ticket</Button>
               </Link>
             </div>
           </div>
@@ -280,18 +314,20 @@ export function EmployeeDashboardPage() {
               Up next ({queue.length})
             </div>
             <div className="space-y-2">
-              {queue.slice(0, 5).map((act, idx) => (
+              {queue.slice(0, 5).map((t, idx) => (
                 <button
-                  key={String(act.id)}
+                  key={String(t.id)}
                   type="button"
-                  onClick={() => setFocusId(String(act.id))}
+                  onClick={() => setFocusId(String(t.id))}
                   className="flex w-full items-center justify-between gap-3 rounded-[8px] border border-border bg-white px-3 py-2 text-left text-sm hover:border-accent-blue/40"
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">
                       {idx + 2}
                     </span>
-                    <span className="truncate font-medium">{String(act.title)}</span>
+                    <span className="truncate font-medium">
+                      #{String(t.ticketNo)} {String(t.subject)}
+                    </span>
                   </span>
                   <ChevronRight size={16} className="shrink-0 text-text-secondary" />
                 </button>
@@ -301,150 +337,105 @@ export function EmployeeDashboardPage() {
         ) : null}
       </Card>
 
-      <Card>
-        <div className="flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <div className="text-sm text-text-secondary">My open pipeline</div>
-            <div className="text-2xl font-semibold text-text-primary">{formatCurrency(pipelineValue)}</div>
-          </div>
-          <Link to="/deals" className="text-sm font-medium text-accent-blue hover:underline">
-            View my deals →
-          </Link>
-        </div>
-      </Card>
-
       <div className="grid gap-4 lg:grid-cols-2">
         <Card padding={false}>
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h2 className="font-semibold">My leads</h2>
-            <Link to="/leads" className="text-sm text-accent-blue hover:underline">
-              All
-            </Link>
-          </div>
-          <div className="divide-y divide-border">
-            {leads.slice(0, 6).map((lead) => (
-              <Link
-                key={String(lead.id)}
-                to="/leads"
-                className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface"
-              >
-                <div className="min-w-0">
-                  <div className="truncate font-medium">{String(lead.name)}</div>
-                  <div className="truncate text-sm text-text-secondary">
-                    {String(lead.company ?? lead.city ?? '—')}
-                  </div>
-                </div>
-                <Badge color={leadStatusColor[String(lead.status)] ?? 'slate'}>
-                  {labelize(String(lead.status))}
-                </Badge>
-              </Link>
-            ))}
-            {!loading && !leads.length && (
-              <p className="p-8 text-center text-sm text-text-secondary">No leads assigned to you yet.</p>
-            )}
-          </div>
-        </Card>
-
-        <Card padding={false}>
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h2 className="font-semibold">Recent activities</h2>
+            <h2 className="font-semibold">Pending tasks</h2>
             <Link to="/my-tasks" className="text-sm text-accent-blue hover:underline">
               All
             </Link>
           </div>
           <div className="divide-y divide-border">
-            {activities.slice(0, 6).map((act) => (
-              <button
+            {pendingActs.slice(0, 5).map((act) => (
+              <Link
                 key={String(act.id)}
-                type="button"
-                className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-surface"
-                onClick={() => {
-                  if (['PENDING', 'OVERDUE'].includes(String(act.status))) {
-                    setFocusId(String(act.id))
-                    window.scrollTo({ top: 0, behavior: 'smooth' })
-                  }
-                }}
+                to="/my-tasks"
+                className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface"
               >
-                <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-[6px] bg-slate-100 text-text-secondary">
-                  <Phone size={14} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="truncate font-medium">{String(act.title)}</span>
-                    <Badge color={activityStatusColor[String(act.status)] ?? 'slate'}>
-                      {labelize(String(act.status))}
-                    </Badge>
-                  </div>
-                  <div className="mt-0.5 text-xs text-text-secondary">
-                    {act.scheduledAt
-                      ? formatDateTime(String(act.scheduledAt))
-                      : timeAgo(String(act.createdAt))}
+                <div className="min-w-0">
+                  <div className="truncate font-medium">{String(act.title)}</div>
+                  <div className="text-xs text-text-secondary">
+                    {act.scheduledAt ? formatDateTime(String(act.scheduledAt)) : timeAgo(String(act.createdAt))}
                   </div>
                 </div>
-              </button>
+                <Badge color={activityStatusColor[String(act.status)] ?? 'slate'}>
+                  {labelize(String(act.status))}
+                </Badge>
+              </Link>
             ))}
-            {!loading && !activities.length && (
-              <p className="p-8 text-center text-sm text-text-secondary">No activities on your plate.</p>
+            {!loading && !pendingActs.length && (
+              <p className="p-6 text-center text-sm text-text-secondary">No pending tasks.</p>
             )}
           </div>
         </Card>
 
         <Card padding={false}>
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h2 className="font-semibold">My deals</h2>
-            <Link to="/deals" className="text-sm text-accent-blue hover:underline">
-              All
+            <h2 className="font-semibold">Sales (secondary)</h2>
+            <Link to="/leads" className="text-sm text-accent-blue hover:underline">
+              Leads
             </Link>
           </div>
-          <div className="divide-y divide-border">
-            {deals.slice(0, 6).map((deal) => (
+          <div className="space-y-3 p-4 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2 text-text-secondary">
+                <UserPlus size={16} /> My leads
+              </span>
+              <span className="font-semibold">{leads.length}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2 text-text-secondary">
+                <Briefcase size={16} /> Open deals
+              </span>
+              <span className="font-semibold">{openDeals.length}</span>
+            </div>
+            <div className="flex items-center justify-between border-t border-border pt-3">
+              <span className="text-text-secondary">Pipeline value</span>
+              <span className="font-semibold">{formatCurrency(pipelineValue)}</span>
+            </div>
+            {leads.slice(0, 3).map((lead) => (
               <Link
-                key={String(deal.id)}
-                to={`/deals/${deal.id}`}
-                className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface"
+                key={String(lead.id)}
+                to="/leads"
+                className="flex items-center justify-between gap-2 rounded-[6px] border border-border px-3 py-2 hover:bg-surface"
               >
-                <div className="min-w-0">
-                  <div className="truncate font-medium">{String(deal.name)}</div>
-                  <div className="text-sm text-text-secondary">{formatCurrency(num(deal.amount))}</div>
-                </div>
-                <Avatar name={user?.name ?? 'Me'} size="sm" />
+                <span className="truncate font-medium">{String(lead.name)}</span>
+                <Badge color={leadStatusColor[String(lead.status)] ?? 'slate'}>
+                  {labelize(String(lead.status))}
+                </Badge>
               </Link>
             ))}
-            {!loading && !deals.length && (
-              <p className="p-8 text-center text-sm text-text-secondary">No deals owned by you.</p>
-            )}
-          </div>
-        </Card>
-
-        <Card padding={false}>
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h2 className="font-semibold">My tickets</h2>
-            <Link to="/tickets" className="text-sm text-accent-blue hover:underline">
-              All
-            </Link>
-          </div>
-          <div className="divide-y divide-border">
-            {tickets.slice(0, 6).map((t) => (
-              <Link
-                key={String(t.id)}
-                to={`/tickets/${t.id}`}
-                className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface"
-              >
-                <div className="min-w-0">
-                  <div className="truncate font-medium">{String(t.subject)}</div>
-                  <div className="text-sm text-text-secondary">
-                    {labelize(String(t.priority ?? 'MEDIUM'))}
-                  </div>
-                </div>
-                <Badge color="blue">{labelize(String(t.status))}</Badge>
-              </Link>
-            ))}
-            {!loading && !tickets.length && (
-              <p className="p-8 text-center text-sm text-text-secondary">No tickets assigned to you.</p>
-            )}
           </div>
         </Card>
       </div>
+
+      <Modal
+        open={completeOpen}
+        onClose={() => setCompleteOpen(false)}
+        title="Complete service?"
+        subtitle={
+          current
+            ? `Ticket #${String(current.ticketNo)} — ${String(current.subject)}`
+            : undefined
+        }
+        size="sm"
+        accent="emerald"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setCompleteOpen(false)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button onClick={() => void completeService()} disabled={busy}>
+              <CheckCircle2 size={16} />
+              {busy ? 'Saving…' : 'Mark complete'}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm leading-relaxed text-text-secondary">
+          This marks the job as done and notifies the customer on WhatsApp when possible.
+        </p>
+      </Modal>
     </div>
   )
 }

@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { CalendarDays, Check, Clock, Mail, Pencil, Phone, Plus, RefreshCw, Trash2, Users } from 'lucide-react'
+import { CalendarDays, Check, Clock, Mail, Pencil, Phone, Plus, RefreshCw, Users } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
 import { Avatar } from '@/components/ui/Avatar'
 import { Badge, activityStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import {
+  BulkActionBar,
+  DeleteIconButton,
+  SelectCheckbox,
+} from '@/components/ui/BulkSelect'
 import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
-import { ConfirmModal, Modal } from '@/components/ui/Modal'
+import { ConfirmModal } from '@/components/ui/Modal'
+import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Select } from '@/components/ui/Select'
+import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, isTenantSession, num } from '@/lib/api'
 import { cn, formatDateTime } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
@@ -64,7 +71,8 @@ export function ActivitiesPage() {
   const [date, setDate] = useState('')
   const [assigned, setAssigned] = useState(isAgent && authUser?.id ? authUser.id : '')
   const [modalOpen, setModalOpen] = useState(false)
-  const [deleteId, setDeleteId] = useState<string>()
+  const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
+  const [busyDelete, setBusyDelete] = useState(false)
   const [loading, setLoading] = useState(true)
   const [activities, setActivities] = useState<ActivityRow[]>([])
   const [users, setUsers] = useState<LookupUser[]>([])
@@ -143,6 +151,9 @@ export function ActivitiesPage() {
     })
   }, [activities, date])
 
+  const ids = useMemo(() => filtered.map((a) => a.id), [filtered])
+  const selection = useRowSelection(ids)
+
   const complete = async (id: string) => {
     try {
       await api.completeActivity(id)
@@ -185,18 +196,24 @@ export function ActivitiesPage() {
     }
   }
 
-  const remove = async () => {
-    if (!deleteId) return
+  const runDelete = async (deleteIds: string[]) => {
+    setBusyDelete(true)
     try {
-      await api.deleteActivity(deleteId)
-      setDeleteId(undefined)
-      addToast({ type: 'success', message: 'Activity deleted' })
+      await Promise.all(deleteIds.map((id) => api.deleteActivity(id)))
+      addToast({
+        type: 'success',
+        message: deleteIds.length === 1 ? 'Deleted' : `${deleteIds.length} deleted`,
+      })
+      selection.clear()
       await load()
     } catch (e) {
       addToast({
         type: 'error',
         message: e instanceof ApiClientError ? e.message : 'Could not delete activity',
       })
+    } finally {
+      setBusyDelete(false)
+      setConfirm(null)
     }
   }
 
@@ -211,13 +228,27 @@ export function ActivitiesPage() {
             <Button variant="outline" onClick={() => void load()} disabled={loading}>
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
             </Button>
-            <Button onClick={() => setModalOpen(true)}>
-              <Plus size={16} /> Create Activity
+            <Button
+              variant={modalOpen ? 'outline' : 'primary'}
+              onClick={() => setModalOpen((v) => !v)}
+            >
+              <Plus size={16} /> {modalOpen ? 'Close form' : 'Create Activity'}
             </Button>
           </div>
         }
       />
       <PageTip moduleKey="crm.activities" />
+
+      <ActivityFormPanel
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        onCreate={create}
+        contacts={contacts}
+        deals={deals}
+        users={users}
+        defaultAssigneeId={authUser?.id}
+      />
+
       <Card className="mb-4 grid gap-3 md:grid-cols-4">
         <Select
           label="Type"
@@ -263,7 +294,29 @@ export function ActivitiesPage() {
         />
       </Card>
       <Card padding={false}>
+        {selection.someSelected ? (
+          <div className="border-b border-border px-4 pt-3">
+            <BulkActionBar
+              count={selection.selectedCount}
+              noun="activity"
+              busy={busyDelete}
+              onClear={selection.clear}
+              onDelete={() => setConfirm({ ids: selection.selectedIds })}
+            />
+          </div>
+        ) : null}
         <div className="divide-y divide-border">
+          {filtered.length > 0 ? (
+            <div className="flex items-center gap-3 border-b border-border bg-muted/40 px-4 py-2">
+              <SelectCheckbox
+                checked={selection.allSelected}
+                indeterminate={selection.someSelected && !selection.allSelected}
+                onChange={selection.toggleAll}
+                aria-label="Select all"
+              />
+              <span className="text-xs font-medium text-text-secondary">Select all</span>
+            </div>
+          ) : null}
           {filtered.map((activity) => {
             const Icon = typeIcons[activity.type] ?? CalendarDays
             const agent = activity.assignee ?? users.find((u) => u.id === activity.assignedToId)
@@ -275,13 +328,20 @@ export function ActivitiesPage() {
                 key={activity.id}
                 className="flex flex-col gap-4 p-4 hover:bg-surface lg:flex-row lg:items-center"
               >
-                <div
-                  className={cn(
-                    'flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px]',
-                    typeStyles[activity.type] ?? 'bg-slate-100 text-text-secondary',
-                  )}
-                >
-                  <Icon size={18} />
+                <div className="flex items-center gap-3">
+                  <SelectCheckbox
+                    checked={selection.isSelected(activity.id)}
+                    onChange={() => selection.toggle(activity.id)}
+                    aria-label={`Select ${activity.title}`}
+                  />
+                  <div
+                    className={cn(
+                      'flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px]',
+                      typeStyles[activity.type] ?? 'bg-slate-100 text-text-secondary',
+                    )}
+                  >
+                    <Icon size={18} />
+                  </div>
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -322,15 +382,10 @@ export function ActivitiesPage() {
                   >
                     <Pencil size={15} />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-accent-red"
-                    onClick={() => setDeleteId(activity.id)}
-                    aria-label="Delete activity"
-                  >
-                    <Trash2 size={15} />
-                  </Button>
+                  <DeleteIconButton
+                    disabled={busyDelete}
+                    onClick={() => setConfirm({ ids: [activity.id] })}
+                  />
                 </div>
               </div>
             )
@@ -341,27 +396,26 @@ export function ActivitiesPage() {
           )}
         </div>
       </Card>
-      <ActivityModal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        onCreate={create}
-        contacts={contacts}
-        deals={deals}
-        users={users}
-        defaultAssigneeId={authUser?.id}
-      />
       <ConfirmModal
-        open={Boolean(deleteId)}
-        onClose={() => setDeleteId(undefined)}
-        onConfirm={() => void remove()}
-        title="Delete activity?"
-        body="This activity will be permanently removed."
+        open={Boolean(confirm)}
+        onClose={() => setConfirm(null)}
+        onConfirm={() => {
+          if (confirm) void runDelete(confirm.ids)
+        }}
+        title={
+          confirm?.ids.length === 1 ? 'Delete activity?' : `Delete ${confirm?.ids.length ?? 0} activities?`
+        }
+        body={
+          confirm?.ids.length === 1
+            ? 'This activity will be permanently removed.'
+            : 'Selected activities will be permanently removed.'
+        }
       />
     </div>
   )
 }
 
-function ActivityModal({
+function ActivityFormPanel({
   open,
   onClose,
   onCreate,
@@ -385,23 +439,23 @@ function ActivityModal({
       : deals.map((item) => ({ value: item.id, label: item.name }))
 
   return (
-    <Modal
+    <FormPanel
       open={open}
+      accent="amber"
+      eyebrow="Tasks"
+      title="Create activity"
+      subtitle="Log a call, email, meeting or task and assign it to a teammate."
       onClose={onClose}
-      title="Create Activity"
-      size="lg"
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>
-            Cancel
-          </Button>
+          <FormPanelCancel onClick={onClose} />
           <Button type="submit" form="create-activity-form">
-            Create Activity
+            Create activity
           </Button>
         </>
       }
     >
-      <form id="create-activity-form" onSubmit={onCreate} className="grid gap-4 sm:grid-cols-2">
+      <form id="create-activity-form" onSubmit={onCreate} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Select
           label="Type"
           name="type"
@@ -411,7 +465,7 @@ function ActivityModal({
             label: labelize(v),
           }))}
         />
-        <Input label="Title" name="title" placeholder="Activity title" required />
+        <Input label="Title" name="title" placeholder="Activity title" required className="lg:col-span-2" />
         <Select
           label="Link to"
           name="linkType"
@@ -428,7 +482,9 @@ function ActivityModal({
           options={[
             {
               value: '',
-              label: linkOptions.length ? `Select ${linkType === 'CONTACT' ? 'contact' : 'deal'}` : 'No records in database',
+              label: linkOptions.length
+                ? `Select ${linkType === 'CONTACT' ? 'contact' : 'deal'}`
+                : 'No records in database',
             },
             ...linkOptions,
           ]}
@@ -448,15 +504,15 @@ function ActivityModal({
           <input type="checkbox" className="h-4 w-4 accent-accent-blue" />
           Send reminder
         </label>
-        <label className="sm:col-span-2 text-sm font-medium text-text-secondary">
+        <label className="text-sm font-medium text-text-secondary sm:col-span-2 lg:col-span-3">
           Description
           <textarea
             name="description"
-            className="mt-1 min-h-24 w-full rounded-[6px] border border-border bg-card p-3 text-text-primary outline-none focus:border-accent-blue"
+            className="mt-1 min-h-28 w-full rounded-[8px] border border-border bg-card p-3 text-text-primary outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
           />
         </label>
       </form>
-    </Modal>
+    </FormPanel>
   )
 }
 

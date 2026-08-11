@@ -30,10 +30,12 @@ export function Button({
   className,
   children,
   disabled,
+  type = 'button',
   ...props
 }: ButtonProps) {
   return (
     <button
+      type={type}
       className={cn(
         'inline-flex items-center justify-center gap-2 rounded-[6px] font-medium transition-all duration-150 disabled:opacity-50 disabled:pointer-events-none whitespace-nowrap',
         variants[variant],

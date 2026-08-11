@@ -12,6 +12,7 @@ import {
   Phone,
   ShoppingBag,
   TicketCheck,
+  TicketPlus,
   UserRound,
 } from 'lucide-react'
 import {
@@ -30,18 +31,29 @@ import {
   YAxis,
 } from 'recharts'
 import { Avatar } from '@/components/ui/Avatar'
-import { Badge } from '@/components/ui/Badge'
+import { Badge, ticketStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
-import { Modal } from '@/components/ui/Modal'
+import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency, formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
-type Tab = 'Overview' | 'Purchases' | 'Deals' | 'Tickets' | 'Notes'
+type Tab = 'Overview' | 'Machines' | 'Purchases' | 'Deals' | 'Tickets' | 'Notes'
+
+const MACHINE_TYPES = [
+  { value: 'WEIGHING', label: 'Weighing machine' },
+  { value: 'BILLING', label: 'Billing machine' },
+  { value: 'CCM', label: 'CCM' },
+  { value: 'CCTV', label: 'CCTV' },
+  { value: 'BIOMETRIC', label: 'Biometric' },
+  { value: 'PAPER_SHREDDER', label: 'Paper shredder' },
+  { value: 'PAPER_ROLL', label: 'Paper roll' },
+  { value: 'OTHER', label: 'Other' },
+]
 
 export function ContactDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -51,7 +63,9 @@ export function ContactDetailPage() {
   const [loading, setLoading] = useState(true)
   const [contact, setContact] = useState<Record<string, unknown> | null>(null)
   const [editOpen, setEditOpen] = useState(false)
+  const [machineOpen, setMachineOpen] = useState(false)
   const [accounts, setAccounts] = useState<Array<{ id: string; name: string }>>([])
+  const [savingMachine, setSavingMachine] = useState(false)
   const [form, setForm] = useState({
     name: '',
     email: '',
@@ -59,10 +73,30 @@ export function ContactDetailPage() {
     mobile: '',
     title: '',
     department: '',
+    street: '',
+    doorNo: '',
+    area: '',
+    pincode: '',
+    location: '',
     city: '',
     state: '',
     accountId: '',
     description: '',
+  })
+  const [machineForm, setMachineForm] = useState({
+    machineType: 'WEIGHING',
+    name: '',
+    capacity: '',
+    accuracy: '',
+    platformSize: '',
+    model: '',
+    serialNo: '',
+    servicePlan: 'NON_AMC',
+    amcEndDate: '',
+    remindersEnabled: true,
+    stampingDate: '',
+    nextDueDate: '',
+    notes: '',
   })
 
   const load = useCallback(async () => {
@@ -79,6 +113,11 @@ export function ContactDetailPage() {
         mobile: String(row.mobile ?? ''),
         title: String(row.title ?? ''),
         department: String(row.department ?? ''),
+        street: String(row.street ?? ''),
+        doorNo: String(row.doorNo ?? ''),
+        area: String(row.area ?? ''),
+        pincode: String(row.pincode ?? ''),
+        location: String(row.location ?? ''),
         city: String(row.city ?? ''),
         state: String(row.state ?? ''),
         accountId: String(row.accountId ?? ''),
@@ -105,6 +144,11 @@ export function ContactDetailPage() {
         mobile: form.mobile || null,
         title: form.title || null,
         department: form.department || null,
+        street: form.street || null,
+        doorNo: form.doorNo || null,
+        area: form.area || null,
+        pincode: form.pincode || null,
+        location: form.location || null,
         city: form.city || null,
         state: form.state || null,
         accountId: form.accountId || null,
@@ -112,12 +156,63 @@ export function ContactDetailPage() {
       })
       setContact(updated)
       setEditOpen(false)
-      addToast({ type: 'success', message: 'Contact updated' })
+      addToast({ type: 'success', message: 'Customer updated' })
     } catch (err) {
       addToast({
         type: 'error',
         message: err instanceof ApiClientError ? err.message : 'Update failed',
       })
+    }
+  }
+
+  async function saveMachine() {
+    if (!id || !machineForm.name.trim()) {
+      addToast({ type: 'error', message: 'Machine name is required' })
+      return
+    }
+    setSavingMachine(true)
+    try {
+      await api.createAsset({
+        contactId: id,
+        machineType: machineForm.machineType,
+        name: machineForm.name.trim(),
+        capacity: machineForm.capacity || null,
+        accuracy: machineForm.accuracy || null,
+        platformSize: machineForm.platformSize || null,
+        model: machineForm.model || null,
+        serialNo: machineForm.serialNo || null,
+        servicePlan: machineForm.servicePlan,
+        amcEndDate: machineForm.servicePlan === 'AMC' ? machineForm.amcEndDate || null : null,
+        remindersEnabled: machineForm.remindersEnabled,
+        stampingDate: machineForm.stampingDate || null,
+        nextDueDate: machineForm.nextDueDate || null,
+        notes: machineForm.notes || null,
+      })
+      setMachineOpen(false)
+      setMachineForm({
+        machineType: 'WEIGHING',
+        name: '',
+        capacity: '',
+        accuracy: '',
+        platformSize: '',
+        model: '',
+        serialNo: '',
+        servicePlan: 'NON_AMC',
+        amcEndDate: '',
+        remindersEnabled: true,
+        stampingDate: '',
+        nextDueDate: '',
+        notes: '',
+      })
+      addToast({ type: 'success', message: 'Machine saved' })
+      await load()
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not save machine',
+      })
+    } finally {
+      setSavingMachine(false)
     }
   }
 
@@ -159,16 +254,148 @@ export function ContactDetailPage() {
           <ArrowLeft size={16} /> Back
         </Button>
         <div className="flex-1" />
-        <Button variant="outline" onClick={() => setEditOpen(true)}>
-          <Edit3 size={16} /> Edit
+        <Button
+          onClick={() =>
+            navigate(
+              `/tickets?contactId=${encodeURIComponent(String(contact.id))}&open=1${
+                contact.accountId ? `&accountId=${encodeURIComponent(String(contact.accountId))}` : ''
+              }`,
+            )
+          }
+        >
+          <TicketPlus size={16} /> New service ticket
+        </Button>
+        <Button variant="outline" onClick={() => setEditOpen((v) => !v)}>
+          <Edit3 size={16} /> {editOpen ? 'Close form' : 'Edit'}
         </Button>
       </div>
+
+      <FormPanel
+        open={editOpen}
+        accent="theme"
+        eyebrow="Customers"
+        title="Edit customer"
+        subtitle="Shop details — street, door, area, pin, phone, location."
+        onClose={() => setEditOpen(false)}
+        footer={
+          <>
+            <FormPanelCancel onClick={() => setEditOpen(false)} />
+            <Button type="submit" form="edit-contact-form">
+              Save changes
+            </Button>
+          </>
+        }
+      >
+        <form
+          id="edit-contact-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void saveEdit()
+          }}
+          className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
+        >
+          <Input label="Company / shop name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <Input label="Phone" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+          <Input label="Mobile" value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
+          <Input label="Street" value={form.street} onChange={(e) => setForm({ ...form, street: e.target.value })} />
+          <Input label="Door number" value={form.doorNo} onChange={(e) => setForm({ ...form, doorNo: e.target.value })} />
+          <Input label="Area" value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
+          <Input label="Pin code" value={form.pincode} onChange={(e) => setForm({ ...form, pincode: e.target.value })} />
+          <Input label="Location" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} className="lg:col-span-2" />
+          <Input label="City" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
+          <Input label="State" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
+          <Input label="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          <Select
+            label="Account"
+            value={form.accountId}
+            onChange={(e) => setForm({ ...form, accountId: e.target.value })}
+            options={[{ value: '', label: 'Select account' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
+          />
+          <label className="block text-sm sm:col-span-2 lg:col-span-3">
+            <span className="mb-1 block font-medium text-text-secondary">Notes</span>
+            <textarea
+              className="min-h-24 w-full rounded-[6px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue"
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+            />
+          </label>
+        </form>
+      </FormPanel>
+
+      <FormPanel
+        open={machineOpen}
+        accent="theme"
+        eyebrow="Machines"
+        title="Add machine"
+        subtitle="Weighing / billing / CCTV etc. Set AMC here — reminders use next due + AMC end."
+        onClose={() => setMachineOpen(false)}
+        footer={
+          <>
+            <FormPanelCancel onClick={() => setMachineOpen(false)} />
+            <Button disabled={savingMachine} onClick={() => void saveMachine()}>
+              {savingMachine ? 'Saving…' : 'Save machine'}
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Select
+            label="Machine type"
+            value={machineForm.machineType}
+            onChange={(e) => setMachineForm({ ...machineForm, machineType: e.target.value })}
+            options={MACHINE_TYPES}
+          />
+          <Input
+            label="Machine name *"
+            placeholder="WEIGHING SCALE 20KG"
+            value={machineForm.name}
+            onChange={(e) => setMachineForm({ ...machineForm, name: e.target.value })}
+            className="lg:col-span-2"
+          />
+          <Input label="Capacity" placeholder="20KG / CAP" value={machineForm.capacity} onChange={(e) => setMachineForm({ ...machineForm, capacity: e.target.value })} />
+          <Input label="Accuracy" placeholder="ACC" value={machineForm.accuracy} onChange={(e) => setMachineForm({ ...machineForm, accuracy: e.target.value })} />
+          <Input label="Platform size" value={machineForm.platformSize} onChange={(e) => setMachineForm({ ...machineForm, platformSize: e.target.value })} />
+          <Input label="Model" value={machineForm.model} onChange={(e) => setMachineForm({ ...machineForm, model: e.target.value })} />
+          <Input label="Serial number" value={machineForm.serialNo} onChange={(e) => setMachineForm({ ...machineForm, serialNo: e.target.value })} />
+          <Select
+            label="Service plan"
+            value={machineForm.servicePlan}
+            onChange={(e) => setMachineForm({ ...machineForm, servicePlan: e.target.value })}
+            options={[
+              { value: 'NON_AMC', label: 'Non-AMC' },
+              { value: 'AMC', label: 'AMC' },
+            ]}
+          />
+          {machineForm.servicePlan === 'AMC' ? (
+            <Input
+              label="AMC end date"
+              type="date"
+              value={machineForm.amcEndDate}
+              onChange={(e) => setMachineForm({ ...machineForm, amcEndDate: e.target.value })}
+            />
+          ) : null}
+          <Input label="Stamping date" type="date" value={machineForm.stampingDate} onChange={(e) => setMachineForm({ ...machineForm, stampingDate: e.target.value })} />
+          <Input label="Next due date" type="date" value={machineForm.nextDueDate} onChange={(e) => setMachineForm({ ...machineForm, nextDueDate: e.target.value })} />
+          <label className="flex items-end gap-2 pb-2 text-sm sm:col-span-2 lg:col-span-3">
+            <input
+              type="checkbox"
+              checked={machineForm.remindersEnabled}
+              onChange={(e) => setMachineForm({ ...machineForm, remindersEnabled: e.target.checked })}
+            />
+            Auto WhatsApp reminders (~1 week before maintenance due and AMC end)
+          </label>
+          <Input label="Notes" value={machineForm.notes} onChange={(e) => setMachineForm({ ...machineForm, notes: e.target.value })} className="sm:col-span-2 lg:col-span-3" />
+        </div>
+      </FormPanel>
 
       <Card className="mb-5">
         <div className="flex flex-wrap items-start gap-4">
           <Avatar name={String(contact.name)} size="lg" />
           <div className="min-w-0 flex-1">
             <h1 className="text-2xl font-semibold text-text-primary">{String(contact.name)}</h1>
+            <p className="mt-1 font-mono text-sm font-semibold text-accent-blue">
+              {contact.customerCode ? String(contact.customerCode) : 'Customer ID pending'}
+            </p>
             <p className="text-sm text-text-secondary">
               {[contact.title, contact.department].filter(Boolean).join(' · ') || 'No title set'}
             </p>
@@ -224,7 +451,7 @@ export function ContactDetailPage() {
       </Card>
 
       <div className="mb-4 flex flex-wrap gap-2">
-        {(['Overview', 'Purchases', 'Deals', 'Tickets', 'Notes'] as Tab[]).map((t) => (
+        {(['Overview', 'Machines', 'Purchases', 'Deals', 'Tickets', 'Notes'] as Tab[]).map((t) => (
           <button
             key={t}
             type="button"
@@ -249,6 +476,80 @@ export function ContactDetailPage() {
           totalPaid={purchaseSummary.totalPaid}
           totalBilled={purchaseSummary.totalBilled}
         />
+      )}
+
+      {tab === 'Machines' && (
+        <Card padding={false}>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+            <div className="text-sm font-semibold">Machines / equipment</div>
+            <Button size="sm" onClick={() => setMachineOpen(true)}>
+              Add machine
+            </Button>
+          </div>
+          {((contact.assets as Array<Record<string, unknown>>) ?? []).length === 0 ? (
+            <EmptyState
+              icon={<Package size={22} />}
+              title="No machines yet"
+              subtitle="Add weighing scales, billing machines, CCTV, etc. for this customer."
+              actionLabel="Add machine"
+              onAction={() => setMachineOpen(true)}
+            />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[900px] text-left text-sm">
+                <thead className="bg-muted text-xs text-text-secondary">
+                  <tr>
+                    {['Machine', 'Type', 'Plan', 'Serial / Cap', 'Stamping', 'Next due', 'AMC end', ''].map((h) => (
+                      <th key={h || 'a'} className="px-4 py-3 font-medium">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {((contact.assets as Array<Record<string, unknown>>) ?? []).map((a) => (
+                    <tr key={String(a.id)} className="border-t border-border">
+                      <td className="px-4 py-3 font-medium">{String(a.name)}</td>
+                      <td className="px-4 py-3">
+                        <Badge color="blue">{String(a.machineType).replaceAll('_', ' ')}</Badge>
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge color={a.servicePlan === 'AMC' ? 'green' : 'gray'}>
+                          {a.servicePlan === 'AMC' ? 'AMC' : 'Non-AMC'}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-text-secondary">
+                        {[a.serialNo, a.capacity].filter(Boolean).join(' · ') || '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        {a.stampingDate ? formatDate(String(a.stampingDate)) : '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        {a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            navigate(
+                              `/tickets?contactId=${encodeURIComponent(String(contact.id))}&assetId=${encodeURIComponent(String(a.id))}&open=1`,
+                            )
+                          }
+                        >
+                          New job
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
       )}
 
       {tab === 'Purchases' && (
@@ -367,8 +668,27 @@ export function ContactDetailPage() {
 
       {tab === 'Tickets' && (
         <Card padding={false}>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+            <div className="font-semibold">Service history</div>
+            <Button
+              size="sm"
+              onClick={() =>
+                navigate(`/tickets?contactId=${encodeURIComponent(String(contact.id))}&open=1`)
+              }
+            >
+              <TicketPlus size={14} /> New ticket
+            </Button>
+          </div>
           {tickets.length === 0 ? (
-            <EmptyState icon={<TicketCheck size={22} />} title="No tickets" subtitle="Support history for this customer will appear here." />
+            <EmptyState
+              icon={<TicketCheck size={22} />}
+              title="No service tickets yet"
+              subtitle="Open a ticket after reviewing purchases — assign an agent and SLA."
+              actionLabel="New service ticket"
+              onAction={() =>
+                navigate(`/tickets?contactId=${encodeURIComponent(String(contact.id))}&open=1`)
+              }
+            />
           ) : (
             <table className="w-full text-left text-sm">
               <thead className="bg-muted text-xs text-text-secondary">
@@ -393,7 +713,7 @@ export function ContactDetailPage() {
                       <Badge color="amber">{String(t.priority)}</Badge>
                     </td>
                     <td className="px-4 py-3">
-                      <Badge color="blue">{String(t.status)}</Badge>
+                      <Badge color={ticketStatusColor[String(t.status)] ?? 'gray'}>{String(t.status)}</Badge>
                     </td>
                   </tr>
                 ))}
@@ -421,46 +741,6 @@ export function ContactDetailPage() {
           )}
         </Card>
       )}
-
-      <Modal
-        open={editOpen}
-        onClose={() => setEditOpen(false)}
-        title="Edit contact"
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setEditOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={() => void saveEdit()}>Save changes</Button>
-          </>
-        }
-      >
-        <div className="grid max-h-[70vh] gap-3 overflow-y-auto sm:grid-cols-2">
-          <Input label="Name" placeholder="Full name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <Input label="Title" placeholder="e.g. Purchase Manager" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-          <Input label="Department" placeholder="e.g. Procurement" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} />
-          <Select
-            label="Account"
-            value={form.accountId}
-            onChange={(e) => setForm({ ...form, accountId: e.target.value })}
-            options={[{ value: '', label: 'Select account' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
-          />
-          <Input label="Email" placeholder="name@company.in" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          <Input label="Phone" placeholder="+91 98400 10001" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-          <Input label="Mobile" placeholder="+91 98400 10002" value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
-          <Input label="City" placeholder="Chennai" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
-          <Input label="State" placeholder="Tamil Nadu" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
-          <label className="block text-sm sm:col-span-2">
-            <span className="mb-1 block font-medium text-text-secondary">Notes</span>
-            <textarea
-              className="min-h-24 w-full rounded-[6px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue"
-              placeholder="Relationship notes, preferences…"
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-            />
-          </label>
-        </div>
-      </Modal>
     </div>
   )
 }

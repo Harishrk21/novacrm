@@ -41,7 +41,15 @@ metaRouter.get("/lookups", async (q: Request, r: Response) => {
       }),
       prisma.contact.findMany({
         where: { tenantId: t, deletedAt: null },
-        select: { id: true, name: true, phone: true, email: true, accountId: true },
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          email: true,
+          accountId: true,
+          customerCode: true,
+          customerNo: true,
+        },
         orderBy: { name: "asc" },
         take: 500,
       }),

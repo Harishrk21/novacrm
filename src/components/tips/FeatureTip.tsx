@@ -49,8 +49,8 @@ export function FeatureTip({
 /** Default tips when API not connected yet */
 export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType: TipType }> = {
   'crm.dashboard': {
-    title: 'How to read your dashboard',
-    body: 'Switch Sales / Leads / Activity / Deal Insights on the left. Each tab explains its KPIs and charts. Use All Users and date range to focus the numbers.',
+    title: 'Service desk first',
+    body: 'Start on Service desk: open tickets, SLA breaches, resolved today. Sales / Leads tabs stay available below for pipeline work.',
     tipType: 'TIP',
   },
   'crm.leads': {
@@ -59,8 +59,8 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
     tipType: 'TIP',
   },
   'crm.contacts': {
-    title: 'Phone lookup',
-    body: 'Paste a phone number during an inbound call. NovaCRM normalizes +91 formats and opens the full contact 360° view.',
+    title: 'Contacts',
+    body: 'Store buyers and decision-makers here. Click a row for the full customer profile.',
     tipType: 'TIP',
   },
   'crm.deals': {
@@ -69,8 +69,8 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
     tipType: 'BEST_PRACTICE',
   },
   'crm.tickets': {
-    title: 'Support tickets',
-    body: 'Link tickets to contacts and products (e.g. a weighing machine serial). Use internal notes for agent-only context.',
+    title: 'Service tickets first',
+    body: 'Find the customer in Contacts, review purchase history, open a service ticket, assign an agent. Completing the ticket can WhatsApp the customer automatically.',
     tipType: 'TIP',
   },
   'erp.products': {
@@ -134,13 +134,13 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
     tipType: 'BEST_PRACTICE',
   },
   'crm.employee': {
-    title: 'Your work queue',
-    body: 'Focus on the current task → Mark completed → next loads automatically. Completions update the admin dashboard.',
+    title: 'Your service queue',
+    body: 'My Tickets come first — work by SLA, then Complete service so the customer gets a WhatsApp. Leads and tasks stay secondary under Sales.',
     tipType: 'TIP',
   },
   'crm.help': {
-    title: 'Start → finish',
-    body: 'Lead → Convert → Deal → Won → Invoice (stock updates). Lost stops billing. Use the steps below as your daily playbook.',
+    title: 'Service → done',
+    body: 'Contact history → Service ticket → Work → Resolved → WhatsApp. Sales leads are secondary under the Sales menu.',
     tipType: 'TIP',
   },
   'settings.custom_fields': {

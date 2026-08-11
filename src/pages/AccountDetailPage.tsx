@@ -11,11 +11,11 @@ import {
   Ticket,
   Users,
 } from 'lucide-react'
-import { Badge } from '@/components/ui/Badge'
+import { Badge, ticketStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { Modal } from '@/components/ui/Modal'
+import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
@@ -131,14 +131,40 @@ export function AccountDetailPage() {
           <ArrowLeft size={16} /> Back
         </Button>
         <Button
+          variant={editOpen ? 'outline' : 'primary'}
           onClick={() => {
+            if (editOpen) {
+              setEditOpen(false)
+              return
+            }
             setForm(accountToForm(account))
             setEditOpen(true)
           }}
         >
-          <Pencil size={16} /> Edit account
+          <Pencil size={16} /> {editOpen ? 'Close form' : 'Edit account'}
         </Button>
       </div>
+
+      <FormPanel
+        open={editOpen}
+        accent="violet"
+        eyebrow="Accounts"
+        title="Edit account"
+        subtitle="Update company, tax, addresses and commercial terms."
+        onClose={() => setEditOpen(false)}
+        footer={
+          <>
+            <FormPanelCancel onClick={() => setEditOpen(false)} />
+            <Button type="submit" form="edit-account">
+              Save changes
+            </Button>
+          </>
+        }
+      >
+        <form id="edit-account" onSubmit={saveEdit}>
+          <AccountFormFields form={form} setForm={setForm} users={users} />
+        </form>
+      </FormPanel>
 
       <Card>
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -324,35 +350,13 @@ export function AccountDetailPage() {
                 <Link className="font-medium text-accent-blue hover:underline" to={`/tickets/${t.id}`}>
                   {String(t.subject)}
                 </Link>
-                <Badge color="blue">{String(t.status)}</Badge>
+                <Badge color={ticketStatusColor[String(t.status)] ?? 'gray'}>{String(t.status)}</Badge>
               </li>
             ))}
             {!tickets.length && <li className="p-6 text-center text-sm text-text-secondary">No tickets</li>}
           </ul>
         </Card>
       </div>
-
-      <Modal
-        open={editOpen}
-        onClose={() => setEditOpen(false)}
-        title="Edit account"
-        subtitle="Update company, tax, addresses and commercial terms."
-        size="xl"
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setEditOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" form="edit-account">
-              Save changes
-            </Button>
-          </>
-        }
-      >
-        <form id="edit-account" onSubmit={saveEdit} className="max-h-[70vh] overflow-y-auto pr-1">
-          <AccountFormFields form={form} setForm={setForm} users={users} />
-        </form>
-      </Modal>
     </div>
   )
 }

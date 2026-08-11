@@ -6,12 +6,20 @@ import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
 import { Avatar } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import {
+  BulkActionBar,
+  DeleteIconButton,
+  SelectCheckbox,
+  ViewIconButton,
+} from '@/components/ui/BulkSelect'
 import { Card } from '@/components/ui/Card'
 import { Drawer } from '@/components/ui/Drawer'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
-import { Modal } from '@/components/ui/Modal'
+import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
+import { ConfirmModal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
+import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
 import { firstError, validateLeadForm, type FieldErrors } from '@/lib/formValidation'
 import { formatDate, formatPhone } from '@/lib/utils'
@@ -71,6 +79,11 @@ export function LeadsPage() {
   const [errors, setErrors] = useState<FieldErrors>({})
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
+  const [busyDelete, setBusyDelete] = useState(false)
+
+  const ids = useMemo(() => items.map((i) => String(i.id)), [items])
+  const selection = useRowSelection(ids)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -244,6 +257,28 @@ export function LeadsPage() {
     }
   }
 
+  async function runDelete(deleteIds: string[]) {
+    setBusyDelete(true)
+    try {
+      await Promise.all(deleteIds.map((id) => api.deleteLead(id)))
+      addToast({
+        type: 'success',
+        message: deleteIds.length === 1 ? 'Deleted' : `${deleteIds.length} deleted`,
+      })
+      if (selected && deleteIds.includes(String(selected.id))) setSelected(null)
+      selection.clear()
+      await load()
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not delete',
+      })
+    } finally {
+      setBusyDelete(false)
+      setConfirm(null)
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -251,12 +286,108 @@ export function LeadsPage() {
         count={items.length}
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Leads' }]}
         actions={
-          <Button onClick={() => setOpen(true)}>
-            <Plus size={16} /> Add lead
+          <Button onClick={() => setOpen((v) => !v)} variant={open ? 'outline' : 'primary'}>
+            <Plus size={16} /> {open ? 'Close form' : 'Add lead'}
           </Button>
         }
       />
       <FeatureTip title={tip.title} body={tip.body} tipType={tip.tipType} />
+
+      <FormPanel
+        open={open}
+        accent="sky"
+        eyebrow="Leads"
+        title="Add lead"
+        subtitle="Capture the full enquiry — company, budget, interest and owner."
+        onClose={() => {
+          setOpen(false)
+          setForm(emptyForm)
+          setErrors({})
+        }}
+        footer={
+          <>
+            <FormPanelCancel
+              onClick={() => {
+                setOpen(false)
+                setForm(emptyForm)
+                setErrors({})
+              }}
+            />
+            <Button type="submit" form="add-lead" disabled={saving}>
+              {saving ? 'Saving…' : 'Save lead'}
+            </Button>
+          </>
+        }
+      >
+        <form id="add-lead" onSubmit={createLead} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Input label="Full name *" placeholder="e.g. Meena Krishnan" value={form.name} error={errors.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          <Input label="Company" placeholder="e.g. Harbour Traders" value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} />
+          <Input label="Email" type="email" placeholder="name@company.in" value={form.email} error={errors.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          <Input label="Phone" placeholder="+91 98400 10001" value={form.phone} error={errors.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+          <Input label="Website" value={form.website} error={errors.website} onChange={(e) => setForm({ ...form, website: e.target.value })} placeholder="https://company.in" />
+          <Select
+            label="Source"
+            value={form.sourceId}
+            onChange={(e) => setForm({ ...form, sourceId: e.target.value })}
+            options={[{ value: '', label: 'Select source' }, ...sources.map((s) => ({ value: s.id, label: s.name }))]}
+          />
+          <Select
+            label="Status"
+            value={form.status}
+            onChange={(e) => setForm({ ...form, status: e.target.value })}
+            options={STATUSES.filter((s) => s !== 'CONVERTED').map((s) => ({ value: s, label: s }))}
+          />
+          <Select
+            label="Assigned to"
+            value={form.assignedToId}
+            onChange={(e) => setForm({ ...form, assignedToId: e.target.value })}
+            options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
+          />
+          <Input label="City" placeholder="Chennai" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
+          <Input label="State" placeholder="Tamil Nadu" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
+          <Input label="Score (0–100) *" type="number" placeholder="55" value={form.score} error={errors.score} onChange={(e) => setForm({ ...form, score: e.target.value })} />
+          <Input label="Product interest" placeholder="Truck scale / Platform 1T" value={form.productInterest} onChange={(e) => setForm({ ...form, productInterest: e.target.value })} />
+          <Input label="Budget ₹" type="number" placeholder="185000" value={form.budget} error={errors.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
+          <Input label="Buy timeline" value={form.timeline} onChange={(e) => setForm({ ...form, timeline: e.target.value })} placeholder="This month / Q2" />
+          <Input label="Tags" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="hot, exhibition" />
+          <label className="block text-sm sm:col-span-2 lg:col-span-3">
+            <span className="mb-1 block font-medium text-text-secondary">Notes</span>
+            <textarea
+              className="min-h-24 w-full rounded-[6px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue"
+              placeholder="Enquiry notes, how they found you…"
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+            />
+          </label>
+        </form>
+      </FormPanel>
+
+      <FormPanel
+        open={convertOpen}
+        accent="sky"
+        eyebrow="Leads"
+        title="Convert lead"
+        subtitle="Creates a contact, account and deal — you’ll land on the new deal page."
+        onClose={() => setConvertOpen(false)}
+        footer={
+          <>
+            <FormPanelCancel onClick={() => setConvertOpen(false)} />
+            <Button onClick={() => void convert()}>Convert</Button>
+          </>
+        }
+      >
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Select
+            label="Deal stage"
+            value={convertStageId}
+            onChange={(e) => setConvertStageId(e.target.value)}
+            options={stages.map((s) => ({ value: s.id, label: s.name }))}
+          />
+          <p className="text-sm text-text-secondary sm:col-span-2 lg:col-span-2">
+            Creates Contact + Account + Deal and marks the lead CONVERTED.
+          </p>
+        </div>
+      </FormPanel>
 
       <Card className="mb-4 flex flex-wrap gap-3 p-4">
         <div className="relative min-w-[220px] flex-1">
@@ -296,58 +427,98 @@ export function LeadsPage() {
         ) : items.length === 0 ? (
           <EmptyState title="No leads" subtitle="Add your first enquiry with full buyer details." actionLabel="Add lead" onAction={() => setOpen(true)} />
         ) : (
-          <table className="w-full min-w-[1000px] text-left text-sm">
-            <thead className="bg-muted text-xs text-text-secondary">
-              <tr>
-                {['Name', 'Company', 'Phone', 'Source', 'Status', 'Score', 'Owner', 'City'].map((h) => (
-                  <th key={h} className="px-4 py-3 font-medium">
-                    {h}
+          <div className="p-4 pt-3">
+            {selection.someSelected ? (
+              <BulkActionBar
+                count={selection.selectedCount}
+                noun="lead"
+                busy={busyDelete}
+                onClear={selection.clear}
+                onDelete={() => setConfirm({ ids: selection.selectedIds })}
+              />
+            ) : null}
+            <table className="w-full min-w-[1000px] text-left text-sm">
+              <thead className="bg-muted text-xs text-text-secondary">
+                <tr>
+                  <th className="w-10 px-4 py-3">
+                    <SelectCheckbox
+                      checked={selection.allSelected}
+                      indeterminate={selection.someSelected && !selection.allSelected}
+                      onChange={selection.toggleAll}
+                      aria-label="Select all"
+                    />
                   </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((lead) => (
-                <tr
-                  key={String(lead.id)}
-                  className="cursor-pointer border-t border-border hover:bg-surface"
-                  onClick={() => setSelected(lead)}
-                >
-                  <td className="px-4 py-3">
-                    <span className="flex items-center gap-2 font-medium">
-                      <Avatar name={String(lead.name)} size="sm" />
-                      {String(lead.name)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">{String(lead.company || '—')}</td>
-                  <td className="px-4 py-3">{formatPhone(String(lead.phone || '')) || '—'}</td>
-                  <td className="px-4 py-3">{sourceName[String(lead.sourceId)] ?? '—'}</td>
-                  <td className="px-4 py-3">
-                    <Badge color="blue">{String(lead.status)}</Badge>
-                  </td>
-                  <td className="px-4 py-3">{num(lead.score)}</td>
-                  <td className="px-4 py-3">
-                    {lead.assignedToId ? (
-                      <span className="flex items-center gap-2">
-                        <Avatar name={userName[String(lead.assignedToId)] ?? '?'} size="sm" />
-                        <span>{userName[String(lead.assignedToId)] ?? '—'}</span>
-                      </span>
-                    ) : (
-                      <span className="text-text-secondary">Unassigned</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-text-secondary">
-                    {[lead.city, lead.state].filter(Boolean).join(', ') || '—'}
-                  </td>
+                  {['Name', 'Company', 'Phone', 'Source', 'Status', 'Score', 'Owner', 'City', 'Actions'].map(
+                    (h) => (
+                      <th key={h} className="px-4 py-3 font-medium">
+                        {h}
+                      </th>
+                    ),
+                  )}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {items.map((lead) => {
+                  const id = String(lead.id)
+                  return (
+                    <tr
+                      key={id}
+                      className="cursor-pointer border-t border-border hover:bg-surface"
+                      onClick={() => setSelected(lead)}
+                    >
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                        <SelectCheckbox
+                          checked={selection.isSelected(id)}
+                          onChange={() => selection.toggle(id)}
+                          aria-label={`Select ${String(lead.name)}`}
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="flex items-center gap-2 font-medium">
+                          <Avatar name={String(lead.name)} size="sm" />
+                          {String(lead.name)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">{String(lead.company || '—')}</td>
+                      <td className="px-4 py-3">{formatPhone(String(lead.phone || '')) || '—'}</td>
+                      <td className="px-4 py-3">{sourceName[String(lead.sourceId)] ?? '—'}</td>
+                      <td className="px-4 py-3">
+                        <Badge color="blue">{String(lead.status)}</Badge>
+                      </td>
+                      <td className="px-4 py-3">{num(lead.score)}</td>
+                      <td className="px-4 py-3">
+                        {lead.assignedToId ? (
+                          <span className="flex items-center gap-2">
+                            <Avatar name={userName[String(lead.assignedToId)] ?? '?'} size="sm" />
+                            <span>{userName[String(lead.assignedToId)] ?? '—'}</span>
+                          </span>
+                        ) : (
+                          <span className="text-text-secondary">Unassigned</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-text-secondary">
+                        {[lead.city, lead.state].filter(Boolean).join(', ') || '—'}
+                      </td>
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-0.5">
+                          <ViewIconButton onClick={() => setSelected(lead)} />
+                          <DeleteIconButton
+                            disabled={busyDelete}
+                            onClick={() => setConfirm({ ids: [id] })}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 
       <Drawer
-        open={Boolean(selected)}
+        open={Boolean(selected) && !convertOpen}
         onClose={() => setSelected(null)}
         title={selected ? String(selected.name) : 'Lead'}
       >
@@ -502,90 +673,19 @@ export function LeadsPage() {
         )}
       </Drawer>
 
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title="Add lead"
-        subtitle="Capture the full enquiry — company, budget, interest and owner."
-        size="xl"
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" form="add-lead" disabled={saving}>
-              {saving ? 'Saving…' : 'Save lead'}
-            </Button>
-          </>
+      <ConfirmModal
+        open={Boolean(confirm)}
+        onClose={() => setConfirm(null)}
+        onConfirm={() => {
+          if (confirm) void runDelete(confirm.ids)
+        }}
+        title={confirm?.ids.length === 1 ? 'Delete lead?' : `Delete ${confirm?.ids.length ?? 0} leads?`}
+        body={
+          confirm?.ids.length === 1
+            ? 'This lead will be permanently removed.'
+            : 'Selected leads will be permanently removed.'
         }
-      >
-        <form id="add-lead" onSubmit={createLead} className="grid max-h-[70vh] gap-3 overflow-y-auto sm:grid-cols-2">
-          <Input label="Full name *" placeholder="e.g. Meena Krishnan" value={form.name} error={errors.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <Input label="Company" placeholder="e.g. Harbour Traders" value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} />
-          <Input label="Email" type="email" placeholder="name@company.in" value={form.email} error={errors.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          <Input label="Phone" placeholder="+91 98400 10001" value={form.phone} error={errors.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-          <Input label="Website" value={form.website} error={errors.website} onChange={(e) => setForm({ ...form, website: e.target.value })} placeholder="https://company.in" />
-          <Select
-            label="Source"
-            value={form.sourceId}
-            onChange={(e) => setForm({ ...form, sourceId: e.target.value })}
-            options={[{ value: '', label: 'Select source' }, ...sources.map((s) => ({ value: s.id, label: s.name }))]}
-          />
-          <Select
-            label="Status"
-            value={form.status}
-            onChange={(e) => setForm({ ...form, status: e.target.value })}
-            options={STATUSES.filter((s) => s !== 'CONVERTED').map((s) => ({ value: s, label: s }))}
-          />
-          <Select
-            label="Assigned to"
-            value={form.assignedToId}
-            onChange={(e) => setForm({ ...form, assignedToId: e.target.value })}
-            options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
-          />
-          <Input label="City" placeholder="Chennai" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
-          <Input label="State" placeholder="Tamil Nadu" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
-          <Input label="Score (0–100) *" type="number" placeholder="55" value={form.score} error={errors.score} onChange={(e) => setForm({ ...form, score: e.target.value })} />
-          <Input label="Product interest" placeholder="Truck scale / Platform 1T" value={form.productInterest} onChange={(e) => setForm({ ...form, productInterest: e.target.value })} />
-          <Input label="Budget ₹" type="number" placeholder="185000" value={form.budget} error={errors.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
-          <Input label="Buy timeline" value={form.timeline} onChange={(e) => setForm({ ...form, timeline: e.target.value })} placeholder="This month / Q2" />
-          <Input label="Tags" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="hot, exhibition" />
-          <label className="block text-sm sm:col-span-2">
-            <span className="mb-1 block font-medium text-text-secondary">Notes</span>
-            <textarea
-              className="min-h-24 w-full rounded-[6px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue"
-              placeholder="Enquiry notes, how they found you…"
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-            />
-          </label>
-        </form>
-      </Modal>
-
-      <Modal
-        open={convertOpen}
-        onClose={() => setConvertOpen(false)}
-        title="Convert lead"
-        subtitle="Creates a contact, account and deal — you’ll land on the new deal page."
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setConvertOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={() => void convert()}>Convert</Button>
-          </>
-        }
-      >
-        <Select
-          label="Deal stage"
-          value={convertStageId}
-          onChange={(e) => setConvertStageId(e.target.value)}
-          options={stages.map((s) => ({ value: s.id, label: s.name }))}
-        />
-        <p className="mt-3 text-sm text-text-secondary">
-          Creates Contact + Account + Deal and marks the lead CONVERTED.
-        </p>
-      </Modal>
+      />
     </div>
   )
 }

@@ -9,12 +9,12 @@ import {
   Ticket,
   Warehouse,
 } from 'lucide-react'
-import { Badge } from '@/components/ui/Badge'
+import { Badge, ticketStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Input } from '@/components/ui/Input'
-import { Modal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { assetUrl } from '@/lib/formValidation'
@@ -141,6 +141,58 @@ export function ProductDetailPage() {
           </Link>
         </div>
       </div>
+
+      {adjustOpen ? (
+        <FormPanel
+          open
+          accent="violet"
+          eyebrow="Inventory"
+          title="Adjust stock"
+          subtitle={String(product.name)}
+          onClose={() => setAdjustOpen(false)}
+          footer={
+            <>
+              <FormPanelCancel onClick={() => setAdjustOpen(false)} />
+              <Button onClick={() => void adjust()} disabled={saving}>
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+            </>
+          }
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Select
+              label="Warehouse"
+              value={form.warehouseId}
+              onChange={(e) => setForm({ ...form, warehouseId: e.target.value })}
+              options={warehouses.map((w) => ({ value: w.id, label: w.name }))}
+            />
+            <Select
+              label="Movement"
+              value={form.movementType}
+              onChange={(e) => setForm({ ...form, movementType: e.target.value })}
+              options={[
+                { value: 'IN', label: 'Stock in (+)' },
+                { value: 'OUT', label: 'Stock out (−)' },
+                { value: 'ADJUST', label: 'Adjustment (+)' },
+                { value: 'RETURN', label: 'Return (−)' },
+              ]}
+            />
+            <Input
+              label="Quantity"
+              type="number"
+              min={1}
+              value={form.quantity}
+              onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+            />
+            <Input
+              label="Reason"
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              placeholder="Opening stock / Damaged / Cycle count"
+            />
+          </div>
+        </FormPanel>
+      ) : null}
 
       <Card>
         <div className="flex flex-wrap gap-5">
@@ -321,7 +373,7 @@ export function ProductDetailPage() {
                     <Ticket size={14} className="text-text-secondary" />
                     #{num(t.ticketNo)} · {String(t.subject)}
                   </span>
-                  <Badge color="blue">{labelize(String(t.status))}</Badge>
+                  <Badge color={ticketStatusColor[String(t.status)] ?? 'gray'}>{labelize(String(t.status))}</Badge>
                 </Link>
               </li>
             ))}
@@ -331,56 +383,6 @@ export function ProductDetailPage() {
           </ul>
         </Card>
       </div>
-
-      <Modal
-        open={adjustOpen}
-        onClose={() => setAdjustOpen(false)}
-        title="Adjust stock"
-        subtitle={String(product.name)}
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setAdjustOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={() => void adjust()} disabled={saving}>
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
-          </>
-        }
-      >
-        <div className="grid gap-3">
-          <Select
-            label="Warehouse"
-            value={form.warehouseId}
-            onChange={(e) => setForm({ ...form, warehouseId: e.target.value })}
-            options={warehouses.map((w) => ({ value: w.id, label: w.name }))}
-          />
-          <Select
-            label="Movement"
-            value={form.movementType}
-            onChange={(e) => setForm({ ...form, movementType: e.target.value })}
-            options={[
-              { value: 'IN', label: 'Stock in (+)' },
-              { value: 'OUT', label: 'Stock out (−)' },
-              { value: 'ADJUST', label: 'Adjustment (+)' },
-              { value: 'RETURN', label: 'Return (−)' },
-            ]}
-          />
-          <Input
-            label="Quantity"
-            type="number"
-            min={1}
-            value={form.quantity}
-            onChange={(e) => setForm({ ...form, quantity: e.target.value })}
-          />
-          <Input
-            label="Reason"
-            value={form.notes}
-            onChange={(e) => setForm({ ...form, notes: e.target.value })}
-            placeholder="Opening stock / Damaged / Cycle count"
-          />
-        </div>
-      </Modal>
     </div>
   )
 }

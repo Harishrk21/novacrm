@@ -92,8 +92,9 @@ export function validateContactForm(form: {
   if (form.alternateEmail?.trim() && !isEmail(form.alternateEmail)) {
     errors.alternateEmail = 'Enter a valid alternate email'
   }
-  if (form.phone.trim() && form.phone.replace(/\D/g, '').length < 8) {
-    errors.phone = 'Enter a valid phone number'
+  const phoneDigits = (form.phone || form.mobile || '').replace(/\D/g, '')
+  if (phoneDigits.length < 8) {
+    errors.phone = 'Phone is required — unique customer identity for walk-ins'
   }
   if (form.mobile.trim() && form.mobile.replace(/\D/g, '').length < 8) {
     errors.mobile = 'Enter a valid mobile number'

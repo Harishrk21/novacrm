@@ -70,12 +70,19 @@ export interface Account {
 
 export interface Contact {
   id: string
+  customerNo?: number
+  customerCode?: string
   name: string
   email?: string
   phone?: string
   mobile?: string
   title?: string
   department?: string
+  street?: string
+  doorNo?: string
+  area?: string
+  pincode?: string
+  location?: string
   address?: string
   city?: string
   state?: string
@@ -84,6 +91,39 @@ export interface Contact {
   description?: string
   accountId?: string
   ownerId?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type MachineType =
+  | 'WEIGHING'
+  | 'BILLING'
+  | 'CCM'
+  | 'CCTV'
+  | 'BIOMETRIC'
+  | 'PAPER_SHREDDER'
+  | 'PAPER_ROLL'
+  | 'OTHER'
+
+export type ServicePlan = 'AMC' | 'NON_AMC'
+export type JobPaymentStatus = 'UNPAID' | 'PARTIAL' | 'PAID'
+
+export interface CustomerAsset {
+  id: string
+  contactId: string
+  machineType: MachineType
+  name: string
+  capacity?: string | null
+  accuracy?: string | null
+  platformSize?: string | null
+  model?: string | null
+  serialNo?: string | null
+  servicePlan?: ServicePlan
+  amcEndDate?: string | null
+  remindersEnabled?: boolean
+  stampingDate?: string | null
+  nextDueDate?: string | null
+  notes?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -135,10 +175,25 @@ export interface Ticket {
   status: TicketStatus
   slaStatus: SlaStatus
   slaBreached: boolean
+  slaDueAt?: string | null
   resolvedAt?: string
   closedAt?: string
   contactId?: string
+  accountId?: string
+  productId?: string
+  assetId?: string | null
+  stampingDate?: string | null
+  nextDueDate?: string | null
+  odAmount?: number
+  paymentTotal?: number
+  advanceAmount?: number
+  balanceDue?: number
+  paymentStatus?: JobPaymentStatus
+  paidAt?: string | null
+  receivedByUserId?: string | null
+  deliveredByUserId?: string | null
   assignedToId?: string
+  customFields?: Record<string, unknown>
   createdAt: string
   updatedAt: string
 }

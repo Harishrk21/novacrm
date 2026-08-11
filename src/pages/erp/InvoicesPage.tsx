@@ -7,8 +7,9 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Input } from '@/components/ui/Input'
-import { Modal } from '@/components/ui/Modal'
+import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency, formatDate } from '@/lib/utils'
@@ -279,7 +280,7 @@ export function InvoicesPage() {
   })
   const [statusFilter, setStatusFilter] = useState('')
   const [statusBusy, setStatusBusy] = useState(false)
-  const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState<'list' | 'create'>('list')
   const [previewOpen, setPreviewOpen] = useState(false)
   const [detail, setDetail] = useState<InvoiceDetail | null>(null)
   const [saving, setSaving] = useState(false)
@@ -401,7 +402,7 @@ export function InvoicesPage() {
       accountId: accountId || f.accountId,
       contactId: contactId || f.contactId,
     }))
-    if (shouldOpen || accountId) setOpen(true)
+    if (shouldOpen || accountId) setTab('create')
   }, [searchParams])
 
   const accountName = useMemo(
@@ -492,7 +493,7 @@ export function InvoicesPage() {
           taxPercent: Number(l.taxPercent) || 0,
         })),
       })) as InvoiceDetail
-      setOpen(false)
+      setTab('list')
       setLines([newLine()])
       setForm((f) => ({
         ...f,
@@ -504,6 +505,7 @@ export function InvoicesPage() {
         poNumber: '',
         billingAddress: '',
       }))
+      setErrors({})
       addToast({
         type: 'success',
         message: 'Invoice created — stock deducted for tracked products',
@@ -610,423 +612,487 @@ export function InvoicesPage() {
         title="Invoices"
         count={items.length}
         breadcrumbs={[{ label: 'ERP' }, { label: 'Invoices' }]}
-        actions={
-          <Button
-            onClick={() => {
-              setErrors({})
-              setLines([newLine()])
-              setOpen(true)
-            }}
-          >
-            <Plus size={16} /> New invoice
-          </Button>
-        }
       />
       <FeatureTip title={t.title} body={t.body} tipType={t.tipType} />
-      <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
-        <Select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="w-44"
-          options={[
-            { value: '', label: 'All statuses' },
-            { value: 'DRAFT', label: 'Draft' },
-            { value: 'SENT', label: 'Sent' },
-            { value: 'PARTIAL', label: 'Partial' },
-            { value: 'PAID', label: 'Paid' },
-            { value: 'OVERDUE', label: 'Overdue' },
-            { value: 'VOID', label: 'Void' },
-          ]}
-        />
-        <p className="text-sm text-text-secondary">
-          New invoices start as <strong>DRAFT</strong>. Open one → <strong>Mark sent</strong> when shared,{' '}
-          <strong>Mark paid</strong> / Record payment when money arrives.
-        </p>
-      </Card>
-      <Card padding={false}>
-        {items.length === 0 ? (
-          <EmptyState title="No invoices" subtitle="Create an invoice for a customer with one or more products." actionLabel="New invoice" onAction={() => setOpen(true)} />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1000px] text-left text-sm">
-              <thead className="bg-muted text-xs text-text-secondary">
-                <tr>
-                  {['Invoice #', 'Customer', 'Date', 'Due', 'Status', 'Subtotal', 'Tax', 'Total', 'Balance', ''].map((h) => (
-                    <th key={h || 'actions'} className="px-4 py-3 font-medium">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((inv) => (
-                  <tr
-                    key={String(inv.id)}
-                    className="cursor-pointer border-t border-border hover:bg-surface"
-                    onClick={() => void openDetail(String(inv.id))}
-                  >
-                    <td className="px-4 py-3 font-mono text-xs font-semibold text-accent-blue">
-                      {String(inv.invoiceNumber)}
-                    </td>
-                    <td className="px-4 py-3">{accountName[String(inv.accountId)] ?? '—'}</td>
-                    <td className="px-4 py-3">{inv.invoiceDate ? formatDate(String(inv.invoiceDate)) : '—'}</td>
-                    <td className="px-4 py-3">{inv.dueDate ? formatDate(String(inv.dueDate)) : '—'}</td>
-                    <td className="px-4 py-3">
-                      <Badge color={invoiceStatusColor(String(inv.status))}>{String(inv.status)}</Badge>
-                    </td>
-                    <td className="px-4 py-3">{formatCurrency(num(inv.subtotal))}</td>
-                    <td className="px-4 py-3">{formatCurrency(num(inv.taxTotal))}</td>
-                    <td className="px-4 py-3 font-semibold">{formatCurrency(num(inv.grandTotal))}</td>
-                    <td className="px-4 py-3">{formatCurrency(num(inv.balanceDue ?? inv.grandTotal))}</td>
-                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex flex-wrap gap-1">
-                        <Button variant="outline" size="sm" onClick={() => void openDetail(String(inv.id))}>
-                          <Eye size={14} /> View
-                        </Button>
-                        <Button
-                          size="sm"
-                          onClick={() =>
-                            void (async () => {
-                              try {
-                                const full = (await api.getInvoice(String(inv.id))) as InvoiceDetail
-                                setDetail(full)
-                                const cf = (full.customFields as Record<string, string> | null) ?? {}
-                                const invLines = ((full.lines as Array<Record<string, unknown>>) ?? []).map((l) => ({
-                                  description: String(l.description ?? ''),
-                                  quantity: num(l.quantity),
-                                  unitPrice: num(l.unitPrice),
-                                  taxPercent: num(l.taxPercent),
-                                  lineTotal: num(l.lineTotal),
-                                }))
-                                const ok = openPrintableInvoice({
-                                  invoiceNumber: String(full.invoiceNumber ?? ''),
-                                  status: String(full.status ?? ''),
-                                  invoiceDate: full.invoiceDate ? formatDate(String(full.invoiceDate)) : '',
-                                  dueDate: full.dueDate ? formatDate(String(full.dueDate)) : null,
-                                  accountName: accountName[String(full.accountId)] ?? 'Customer',
-                                  contactName: full.contactId ? contactName[String(full.contactId)] : undefined,
-                                  currency: String(full.currency ?? 'INR'),
-                                  notes: full.notes ? String(full.notes) : null,
-                                  billingAddress:
-                                    cf.billing_address ||
-                                    buyerAddress(full.accountId ? String(full.accountId) : null),
-                                  placeOfSupply: cf.place_of_supply,
-                                  paymentTerms: cf.payment_terms,
-                                  poNumber: cf.po_number,
-                                  lines: invLines,
-                                  subtotal: num(full.subtotal),
-                                  taxTotal: num(full.taxTotal),
-                                  discountTotal: num(full.discountTotal),
-                                  grandTotal: num(full.grandTotal),
-                                  amountPaid: num(full.amountPaid),
-                                  ...sellerFields(),
-                                })
-                                if (!ok) {
-                                  addToast({
-                                    type: 'info',
-                                    message:
-                                      'Popup blocked — invoice downloaded. Open the file → Print → Save as PDF.',
-                                  })
-                                }
-                              } catch (err) {
-                                addToast({
-                                  type: 'error',
-                                  message: err instanceof ApiClientError ? err.message : 'Download failed',
-                                })
-                              }
-                            })()
-                          }
-                        >
-                          <Download size={14} /> Download
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
 
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title="New invoice"
-        subtitle="Select a customer, add multiple products, then preview or save."
-        size="xl"
-        footer={
-          <>
-            <Button variant="outline" onClick={() => previewDraft()}>
-              <Eye size={16} /> Preview
-            </Button>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={() => void createInvoice()} disabled={saving}>
-              {saving ? 'Creating…' : 'Create invoice'}
-            </Button>
-          </>
-        }
-      >
-        <div className="grid max-h-[70vh] gap-3 overflow-y-auto sm:grid-cols-2">
-          <Select
-            label="Customer account *"
-            value={form.accountId}
-            onChange={(e) => {
-              const acc = accounts.find((a) => a.id === e.target.value)
-              setForm({
-                ...form,
-                accountId: e.target.value,
-                contactId: '',
-                placeOfSupply: acc ? [acc.city, acc.state].filter(Boolean).join(', ') : form.placeOfSupply,
-              })
-            }}
-            options={[
-              { value: '', label: 'Select customer account' },
-              ...accounts.map((a) => ({ value: a.id, label: a.name })),
-            ]}
-          />
-          {errors.accountId && <p className="sm:col-span-2 -mt-2 text-xs text-accent-red">{errors.accountId}</p>}
-          <Select
-            label="Contact"
-            value={form.contactId}
-            onChange={(e) => setForm({ ...form, contactId: e.target.value })}
-            options={[
-              { value: '', label: 'Select contact' },
-              ...contacts
-                .filter((c) => !form.accountId || c.accountId === form.accountId)
-                .map((c) => ({ value: c.id, label: c.name })),
-            ]}
-          />
-          <Input label="Invoice date *" type="date" value={form.invoiceDate} error={errors.invoiceDate} onChange={(e) => setForm({ ...form, invoiceDate: e.target.value })} />
-          <Input label="Due date" type="date" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
-          <Input label="Currency" placeholder="INR" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value.toUpperCase().slice(0, 3) })} />
-          <Input label="Place of supply" placeholder="Tamil Nadu" value={form.placeOfSupply} onChange={(e) => setForm({ ...form, placeOfSupply: e.target.value })} />
-          <div>
-            <Input
-              label="Payment terms"
-              placeholder="Net 15"
-              value={form.paymentTerms}
-              onChange={(e) => setForm({ ...form, paymentTerms: e.target.value })}
+      <PageTabs
+        accent="theme"
+        active={tab}
+        onChange={(id) => {
+          setTab(id as 'list' | 'create')
+          if (id === 'create') {
+            setErrors({})
+            setLines([newLine()])
+          }
+        }}
+        tabs={[
+          { id: 'list', label: 'All invoices', count: items.length },
+          { id: 'create', label: 'New invoice' },
+        ]}
+      />
+
+      {tab === 'list' ? (
+        <>
+          <Card className="mb-4 flex flex-wrap items-center gap-3 p-4">
+            <Select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="w-44"
+              options={[
+                { value: '', label: 'All statuses' },
+                { value: 'DRAFT', label: 'Draft' },
+                { value: 'SENT', label: 'Sent' },
+                { value: 'PARTIAL', label: 'Partial' },
+                { value: 'PAID', label: 'Paid' },
+                { value: 'OVERDUE', label: 'Overdue' },
+                { value: 'VOID', label: 'Void' },
+              ]}
             />
-            <p className="mt-1 text-xs text-text-secondary">
-              When the customer must pay. Examples: <strong>Due on receipt</strong>, <strong>Net 15</strong>{' '}
-              (15 days after invoice), <strong>Net 30</strong>, <strong>50% advance</strong>.
+            <p className="text-sm text-text-secondary">
+              New invoices start as <strong>DRAFT</strong>. Open one → <strong>Mark sent</strong> when shared,{' '}
+              <strong>Mark paid</strong> / Record payment when money arrives.
             </p>
-          </div>
-          <Input label="Customer PO / Ref #" placeholder="PO-2026-001" value={form.poNumber} onChange={(e) => setForm({ ...form, poNumber: e.target.value })} />
-          <Input label="Billing address" placeholder="Plot 12, Industrial Estate, Chennai" value={form.billingAddress} onChange={(e) => setForm({ ...form, billingAddress: e.target.value })} />
-          <Input label="Discount ₹" type="number" placeholder="0" value={form.discountTotal} onChange={(e) => setForm({ ...form, discountTotal: e.target.value })} />
+          </Card>
 
-          <div className="sm:col-span-2 space-y-3 rounded-lg border border-border p-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold">Product lines</h3>
-              <Button type="button" variant="outline" size="sm" onClick={() => setLines((prev) => [...prev, newLine()])}>
-                <Plus size={14} /> Add product
-              </Button>
-            </div>
-            {lines.map((line, idx) => (
-              <div key={line.key} className="grid gap-2 rounded-md bg-surface p-3 sm:grid-cols-12">
-                <div className="sm:col-span-4">
-                  <Select
-                    label={`Product ${idx + 1}`}
-                    value={line.productId}
-                    onChange={(e) => pickProduct(line.key, e.target.value)}
-                    options={[
-                      { value: '', label: 'Custom / no product' },
-                      ...products.map((p) => ({ value: p.id, label: `${p.sku} — ${p.name}` })),
-                    ]}
-                  />
-                </div>
-                <div className="sm:col-span-3">
-                  <Input
-                    label="Description *"
-                    value={line.description}
-                    error={errors[`line-${idx}-desc`]}
-                    onChange={(e) => updateLine(line.key, { description: e.target.value })}
-                  />
-                </div>
-                <div className="sm:col-span-1">
-                  <Input
-                    label="Qty"
-                    type="number"
-                    value={line.quantity}
-                    error={errors[`line-${idx}-qty`]}
-                    onChange={(e) => updateLine(line.key, { quantity: e.target.value })}
-                  />
-                </div>
-                <div className="sm:col-span-2">
-                  <Input
-                    label="Rate"
-                    type="number"
-                    value={line.unitPrice}
-                    error={errors[`line-${idx}-price`]}
-                    onChange={(e) => updateLine(line.key, { unitPrice: e.target.value })}
-                  />
-                </div>
-                <div className="sm:col-span-1">
-                  <Input
-                    label="Tax %"
-                    type="number"
-                    value={line.taxPercent}
-                    error={errors[`line-${idx}-tax`]}
-                    onChange={(e) => updateLine(line.key, { taxPercent: e.target.value })}
-                  />
-                </div>
-                <div className="flex items-end justify-between gap-2 sm:col-span-1">
-                  <div className="pb-2 text-xs font-medium">{formatCurrency(lineAmount(line).total)}</div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={lines.length === 1}
-                    onClick={() => setLines((prev) => prev.filter((l) => l.key !== line.key))}
-                  >
-                    <Trash2 size={14} />
+          {previewOpen && detail ? (
+            <FormPanel
+              open
+              accent="sky"
+              eyebrow="Invoice"
+              title={String(detail.invoiceNumber)}
+              subtitle="Full invoice with line items — mark sent, record payment, or download."
+              onClose={() => setPreviewOpen(false)}
+              footer={
+                <>
+                  <FormPanelCancel onClick={() => setPreviewOpen(false)} />
+                  {String(detail.status) === 'DRAFT' && (
+                    <Button
+                      variant="outline"
+                      disabled={statusBusy}
+                      onClick={() => void setInvoiceStatus(String(detail.id), 'SENT')}
+                    >
+                      Mark sent
+                    </Button>
+                  )}
+                  {['DRAFT', 'SENT', 'PARTIAL', 'OVERDUE'].includes(String(detail.status)) && (
+                    <Button
+                      variant="outline"
+                      disabled={statusBusy}
+                      onClick={() => {
+                        const total = num(detail.grandTotal)
+                        const paid = num(detail.amountPaid)
+                        const remaining = Math.max(0, total - paid)
+                        if (remaining <= 0) {
+                          void setInvoiceStatus(String(detail.id), 'PAID')
+                          return
+                        }
+                        const raw = window.prompt(
+                          `Amount received (balance due ${formatCurrency(remaining)}). Leave blank to mark fully paid.`,
+                          String(remaining),
+                        )
+                        if (raw === null) return
+                        const amt = raw.trim() === '' ? remaining : Number(raw)
+                        if (!Number.isFinite(amt) || amt <= 0) {
+                          addToast({ type: 'error', message: 'Enter a valid payment amount' })
+                          return
+                        }
+                        if (amt >= remaining) {
+                          void setInvoiceStatus(String(detail.id), 'PAID')
+                        } else {
+                          void setInvoiceStatus(String(detail.id), 'PARTIAL', paid + amt)
+                        }
+                      }}
+                    >
+                      Record payment
+                    </Button>
+                  )}
+                  {['DRAFT', 'SENT', 'PARTIAL', 'OVERDUE'].includes(String(detail.status)) && (
+                    <Button disabled={statusBusy} onClick={() => void setInvoiceStatus(String(detail.id), 'PAID')}>
+                      Mark paid
+                    </Button>
+                  )}
+                  <Button onClick={downloadDetail}>
+                    <Download size={16} /> Download / Print
                   </Button>
+                </>
+              }
+            >
+              <div className="space-y-4 text-sm">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div>
+                    <div className="text-xs text-text-secondary">Customer</div>
+                    <div className="font-medium">{accountName[String(detail.accountId)] ?? '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-text-secondary">Date</div>
+                    <div className="font-medium">
+                      {detail.invoiceDate ? formatDate(String(detail.invoiceDate)) : '—'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-text-secondary">Status</div>
+                    <Badge color={invoiceStatusColor(String(detail.status))}>{String(detail.status)}</Badge>
+                  </div>
+                  <div>
+                    <div className="text-xs text-text-secondary">Paid / Balance</div>
+                    <div className="font-medium">
+                      {formatCurrency(num(detail.amountPaid))} /{' '}
+                      {formatCurrency(num(detail.balanceDue ?? num(detail.grandTotal) - num(detail.amountPaid)))}
+                    </div>
+                  </div>
+                </div>
+                <table className="w-full text-left">
+                  <thead className="bg-muted text-xs text-text-secondary">
+                    <tr>
+                      {['Description', 'Qty', 'Rate', 'Tax %', 'Amount'].map((h) => (
+                        <th key={h} className="px-3 py-2 font-medium">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {((detail.lines as Array<Record<string, unknown>>) ?? []).map((l) => (
+                      <tr key={String(l.id)} className="border-t border-border">
+                        <td className="px-3 py-2">{String(l.description)}</td>
+                        <td className="px-3 py-2">{num(l.quantity)}</td>
+                        <td className="px-3 py-2">{formatCurrency(num(l.unitPrice))}</td>
+                        <td className="px-3 py-2">{num(l.taxPercent)}%</td>
+                        <td className="px-3 py-2 font-medium">{formatCurrency(num(l.lineTotal))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="flex flex-wrap justify-end gap-6">
+                  <div>Subtotal: {formatCurrency(num(detail.subtotal))}</div>
+                  <div>Tax: {formatCurrency(num(detail.taxTotal))}</div>
+                  <div>Discount: {formatCurrency(num(detail.discountTotal))}</div>
+                  <div className="font-semibold">Total: {formatCurrency(num(detail.grandTotal))}</div>
                 </div>
               </div>
-            ))}
-            <div className="flex flex-wrap justify-end gap-6 border-t border-border pt-3 text-sm">
-              <div>Subtotal: <strong>{formatCurrency(totals.subtotal)}</strong></div>
-              <div>Tax: <strong>{formatCurrency(totals.taxTotal)}</strong></div>
-              <div>Discount: <strong>{formatCurrency(totals.discount)}</strong></div>
-              <div>Grand total: <strong>{formatCurrency(totals.grandTotal)}</strong></div>
-            </div>
-          </div>
+            </FormPanel>
+          ) : null}
 
-          <label className="block text-sm sm:col-span-2">
-            <span className="mb-1 block font-medium text-text-secondary">Notes</span>
-            <textarea
-              className="min-h-20 w-full rounded-[6px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue"
-              value={form.notes}
-              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+          <Card padding={false}>
+            {items.length === 0 ? (
+              <EmptyState
+                title="No invoices"
+                subtitle="Create an invoice for a customer with one or more products."
+                actionLabel="New invoice"
+                onAction={() => setTab('create')}
+              />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1000px] text-left text-sm">
+                  <thead className="bg-muted text-xs text-text-secondary">
+                    <tr>
+                      {['Invoice #', 'Customer', 'Date', 'Due', 'Status', 'Subtotal', 'Tax', 'Total', 'Balance', ''].map(
+                        (h) => (
+                          <th key={h || 'actions'} className="px-4 py-3 font-medium">
+                            {h}
+                          </th>
+                        ),
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((inv) => (
+                      <tr
+                        key={String(inv.id)}
+                        className="cursor-pointer border-t border-border hover:bg-surface"
+                        onClick={() => void openDetail(String(inv.id))}
+                      >
+                        <td className="px-4 py-3 font-mono text-xs font-semibold text-accent-blue">
+                          {String(inv.invoiceNumber)}
+                        </td>
+                        <td className="px-4 py-3">{accountName[String(inv.accountId)] ?? '—'}</td>
+                        <td className="px-4 py-3">{inv.invoiceDate ? formatDate(String(inv.invoiceDate)) : '—'}</td>
+                        <td className="px-4 py-3">{inv.dueDate ? formatDate(String(inv.dueDate)) : '—'}</td>
+                        <td className="px-4 py-3">
+                          <Badge color={invoiceStatusColor(String(inv.status))}>{String(inv.status)}</Badge>
+                        </td>
+                        <td className="px-4 py-3">{formatCurrency(num(inv.subtotal))}</td>
+                        <td className="px-4 py-3">{formatCurrency(num(inv.taxTotal))}</td>
+                        <td className="px-4 py-3 font-semibold">{formatCurrency(num(inv.grandTotal))}</td>
+                        <td className="px-4 py-3">{formatCurrency(num(inv.balanceDue ?? inv.grandTotal))}</td>
+                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex flex-wrap gap-1">
+                            <Button variant="outline" size="sm" onClick={() => void openDetail(String(inv.id))}>
+                              <Eye size={14} /> View
+                            </Button>
+                            <Button
+                              size="sm"
+                              onClick={() =>
+                                void (async () => {
+                                  try {
+                                    const full = (await api.getInvoice(String(inv.id))) as InvoiceDetail
+                                    setDetail(full)
+                                    const cf = (full.customFields as Record<string, string> | null) ?? {}
+                                    const invLines = ((full.lines as Array<Record<string, unknown>>) ?? []).map(
+                                      (l) => ({
+                                        description: String(l.description ?? ''),
+                                        quantity: num(l.quantity),
+                                        unitPrice: num(l.unitPrice),
+                                        taxPercent: num(l.taxPercent),
+                                        lineTotal: num(l.lineTotal),
+                                      }),
+                                    )
+                                    const ok = openPrintableInvoice({
+                                      invoiceNumber: String(full.invoiceNumber ?? ''),
+                                      status: String(full.status ?? ''),
+                                      invoiceDate: full.invoiceDate ? formatDate(String(full.invoiceDate)) : '',
+                                      dueDate: full.dueDate ? formatDate(String(full.dueDate)) : null,
+                                      accountName: accountName[String(full.accountId)] ?? 'Customer',
+                                      contactName: full.contactId
+                                        ? contactName[String(full.contactId)]
+                                        : undefined,
+                                      currency: String(full.currency ?? 'INR'),
+                                      notes: full.notes ? String(full.notes) : null,
+                                      billingAddress:
+                                        cf.billing_address ||
+                                        buyerAddress(full.accountId ? String(full.accountId) : null),
+                                      placeOfSupply: cf.place_of_supply,
+                                      paymentTerms: cf.payment_terms,
+                                      poNumber: cf.po_number,
+                                      lines: invLines,
+                                      subtotal: num(full.subtotal),
+                                      taxTotal: num(full.taxTotal),
+                                      discountTotal: num(full.discountTotal),
+                                      grandTotal: num(full.grandTotal),
+                                      amountPaid: num(full.amountPaid),
+                                      ...sellerFields(),
+                                    })
+                                    if (!ok) {
+                                      addToast({
+                                        type: 'info',
+                                        message:
+                                          'Popup blocked — invoice downloaded. Open the file → Print → Save as PDF.',
+                                      })
+                                    }
+                                  } catch (err) {
+                                    addToast({
+                                      type: 'error',
+                                      message: err instanceof ApiClientError ? err.message : 'Download failed',
+                                    })
+                                  }
+                                })()
+                              }
+                            >
+                              <Download size={14} /> Download
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        </>
+      ) : (
+        <FormPanel
+          open
+          accent="sky"
+          eyebrow="Billing"
+          title="New invoice"
+          subtitle="Select a customer, add multiple products, then preview or save."
+          onClose={() => setTab('list')}
+          footer={
+            <>
+              <Button variant="outline" onClick={() => previewDraft()}>
+                <Eye size={16} /> Preview
+              </Button>
+              <FormPanelCancel onClick={() => setTab('list')} />
+              <Button onClick={() => void createInvoice()} disabled={saving}>
+                {saving ? 'Creating…' : 'Create invoice'}
+              </Button>
+            </>
+          }
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Select
+              label="Customer account *"
+              value={form.accountId}
+              onChange={(e) => {
+                const acc = accounts.find((a) => a.id === e.target.value)
+                setForm({
+                  ...form,
+                  accountId: e.target.value,
+                  contactId: '',
+                  placeOfSupply: acc ? [acc.city, acc.state].filter(Boolean).join(', ') : form.placeOfSupply,
+                })
+              }}
+              options={[
+                { value: '', label: 'Select customer account' },
+                ...accounts.map((a) => ({ value: a.id, label: a.name })),
+              ]}
             />
-          </label>
-        </div>
-      </Modal>
+            {errors.accountId && <p className="sm:col-span-2 -mt-2 text-xs text-accent-red">{errors.accountId}</p>}
+            <Select
+              label="Contact"
+              value={form.contactId}
+              onChange={(e) => setForm({ ...form, contactId: e.target.value })}
+              options={[
+                { value: '', label: 'Select contact' },
+                ...contacts
+                  .filter((c) => !form.accountId || c.accountId === form.accountId)
+                  .map((c) => ({ value: c.id, label: c.name })),
+              ]}
+            />
+            <Input
+              label="Invoice date *"
+              type="date"
+              value={form.invoiceDate}
+              error={errors.invoiceDate}
+              onChange={(e) => setForm({ ...form, invoiceDate: e.target.value })}
+            />
+            <Input
+              label="Due date"
+              type="date"
+              value={form.dueDate}
+              onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
+            />
+            <Input
+              label="Currency"
+              placeholder="INR"
+              value={form.currency}
+              onChange={(e) => setForm({ ...form, currency: e.target.value.toUpperCase().slice(0, 3) })}
+            />
+            <Input
+              label="Place of supply"
+              placeholder="Tamil Nadu"
+              value={form.placeOfSupply}
+              onChange={(e) => setForm({ ...form, placeOfSupply: e.target.value })}
+            />
+            <div>
+              <Input
+                label="Payment terms"
+                placeholder="Net 15"
+                value={form.paymentTerms}
+                onChange={(e) => setForm({ ...form, paymentTerms: e.target.value })}
+              />
+              <p className="mt-1 text-xs text-text-secondary">
+                When the customer must pay. Examples: <strong>Due on receipt</strong>, <strong>Net 15</strong>{' '}
+                (15 days after invoice), <strong>Net 30</strong>, <strong>50% advance</strong>.
+              </p>
+            </div>
+            <Input
+              label="Customer PO / Ref #"
+              placeholder="PO-2026-001"
+              value={form.poNumber}
+              onChange={(e) => setForm({ ...form, poNumber: e.target.value })}
+            />
+            <Input
+              label="Billing address"
+              placeholder="Plot 12, Industrial Estate, Chennai"
+              value={form.billingAddress}
+              onChange={(e) => setForm({ ...form, billingAddress: e.target.value })}
+            />
+            <Input
+              label="Discount ₹"
+              type="number"
+              placeholder="0"
+              value={form.discountTotal}
+              onChange={(e) => setForm({ ...form, discountTotal: e.target.value })}
+            />
 
-      <Modal
-        open={previewOpen}
-        onClose={() => setPreviewOpen(false)}
-        title={detail ? String(detail.invoiceNumber) : 'Invoice'}
-        subtitle="Full invoice with line items"
-        size="xl"
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setPreviewOpen(false)}>
-              Close
-            </Button>
-            {detail && String(detail.status) === 'DRAFT' && (
-              <Button
-                variant="outline"
-                disabled={statusBusy}
-                onClick={() => void setInvoiceStatus(String(detail.id), 'SENT')}
-              >
-                Mark sent
-              </Button>
-            )}
-            {detail && ['DRAFT', 'SENT', 'PARTIAL', 'OVERDUE'].includes(String(detail.status)) && (
-              <Button
-                variant="outline"
-                disabled={statusBusy}
-                onClick={() => {
-                  const total = num(detail.grandTotal)
-                  const paid = num(detail.amountPaid)
-                  const remaining = Math.max(0, total - paid)
-                  if (remaining <= 0) {
-                    void setInvoiceStatus(String(detail.id), 'PAID')
-                    return
-                  }
-                  const raw = window.prompt(
-                    `Amount received (balance due ${formatCurrency(remaining)}). Leave blank to mark fully paid.`,
-                    String(remaining),
-                  )
-                  if (raw === null) return
-                  const amt = raw.trim() === '' ? remaining : Number(raw)
-                  if (!Number.isFinite(amt) || amt <= 0) {
-                    addToast({ type: 'error', message: 'Enter a valid payment amount' })
-                    return
-                  }
-                  if (amt >= remaining) {
-                    void setInvoiceStatus(String(detail.id), 'PAID')
-                  } else {
-                    void setInvoiceStatus(String(detail.id), 'PARTIAL', paid + amt)
-                  }
-                }}
-              >
-                Record payment
-              </Button>
-            )}
-            {detail && ['DRAFT', 'SENT', 'PARTIAL', 'OVERDUE'].includes(String(detail.status)) && (
-              <Button
-                disabled={statusBusy}
-                onClick={() => void setInvoiceStatus(String(detail.id), 'PAID')}
-              >
-                Mark paid
-              </Button>
-            )}
-            <Button onClick={downloadDetail}>
-              <Download size={16} /> Download / Print
-            </Button>
-          </>
-        }
-      >
-        {detail && (
-          <div className="space-y-4 text-sm">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <div className="text-xs text-text-secondary">Customer</div>
-                <div className="font-medium">{accountName[String(detail.accountId)] ?? '—'}</div>
+            <div className="sm:col-span-2 space-y-3 rounded-lg border border-sky-100 bg-sky-50/30 p-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold">Product lines</h3>
+                <Button type="button" variant="outline" size="sm" onClick={() => setLines((prev) => [...prev, newLine()])}>
+                  <Plus size={14} /> Add product
+                </Button>
               </div>
-              <div>
-                <div className="text-xs text-text-secondary">Date</div>
-                <div className="font-medium">{detail.invoiceDate ? formatDate(String(detail.invoiceDate)) : '—'}</div>
-              </div>
-              <div>
-                <div className="text-xs text-text-secondary">Status</div>
-                <Badge color={invoiceStatusColor(String(detail.status))}>{String(detail.status)}</Badge>
-              </div>
-              <div>
-                <div className="text-xs text-text-secondary">Paid / Balance</div>
-                <div className="font-medium">
-                  {formatCurrency(num(detail.amountPaid))} /{' '}
-                  {formatCurrency(num(detail.balanceDue ?? num(detail.grandTotal) - num(detail.amountPaid)))}
+              {lines.map((line, idx) => (
+                <div key={line.key} className="grid gap-2 rounded-md bg-card p-3 sm:grid-cols-12">
+                  <div className="sm:col-span-4">
+                    <Select
+                      label={`Product ${idx + 1}`}
+                      value={line.productId}
+                      onChange={(e) => pickProduct(line.key, e.target.value)}
+                      options={[
+                        { value: '', label: 'Custom / no product' },
+                        ...products.map((p) => ({ value: p.id, label: `${p.sku} — ${p.name}` })),
+                      ]}
+                    />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <Input
+                      label="Description *"
+                      value={line.description}
+                      error={errors[`line-${idx}-desc`]}
+                      onChange={(e) => updateLine(line.key, { description: e.target.value })}
+                    />
+                  </div>
+                  <div className="sm:col-span-1">
+                    <Input
+                      label="Qty"
+                      type="number"
+                      value={line.quantity}
+                      error={errors[`line-${idx}-qty`]}
+                      onChange={(e) => updateLine(line.key, { quantity: e.target.value })}
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <Input
+                      label="Rate"
+                      type="number"
+                      value={line.unitPrice}
+                      error={errors[`line-${idx}-price`]}
+                      onChange={(e) => updateLine(line.key, { unitPrice: e.target.value })}
+                    />
+                  </div>
+                  <div className="sm:col-span-1">
+                    <Input
+                      label="Tax %"
+                      type="number"
+                      value={line.taxPercent}
+                      error={errors[`line-${idx}-tax`]}
+                      onChange={(e) => updateLine(line.key, { taxPercent: e.target.value })}
+                    />
+                  </div>
+                  <div className="flex items-end justify-between gap-2 sm:col-span-1">
+                    <div className="pb-2 text-xs font-medium">{formatCurrency(lineAmount(line).total)}</div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={lines.length === 1}
+                      onClick={() => setLines((prev) => prev.filter((l) => l.key !== line.key))}
+                    >
+                      <Trash2 size={14} />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              <div className="flex flex-wrap justify-end gap-6 border-t border-sky-100 pt-3 text-sm">
+                <div>
+                  Subtotal: <strong>{formatCurrency(totals.subtotal)}</strong>
+                </div>
+                <div>
+                  Tax: <strong>{formatCurrency(totals.taxTotal)}</strong>
+                </div>
+                <div>
+                  Discount: <strong>{formatCurrency(totals.discount)}</strong>
+                </div>
+                <div>
+                  Grand total: <strong>{formatCurrency(totals.grandTotal)}</strong>
                 </div>
               </div>
             </div>
-            <table className="w-full text-left">
-              <thead className="bg-muted text-xs text-text-secondary">
-                <tr>
-                  {['Description', 'Qty', 'Rate', 'Tax %', 'Amount'].map((h) => (
-                    <th key={h} className="px-3 py-2 font-medium">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {((detail.lines as Array<Record<string, unknown>>) ?? []).map((l) => (
-                  <tr key={String(l.id)} className="border-t border-border">
-                    <td className="px-3 py-2">{String(l.description)}</td>
-                    <td className="px-3 py-2">{num(l.quantity)}</td>
-                    <td className="px-3 py-2">{formatCurrency(num(l.unitPrice))}</td>
-                    <td className="px-3 py-2">{num(l.taxPercent)}%</td>
-                    <td className="px-3 py-2 font-medium">{formatCurrency(num(l.lineTotal))}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="flex flex-wrap justify-end gap-6">
-              <div>Subtotal: {formatCurrency(num(detail.subtotal))}</div>
-              <div>Tax: {formatCurrency(num(detail.taxTotal))}</div>
-              <div>Discount: {formatCurrency(num(detail.discountTotal))}</div>
-              <div className="font-semibold">Total: {formatCurrency(num(detail.grandTotal))}</div>
-            </div>
+
+            <label className="block text-sm sm:col-span-2">
+              <span className="mb-1 block font-medium text-text-secondary">Notes</span>
+              <textarea
+                className="min-h-20 w-full rounded-[6px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue"
+                value={form.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              />
+            </label>
           </div>
-        )}
-      </Modal>
+        </FormPanel>
+      )}
     </div>
   )
 }

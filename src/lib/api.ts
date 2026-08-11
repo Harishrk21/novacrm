@@ -226,6 +226,18 @@ export const api = {
       kpis: Record<string, number>
       leadsByStatus: Array<{ name: string; value: number }>
       leadsBySource: Array<{ name: string; leads: number }>
+      ticketsByStatus: Array<{ name: string; value: number }>
+      ticketsByPriority: Array<{ name: string; value: number }>
+      ticketsByCategory: Array<{ name: string; value: number }>
+      ticketsByAssignee: Array<{
+        id: string
+        name: string
+        total: number
+        open: number
+        resolved: number
+        breached: number
+      }>
+      ticketMonthly: Array<{ month: string; created: number; resolved: number; breached: number }>
       funnel: Array<{
         stage: string
         code: string
@@ -341,6 +353,7 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
+  deleteAccount: (id: string) => apiFetch<null>(`/accounts/${id}`, { method: 'DELETE' }),
 
   // Deals
   deals: (params?: Record<string, string | number | undefined>) =>
@@ -393,19 +406,67 @@ export const api = {
   // Tickets
   tickets: (params?: Record<string, string | number | undefined>) =>
     apiFetch<Page<Record<string, unknown>>>(`/tickets${qs(params)}`),
+  ticketsSummary: () =>
+    apiFetch<{
+      open: number
+      activeQueue?: number
+      overdue: number
+      unassigned: number
+      resolvedToday: number
+      byStatus: Record<string, number>
+      balanceOutstanding?: number
+      machinesDueSoon?: number
+    }>('/tickets/summary'),
   getTicket: (id: string) => apiFetch<Record<string, unknown>>(`/tickets/${id}`),
   createTicket: (body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>('/tickets', { method: 'POST', body: JSON.stringify(body) }),
   updateTicket: (id: string, body: Record<string, unknown>) =>
-    apiFetch<Record<string, unknown>>(`/tickets/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(body),
-    }),
+    apiFetch<Record<string, unknown> & { whatsapp?: { notified: boolean; reason?: string; fallbackWaLink?: string | null } }>(
+      `/tickets/${id}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      },
+    ),
+  markTicketPaid: (id: string) =>
+    apiFetch<
+      Record<string, unknown> & {
+        whatsapp?: { notified: boolean; reason?: string; fallbackWaLink?: string | null }
+        invoice?: Record<string, unknown> | null
+        invoiceError?: string | null
+      }
+    >(`/tickets/${id}/mark-paid`, { method: 'POST' }),
+  sendTicketPaymentDue: (id: string) =>
+    apiFetch<Record<string, unknown> & { whatsapp?: { notified: boolean; reason?: string; fallbackWaLink?: string | null } }>(
+      `/tickets/${id}/payment-due`,
+      { method: 'POST' },
+    ),
+  createTicketInvoice: (id: string) =>
+    apiFetch<
+      Record<string, unknown> & {
+        whatsapp?: { notified: boolean; reason?: string; fallbackWaLink?: string | null }
+        invoice?: Record<string, unknown>
+      }
+    >(`/tickets/${id}/invoice`, { method: 'POST' }),
   addTicketMessage: (id: string, body: { content: string; isInternal?: boolean }) =>
     apiFetch<Record<string, unknown>>(`/tickets/${id}/messages`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  deleteTicket: (id: string) => apiFetch<null>(`/tickets/${id}`, { method: 'DELETE' }),
+
+  // Customer machines (service assets)
+  assets: (params?: Record<string, string | number | undefined>) =>
+    apiFetch<Page<Record<string, unknown>>>(`/assets${qs(params)}`),
+  getAsset: (id: string) => apiFetch<Record<string, unknown>>(`/assets/${id}`),
+  createAsset: (body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>('/assets', { method: 'POST', body: JSON.stringify(body) }),
+  updateAsset: (id: string, body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>(`/assets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteAsset: (id: string) => apiFetch<null>(`/assets/${id}`, { method: 'DELETE' }),
 
   // Products / inventory / invoices / POs
   products: (params?: Record<string, string | number | undefined>) =>
@@ -418,6 +479,7 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
+  deleteProduct: (id: string) => apiFetch<null>(`/products/${id}`, { method: 'DELETE' }),
   inventory: () => apiFetch<Array<Record<string, unknown>>>('/inventory/levels'),
   adjustStock: (body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>('/inventory/adjust', {

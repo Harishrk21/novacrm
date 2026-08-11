@@ -7,8 +7,10 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
+import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency, formatDate } from '@/lib/utils'
@@ -393,26 +395,16 @@ export function PurchaseOrdersPage() {
       />
       <FeatureTip title={tip.title} body={tip.body} tipType={tip.tipType} />
 
-      <div className="mb-4 flex flex-wrap gap-2">
-        {(
-          [
-            ['orders', 'All POs'],
-            ['vendors', 'Vendors'],
-            ['create', 'Create PO'],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setTab(id)}
-            className={`rounded-full px-4 py-1.5 text-sm font-medium ${
-              tab === id ? 'bg-accent-blue text-white' : 'bg-muted text-text-secondary'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <PageTabs
+        accent="emerald"
+        active={tab}
+        onChange={(id) => setTab(id as 'orders' | 'vendors' | 'create')}
+        tabs={[
+          { id: 'orders', label: 'All POs', count: items.length },
+          { id: 'vendors', label: 'Vendors', count: vendors.length },
+          { id: 'create', label: 'Create PO' },
+        ]}
+      />
 
       {tab === 'orders' && (
         <Card padding={false}>
@@ -576,11 +568,24 @@ export function PurchaseOrdersPage() {
       )}
 
       {tab === 'create' && (
-        <Card>
-          <h2 className="mb-1 text-lg font-semibold">Create purchase order</h2>
-          <p className="mb-4 text-sm text-text-secondary">
-            Full-page PO with multiple products. After save you can print a professional PO document.
-          </p>
+        <FormPanel
+          open
+          accent="emerald"
+          eyebrow="Purchasing"
+          title="Create purchase order"
+          subtitle="Full-page PO with multiple products. After save you can print a professional PO document."
+          onClose={() => setTab('orders')}
+          footer={
+            vendors.length ? (
+              <>
+                <FormPanelCancel onClick={() => setTab('orders')} />
+                <Button onClick={() => void createPo()} disabled={saving}>
+                  {saving ? 'Creating…' : 'Create & open PO'}
+                </Button>
+              </>
+            ) : undefined
+          }
+        >
           {!vendors.length ? (
             <EmptyState
               title="Add a vendor first"
@@ -620,7 +625,7 @@ export function PurchaseOrdersPage() {
                 <Input label="Payment terms" value={form.paymentTerms} onChange={(e) => setForm({ ...form, paymentTerms: e.target.value })} />
               </div>
 
-              <div className="rounded-lg border border-border p-3">
+              <div className="rounded-lg border border-emerald-100 bg-emerald-50/30 p-3">
                 <div className="mb-3 flex items-center justify-between">
                   <h3 className="font-semibold">Line items</h3>
                   <Button type="button" variant="outline" size="sm" onClick={() => setLines((p) => [...p, newLine()])}>
@@ -629,7 +634,7 @@ export function PurchaseOrdersPage() {
                 </div>
                 <div className="space-y-3">
                   {lines.map((line, idx) => (
-                    <div key={line.key} className="grid gap-2 rounded-md bg-surface p-3 sm:grid-cols-12">
+                    <div key={line.key} className="grid gap-2 rounded-md bg-card p-3 sm:grid-cols-12">
                       <div className="sm:col-span-4">
                         <Select
                           label={`Product ${idx + 1}`}
@@ -715,10 +720,16 @@ export function PurchaseOrdersPage() {
                     </div>
                   ))}
                 </div>
-                <div className="mt-3 flex flex-wrap justify-end gap-6 border-t border-border pt-3 text-sm">
-                  <div>Subtotal: <strong>{formatCurrency(totals.subtotal)}</strong></div>
-                  <div>Tax: <strong>{formatCurrency(totals.taxTotal)}</strong></div>
-                  <div>Total: <strong>{formatCurrency(totals.grandTotal)}</strong></div>
+                <div className="mt-3 flex flex-wrap justify-end gap-6 border-t border-emerald-100 pt-3 text-sm">
+                  <div>
+                    Subtotal: <strong>{formatCurrency(totals.subtotal)}</strong>
+                  </div>
+                  <div>
+                    Tax: <strong>{formatCurrency(totals.taxTotal)}</strong>
+                  </div>
+                  <div>
+                    Total: <strong>{formatCurrency(totals.grandTotal)}</strong>
+                  </div>
                 </div>
               </div>
 
@@ -730,18 +741,9 @@ export function PurchaseOrdersPage() {
                   onChange={(e) => setForm({ ...form, notes: e.target.value })}
                 />
               </label>
-
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setTab('orders')}>
-                  Cancel
-                </Button>
-                <Button onClick={() => void createPo()} disabled={saving}>
-                  {saving ? 'Creating…' : 'Create & open PO'}
-                </Button>
-              </div>
             </div>
           )}
-        </Card>
+        </FormPanel>
       )}
 
       <Modal

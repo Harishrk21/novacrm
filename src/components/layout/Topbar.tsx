@@ -266,26 +266,39 @@ export function Topbar() {
             <Palette size={18} />
           </button>
           {paletteOpen && (
-            <div className="absolute right-0 top-full z-50 mt-1 w-72 rounded-[8px] border border-border bg-card p-3 shadow-[var(--shadow-hover)]">
-              <div className="mb-2 text-sm font-semibold text-text-primary">Color palette</div>
+            <div className="absolute right-0 top-full z-50 mt-1 w-80 rounded-[12px] border border-border bg-card p-3 shadow-[var(--shadow-hover)]">
+              <div className="mb-1 text-sm font-semibold text-text-primary">Color palette</div>
+              <p className="mb-3 text-xs text-text-secondary">
+                Background, cards, sidebar and accents change together
+              </p>
               <div className="grid grid-cols-2 gap-2">
                 {(Object.keys(PALETTES) as ColorPalette[]).map((key) => (
                   <button
                     key={key}
+                    type="button"
                     onClick={() => {
                       setPalette(key)
                       setPaletteOpen(false)
                     }}
                     className={cn(
-                      'rounded-[8px] border p-2.5 text-left transition-all duration-150',
+                      'rounded-[10px] border p-2.5 text-left transition-all duration-150',
                       palette === key
                         ? 'border-accent-blue ring-2 ring-accent-blue/20'
                         : 'border-border hover:border-accent-blue/40',
                     )}
                   >
-                    <div className="mb-2 flex gap-1">
+                    <div
+                      className="mb-2 h-9 overflow-hidden rounded-md border border-border"
+                      style={{ background: PALETTES[key].light.wash }}
+                    >
+                      <div className="flex h-full">
+                        <div className="w-1/4" style={{ background: PALETTES[key].light.sidebarBg }} />
+                        <div className="m-1 flex-1 rounded-sm" style={{ background: PALETTES[key].light.card }} />
+                      </div>
+                    </div>
+                    <div className="mb-1.5 flex gap-1">
                       {PALETTES[key].chart.slice(0, 4).map((c) => (
-                        <span key={c} className="h-3 w-3 rounded-full" style={{ background: c }} />
+                        <span key={c} className="h-2.5 flex-1 rounded-full" style={{ background: c }} />
                       ))}
                     </div>
                     <div className="text-xs font-semibold text-text-primary">{PALETTES[key].label}</div>

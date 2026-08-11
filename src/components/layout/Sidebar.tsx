@@ -9,7 +9,6 @@ import {
   Phone,
   Ticket,
   Mail,
-  MessageCircle,
   Settings,
   UserCog,
   ChevronLeft,
@@ -20,10 +19,10 @@ import {
   ShoppingCart,
   BookOpen,
   CheckSquare,
+  Shield,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
-import { useAskMeisterStore } from '@/store/askMeisterStore'
 import { Avatar } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
 import { BrandLogo } from '@/components/BrandLogo'
@@ -42,7 +41,6 @@ type NavItem = {
 export function Sidebar() {
   const collapsed = useUIStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUIStore((s) => s.toggleSidebar)
-  const askConnected = useAskMeisterStore((s) => s.connected)
   const authUser = useAuthStore((s) => s.user)
   const displayName = authUser?.name ?? 'User'
   const isAdmin = isCompanyAdmin(authUser?.role)
@@ -58,11 +56,19 @@ export function Sidebar() {
       ],
     },
     {
-      label: 'CRM',
+      label: 'SERVICE',
+      items: [
+        { to: '/tickets', icon: Ticket, label: 'Service tickets' },
+        { to: '/amc', icon: Shield, label: 'AMC / Non-AMC' },
+        { to: '/contacts', icon: Users, label: 'Customers' },
+        { to: '/accounts', icon: Building2, label: 'Accounts' },
+        { to: '/activities', icon: Phone, label: 'Activities' },
+      ],
+    },
+    {
+      label: 'SALES',
       items: [
         { to: '/leads', icon: UserPlus, label: 'Leads' },
-        { to: '/contacts', icon: Users, label: 'Contacts' },
-        { to: '/accounts', icon: Building2, label: 'Accounts' },
         { to: '/deals', icon: Briefcase, label: 'Deals' },
       ],
     },
@@ -76,59 +82,43 @@ export function Sidebar() {
       ],
     },
     {
-      label: 'ENGAGEMENT',
+      label: 'MORE',
       items: [
-        { to: '/activities', icon: Phone, label: 'Activities' },
-        { to: '/tickets', icon: Ticket, label: 'Tickets' },
         { to: '/emails', icon: Mail, label: 'Emails' },
-        {
-          to: '/whatsapp',
-          icon: MessageCircle,
-          label: 'WhatsApp',
-          badge: askConnected ? 'Live' : 'AskMeister',
-          badgeColor: askConnected ? 'green' : 'amber',
-        },
-      ],
-    },
-    {
-      label: 'SETTINGS',
-      items: [
         { to: '/settings', icon: Settings, label: 'Settings' },
         { to: '/users', icon: UserCog, label: 'Users & Roles' },
       ],
     },
   ]
 
-  /** Employee / agent shell — task queue first, only assigned work */
   const employeeNav: { label: string; items: NavItem[] }[] = [
     {
       label: 'MY WORK',
       items: [
         { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
+        { to: '/tickets', icon: Ticket, label: 'My Tickets' },
+        { to: '/amc', icon: Shield, label: 'AMC / Non-AMC' },
         { to: '/my-tasks', icon: CheckSquare, label: 'My Tasks' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
       ],
     },
     {
-      label: 'ASSIGNED TO ME',
+      label: 'CUSTOMERS',
+      items: [
+        { to: '/contacts', icon: Users, label: 'Customers' },
+        { to: '/accounts', icon: Building2, label: 'Accounts' },
+      ],
+    },
+    {
+      label: 'SALES',
       items: [
         { to: '/leads', icon: UserPlus, label: 'My Leads' },
         { to: '/deals', icon: Briefcase, label: 'My Deals' },
-        { to: '/tickets', icon: Ticket, label: 'My Tickets' },
       ],
     },
     {
       label: 'ACCOUNT',
-      items: [
-        {
-          to: '/whatsapp',
-          icon: MessageCircle,
-          label: 'WhatsApp',
-          badge: askConnected ? 'Live' : undefined,
-          badgeColor: askConnected ? 'green' : undefined,
-        },
-        { to: '/settings', icon: Settings, label: 'My Profile' },
-      ],
+      items: [{ to: '/settings', icon: Settings, label: 'My Profile' }],
     },
   ]
 
@@ -159,8 +149,8 @@ export function Sidebar() {
       <nav className="flex-1 overflow-y-auto py-3">
         {!collapsed && !isAdmin ? (
           <div className="mb-3 mx-2 rounded-[8px] border border-white/10 bg-white/5 px-3 py-2">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-sky-300">Employee desk</div>
-            <div className="mt-0.5 text-xs text-slate-300">Your assigned tasks & leads only</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-sky-300">Service desk</div>
+            <div className="mt-0.5 text-xs text-slate-300">Tickets first — look up customers, complete service</div>
           </div>
         ) : null}
         {navSections.map((section) => (

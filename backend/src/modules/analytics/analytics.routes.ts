@@ -107,7 +107,32 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
       },
     }),
     prisma.product.count({ where: { tenantId: t, deletedAt: null } }),
-    prisma.ticket.count({ where: { tenantId: t, deletedAt: null } }),
+    prisma.ticket.findMany({
+      where: { tenantId: t, deletedAt: null },
+      select: {
+        id: true,
+        ticketNo: true,
+        subject: true,
+        status: true,
+        priority: true,
+        slaDueAt: true,
+        slaBreached: true,
+        assignedToId: true,
+        contactId: true,
+        accountId: true,
+        productId: true,
+        customFields: true,
+        paymentTotal: true,
+        advanceAmount: true,
+        odAmount: true,
+        nextDueDate: true,
+        stampingDate: true,
+        resolvedAt: true,
+        closedAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    }),
     prisma.stockLevel.findMany({
       where: { tenantId: t },
       select: { quantityOnHand: true, quantityReserved: true },
@@ -244,6 +269,125 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
 
   const stockUnits = stock.reduce((s, r) => s + Number(r.quantityOnHand), 0);
 
+  const ticketsInRange = tickets.filter((x) => x.createdAt >= from);
+  const ticketsPrev = tickets.filter((x) => x.createdAt >= prevFrom && x.createdAt < from);
+  const openTicketStatuses = new Set(["OPEN", "IN_PROGRESS", "PENDING"]);
+  const openTickets = tickets.filter((x) => openTicketStatuses.has(x.status));
+  const resolvedTickets = tickets.filter((x) => x.status === "RESOLVED" || x.status === "CLOSED");
+  const resolvedInRange = tickets.filter((x) => {
+    const doneAt = x.resolvedAt ?? x.closedAt;
+    return doneAt != null && doneAt >= from && doneAt <= now;
+  });
+  const breachedTickets = tickets.filter((x) => x.slaBreached);
+  const ticketGrowth =
+    ticketsPrev.length === 0
+      ? ticketsInRange.length > 0
+        ? 100
+        : 0
+      : Math.round(((ticketsInRange.length - ticketsPrev.length) / ticketsPrev.length) * 100);
+
+  const ticketsByStatusMap: Record<string, number> = {
+    OPEN: 0,
+    IN_PROGRESS: 0,
+    PENDING: 0,
+    RESOLVED: 0,
+    CLOSED: 0,
+  };
+  for (const x of tickets) ticketsByStatusMap[x.status] = (ticketsByStatusMap[x.status] ?? 0) + 1;
+  const ticketsByStatus = Object.entries(ticketsByStatusMap).map(([name, value]) => ({ name, value }));
+
+  const ticketsByPriorityMap: Record<string, number> = {
+    LOW: 0,
+    MEDIUM: 0,
+    HIGH: 0,
+    CRITICAL: 0,
+  };
+  for (const x of tickets) ticketsByPriorityMap[x.priority] = (ticketsByPriorityMap[x.priority] ?? 0) + 1;
+  const ticketsByPriority = Object.entries(ticketsByPriorityMap).map(([name, value]) => ({
+    name,
+    value,
+  }));
+
+  const ticketsByCategoryMap: Record<string, number> = {};
+  for (const x of tickets) {
+    const cf =
+      x.customFields && typeof x.customFields === "object" && !Array.isArray(x.customFields)
+        ? (x.customFields as Record<string, unknown>)
+        : {};
+    const cat = String(cf.category ?? "General").trim() || "General";
+    ticketsByCategoryMap[cat] = (ticketsByCategoryMap[cat] ?? 0) + 1;
+  }
+  const ticketsByCategory = Object.entries(ticketsByCategoryMap)
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
+
+  const ticketsByAssignee = users
+    .map((u) => {
+      const owned = tickets.filter((x) => x.assignedToId === u.id);
+      const open = owned.filter((x) => openTicketStatuses.has(x.status)).length;
+      const resolved = owned.filter((x) => x.status === "RESOLVED" || x.status === "CLOSED").length;
+      const breached = owned.filter((x) => x.slaBreached).length;
+      return {
+        id: u.id,
+        name: u.name,
+        total: owned.length,
+        open,
+        resolved,
+        breached,
+      };
+    })
+    .filter((row) => row.total > 0)
+    .sort((a, b) => b.total - a.total);
+
+  const unassignedTickets = tickets.filter((x) => !x.assignedToId).length;
+
+  const ticketMonthly: Array<{
+    month: string;
+    created: number;
+    resolved: number;
+    breached: number;
+  }> = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const label = d.toLocaleString("en-IN", { month: "short" });
+    const next = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+    ticketMonthly.push({
+      month: label,
+      created: tickets.filter((x) => x.createdAt >= d && x.createdAt < next).length,
+      resolved: tickets.filter((x) => {
+        const doneAt = x.resolvedAt ?? x.closedAt;
+        return doneAt != null && doneAt >= d && doneAt < next;
+      }).length,
+      breached: tickets.filter((x) => x.slaBreached && x.createdAt >= d && x.createdAt < next).length,
+    });
+  }
+
+  const resolutionHours: number[] = [];
+  for (const x of tickets) {
+    const doneAt = x.resolvedAt ?? x.closedAt;
+    if (!doneAt) continue;
+    const hours = (doneAt.getTime() - x.createdAt.getTime()) / (1000 * 60 * 60);
+    if (Number.isFinite(hours) && hours >= 0) resolutionHours.push(hours);
+  }
+  const avgResolutionHours = resolutionHours.length
+    ? Math.round((resolutionHours.reduce((s, h) => s + h, 0) / resolutionHours.length) * 10) / 10
+    : 0;
+
+  const balanceOutstanding = openTickets.reduce(
+    (s, x) => s + Math.max(0, Number(x.paymentTotal ?? 0) - Number(x.advanceAmount ?? 0)),
+    0,
+  );
+  const in30 = new Date(now);
+  in30.setDate(in30.getDate() + 30);
+  const [machinesDueSoon, machinesStampingDue] = await Promise.all([
+    prisma.customerAsset.count({
+      where: { tenantId: t, deletedAt: null, nextDueDate: { lte: in30, not: null } },
+    }),
+    prisma.customerAsset.count({
+      where: { tenantId: t, deletedAt: null, stampingDate: { lte: in30, not: null } },
+    }),
+  ]);
+
   const tenant = await prisma.tenant.findFirst({
     where: { id: t, deletedAt: null },
     select: { settings: true, currency: true, name: true },
@@ -304,7 +448,18 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
       invoiceRevenue,
       invoiceCount: invoices.length,
       products,
-      tickets,
+      tickets: tickets.length,
+      ticketsInRange: ticketsInRange.length,
+      ticketGrowth,
+      openTickets: openTickets.length,
+      resolvedTickets: resolvedTickets.length,
+      resolvedInRange: resolvedInRange.length,
+      slaBreached: breachedTickets.length,
+      unassignedTickets,
+      avgResolutionHours,
+      balanceOutstanding,
+      machinesDueSoon,
+      machinesStampingDue,
       stockUnits,
       accounts: accounts.length,
       contacts: contactCount,
@@ -316,6 +471,11 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
     },
     leadsByStatus: Object.entries(leadsByStatus).map(([name, value]) => ({ name, value })),
     leadsBySource,
+    ticketsByStatus,
+    ticketsByPriority,
+    ticketsByCategory,
+    ticketsByAssignee,
+    ticketMonthly,
     funnel: funnelWithWidth,
     team,
     byCity,

@@ -3,18 +3,49 @@ import { newId } from "../../common/utils/id.js";
 import { normalizePhone } from "../../common/utils/phone.js";
 import { pagination, pageResult } from "../../common/utils/pagination.js";
 import { notFound } from "../../common/errors.js";
+import {
+  allocateCustomerIdentity,
+  assertContactIdentityAvailable,
+} from "./customerIdentity.js";
+
+function num(v: unknown) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function withTicketBalance<T extends { odAmount?: unknown; paymentTotal?: unknown; advanceAmount?: unknown }>(
+  ticket: T,
+) {
+  const paymentTotal = num(ticket.paymentTotal);
+  const advanceAmount = num(ticket.advanceAmount);
+  const odAmount = num(ticket.odAmount);
+  return {
+    ...ticket,
+    odAmount,
+    paymentTotal,
+    advanceAmount,
+    balanceDue: Math.max(0, paymentTotal - advanceAmount),
+  };
+}
+
+function serializeAsset(asset: Record<string, unknown>) {
+  return asset;
+}
 
 export async function list(t: string, q: Record<string, unknown>) {
   const p = pagination(q);
   const where: Record<string, unknown> = { tenantId: t, deletedAt: null };
   if (q.search) {
+    const s = String(q.search).trim();
     where.OR = [
-      { name: { contains: String(q.search) } },
-      { email: { contains: String(q.search) } },
-      { phone: { contains: String(q.search) } },
-      { mobile: { contains: String(q.search) } },
+      { name: { contains: s } },
+      { email: { contains: s } },
+      { phone: { contains: s } },
+      { mobile: { contains: s } },
+      { customerCode: { contains: s } },
     ];
   }
+  if (q.customerCode) where.customerCode = String(q.customerCode).trim().toUpperCase();
   if (q.accountId) where.accountId = String(q.accountId);
   if (q.ownerUserId) where.ownerUserId = String(q.ownerUserId);
   if (q.city) where.city = { contains: String(q.city) };
@@ -26,7 +57,7 @@ export async function list(t: string, q: Record<string, unknown>) {
       where,
       skip: p.skip,
       take: p.take,
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ customerNo: "asc" }, { createdAt: "desc" }],
     }),
     prisma.contact.count({ where }),
   ]);
@@ -46,7 +77,7 @@ export async function get(t: string, id: string) {
     ],
   };
 
-  const [account, deals, tickets, notes, invoices] = await Promise.all([
+  const [account, deals, tickets, notes, invoices, assets] = await Promise.all([
     x.accountId
       ? prisma.account.findFirst({ where: { id: x.accountId, tenantId: t, deletedAt: null } })
       : null,
@@ -69,6 +100,11 @@ export async function get(t: string, id: string) {
       where: invoiceWhere,
       orderBy: { invoiceDate: "desc" },
       take: 50,
+    }),
+    prisma.customerAsset.findMany({
+      where: { tenantId: t, contactId: id, deletedAt: null },
+      orderBy: { updatedAt: "desc" },
+      take: 100,
     }),
   ]);
 
@@ -148,9 +184,10 @@ export async function get(t: string, id: string) {
     ...x,
     account,
     deals,
-    tickets,
+    tickets: tickets.map(withTicketBalance),
     notes,
     invoices: invoicesDetailed,
+    assets: assets.map(serializeAsset),
     purchaseSummary,
   };
 }
@@ -176,25 +213,68 @@ async function refs(t: string, d: Record<string, unknown>) {
 
 export async function create(t: string, d: Record<string, unknown>) {
   await refs(t, d);
-  return prisma.contact.create({
-    data: {
-      ...d,
-      id: newId(),
-      tenantId: t,
-      phoneNormalized: normalizePhone((d.phone as string) ?? (d.mobile as string)),
-    } as never,
+  const { phoneNormalized, email } = await assertContactIdentityAvailable(t, {
+    phone: d.phone as string | null | undefined,
+    mobile: d.mobile as string | null | undefined,
+    email: d.email as string | null | undefined,
+    requirePhone: true,
+  });
+
+  return prisma.$transaction(async (tx) => {
+    const identity = await allocateCustomerIdentity(t, tx);
+    return tx.contact.create({
+      data: {
+        ...d,
+        id: newId(),
+        tenantId: t,
+        customerNo: identity.customerNo,
+        customerCode: identity.customerCode,
+        email: email ?? (d.email as string | null | undefined) ?? null,
+        phoneNormalized,
+      } as never,
+    });
   });
 }
 
 export async function update(t: string, id: string, d: Record<string, unknown>) {
   await refs(t, d);
+  const existing = await prisma.contact.findFirst({
+    where: { id, tenantId: t, deletedAt: null },
+  });
+  if (!existing) throw notFound("Contact");
+
+  const nextPhone =
+    "phone" in d || "mobile" in d
+      ? ((d.phone as string | null | undefined) ??
+        (d.mobile as string | null | undefined) ??
+        existing.phone ??
+        existing.mobile)
+      : (existing.phone ?? existing.mobile);
+  const nextEmail = "email" in d ? (d.email as string | null | undefined) : existing.email;
+
+  const { phoneNormalized, email } = await assertContactIdentityAvailable(
+    t,
+    {
+      phone: nextPhone,
+      mobile: null,
+      email: nextEmail,
+      excludeId: id,
+      // Updates may keep contacts that predate phone requirement, but cannot clear phone if already set
+      requirePhone: Boolean(existing.phoneNormalized || nextPhone),
+    },
+  );
+
+  const { customerNo: _n, customerCode: _c, ...safe } = d as Record<string, unknown> & {
+    customerNo?: unknown;
+    customerCode?: unknown;
+  };
+
   const r = await prisma.contact.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data: {
-      ...d,
-      ...("phone" in d || "mobile" in d
-        ? { phoneNormalized: normalizePhone((d.phone as string) ?? (d.mobile as string)) }
-        : {}),
+      ...safe,
+      ...("email" in d ? { email } : {}),
+      ...("phone" in d || "mobile" in d ? { phoneNormalized } : {}),
     } as never,
   });
   if (!r.count) throw notFound("Contact");
@@ -214,3 +294,37 @@ export const phone = (t: string, p: string) =>
     where: { tenantId: t, phoneNormalized: normalizePhone(p), deletedAt: null },
     take: 20,
   });
+
+/** Ensure every existing contact has a customer code (one-time / safe to re-run). */
+export async function backfillCustomerCodes(t?: string) {
+  const tenants = t
+    ? [{ id: t }]
+    : await prisma.tenant.findMany({ where: { deletedAt: null }, select: { id: true } });
+
+  let updated = 0;
+  for (const tenant of tenants) {
+    const missing = await prisma.contact.findMany({
+      where: {
+        tenantId: tenant.id,
+        deletedAt: null,
+        OR: [{ customerCode: null }, { customerNo: null }],
+      },
+      orderBy: { createdAt: "asc" },
+      select: { id: true },
+    });
+    for (const row of missing) {
+      await prisma.$transaction(async (tx) => {
+        const identity = await allocateCustomerIdentity(tenant.id, tx);
+        await tx.contact.update({
+          where: { id: row.id },
+          data: {
+            customerNo: identity.customerNo,
+            customerCode: identity.customerCode,
+          },
+        });
+      });
+      updated += 1;
+    }
+  }
+  return { updated };
+}

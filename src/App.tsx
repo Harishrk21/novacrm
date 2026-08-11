@@ -15,6 +15,7 @@ import { DealDetailPage } from '@/pages/DealDetailPage'
 import { ActivitiesPage } from '@/pages/ActivitiesPage'
 import { TicketsPage } from '@/pages/TicketsPage'
 import { TicketDetailPage } from '@/pages/TicketDetailPage'
+import { AmcPage } from '@/pages/AmcPage'
 import { ReportsPage } from '@/pages/ReportsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { UsersPage } from '@/pages/UsersPage'
@@ -64,6 +65,7 @@ export default function App() {
           />
           <Route path="tickets" element={<TicketsPage />} />
           <Route path="tickets/:id" element={<TicketDetailPage />} />
+          <Route path="amc" element={<AmcPage />} />
           <Route
             path="erp/products"
             element={

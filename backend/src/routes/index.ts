@@ -13,6 +13,7 @@ import { searchRouter } from '../modules/search/search.routes.js'
 import { integrationsRouter } from '../modules/integrations/integrations.routes.js'
 import { accountsRouter } from '../modules/accounts/accounts.routes.js'
 import { ticketsRouter } from '../modules/tickets/tickets.routes.js'
+import { assetsRouter } from '../modules/assets/assets.routes.js'
 import { purchaseOrdersRouter } from '../modules/purchaseOrders/purchaseOrders.routes.js'
 import { metaRouter } from '../modules/meta/meta.routes.js'
 import { usersRouter } from '../modules/users/users.routes.js'
@@ -34,6 +35,7 @@ apiRouter.use('/leads', leadsRouter)
 apiRouter.use('/contacts', contactsRouter)
 apiRouter.use('/deals', dealsRouter)
 apiRouter.use('/tickets', ticketsRouter)
+apiRouter.use('/assets', assetsRouter)
 apiRouter.use('/products', productsRouter)
 apiRouter.use('/inventory', inventoryRouter)
 apiRouter.use('/purchase-orders', purchaseOrdersRouter)

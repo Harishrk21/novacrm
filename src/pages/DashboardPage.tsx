@@ -6,13 +6,17 @@ import {
   Briefcase,
   Calendar,
   CheckSquare,
+  CircleDollarSign,
+  Clock,
   Mail,
   Phone,
   RefreshCw,
   Target,
+  Ticket,
   TrendingUp,
   Users,
   FileText,
+  UserX,
 } from 'lucide-react'
 import {
   Bar,
@@ -43,6 +47,7 @@ import type { Account, Activity, Contact, Deal, DealStage, Lead, LeadSource, Lea
 
 const FUNNEL_STAGES: DealStage[] = ['PROSPECT', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION', 'WON']
 const DASHBOARDS = [
+  { id: 'service', label: 'Service desk' },
   { id: 'sales', label: 'Sales Analytics' },
   { id: 'leads', label: 'Lead Analytics' },
   { id: 'activity', label: 'Activity Stats' },
@@ -87,7 +92,7 @@ export function DashboardPage() {
 function AdminDashboardPage() {
   const palette = useUIStore((state) => state.palette)
   const chartColors = PALETTES[palette].chart
-  const [dash, setDash] = useState<DashId>('sales')
+  const [dash, setDash] = useState<DashId>('service')
   const [ownerFilter, setOwnerFilter] = useState('all')
   const [range, setRange] = useState('month')
   const [live, setLive] = useState(false)
@@ -98,6 +103,17 @@ function AdminDashboardPage() {
   const [contacts, setContacts] = useState<Contact[]>([])
   const [users, setUsers] = useState<User[]>([])
   const [erp, setErp] = useState({ products: 0, invoices: 0, tickets: 0, stockRows: 0 })
+  const [ticketSummary, setTicketSummary] = useState({
+    open: 0,
+    activeQueue: 0,
+    overdue: 0,
+    unassigned: 0,
+    resolvedToday: 0,
+    balanceOutstanding: 0,
+    machinesDueSoon: 0,
+    byStatus: {} as Record<string, number>,
+  })
+  const [recentTickets, setRecentTickets] = useState<Array<Record<string, unknown>>>([])
   const [analytics, setAnalytics] = useState<Awaited<ReturnType<typeof api.analytics>> | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
 
@@ -112,13 +128,15 @@ function AdminDashboardPage() {
       setUsers([])
       setAnalytics(null)
       setErp({ products: 0, invoices: 0, tickets: 0, stockRows: 0 })
+      setTicketSummary({ open: 0, activeQueue: 0, overdue: 0, unassigned: 0, resolvedToday: 0, balanceOutstanding: 0, machinesDueSoon: 0, byStatus: {} })
+      setRecentTickets([])
       return
     }
 
     let cancelled = false
     ;(async () => {
       try {
-        const [leadRes, dealRes, accountRes, contactRes, lookups, products, invoices, tickets, stock, summary, actsPage] =
+        const [leadRes, dealRes, accountRes, contactRes, lookups, products, invoices, tickets, stock, summary, actsPage, tSum] =
           await Promise.all([
             api.leads({ limit: 200 }),
             api.deals({ limit: 200 }),
@@ -127,12 +145,35 @@ function AdminDashboardPage() {
             api.lookups(),
             api.products({ limit: 100 }),
             api.invoices({ limit: 100 }),
-            api.tickets({ limit: 100 }),
+            api.tickets({ limit: 100, sort: 'sla' }),
             api.inventory(),
             api.analytics(range),
             api.activities({ limit: 100 }),
+            api.ticketsSummary(),
           ])
         if (cancelled) return
+
+        const byStatus = tSum.byStatus ?? {}
+        const openOnly = Number(tSum.open ?? byStatus.OPEN ?? 0)
+        const activeQueue = Number(
+          tSum.activeQueue ??
+            (byStatus.OPEN ?? 0) + (byStatus.IN_PROGRESS ?? 0) + (byStatus.PENDING ?? 0),
+        )
+        setTicketSummary({
+          open: openOnly,
+          activeQueue,
+          overdue: tSum.overdue,
+          unassigned: tSum.unassigned,
+          resolvedToday: tSum.resolvedToday,
+          balanceOutstanding: Number(tSum.balanceOutstanding ?? 0),
+          machinesDueSoon: Number(tSum.machinesDueSoon ?? 0),
+          byStatus,
+        })
+        setRecentTickets(
+          (tickets.items ?? [])
+            .filter((t) => ['OPEN', 'IN_PROGRESS', 'PENDING'].includes(String(t.status)))
+            .slice(0, 8),
+        )
 
         const stageById = Object.fromEntries(lookups.stages.map((s) => [s.id, s]))
         const sourceById = Object.fromEntries(lookups.sources.map((s) => [s.id, s.name]))
@@ -255,10 +296,10 @@ function AdminDashboardPage() {
         )
         setAnalytics(summary)
         setErp({
-          products: products.items?.length ?? 0,
-          invoices: invoices.items?.length ?? 0,
-          tickets: tickets.items?.length ?? 0,
-          stockRows: stock.length,
+          products: Number(products.meta?.total ?? products.items?.length ?? 0),
+          invoices: Number(invoices.meta?.total ?? invoices.items?.length ?? 0),
+          tickets: Number(tickets.meta?.total ?? tickets.items?.length ?? 0),
+          stockRows: Array.isArray(stock) ? stock.length : Number((stock as { meta?: { total?: number } })?.meta?.total ?? 0),
         })
         setLive(true)
       } catch {
@@ -271,6 +312,8 @@ function AdminDashboardPage() {
         setUsers([])
         setAnalytics(null)
         setErp({ products: 0, invoices: 0, tickets: 0, stockRows: 0 })
+        setTicketSummary({ open: 0, activeQueue: 0, overdue: 0, unassigned: 0, resolvedToday: 0, balanceOutstanding: 0, machinesDueSoon: 0, byStatus: {} })
+        setRecentTickets([])
       }
     })()
 
@@ -439,11 +482,20 @@ function AdminDashboardPage() {
   const invoiceCount = Number(analytics?.kpis?.invoiceCount ?? erp.invoices) || erp.invoices
 
   const dashHint: Record<(typeof DASHBOARDS)[number]['id'], string> = {
+    service: 'Open service tickets, SLA breaches, and today’s resolutions. Click a KPI to open the queue.',
     sales: 'Revenue, open deals, invoices & conversion. Filter by user or date above.',
     leads: 'Lead volume by status & source. Assign owners on Leads, then Convert when ready.',
     activity: 'Team follow-ups. Assign tasks in Activities — agents complete them on My Work.',
     pipeline: 'Deal stages & forecast. Move cards on Deals; Won → Create invoice.',
   }
+
+  const statusBars = [
+    { label: 'Open', key: 'OPEN', color: chartColors[4] },
+    { label: 'In progress', key: 'IN_PROGRESS', color: chartColors[2] },
+    { label: 'Pending', key: 'PENDING', color: chartColors[3] },
+    { label: 'Resolved', key: 'RESOLVED', color: chartColors[0] },
+    { label: 'Closed', key: 'CLOSED', color: chartColors[1] },
+  ].map((s) => ({ ...s, value: ticketSummary.byStatus[s.key] ?? 0 }))
 
   return (
     <div className="space-y-5">
@@ -486,7 +538,9 @@ function AdminDashboardPage() {
       </p>
 
       {live && (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-accent-green">Live totals from your database (not sample data)</p>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {[
             { label: 'Products', value: erp.products },
             { label: 'Stock rows', value: erp.stockRows },
@@ -498,6 +552,7 @@ function AdminDashboardPage() {
               <span className="text-xl font-semibold tabular-nums">{item.value}</span>
             </Card>
           ))}
+          </div>
         </div>
       )}
 
@@ -542,6 +597,54 @@ function AdminDashboardPage() {
 
           {/* KPI row — changes with dashboard tab */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {dash === 'service' && (
+              <>
+                <KpiCard
+                  to="/tickets?status=OPEN"
+                  label="Open tickets"
+                  value={String(ticketSummary.open)}
+                  change={
+                    ticketSummary.activeQueue > ticketSummary.open
+                      ? `${ticketSummary.activeQueue} active`
+                      : '—'
+                  }
+                  up
+                  icon={<Ticket size={18} />}
+                  iconBg="bg-blue-50 text-accent-blue"
+                  sub={`${ticketSummary.byStatus.IN_PROGRESS ?? 0} in progress · ${ticketSummary.byStatus.PENDING ?? 0} pending`}
+                />
+                <KpiCard
+                  to="/tickets"
+                  label="Balance outstanding"
+                  value={formatCurrency(ticketSummary.balanceOutstanding)}
+                  change={ticketSummary.balanceOutstanding > 0 ? 'Collect' : 'Clear'}
+                  up={ticketSummary.balanceOutstanding === 0}
+                  icon={<CircleDollarSign size={18} />}
+                  iconBg="bg-amber-50 text-accent-amber"
+                  sub="Payment − advance on open jobs"
+                />
+                <KpiCard
+                  to="/tickets?slaBreached=1"
+                  label="Overdue SLA"
+                  value={String(ticketSummary.overdue)}
+                  change={ticketSummary.overdue > 0 ? 'Action' : 'OK'}
+                  up={ticketSummary.overdue === 0}
+                  icon={<Clock size={18} />}
+                  iconBg="bg-red-50 text-accent-red"
+                  sub="Past due, still open"
+                />
+                <KpiCard
+                  to="/contacts"
+                  label="Machines due (30d)"
+                  value={String(ticketSummary.machinesDueSoon)}
+                  change={ticketSummary.machinesDueSoon > 0 ? 'Follow up' : 'OK'}
+                  up={ticketSummary.machinesDueSoon === 0}
+                  icon={<Calendar size={18} />}
+                  iconBg="bg-violet-50 text-accent-purple"
+                  sub="Next due, stamping or AMC end within 30 days"
+                />
+              </>
+            )}
             {dash === 'sales' && (
               <>
                 <KpiCard
@@ -721,6 +824,84 @@ function AdminDashboardPage() {
               </>
             )}
           </div>
+
+          {dash === 'service' && (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Card>
+                <div className="mb-3 flex items-center justify-between">
+                  <WidgetTitle title="Tickets by status" icon={<Ticket size={14} />} />
+                  <Link to="/tickets" className="text-xs text-accent-blue hover:underline">
+                    Open queue
+                  </Link>
+                </div>
+                {live ? (
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={statusBars}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                        <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                        <Tooltip />
+                        <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                          {statusBars.map((s) => (
+                            <Cell key={s.key} fill={s.color} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <p className="text-sm text-text-secondary">Sign in to a company workspace to see live ticket stats.</p>
+                )}
+              </Card>
+              <Card>
+                <div className="mb-3 flex items-center justify-between">
+                  <WidgetTitle title="SLA queue (soonest due)" icon={<Clock size={14} />} />
+                  <Link to="/tickets?slaBreached=1" className="text-xs text-accent-blue hover:underline">
+                    Overdue only
+                  </Link>
+                </div>
+                <div className="space-y-2">
+                  {!live || recentTickets.length === 0 ? (
+                    <p className="text-sm text-text-secondary">
+                      No open service tickets. Find a customer in{' '}
+                      <Link to="/contacts" className="text-accent-blue hover:underline">
+                        Contacts
+                      </Link>{' '}
+                      and create a ticket.
+                    </p>
+                  ) : (
+                    recentTickets.map((t) => {
+                      const id = String(t.id)
+                      const breached = Boolean(t.slaBreached)
+                      return (
+                        <Link
+                          key={id}
+                          to={`/tickets/${id}`}
+                          className="block rounded-[8px] border border-border bg-surface px-3 py-2 text-sm hover:border-accent-blue/40"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="truncate font-medium">
+                                #{String(t.ticketNo)} · {String(t.subject)}
+                              </div>
+                              <div className="mt-0.5 text-xs text-text-secondary">
+                                {String(t.status).replaceAll('_', ' ')}
+                                {t.slaDueAt ? ` · due ${formatDate(String(t.slaDueAt))}` : ''}
+                              </div>
+                            </div>
+                            <Badge color={breached ? 'red' : t.priority === 'CRITICAL' || t.priority === 'HIGH' ? 'amber' : 'blue'}>
+                              {breached ? 'SLA' : String(t.priority)}
+                            </Badge>
+                          </div>
+                        </Link>
+                      )
+                    })
+                  )}
+                </div>
+              </Card>
+            </div>
+          )}
 
           {live && (dash === 'sales' || dash === 'activity') && (
             <div className="grid gap-4 lg:grid-cols-2">

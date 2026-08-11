@@ -11,6 +11,8 @@ interface ModalProps {
   children: ReactNode
   footer?: ReactNode
   size?: 'sm' | 'md' | 'lg' | 'xl'
+  /** Color theme for confirm / small dialogs */
+  accent?: 'sky' | 'emerald' | 'violet' | 'amber'
 }
 
 const sizes = {
@@ -20,7 +22,39 @@ const sizes = {
   xl: 'max-w-3xl',
 }
 
-export function Modal({ open, onClose, title, subtitle, children, footer, size = 'lg' }: ModalProps) {
+const accents = {
+  sky: {
+    bar: 'from-sky-100 via-cyan-50 to-white',
+    blob: 'bg-sky-300/50',
+    chip: 'text-sky-700',
+  },
+  emerald: {
+    bar: 'from-emerald-100 via-teal-50 to-white',
+    blob: 'bg-emerald-300/45',
+    chip: 'text-emerald-700',
+  },
+  violet: {
+    bar: 'from-violet-100 via-fuchsia-50 to-white',
+    blob: 'bg-violet-300/45',
+    chip: 'text-violet-700',
+  },
+  amber: {
+    bar: 'from-amber-100 via-orange-50 to-white',
+    blob: 'bg-amber-300/45',
+    chip: 'text-amber-800',
+  },
+}
+
+export function Modal({
+  open,
+  onClose,
+  title,
+  subtitle,
+  children,
+  footer,
+  size = 'lg',
+  accent = 'sky',
+}: ModalProps) {
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
@@ -36,11 +70,12 @@ export function Modal({ open, onClose, title, subtitle, children, footer, size =
   }, [open, onClose])
 
   if (!open) return null
+  const a = accents[accent]
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4">
       <div
-        className="absolute inset-0 bg-slate-900/50 backdrop-blur-[2px]"
+        className="absolute inset-0 bg-slate-900/40 backdrop-blur-[2px]"
         onClick={onClose}
         aria-hidden
       />
@@ -49,26 +84,27 @@ export function Modal({ open, onClose, title, subtitle, children, footer, size =
         aria-modal="true"
         aria-labelledby="modal-title"
         className={cn(
-          'relative z-10 flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-[0_24px_64px_rgba(15,23,42,0.28)] sm:rounded-2xl',
+          'relative z-10 flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-2xl border border-sky-200/80 bg-card shadow-[0_24px_64px_rgba(14,165,233,0.18)] sm:rounded-2xl',
           sizes[size],
         )}
       >
-        <div className="relative shrink-0 overflow-hidden border-b border-border bg-gradient-to-br from-sky-50 via-white to-slate-50 px-5 py-4 dark:from-slate-900 dark:via-card dark:to-card">
-          <div className="pointer-events-none absolute -right-8 -top-10 h-28 w-28 rounded-full bg-sky-200/40 blur-2xl" />
+        <div className={cn('relative shrink-0 overflow-hidden border-b border-sky-100 bg-gradient-to-br px-5 py-4', a.bar)}>
+          <div className={cn('pointer-events-none absolute -left-8 -top-10 h-28 w-28 rounded-full blur-2xl', a.blob)} />
+          <div className={cn('pointer-events-none absolute -bottom-8 right-0 h-24 w-24 rounded-full blur-2xl', a.blob)} />
           <div className="relative flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-sky-700/80">
+              <p className={cn('mb-1 text-[11px] font-semibold uppercase tracking-[0.14em]', a.chip)}>
                 NovaCRM
               </p>
-              <h2 id="modal-title" className="text-xl font-semibold tracking-tight text-text-primary">
+              <h2 id="modal-title" className="text-xl font-semibold tracking-tight text-slate-900">
                 {title}
               </h2>
-              {subtitle ? <p className="mt-1 text-sm text-text-secondary">{subtitle}</p> : null}
+              {subtitle ? <p className="mt-1 text-sm text-slate-600">{subtitle}</p> : null}
             </div>
             <button
               type="button"
               onClick={onClose}
-              className="rounded-full border border-border bg-card p-2 text-text-secondary shadow-sm transition hover:bg-muted hover:text-text-primary"
+              className="rounded-full border border-white/80 bg-white/90 p-2 text-slate-500 shadow-sm transition hover:bg-white hover:text-slate-800"
               aria-label="Close"
             >
               <X size={16} />
@@ -79,7 +115,7 @@ export function Modal({ open, onClose, title, subtitle, children, footer, size =
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">{children}</div>
 
         {footer ? (
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border bg-muted/40 px-5 py-4">
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-sky-100 bg-gradient-to-r from-sky-50/70 via-white to-emerald-50/40 px-5 py-4">
             {footer}
           </div>
         ) : null}
@@ -111,6 +147,7 @@ export function ConfirmModal({
       onClose={onClose}
       title={title}
       size="sm"
+      accent="amber"
       footer={
         <>
           <Button variant="outline" onClick={onClose}>

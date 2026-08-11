@@ -20,8 +20,8 @@ import { Avatar } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
+import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Input } from '@/components/ui/Input'
-import { Modal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError } from '@/lib/api'
 import { cn, formatDateTime } from '@/lib/utils'
@@ -163,23 +163,44 @@ function Appearance() {
       </Card>
 
       <Card>
-        <Heading title="Dashboard color palette" subtitle="Accent + chart colors used across CRM analytics" />
+        <Heading
+          title="Workspace color palette"
+          subtitle="Accent, charts, page background, cards and sidebar all switch together"
+        />
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {(Object.keys(PALETTES) as ColorPalette[]).map((key) => (
             <button
               key={key}
+              type="button"
               onClick={() => {
                 setPalette(key)
                 addToast({ type: 'success', message: `${PALETTES[key].label} palette applied` })
               }}
               className={cn(
-                'rounded-[8px] border p-4 text-left transition-all',
-                palette === key ? 'border-accent-blue ring-2 ring-accent-blue/20' : 'border-border hover:border-accent-blue/40',
+                'rounded-[12px] border p-4 text-left transition-all',
+                palette === key
+                  ? 'border-accent-blue ring-2 ring-accent-blue/20'
+                  : 'border-border hover:border-accent-blue/40',
               )}
             >
-              <div className="mb-3 flex gap-1.5">
-                {PALETTES[key].chart.map((c) => (
-                  <span key={c} className="h-4 flex-1 rounded-full" style={{ background: c }} />
+              <div
+                className="mb-3 h-14 overflow-hidden rounded-[10px] border border-border"
+                style={{ background: PALETTES[key].light.wash }}
+              >
+                <div className="flex h-full">
+                  <div className="w-1/4" style={{ background: PALETTES[key].light.sidebarBg }} />
+                  <div className="flex flex-1 items-end gap-1 p-2">
+                    <div
+                      className="h-6 flex-1 rounded-md shadow-sm"
+                      style={{ background: PALETTES[key].light.card }}
+                    />
+                    <div className="h-6 w-8 rounded-md" style={{ background: PALETTES[key].accent }} />
+                  </div>
+                </div>
+              </div>
+              <div className="mb-2 flex gap-1.5">
+                {PALETTES[key].chart.slice(0, 5).map((c) => (
+                  <span key={c} className="h-3 flex-1 rounded-full" style={{ background: c }} />
                 ))}
               </div>
               <div className="font-semibold">{PALETTES[key].label}</div>
@@ -812,6 +833,55 @@ function Pipeline() {
 
   return (
     <>
+      {open ? (
+        <FormPanel
+          open
+          accent="sky"
+          eyebrow="Pipeline"
+          title={editing ? 'Edit stage' : 'New stage'}
+          subtitle="Stages used on deals and the pipeline board"
+          onClose={() => setOpen(false)}
+          footer={
+            <>
+              <FormPanelCancel onClick={() => setOpen(false)} />
+              <Button disabled={saving || !name.trim()} onClick={() => void save()}>
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+            <Input
+              label="Win probability %"
+              type="number"
+              min={0}
+              max={100}
+              value={probability}
+              onChange={(e) => setProbability(e.target.value)}
+            />
+            <div>
+              <p className="mb-2 text-sm font-medium text-text-secondary">Color</p>
+              <div className="flex flex-wrap gap-2">
+                {STAGE_SWATCHES.map((s) => (
+                  <button
+                    key={s.hex}
+                    type="button"
+                    onClick={() => setColorHex(s.hex)}
+                    className={cn(
+                      'h-8 w-8 rounded-full border-2',
+                      s.className,
+                      colorHex === s.hex ? 'border-text-primary' : 'border-transparent',
+                    )}
+                    aria-label={s.hex}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        </FormPanel>
+      ) : null}
+
       <Card>
         <Heading
           title="Pipeline Stages"
@@ -861,52 +931,6 @@ function Pipeline() {
           <p className="mt-3 text-xs text-text-secondary">Only company admins can add or edit stages.</p>
         )}
       </Card>
-
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title={editing ? 'Edit stage' : 'New stage'}
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button disabled={saving || !name.trim()} onClick={() => void save()}>
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <Input label="Name" value={name} onChange={(e) => setName(e.target.value)} />
-          <Input
-            label="Win probability %"
-            type="number"
-            min={0}
-            max={100}
-            value={probability}
-            onChange={(e) => setProbability(e.target.value)}
-          />
-          <div>
-            <p className="mb-2 text-sm font-medium text-text-secondary">Color</p>
-            <div className="flex flex-wrap gap-2">
-              {STAGE_SWATCHES.map((s) => (
-                <button
-                  key={s.hex}
-                  type="button"
-                  onClick={() => setColorHex(s.hex)}
-                  className={cn(
-                    'h-8 w-8 rounded-full border-2',
-                    s.className,
-                    colorHex === s.hex ? 'border-text-primary' : 'border-transparent',
-                  )}
-                  aria-label={s.hex}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      </Modal>
     </>
   )
 }
@@ -994,6 +1018,27 @@ function Sources() {
 
   return (
     <>
+      {open ? (
+        <FormPanel
+          open
+          accent="emerald"
+          eyebrow="Leads"
+          title={editing ? 'Edit source' : 'New source'}
+          subtitle="Where your leads originate — used in lead forms and reports"
+          onClose={() => setOpen(false)}
+          footer={
+            <>
+              <FormPanelCancel onClick={() => setOpen(false)} />
+              <Button disabled={saving || !name.trim()} onClick={() => void save()}>
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+            </>
+          }
+        >
+          <Input label="Source name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Website" />
+        </FormPanel>
+      ) : null}
+
       <Card>
         <Heading
           title="Lead Sources"
@@ -1038,24 +1083,6 @@ function Sources() {
           </div>
         )}
       </Card>
-
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title={editing ? 'Edit source' : 'New source'}
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button disabled={saving || !name.trim()} onClick={() => void save()}>
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
-          </>
-        }
-      >
-        <Input label="Source name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Website" />
-      </Modal>
     </>
   )
 }
@@ -1137,6 +1164,52 @@ export function UsersSettings() {
 
   return (
     <>
+      {open ? (
+        <FormPanel
+          open
+          accent="sky"
+          eyebrow="Team"
+          title="Invite user"
+          subtitle={
+            meta.maxUsers
+              ? `${meta.used} of ${meta.maxUsers} seats used (${meta.remaining} remaining)`
+              : 'Create access for a teammate'
+          }
+          onClose={() => setOpen(false)}
+          footer={
+            <>
+              <FormPanelCancel onClick={() => setOpen(false)} />
+              <Button disabled={saving} onClick={() => void invite()}>
+                {saving ? 'Creating…' : 'Create user'}
+              </Button>
+            </>
+          }
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Input label="Full name" value={name} onChange={(e) => setName(e.target.value)} />
+            <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <Input label="Phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
+            <Input
+              label="Temporary password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <Select
+              label="Role"
+              value={roleCode}
+              onChange={(e) => setRoleCode(e.target.value)}
+              options={[
+                { value: 'AGENT', label: 'Sales Agent' },
+                { value: 'MANAGER', label: 'Manager' },
+                { value: 'ADMIN', label: 'Company Admin' },
+                { value: 'READ_ONLY', label: 'Read only' },
+              ]}
+            />
+          </div>
+        </FormPanel>
+      ) : null}
+
       <Card padding={false}>
         <div className="p-5">
           <Heading
@@ -1211,45 +1284,6 @@ export function UsersSettings() {
           </div>
         )}
       </Card>
-
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        title="Invite user"
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button disabled={saving} onClick={() => void invite()}>
-              {saving ? 'Creating…' : 'Create user'}
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <Input label="Full name" value={name} onChange={(e) => setName(e.target.value)} />
-          <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <Input label="Phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
-          <Input
-            label="Temporary password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          <Select
-            label="Role"
-            value={roleCode}
-            onChange={(e) => setRoleCode(e.target.value)}
-            options={[
-              { value: 'AGENT', label: 'Sales Agent' },
-              { value: 'MANAGER', label: 'Manager' },
-              { value: 'ADMIN', label: 'Company Admin' },
-              { value: 'READ_ONLY', label: 'Read only' },
-            ]}
-          />
-        </div>
-      </Modal>
     </>
   )
 }
@@ -1468,7 +1502,12 @@ function Integrations() {
 
   return (
     <div>
-      <Heading title="Integrations" subtitle="Connect NovaCRM with telephony, email, WhatsApp, and books" />
+      <Heading title="Integrations" subtitle="WhatsApp, telephony, email, and books" />
+      <p className="mb-4 rounded-[8px] border border-border bg-surface px-3 py-2 text-sm text-text-secondary">
+        <strong>WhatsApp</strong> is managed here (not in the sidebar). Connect AskMeister, then open the
+        inbox. When a service job is marked <strong>Resolved</strong> or <strong>Closed</strong>, NovaCRM
+        can notify the customer automatically if connected.
+      </p>
       {!loaded ? (
         <p className="text-sm text-text-secondary">Loading…</p>
       ) : (
@@ -1501,11 +1540,18 @@ function Integrations() {
                 </div>
                 {state !== 'soon' &&
                   ('href' in item && item.href ? (
-                    <Link to={item.href}>
-                      <Button className="mt-4 w-full" variant={state === 'on' ? 'outline' : 'primary'}>
-                        {state === 'on' ? 'Manage connection' : 'Connect AskMeister'}
-                      </Button>
-                    </Link>
+                    <div className="mt-4 flex flex-col gap-2">
+                      <Link to={item.href}>
+                        <Button className="w-full" variant={state === 'on' ? 'primary' : 'primary'}>
+                          {state === 'on' ? 'Open WhatsApp inbox' : 'Connect AskMeister'}
+                        </Button>
+                      </Link>
+                      {state === 'on' ? (
+                        <Link to={item.href} className="text-center text-xs text-accent-blue hover:underline">
+                          Manage connection
+                        </Link>
+                      ) : null}
+                    </div>
                   ) : (
                     <Button
                       className="mt-4 w-full"

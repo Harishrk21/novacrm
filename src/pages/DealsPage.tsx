@@ -18,11 +18,19 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { Avatar } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import {
+  BulkActionBar,
+  DeleteIconButton,
+  SelectCheckbox,
+  ViewIconButton,
+} from '@/components/ui/BulkSelect'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
-import { Modal } from '@/components/ui/Modal'
+import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
+import { ConfirmModal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
+import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
@@ -77,6 +85,11 @@ export function DealsPage() {
     priority: 'MEDIUM',
     description: '',
   })
+  const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
+  const [busyDelete, setBusyDelete] = useState(false)
+
+  const dealIds = useMemo(() => deals.map((d) => d.id), [deals])
+  const selection = useRowSelection(dealIds)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -261,6 +274,27 @@ export function DealsPage() {
     }
   }
 
+  async function runDelete(deleteIds: string[]) {
+    setBusyDelete(true)
+    try {
+      await Promise.all(deleteIds.map((id) => api.deleteDeal(id)))
+      addToast({
+        type: 'success',
+        message: deleteIds.length === 1 ? 'Deleted' : `${deleteIds.length} deleted`,
+      })
+      selection.clear()
+      await load()
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not delete',
+      })
+    } finally {
+      setBusyDelete(false)
+      setConfirm(null)
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -291,8 +325,8 @@ export function DealsPage() {
                 <LayoutList size={15} /> List
               </button>
             </div>
-            <Button onClick={() => setAddOpen(true)}>
-              <Plus size={16} /> Add deal
+            <Button onClick={() => setAddOpen((v) => !v)} variant={addOpen ? 'outline' : 'primary'}>
+              <Plus size={16} /> {addOpen ? 'Close form' : 'Add deal'}
             </Button>
           </>
         }
@@ -303,6 +337,108 @@ export function DealsPage() {
         body="Each card is an open opportunity. Drag across stages as the sale progresses. When you reach Won, open the deal and create an invoice."
         tipType="BEST_PRACTICE"
       />
+
+      <FormPanel
+        open={addOpen}
+        accent="violet"
+        eyebrow="Deals"
+        title="Add deal"
+        subtitle="Track a sales opportunity through your pipeline stages."
+        onClose={() => setAddOpen(false)}
+        footer={
+          <>
+            <FormPanelCancel onClick={() => setAddOpen(false)} />
+            <Button type="submit" form="add-deal-form" disabled={saving}>
+              {saving ? 'Saving…' : 'Create deal'}
+            </Button>
+          </>
+        }
+      >
+        <form id="add-deal-form" onSubmit={(e) => void handleAddDeal(e)} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Input
+            className="sm:col-span-2 lg:col-span-3"
+            label="Deal name *"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            placeholder="e.g. 50kg platform scale — ABC Traders"
+          />
+          <Input
+            label="Deal value ₹"
+            type="number"
+            placeholder="e.g. 185000"
+            value={form.amount}
+            onChange={(e) => setForm({ ...form, amount: e.target.value })}
+          />
+          <Input
+            label="Expected close"
+            type="date"
+            value={form.expectedCloseDate}
+            onChange={(e) => setForm({ ...form, expectedCloseDate: e.target.value })}
+          />
+          <Select
+            label="Stage *"
+            value={form.stageId}
+            onChange={(e) => setForm({ ...form, stageId: e.target.value })}
+            options={[
+              { value: '', label: 'Select stage' },
+              ...stages.map((s) => ({ value: s.id, label: s.name })),
+            ]}
+          />
+          <Select
+            label="Priority"
+            value={form.priority}
+            onChange={(e) => setForm({ ...form, priority: e.target.value })}
+            options={[
+              { value: 'LOW', label: 'Low' },
+              { value: 'MEDIUM', label: 'Medium' },
+              { value: 'HIGH', label: 'High' },
+            ]}
+          />
+          <Select
+            label="Contact"
+            value={form.contactId}
+            onChange={(e) => {
+              const c = contacts.find((x) => x.id === e.target.value)
+              setForm({
+                ...form,
+                contactId: e.target.value,
+                accountId: c?.accountId || form.accountId,
+              })
+            }}
+            options={[
+              { value: '', label: 'Select contact' },
+              ...contacts.map((c) => ({ value: c.id, label: c.name })),
+            ]}
+          />
+          <Select
+            label="Account / company"
+            value={form.accountId}
+            onChange={(e) => setForm({ ...form, accountId: e.target.value })}
+            options={[
+              { value: '', label: 'Select company' },
+              ...accounts.map((a) => ({ value: a.id, label: a.name })),
+            ]}
+          />
+          <Select
+            label="Owner"
+            value={form.ownerUserId}
+            onChange={(e) => setForm({ ...form, ownerUserId: e.target.value })}
+            options={[
+              { value: '', label: 'Select owner' },
+              ...users.map((u) => ({ value: u.id, label: u.name })),
+            ]}
+          />
+          <label className="block text-sm sm:col-span-2 lg:col-span-3">
+            <span className="mb-1 block font-medium text-text-secondary">Notes</span>
+            <textarea
+              className="min-h-20 w-full rounded-[6px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue"
+              placeholder="Scope, site notes, competitor info…"
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+            />
+          </label>
+        </form>
+      </FormPanel>
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Card className="border-l-4 border-l-accent-blue py-4">
@@ -383,162 +519,112 @@ export function DealsPage() {
               onAction={() => setAddOpen(true)}
             />
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1000px] text-left text-sm">
-                <thead className="bg-muted text-xs text-text-secondary">
-                  <tr>
-                    {['Deal', 'Customer', 'Value', 'Stage', 'Prob.', 'Close', 'Owner', ''].map((h) => (
-                      <th key={h || 'a'} className="px-4 py-3 font-medium">
-                        {h}
+            <div className="p-4 pt-3">
+              {selection.someSelected ? (
+                <BulkActionBar
+                  count={selection.selectedCount}
+                  noun="deal"
+                  busy={busyDelete}
+                  onClear={selection.clear}
+                  onDelete={() => setConfirm({ ids: selection.selectedIds })}
+                />
+              ) : null}
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1000px] text-left text-sm">
+                  <thead className="bg-muted text-xs text-text-secondary">
+                    <tr>
+                      <th className="w-10 px-4 py-3">
+                        <SelectCheckbox
+                          checked={selection.allSelected}
+                          indeterminate={selection.someSelected && !selection.allSelected}
+                          onChange={selection.toggleAll}
+                          aria-label="Select all"
+                        />
                       </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {deals.map((deal) => (
-                    <tr key={deal.id} className="border-t border-border hover:bg-surface">
-                      <td className="px-4 py-3">
-                        <button
-                          type="button"
-                          className="font-semibold text-accent-blue hover:underline"
-                          onClick={() => navigate(`/deals/${deal.id}`)}
-                        >
-                          {deal.name}
-                        </button>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div>{deal.contactId ? contactName[deal.contactId] ?? '—' : '—'}</div>
-                        <div className="text-xs text-text-secondary">
-                          {deal.accountId ? accountName[deal.accountId] ?? '' : ''}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 font-semibold">{formatCurrency(deal.amount)}</td>
-                      <td className="px-4 py-3">
-                        <Badge color="blue">{stageMap[deal.stageId]?.name ?? '—'}</Badge>
-                      </td>
-                      <td className="px-4 py-3">{deal.probability}%</td>
-                      <td className="px-4 py-3 text-text-secondary">
-                        {deal.expectedCloseDate ? formatDate(deal.expectedCloseDate) : '—'}
-                      </td>
-                      <td className="px-4 py-3">
-                        {deal.ownerUserId ? userName[deal.ownerUserId] ?? '—' : '—'}
-                      </td>
-                      <td className="px-4 py-3">
-                        <Button variant="ghost" size="sm" onClick={() => void removeDeal(deal.id, deal.name)}>
-                          Delete
-                        </Button>
-                      </td>
+                      {['Deal', 'Customer', 'Value', 'Stage', 'Prob.', 'Close', 'Owner', 'Actions'].map(
+                        (h) => (
+                          <th key={h} className="px-4 py-3 font-medium">
+                            {h}
+                          </th>
+                        ),
+                      )}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {deals.map((deal) => (
+                      <tr
+                        key={deal.id}
+                        className="cursor-pointer border-t border-border hover:bg-surface"
+                        onClick={() => navigate(`/deals/${deal.id}`)}
+                      >
+                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                          <SelectCheckbox
+                            checked={selection.isSelected(deal.id)}
+                            onChange={() => selection.toggle(deal.id)}
+                            aria-label={`Select ${deal.name}`}
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <button
+                            type="button"
+                            className="font-semibold text-accent-blue hover:underline"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              navigate(`/deals/${deal.id}`)
+                            }}
+                          >
+                            {deal.name}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div>{deal.contactId ? contactName[deal.contactId] ?? '—' : '—'}</div>
+                          <div className="text-xs text-text-secondary">
+                            {deal.accountId ? accountName[deal.accountId] ?? '' : ''}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 font-semibold">{formatCurrency(deal.amount)}</td>
+                        <td className="px-4 py-3">
+                          <Badge color="blue">{stageMap[deal.stageId]?.name ?? '—'}</Badge>
+                        </td>
+                        <td className="px-4 py-3">{deal.probability}%</td>
+                        <td className="px-4 py-3 text-text-secondary">
+                          {deal.expectedCloseDate ? formatDate(deal.expectedCloseDate) : '—'}
+                        </td>
+                        <td className="px-4 py-3">
+                          {deal.ownerUserId ? userName[deal.ownerUserId] ?? '—' : '—'}
+                        </td>
+                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center gap-0.5">
+                            <ViewIconButton onClick={() => navigate(`/deals/${deal.id}`)} />
+                            <DeleteIconButton
+                              disabled={busyDelete}
+                              onClick={() => setConfirm({ ids: [deal.id] })}
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </Card>
       )}
 
-      <Modal
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        title="Add deal"
-        subtitle="Track a sales opportunity through your pipeline stages."
-        size="xl"
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setAddOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" form="add-deal-form" disabled={saving}>
-              {saving ? 'Saving…' : 'Create deal'}
-            </Button>
-          </>
+      <ConfirmModal
+        open={Boolean(confirm)}
+        onClose={() => setConfirm(null)}
+        onConfirm={() => {
+          if (confirm) void runDelete(confirm.ids)
+        }}
+        title={confirm?.ids.length === 1 ? 'Delete deal?' : `Delete ${confirm?.ids.length ?? 0} deals?`}
+        body={
+          confirm?.ids.length === 1
+            ? 'This deal will be permanently removed.'
+            : 'Selected deals will be permanently removed.'
         }
-      >
-        <form id="add-deal-form" onSubmit={(e) => void handleAddDeal(e)} className="grid gap-3 sm:grid-cols-2">
-          <Input
-            className="sm:col-span-2"
-            label="Deal name *"
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            placeholder="e.g. 50kg platform scale — ABC Traders"
-          />
-          <Input
-            label="Deal value ₹"
-            type="number"
-            placeholder="e.g. 185000"
-            value={form.amount}
-            onChange={(e) => setForm({ ...form, amount: e.target.value })}
-          />
-          <Input
-            label="Expected close"
-            type="date"
-            value={form.expectedCloseDate}
-            onChange={(e) => setForm({ ...form, expectedCloseDate: e.target.value })}
-          />
-          <Select
-            label="Stage *"
-            value={form.stageId}
-            onChange={(e) => setForm({ ...form, stageId: e.target.value })}
-            options={[
-              { value: '', label: 'Select stage' },
-              ...stages.map((s) => ({ value: s.id, label: s.name })),
-            ]}
-          />
-          <Select
-            label="Priority"
-            value={form.priority}
-            onChange={(e) => setForm({ ...form, priority: e.target.value })}
-            options={[
-              { value: 'LOW', label: 'Low' },
-              { value: 'MEDIUM', label: 'Medium' },
-              { value: 'HIGH', label: 'High' },
-            ]}
-          />
-          <Select
-            label="Contact"
-            value={form.contactId}
-            onChange={(e) => {
-              const c = contacts.find((x) => x.id === e.target.value)
-              setForm({
-                ...form,
-                contactId: e.target.value,
-                accountId: c?.accountId || form.accountId,
-              })
-            }}
-            options={[
-              { value: '', label: 'Select contact' },
-              ...contacts.map((c) => ({ value: c.id, label: c.name })),
-            ]}
-          />
-          <Select
-            label="Account / company"
-            value={form.accountId}
-            onChange={(e) => setForm({ ...form, accountId: e.target.value })}
-            options={[
-              { value: '', label: 'Select company' },
-              ...accounts.map((a) => ({ value: a.id, label: a.name })),
-            ]}
-          />
-          <Select
-            label="Owner"
-            value={form.ownerUserId}
-            onChange={(e) => setForm({ ...form, ownerUserId: e.target.value })}
-            options={[
-              { value: '', label: 'Select owner' },
-              ...users.map((u) => ({ value: u.id, label: u.name })),
-            ]}
-          />
-          <label className="block text-sm sm:col-span-2">
-            <span className="mb-1 block font-medium text-text-secondary">Notes</span>
-            <textarea
-              className="min-h-20 w-full rounded-[6px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue"
-              placeholder="Scope, site notes, competitor info…"
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-            />
-          </label>
-        </form>
-      </Modal>
+      />
     </div>
   )
 }

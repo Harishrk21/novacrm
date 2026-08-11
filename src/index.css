@@ -37,30 +37,38 @@
 
 :root,
 [data-theme="light"] {
-  --color-sidebar-bg: #0F172A;
-  --color-sidebar-text: #94A3B8;
-  --color-surface: #F8FAFC;
+  --color-sidebar-bg: #0B1F3A;
+  --color-sidebar-text: #A8C4E0;
+  --color-surface: #EAF3FF;
   --color-card: #FFFFFF;
-  --color-border: #E2E8F0;
-  --color-text-primary: #0F172A;
-  --color-text-secondary: #64748B;
-  --color-muted: #F1F5F9;
+  --color-border: #BFD8F6;
+  --color-text-primary: #0B1F3A;
+  --color-text-secondary: #4B6A8A;
+  --color-muted: #D8E9FF;
   --color-overlay: rgba(15, 23, 42, 0.45);
+  --color-accent-soft: rgba(37, 99, 235, 0.12);
+  --color-panel-from: #DBEAFE;
+  --color-panel-to: #F0F9FF;
+  --app-wash: linear-gradient(165deg, #EAF3FF 0%, #F5F9FF 45%, #EEF6FF 100%);
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
   --shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.12);
   color-scheme: light;
 }
 
 [data-theme="dark"] {
-  --color-sidebar-bg: #020617;
-  --color-sidebar-text: #94A3B8;
-  --color-surface: #0B1220;
-  --color-card: #111827;
-  --color-border: #1F2937;
-  --color-text-primary: #F8FAFC;
-  --color-text-secondary: #94A3B8;
-  --color-muted: #1E293B;
+  --color-sidebar-bg: #050D18;
+  --color-sidebar-text: #8BA3C0;
+  --color-surface: #07111F;
+  --color-card: #0F1C2E;
+  --color-border: #243B57;
+  --color-text-primary: #E8F1FF;
+  --color-text-secondary: #8BA3C0;
+  --color-muted: #15253A;
   --color-overlay: rgba(0, 0, 0, 0.6);
+  --color-accent-soft: rgba(56, 189, 248, 0.16);
+  --color-panel-from: #12243A;
+  --color-panel-to: #0F1C2E;
+  --app-wash: linear-gradient(165deg, #07111F 0%, #0A1628 50%, #0C1A30 100%);
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35);
   --shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.45);
   color-scheme: dark;
@@ -81,9 +89,14 @@ body {
   font-family: var(--font-sans);
   font-size: var(--text-base);
   color: var(--color-text-primary);
-  background: var(--color-surface);
+  background-color: var(--color-surface);
+  background-image: var(--app-wash, none);
+  background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
-  transition: background-color 150ms ease, color 150ms ease;
+  transition:
+    background-color 220ms ease,
+    background-image 220ms ease,
+    color 220ms ease;
 }
 
 ::-webkit-scrollbar {
@@ -105,6 +118,26 @@ body {
   background-color: var(--color-muted);
 }
 
+.bg-surface {
+  background-color: var(--color-surface);
+}
+
+.bg-card {
+  background-color: var(--color-card);
+}
+
+.border-border {
+  border-color: var(--color-border);
+}
+
+.text-text-primary {
+  color: var(--color-text-primary);
+}
+
+.text-text-secondary {
+  color: var(--color-text-secondary);
+}
+
 .text-accent {
   color: var(--color-accent-blue);
 }
@@ -113,6 +146,20 @@ body {
   background-color: var(--color-accent-blue);
 }
 
+.bg-accent-soft {
+  background-color: var(--color-accent-soft);
+}
+
 .ring-accent:focus {
   --tw-ring-color: color-mix(in srgb, var(--color-accent-blue) 25%, transparent);
+}
+
+/* Cards / chrome follow palette smoothly */
+.bg-card,
+.bg-surface,
+.bg-muted,
+header,
+aside,
+main {
+  transition: background-color 220ms ease, border-color 220ms ease, color 220ms ease;
 }

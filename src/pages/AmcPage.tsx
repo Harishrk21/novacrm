@@ -16,10 +16,12 @@ import { ConfirmModal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError } from '@/lib/api'
+import { assetOriginShort, isThirdPartyOrigin } from '@/lib/assetOrigin'
 import { formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
 type PlanTab = 'AMC' | 'NON_AMC' | 'DUE'
+type OriginFilter = 'ALL' | 'SOLD_BY_US' | 'THIRD_PARTY'
 
 function daysUntil(dateStr?: string | null) {
   if (!dateStr) return null
@@ -35,6 +37,7 @@ export function AmcPage() {
   const navigate = useNavigate()
   const addToast = useUIStore((s) => s.addToast)
   const [tab, setTab] = useState<PlanTab>('AMC')
+  const [originFilter, setOriginFilter] = useState<OriginFilter>('ALL')
   const [rows, setRows] = useState<Record<string, unknown>[]>([])
   const [loading, setLoading] = useState(true)
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
@@ -60,10 +63,24 @@ export function AmcPage() {
     void load()
   }, [load])
 
-  const amcRows = useMemo(() => rows.filter((r) => String(r.servicePlan) === 'AMC'), [rows])
-  const nonAmcRows = useMemo(() => rows.filter((r) => String(r.servicePlan) !== 'AMC'), [rows])
+  const byOrigin = useMemo(() => {
+    if (originFilter === 'ALL') return rows
+    return rows.filter((r) => String(r.origin ?? 'SOLD_BY_US') === originFilter)
+  }, [originFilter, rows])
+
+  const soldCount = useMemo(
+    () => rows.filter((r) => !isThirdPartyOrigin(r.origin ? String(r.origin) : null)).length,
+    [rows],
+  )
+  const outsideCount = useMemo(
+    () => rows.filter((r) => isThirdPartyOrigin(r.origin ? String(r.origin) : null)).length,
+    [rows],
+  )
+
+  const amcRows = useMemo(() => byOrigin.filter((r) => String(r.servicePlan) === 'AMC'), [byOrigin])
+  const nonAmcRows = useMemo(() => byOrigin.filter((r) => String(r.servicePlan) !== 'AMC'), [byOrigin])
   const dueRows = useMemo(() => {
-    return rows
+    return byOrigin
       .map((r) => {
         const due = daysUntil(r.nextDueDate ? String(r.nextDueDate) : null)
         const amc = daysUntil(r.amcEndDate ? String(r.amcEndDate) : null)
@@ -76,7 +93,7 @@ export function AmcPage() {
         const bv = Math.min(b.due ?? 9999, b.amc ?? 9999)
         return av - bv
       })
-  }, [rows])
+  }, [byOrigin])
 
   const list =
     tab === 'AMC' ? amcRows : tab === 'NON_AMC' ? nonAmcRows : dueRows.map((d) => d.row)
@@ -113,7 +130,7 @@ export function AmcPage() {
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'AMC / Non-AMC' }]}
       />
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-3">
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Card className="flex items-center justify-between py-3">
           <span className="inline-flex items-center gap-2 text-sm text-text-secondary">
             <Shield size={16} className="text-accent-green" /> AMC machines
@@ -132,6 +149,35 @@ export function AmcPage() {
           </span>
           <span className="text-xl font-semibold tabular-nums">{dueRows.length}</span>
         </Card>
+        <Card className="flex items-center justify-between gap-2 py-3">
+          <span className="text-sm text-text-secondary">Sold by us / Outside</span>
+          <span className="text-lg font-semibold tabular-nums">
+            {soldCount} / {outsideCount}
+          </span>
+        </Card>
+      </div>
+
+      <div className="mb-3 flex flex-wrap gap-2">
+        {(
+          [
+            { id: 'ALL', label: 'All origins' },
+            { id: 'SOLD_BY_US', label: `Sold by us (${soldCount})` },
+            { id: 'THIRD_PARTY', label: `Outside / repair (${outsideCount})` },
+          ] as const
+        ).map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            onClick={() => setOriginFilter(o.id)}
+            className={`rounded-[10px] px-3 py-1.5 text-sm font-medium transition ${
+              originFilter === o.id
+                ? 'bg-accent-blue text-white'
+                : 'bg-muted text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            {o.label}
+          </button>
+        ))}
       </div>
 
       <PageTabs
@@ -180,7 +226,7 @@ export function AmcPage() {
                         aria-label="Select all"
                       />
                     </th>
-                    {['Customer', 'Machine', 'Plan', 'Next due', 'AMC end', 'Reminders', 'Actions'].map(
+                    {['Customer', 'Machine', 'Origin', 'Plan', 'Next due', 'AMC period', 'Reminders', 'Actions'].map(
                       (h) => (
                         <th key={h} className="px-4 py-3 font-medium">
                           {h}
@@ -200,6 +246,7 @@ export function AmcPage() {
                     const due = daysUntil(a.nextDueDate ? String(a.nextDueDate) : null)
                     const amcEnd = daysUntil(a.amcEndDate ? String(a.amcEndDate) : null)
                     const plan = String(a.servicePlan) === 'AMC' ? 'AMC' : 'Non-AMC'
+                    const outside = isThirdPartyOrigin(a.origin ? String(a.origin) : null)
                     return (
                       <tr key={id} className="border-t border-border">
                         <td className="px-4 py-3">
@@ -234,6 +281,11 @@ export function AmcPage() {
                           </div>
                         </td>
                         <td className="px-4 py-3">
+                          <Badge color={outside ? 'amber' : 'blue'}>
+                            {assetOriginShort(a.origin ? String(a.origin) : null)}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3">
                           <Badge color={plan === 'AMC' ? 'green' : 'gray'}>{plan}</Badge>
                         </td>
                         <td className="px-4 py-3">
@@ -247,14 +299,23 @@ export function AmcPage() {
                           ) : null}
                         </td>
                         <td className="px-4 py-3">
-                          {plan === 'AMC' && a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}
-                          {plan === 'AMC' && amcEnd != null ? (
-                            <div
-                              className={`text-xs ${amcEnd <= 7 ? 'text-accent-red' : amcEnd <= 30 ? 'text-accent-amber' : 'text-text-secondary'}`}
-                            >
-                              {amcEnd < 0 ? `${Math.abs(amcEnd)}d overdue` : `${amcEnd}d left`}
+                          {plan === 'AMC' ? (
+                            <div className="text-xs">
+                              <div>
+                                {a.amcStartDate ? formatDate(String(a.amcStartDate)) : '—'} →{' '}
+                                {a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}
+                              </div>
+                              {amcEnd != null ? (
+                                <div
+                                  className={`text-xs ${amcEnd <= 7 ? 'text-accent-red' : amcEnd <= 30 ? 'text-accent-amber' : 'text-text-secondary'}`}
+                                >
+                                  {amcEnd < 0 ? `${Math.abs(amcEnd)}d overdue` : `${amcEnd}d left`}
+                                </div>
+                              ) : null}
                             </div>
-                          ) : null}
+                          ) : (
+                            '—'
+                          )}
                         </td>
                         <td className="px-4 py-3 text-text-secondary">
                           {a.remindersEnabled === false ? 'Off' : 'On'}

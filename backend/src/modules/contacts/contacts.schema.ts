@@ -43,3 +43,21 @@ export const phoneSchema = z.object({
   query: z.object({ phone: z.string().min(5) }),
   params: z.any(),
 });
+
+export const noteCreateSchema = z.object({
+  body: z.object({ content: z.string().min(1) }),
+  query: z.any(),
+  params,
+});
+
+export const noteUpdateSchema = z.object({
+  body: z.object({ content: z.string().min(1) }),
+  query: z.any(),
+  params: z.object({ id: z.string().min(1).max(36), noteId: z.string().min(1).max(36) }),
+});
+
+export const noteIdSchema = z.object({
+  body: z.any(),
+  query: z.any(),
+  params: z.object({ id: z.string().min(1).max(36), noteId: z.string().min(1).max(36) }),
+});

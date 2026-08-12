@@ -341,6 +341,18 @@ export const api = {
   deleteContact: (id: string) => apiFetch<null>(`/contacts/${id}`, { method: 'DELETE' }),
   contactsLookup: (phone: string) =>
     apiFetch<unknown[]>(`/contacts/phone-lookup?phone=${encodeURIComponent(phone)}`),
+  addContactNote: (id: string, content: string) =>
+    apiFetch<Record<string, unknown>>(`/contacts/${id}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    }),
+  updateContactNote: (id: string, noteId: string, content: string) =>
+    apiFetch<Record<string, unknown>>(`/contacts/${id}/notes/${noteId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ content }),
+    }),
+  deleteContactNote: (id: string, noteId: string) =>
+    apiFetch<null>(`/contacts/${id}/notes/${noteId}`, { method: 'DELETE' }),
 
   // Accounts
   accounts: (params?: Record<string, string | number | undefined>) =>

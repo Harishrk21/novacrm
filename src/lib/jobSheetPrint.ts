@@ -36,6 +36,8 @@ export type JobSheetPrintOpts = {
   serialNo?: string | null
   capacity?: string | null
   servicePlan?: string | null
+  assetOrigin?: string | null
+  amcStartDate?: string | null
   amcEndDate?: string | null
   stampingDate?: string | null
   nextDueDate?: string | null
@@ -62,6 +64,16 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
 
   const machineTypeLabel = opts.machineType ? opts.machineType.replaceAll('_', ' ') : ''
   const servicePlanLabel = opts.servicePlan ? opts.servicePlan.replaceAll('_', ' ') : ''
+  const originLabel =
+    opts.assetOrigin === 'THIRD_PARTY'
+      ? 'Outside / repair only'
+      : opts.assetOrigin
+        ? 'Sold by us'
+        : ''
+  const amcPeriod =
+    opts.amcStartDate || opts.amcEndDate
+      ? `${opts.amcStartDate || '—'} → ${opts.amcEndDate || '—'}`
+      : ''
 
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"/><title>Job sheet ${escapeHtml(ticketLabel)}</title>
@@ -119,7 +131,7 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
       <div class="hero-top">
         <div>
           <div class="brand">${escapeHtml(opts.companyName || 'NovaCRM')}</div>
-          <div class="tag">Service job sheet</div>
+          <div class="tag">${opts.paymentStatus === 'PAID' ? 'Payment receipt' : 'Service job sheet'}</div>
         </div>
         <div class="meta">
           <div class="job-no">${escapeHtml(ticketLabel)}</div>
@@ -142,7 +154,8 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
           ${machineTypeLabel ? `<div class="line">${escapeHtml(machineTypeLabel)}</div>` : ''}
           ${opts.serialNo ? `<div class="line">Serial: ${escapeHtml(opts.serialNo)}</div>` : ''}
           ${opts.capacity ? `<div class="line">Capacity: ${escapeHtml(opts.capacity)}</div>` : ''}
-          ${servicePlanLabel ? `<div class="line">Plan: ${escapeHtml(servicePlanLabel)}${opts.amcEndDate ? ` · AMC ends ${escapeHtml(opts.amcEndDate)}` : ''}</div>` : ''}
+          ${originLabel ? `<div class="line">Origin: ${escapeHtml(originLabel)}</div>` : ''}
+          ${servicePlanLabel ? `<div class="line">Plan: ${escapeHtml(servicePlanLabel)}${amcPeriod ? ` · ${escapeHtml(amcPeriod)}` : ''}</div>` : ''}
         </div>
       </div>
 

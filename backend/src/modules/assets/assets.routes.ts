@@ -31,7 +31,9 @@ const body = z.object({
   platformSize: z.string().nullable().optional(),
   model: z.string().nullable().optional(),
   serialNo: z.string().nullable().optional(),
+  origin: z.enum(["SOLD_BY_US", "THIRD_PARTY"]).optional(),
   servicePlan: z.enum(["AMC", "NON_AMC"]).optional(),
+  amcStartDate: z.string().nullable().optional(),
   amcEndDate: z.string().nullable().optional(),
   remindersEnabled: z.boolean().optional(),
   stampingDate: z.string().nullable().optional(),
@@ -54,6 +56,7 @@ function parseDate(v: unknown): Date | null {
 function serialize(row: {
   stampingDate: Date | null;
   nextDueDate: Date | null;
+  amcStartDate?: Date | null;
   amcEndDate?: Date | null;
   [key: string]: unknown;
 }) {
@@ -61,6 +64,7 @@ function serialize(row: {
     ...row,
     stampingDate: row.stampingDate ? row.stampingDate.toISOString().slice(0, 10) : null,
     nextDueDate: row.nextDueDate ? row.nextDueDate.toISOString().slice(0, 10) : null,
+    amcStartDate: row.amcStartDate ? row.amcStartDate.toISOString().slice(0, 10) : null,
     amcEndDate: row.amcEndDate ? row.amcEndDate.toISOString().slice(0, 10) : null,
   };
 }
@@ -76,6 +80,9 @@ assetsRouter.get("/", async (q: Request, r: Response) => {
   if (q.query.machineType) where.machineType = String(q.query.machineType);
   if (q.query.servicePlan === "AMC" || q.query.servicePlan === "NON_AMC") {
     where.servicePlan = String(q.query.servicePlan);
+  }
+  if (q.query.origin === "SOLD_BY_US" || q.query.origin === "THIRD_PARTY") {
+    where.origin = String(q.query.origin);
   }
   if (q.query.dueSoon === "1" || q.query.dueSoon === "true") {
     const until = new Date();
@@ -153,8 +160,10 @@ assetsRouter.post("/", validate(createSchema), async (q: Request, r: Response) =
       platformSize: d.platformSize ?? null,
       model: d.model ?? null,
       serialNo: d.serialNo ?? null,
+      origin: d.origin ?? "SOLD_BY_US",
       servicePlan: d.servicePlan ?? "NON_AMC",
-      amcEndDate: parseDate(d.amcEndDate),
+      amcStartDate: d.servicePlan === "AMC" ? parseDate(d.amcStartDate) : null,
+      amcEndDate: d.servicePlan === "AMC" ? parseDate(d.amcEndDate) : null,
       remindersEnabled: d.remindersEnabled ?? true,
       stampingDate: parseDate(d.stampingDate),
       nextDueDate: parseDate(d.nextDueDate),
@@ -188,8 +197,13 @@ assetsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respons
   const data: Record<string, unknown> = { ...d };
   if ("stampingDate" in d) data.stampingDate = parseDate(d.stampingDate);
   if ("nextDueDate" in d) data.nextDueDate = parseDate(d.nextDueDate);
+  if ("amcStartDate" in d) data.amcStartDate = parseDate(d.amcStartDate);
   if ("amcEndDate" in d) data.amcEndDate = parseDate(d.amcEndDate);
   if (typeof d.name === "string") data.name = d.name.trim();
+  if (d.servicePlan === "NON_AMC") {
+    data.amcStartDate = null;
+    data.amcEndDate = null;
+  }
   await prisma.customerAsset.updateMany({ where: { id, tenantId: t, deletedAt: null }, data });
   const row = await prisma.customerAsset.findFirst({ where: { id, tenantId: t } });
   if (!row) throw notFound("Machine");

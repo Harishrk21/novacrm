@@ -28,8 +28,25 @@ function withTicketBalance<T extends { odAmount?: unknown; paymentTotal?: unknow
   };
 }
 
-function serializeAsset(asset: Record<string, unknown>) {
-  return asset;
+function serializeAsset(asset: {
+  stampingDate?: Date | string | null;
+  nextDueDate?: Date | string | null;
+  amcStartDate?: Date | string | null;
+  amcEndDate?: Date | string | null;
+  [key: string]: unknown;
+}) {
+  const slice = (v: Date | string | null | undefined) => {
+    if (!v) return null;
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    return String(v).slice(0, 10);
+  };
+  return {
+    ...asset,
+    stampingDate: slice(asset.stampingDate),
+    nextDueDate: slice(asset.nextDueDate),
+    amcStartDate: slice(asset.amcStartDate),
+    amcEndDate: slice(asset.amcEndDate),
+  };
 }
 
 export async function list(t: string, q: Record<string, unknown>) {
@@ -294,6 +311,52 @@ export const phone = (t: string, p: string) =>
     where: { tenantId: t, phoneNormalized: normalizePhone(p), deletedAt: null },
     take: 20,
   });
+
+export async function addNote(t: string, contactId: string, userId: string, content: string) {
+  const contact = await prisma.contact.findFirst({
+    where: { id: contactId, tenantId: t, deletedAt: null },
+  });
+  if (!contact) throw notFound("Contact");
+  return prisma.note.create({
+    data: {
+      id: newId(),
+      tenantId: t,
+      content: content.trim(),
+      entityType: "CONTACT",
+      entityId: contactId,
+      createdById: userId,
+    },
+  });
+}
+
+export async function updateNote(t: string, contactId: string, noteId: string, content: string) {
+  const updated = await prisma.note.updateMany({
+    where: {
+      id: noteId,
+      tenantId: t,
+      entityType: "CONTACT",
+      entityId: contactId,
+      deletedAt: null,
+    },
+    data: { content: content.trim() },
+  });
+  if (!updated.count) throw notFound("Note");
+  return prisma.note.findFirst({ where: { id: noteId, tenantId: t } });
+}
+
+export async function removeNote(t: string, contactId: string, noteId: string) {
+  const updated = await prisma.note.updateMany({
+    where: {
+      id: noteId,
+      tenantId: t,
+      entityType: "CONTACT",
+      entityId: contactId,
+      deletedAt: null,
+    },
+    data: { deletedAt: new Date() },
+  });
+  if (!updated.count) throw notFound("Note");
+}
 
 /** Ensure every existing contact has a customer code (one-time / safe to re-run). */
 export async function backfillCustomerCodes(t?: string) {

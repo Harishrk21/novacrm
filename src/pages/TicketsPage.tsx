@@ -19,6 +19,7 @@ import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
+import { ASSET_ORIGIN_OPTIONS, assetOriginShort } from '@/lib/assetOrigin'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -48,7 +49,9 @@ const emptyJob = {
   platformSize: '',
   model: '',
   serialNo: '',
+  origin: 'SOLD_BY_US',
   servicePlan: 'NON_AMC',
+  amcStartDate: '',
   amcEndDate: '',
   remindersEnabled: true,
   stampingDate: '',
@@ -195,7 +198,9 @@ export function TicketsPage() {
             platformSize: form.platformSize || null,
             model: form.model || null,
             serialNo: form.serialNo || null,
+            origin: form.origin,
             servicePlan: form.servicePlan,
+            amcStartDate: form.servicePlan === 'AMC' ? form.amcStartDate || null : null,
             amcEndDate: form.servicePlan === 'AMC' ? form.amcEndDate || null : null,
             remindersEnabled: form.remindersEnabled,
             stampingDate: form.stampingDate || null,
@@ -203,12 +208,26 @@ export function TicketsPage() {
           })
           assetId = String(machine.id)
         }
-      } else if (assetId && (form.stampingDate || form.nextDueDate || form.servicePlan || form.amcEndDate)) {
+      } else if (
+        assetId &&
+        (form.stampingDate ||
+          form.nextDueDate ||
+          form.servicePlan ||
+          form.amcEndDate ||
+          form.amcStartDate ||
+          form.origin)
+      ) {
         await api.updateAsset(assetId, {
           ...(form.stampingDate ? { stampingDate: form.stampingDate } : {}),
           ...(form.nextDueDate ? { nextDueDate: form.nextDueDate } : {}),
+          ...(form.origin ? { origin: form.origin } : {}),
           ...(form.servicePlan ? { servicePlan: form.servicePlan } : {}),
-          ...(form.servicePlan === 'AMC' && form.amcEndDate ? { amcEndDate: form.amcEndDate } : {}),
+          ...(form.servicePlan === 'AMC'
+            ? {
+                amcStartDate: form.amcStartDate || null,
+                amcEndDate: form.amcEndDate || null,
+              }
+            : { amcStartDate: null, amcEndDate: null }),
           remindersEnabled: form.remindersEnabled,
         })
       }
@@ -500,7 +519,9 @@ export function TicketsPage() {
                       stampingDate: a?.stampingDate ? String(a.stampingDate).slice(0, 10) : form.stampingDate,
                       nextDueDate: a?.nextDueDate ? String(a.nextDueDate).slice(0, 10) : form.nextDueDate,
                       servicePlan: a?.servicePlan ? String(a.servicePlan) : form.servicePlan,
+                      amcStartDate: a?.amcStartDate ? String(a.amcStartDate).slice(0, 10) : form.amcStartDate,
                       amcEndDate: a?.amcEndDate ? String(a.amcEndDate).slice(0, 10) : form.amcEndDate,
+                      origin: a?.origin ? String(a.origin) : form.origin,
                       remindersEnabled: a?.remindersEnabled !== false,
                     })
                   }}
@@ -508,12 +529,23 @@ export function TicketsPage() {
                     { value: '', label: 'Select machine' },
                     ...assets.map((a) => ({
                       value: String(a.id),
-                      label: `${String(a.name)}${a.serialNo ? ` · ${String(a.serialNo)}` : ''}${a.servicePlan === 'AMC' ? ' · AMC' : ''}`,
+                      label: `${String(a.name)}${a.serialNo ? ` · ${String(a.serialNo)}` : ''} · ${assetOriginShort(a.origin ? String(a.origin) : null)}${a.servicePlan === 'AMC' ? ' · AMC' : ''}`,
                     })),
                   ]}
                 />
               ) : (
                 <>
+                  <div className="sm:col-span-2 lg:col-span-3">
+                    <Select
+                      label="Machine origin *"
+                      value={form.origin}
+                      onChange={(e) => setForm({ ...form, origin: e.target.value })}
+                      options={ASSET_ORIGIN_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                    />
+                    <p className="mt-1 text-xs text-text-secondary">
+                      {ASSET_ORIGIN_OPTIONS.find((o) => o.value === form.origin)?.hint}
+                    </p>
+                  </div>
                   <Select
                     label="Type"
                     value={form.machineType}
@@ -534,6 +566,19 @@ export function TicketsPage() {
                   <Input label="Serial number" value={form.serialNo} onChange={(e) => setForm({ ...form, serialNo: e.target.value })} />
                 </>
               )}
+              {!form.newMachine && assets.length > 0 ? (
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <Select
+                    label="Machine origin"
+                    value={form.origin}
+                    onChange={(e) => setForm({ ...form, origin: e.target.value })}
+                    options={ASSET_ORIGIN_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                  />
+                  <p className="mt-1 text-xs text-text-secondary">
+                    Change if this unit was sold by us vs brought only for repair.
+                  </p>
+                </div>
+              ) : null}
               <Select
                 label="Service plan"
                 value={form.servicePlan}
@@ -544,12 +589,20 @@ export function TicketsPage() {
                 ]}
               />
               {form.servicePlan === 'AMC' ? (
-                <Input
-                  label="AMC end date"
-                  type="date"
-                  value={form.amcEndDate}
-                  onChange={(e) => setForm({ ...form, amcEndDate: e.target.value })}
-                />
+                <>
+                  <Input
+                    label="AMC start date"
+                    type="date"
+                    value={form.amcStartDate}
+                    onChange={(e) => setForm({ ...form, amcStartDate: e.target.value })}
+                  />
+                  <Input
+                    label="AMC end date"
+                    type="date"
+                    value={form.amcEndDate}
+                    onChange={(e) => setForm({ ...form, amcEndDate: e.target.value })}
+                  />
+                </>
               ) : null}
               <label className="flex items-end gap-2 pb-2 text-sm">
                 <input

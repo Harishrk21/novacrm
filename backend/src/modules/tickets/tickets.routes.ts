@@ -614,6 +614,8 @@ ticketsRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) =>
         stampingDate: a.stampingDate ? a.stampingDate.toISOString().slice(0, 10) : null,
         nextDueDate: a.nextDueDate ? a.nextDueDate.toISOString().slice(0, 10) : null,
         amcEndDate: a.amcEndDate ? a.amcEndDate.toISOString().slice(0, 10) : null,
+        amcStartDate: a.amcStartDate ? a.amcStartDate.toISOString().slice(0, 10) : null,
+        origin: a.origin,
       };
     }
   }
@@ -658,12 +660,12 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
   if (d.status === "CLOSED") data.closedAt = new Date();
   if ("stampingDate" in d) data.stampingDate = parseDate(d.stampingDate);
   if ("nextDueDate" in d) data.nextDueDate = parseDate(d.nextDueDate);
-  if (d.category || d.channel) {
+  if ("category" in d || "channel" in d) {
     data.customFields = {
       ...((existing.customFields as object) ?? {}),
-      ...(d.category ? { category: d.category } : {}),
-      ...(d.channel ? { channel: d.channel } : {}),
       ...((d.customFields as object) ?? {}),
+      ...("category" in d ? { category: d.category ?? null } : {}),
+      ...("channel" in d ? { channel: d.channel ?? null } : {}),
     };
     delete data.category;
     delete data.channel;

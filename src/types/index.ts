@@ -106,6 +106,7 @@ export type MachineType =
   | 'OTHER'
 
 export type ServicePlan = 'AMC' | 'NON_AMC'
+export type AssetOrigin = 'SOLD_BY_US' | 'THIRD_PARTY'
 export type JobPaymentStatus = 'UNPAID' | 'PARTIAL' | 'PAID'
 
 export interface CustomerAsset {
@@ -118,7 +119,10 @@ export interface CustomerAsset {
   platformSize?: string | null
   model?: string | null
   serialNo?: string | null
+  /** Bought from us vs outside unit brought only for repair/service */
+  origin?: AssetOrigin
   servicePlan?: ServicePlan
+  amcStartDate?: string | null
   amcEndDate?: string | null
   remindersEnabled?: boolean
   stampingDate?: string | null

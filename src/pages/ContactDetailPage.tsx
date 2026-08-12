@@ -5,7 +5,9 @@ import {
   Briefcase,
   Building2,
   CircleDollarSign,
+  Download,
   Edit3,
+  Eye,
   Mail,
   MapPin,
   Package,
@@ -13,6 +15,7 @@ import {
   ShoppingBag,
   TicketCheck,
   TicketPlus,
+  Trash2,
   UserRound,
 } from 'lucide-react'
 import {
@@ -37,8 +40,10 @@ import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
+import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
+import { ASSET_ORIGIN_OPTIONS, isThirdPartyOrigin } from '@/lib/assetOrigin'
 import { formatCurrency, formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
@@ -64,8 +69,13 @@ export function ContactDetailPage() {
   const [contact, setContact] = useState<Record<string, unknown> | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [machineOpen, setMachineOpen] = useState(false)
+  const [editingMachineId, setEditingMachineId] = useState<string | null>(null)
   const [accounts, setAccounts] = useState<Array<{ id: string; name: string }>>([])
   const [savingMachine, setSavingMachine] = useState(false)
+  const [noteDraft, setNoteDraft] = useState('')
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
+  const [editingNoteText, setEditingNoteText] = useState('')
+  const [noteBusy, setNoteBusy] = useState(false)
   const [form, setForm] = useState({
     name: '',
     email: '',
@@ -83,7 +93,7 @@ export function ContactDetailPage() {
     accountId: '',
     description: '',
   })
-  const [machineForm, setMachineForm] = useState({
+  const emptyMachineForm = {
     machineType: 'WEIGHING',
     name: '',
     capacity: '',
@@ -91,13 +101,44 @@ export function ContactDetailPage() {
     platformSize: '',
     model: '',
     serialNo: '',
+    origin: 'SOLD_BY_US',
     servicePlan: 'NON_AMC',
+    amcStartDate: '',
     amcEndDate: '',
     remindersEnabled: true,
     stampingDate: '',
     nextDueDate: '',
     notes: '',
-  })
+  }
+  const [machineForm, setMachineForm] = useState(emptyMachineForm)
+
+  function openAddMachine() {
+    setEditingMachineId(null)
+    setMachineForm(emptyMachineForm)
+    setMachineOpen(true)
+  }
+
+  function openEditMachine(a: Record<string, unknown>) {
+    setEditingMachineId(String(a.id))
+    setMachineForm({
+      machineType: String(a.machineType ?? 'WEIGHING'),
+      name: String(a.name ?? ''),
+      capacity: String(a.capacity ?? ''),
+      accuracy: String(a.accuracy ?? ''),
+      platformSize: String(a.platformSize ?? ''),
+      model: String(a.model ?? ''),
+      serialNo: String(a.serialNo ?? ''),
+      origin: String(a.origin ?? 'SOLD_BY_US'),
+      servicePlan: String(a.servicePlan ?? 'NON_AMC'),
+      amcStartDate: a.amcStartDate ? String(a.amcStartDate).slice(0, 10) : '',
+      amcEndDate: a.amcEndDate ? String(a.amcEndDate).slice(0, 10) : '',
+      remindersEnabled: a.remindersEnabled !== false,
+      stampingDate: a.stampingDate ? String(a.stampingDate).slice(0, 10) : '',
+      nextDueDate: a.nextDueDate ? String(a.nextDueDate).slice(0, 10) : '',
+      notes: String(a.notes ?? ''),
+    })
+    setMachineOpen(true)
+  }
 
   const load = useCallback(async () => {
     if (!id) return
@@ -165,15 +206,128 @@ export function ContactDetailPage() {
     }
   }
 
+  function downloadPurchasesCsv() {
+    if (!contact) return
+    const invs = (contact.invoices as Array<Record<string, unknown>>) ?? []
+    const products = ((contact.purchaseSummary as { productsBought?: Array<Record<string, unknown>> })
+      ?.productsBought ?? []) as Array<{
+      name?: string
+      sku?: string
+      qty?: number
+      amount?: number
+    }>
+    const lines = [
+      ['Type', 'Reference', 'Date', 'SKU', 'Item', 'Qty', 'Amount', 'Status'].join(','),
+      ...products.map((p) =>
+        [
+          'Product',
+          '',
+          '',
+          csvEscape(String(p.sku ?? '')),
+          csvEscape(String(p.name ?? '')),
+          String(p.qty ?? 0),
+          String(p.amount ?? 0),
+          '',
+        ].join(','),
+      ),
+      ...invs.map((inv) =>
+        [
+          'Invoice',
+          csvEscape(String(inv.invoiceNumber ?? '')),
+          inv.invoiceDate ? formatDate(String(inv.invoiceDate)) : '',
+          '',
+          '',
+          '',
+          String(num(inv.grandTotal)),
+          csvEscape(String(inv.status ?? '')),
+        ].join(','),
+      ),
+    ]
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${String(contact.customerCode || contact.name || 'customer').replace(/\s+/g, '_')}_purchases.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    addToast({ type: 'success', message: 'Purchases CSV downloaded' })
+  }
+
+  async function addNote() {
+    if (!id || !noteDraft.trim()) return
+    setNoteBusy(true)
+    try {
+      await api.addContactNote(id, noteDraft.trim())
+      setNoteDraft('')
+      addToast({ type: 'success', message: 'Note added' })
+      await load()
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not add note',
+      })
+    } finally {
+      setNoteBusy(false)
+    }
+  }
+
+  async function saveNoteEdit() {
+    if (!id || !editingNoteId || !editingNoteText.trim()) return
+    setNoteBusy(true)
+    try {
+      await api.updateContactNote(id, editingNoteId, editingNoteText.trim())
+      setEditingNoteId(null)
+      setEditingNoteText('')
+      addToast({ type: 'success', message: 'Note updated' })
+      await load()
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not update note',
+      })
+    } finally {
+      setNoteBusy(false)
+    }
+  }
+
+  async function deleteNote(noteId: string) {
+    if (!id) return
+    setNoteBusy(true)
+    try {
+      await api.deleteContactNote(id, noteId)
+      addToast({ type: 'success', message: 'Note deleted' })
+      await load()
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not delete note',
+      })
+    } finally {
+      setNoteBusy(false)
+    }
+  }
+
   async function saveMachine() {
     if (!id || !machineForm.name.trim()) {
       addToast({ type: 'error', message: 'Machine name is required' })
       return
     }
+    if (machineForm.servicePlan === 'AMC' && !machineForm.amcStartDate && !machineForm.amcEndDate) {
+      addToast({ type: 'error', message: 'Set AMC start and/or end date' })
+      return
+    }
+    if (
+      machineForm.servicePlan === 'AMC' &&
+      machineForm.amcStartDate &&
+      machineForm.amcEndDate &&
+      machineForm.amcEndDate < machineForm.amcStartDate
+    ) {
+      addToast({ type: 'error', message: 'AMC end date must be on or after start date' })
+      return
+    }
     setSavingMachine(true)
     try {
-      await api.createAsset({
-        contactId: id,
+      const body = {
         machineType: machineForm.machineType,
         name: machineForm.name.trim(),
         capacity: machineForm.capacity || null,
@@ -181,30 +335,25 @@ export function ContactDetailPage() {
         platformSize: machineForm.platformSize || null,
         model: machineForm.model || null,
         serialNo: machineForm.serialNo || null,
+        origin: machineForm.origin,
         servicePlan: machineForm.servicePlan,
+        amcStartDate: machineForm.servicePlan === 'AMC' ? machineForm.amcStartDate || null : null,
         amcEndDate: machineForm.servicePlan === 'AMC' ? machineForm.amcEndDate || null : null,
         remindersEnabled: machineForm.remindersEnabled,
         stampingDate: machineForm.stampingDate || null,
         nextDueDate: machineForm.nextDueDate || null,
         notes: machineForm.notes || null,
-      })
+      }
+      if (editingMachineId) {
+        await api.updateAsset(editingMachineId, body)
+        addToast({ type: 'success', message: 'Machine updated' })
+      } else {
+        await api.createAsset({ contactId: id, ...body })
+        addToast({ type: 'success', message: 'Machine saved' })
+      }
       setMachineOpen(false)
-      setMachineForm({
-        machineType: 'WEIGHING',
-        name: '',
-        capacity: '',
-        accuracy: '',
-        platformSize: '',
-        model: '',
-        serialNo: '',
-        servicePlan: 'NON_AMC',
-        amcEndDate: '',
-        remindersEnabled: true,
-        stampingDate: '',
-        nextDueDate: '',
-        notes: '',
-      })
-      addToast({ type: 'success', message: 'Machine saved' })
+      setEditingMachineId(null)
+      setMachineForm(emptyMachineForm)
       await load()
     } catch (err) {
       addToast({
@@ -326,19 +475,38 @@ export function ContactDetailPage() {
         open={machineOpen}
         accent="theme"
         eyebrow="Machines"
-        title="Add machine"
-        subtitle="Weighing / billing / CCTV etc. Set AMC here — reminders use next due + AMC end."
-        onClose={() => setMachineOpen(false)}
+        title={editingMachineId ? 'Edit machine' : 'Add machine'}
+        subtitle="Switch to AMC anytime and set AMC start + end. Reminders use next due and AMC end."
+        onClose={() => {
+          setMachineOpen(false)
+          setEditingMachineId(null)
+        }}
         footer={
           <>
-            <FormPanelCancel onClick={() => setMachineOpen(false)} />
+            <FormPanelCancel
+              onClick={() => {
+                setMachineOpen(false)
+                setEditingMachineId(null)
+              }}
+            />
             <Button disabled={savingMachine} onClick={() => void saveMachine()}>
-              {savingMachine ? 'Saving…' : 'Save machine'}
+              {savingMachine ? 'Saving…' : editingMachineId ? 'Save changes' : 'Save machine'}
             </Button>
           </>
         }
       >
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="sm:col-span-2 lg:col-span-3">
+            <Select
+              label="Machine origin *"
+              value={machineForm.origin}
+              onChange={(e) => setMachineForm({ ...machineForm, origin: e.target.value })}
+              options={ASSET_ORIGIN_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+            />
+            <p className="mt-1 text-xs text-text-secondary">
+              {ASSET_ORIGIN_OPTIONS.find((o) => o.value === machineForm.origin)?.hint}
+            </p>
+          </div>
           <Select
             label="Machine type"
             value={machineForm.machineType}
@@ -367,12 +535,20 @@ export function ContactDetailPage() {
             ]}
           />
           {machineForm.servicePlan === 'AMC' ? (
-            <Input
-              label="AMC end date"
-              type="date"
-              value={machineForm.amcEndDate}
-              onChange={(e) => setMachineForm({ ...machineForm, amcEndDate: e.target.value })}
-            />
+            <>
+              <Input
+                label="AMC start date"
+                type="date"
+                value={machineForm.amcStartDate}
+                onChange={(e) => setMachineForm({ ...machineForm, amcStartDate: e.target.value })}
+              />
+              <Input
+                label="AMC end date"
+                type="date"
+                value={machineForm.amcEndDate}
+                onChange={(e) => setMachineForm({ ...machineForm, amcEndDate: e.target.value })}
+              />
+            </>
           ) : null}
           <Input label="Stamping date" type="date" value={machineForm.stampingDate} onChange={(e) => setMachineForm({ ...machineForm, stampingDate: e.target.value })} />
           <Input label="Next due date" type="date" value={machineForm.nextDueDate} onChange={(e) => setMachineForm({ ...machineForm, nextDueDate: e.target.value })} />
@@ -450,20 +626,23 @@ export function ContactDetailPage() {
         </div>
       </Card>
 
-      <div className="mb-4 flex flex-wrap gap-2">
-        {(['Overview', 'Machines', 'Purchases', 'Deals', 'Tickets', 'Notes'] as Tab[]).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => setTab(t)}
-            className={`rounded-full px-4 py-1.5 text-sm font-medium ${
-              tab === t ? 'bg-accent-blue text-white' : 'bg-muted text-text-secondary'
-            }`}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
+      <PageTabs
+        accent="theme"
+        active={tab}
+        onChange={(id) => setTab(id as Tab)}
+        tabs={[
+          { id: 'Overview', label: 'Overview' },
+          {
+            id: 'Machines',
+            label: 'Machines',
+            count: ((contact.assets as Array<unknown>) ?? []).length,
+          },
+          { id: 'Purchases', label: 'Purchases', count: invoices.length },
+          { id: 'Deals', label: 'Deals', count: deals.length },
+          { id: 'Tickets', label: 'Tickets', count: tickets.length },
+          { id: 'Notes', label: 'Notes', count: notes.length },
+        ]}
+      />
 
       {tab === 'Overview' && (
         <ContactAnalytics
@@ -481,8 +660,24 @@ export function ContactDetailPage() {
       {tab === 'Machines' && (
         <Card padding={false}>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-            <div className="text-sm font-semibold">Machines / equipment</div>
-            <Button size="sm" onClick={() => setMachineOpen(true)}>
+            <div>
+              <div className="text-sm font-semibold">Machines / equipment</div>
+              <p className="mt-0.5 text-xs text-text-secondary">
+                {
+                  ((contact.assets as Array<Record<string, unknown>>) ?? []).filter(
+                    (a) => !isThirdPartyOrigin(a.origin ? String(a.origin) : null),
+                  ).length
+                }{' '}
+                sold by us ·{' '}
+                {
+                  ((contact.assets as Array<Record<string, unknown>>) ?? []).filter((a) =>
+                    isThirdPartyOrigin(a.origin ? String(a.origin) : null),
+                  ).length
+                }{' '}
+                outside / repair-only
+              </p>
+            </div>
+            <Button size="sm" onClick={openAddMachine}>
               Add machine
             </Button>
           </div>
@@ -490,16 +685,26 @@ export function ContactDetailPage() {
             <EmptyState
               icon={<Package size={22} />}
               title="No machines yet"
-              subtitle="Add weighing scales, billing machines, CCTV, etc. for this customer."
+              subtitle="Add weighing scales, billing machines, CCTV, etc. Mark each as Sold by us or Outside (repair only)."
               actionLabel="Add machine"
-              onAction={() => setMachineOpen(true)}
+              onAction={openAddMachine}
             />
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[900px] text-left text-sm">
+              <table className="w-full min-w-[1080px] text-left text-sm">
                 <thead className="bg-muted text-xs text-text-secondary">
                   <tr>
-                    {['Machine', 'Type', 'Plan', 'Serial / Cap', 'Stamping', 'Next due', 'AMC end', ''].map((h) => (
+                    {[
+                      'Machine',
+                      'Origin',
+                      'Type',
+                      'Plan',
+                      'Serial / Cap',
+                      'Stamping',
+                      'Next due',
+                      'AMC period',
+                      '',
+                    ].map((h) => (
                       <th key={h || 'a'} className="px-4 py-3 font-medium">
                         {h}
                       </th>
@@ -510,6 +715,15 @@ export function ContactDetailPage() {
                   {((contact.assets as Array<Record<string, unknown>>) ?? []).map((a) => (
                     <tr key={String(a.id)} className="border-t border-border">
                       <td className="px-4 py-3 font-medium">{String(a.name)}</td>
+                      <td className="px-4 py-3">
+                        <Badge
+                          color={isThirdPartyOrigin(a.origin ? String(a.origin) : null) ? 'amber' : 'blue'}
+                        >
+                          {isThirdPartyOrigin(a.origin ? String(a.origin) : null)
+                            ? 'Outside'
+                            : 'Sold by us'}
+                        </Badge>
+                      </td>
                       <td className="px-4 py-3">
                         <Badge color="blue">{String(a.machineType).replaceAll('_', ' ')}</Badge>
                       </td>
@@ -527,21 +741,43 @@ export function ContactDetailPage() {
                       <td className="px-4 py-3">
                         {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
                       </td>
-                      <td className="px-4 py-3">
-                        {a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}
+                      <td className="px-4 py-3 text-xs text-text-secondary">
+                        {a.servicePlan === 'AMC' ? (
+                          <>
+                            <div>
+                              Start:{' '}
+                              <span className="font-medium text-text-primary">
+                                {a.amcStartDate ? formatDate(String(a.amcStartDate)) : '—'}
+                              </span>
+                            </div>
+                            <div>
+                              End:{' '}
+                              <span className="font-medium text-text-primary">
+                                {a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          '—'
+                        )}
                       </td>
                       <td className="px-4 py-3">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() =>
-                            navigate(
-                              `/tickets?contactId=${encodeURIComponent(String(contact.id))}&assetId=${encodeURIComponent(String(a.id))}&open=1`,
-                            )
-                          }
-                        >
-                          New job
-                        </Button>
+                        <div className="flex flex-wrap gap-2">
+                          <Button size="sm" variant="outline" onClick={() => openEditMachine(a)}>
+                            <Edit3 size={14} /> Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() =>
+                              navigate(
+                                `/tickets?contactId=${encodeURIComponent(String(contact.id))}&assetId=${encodeURIComponent(String(a.id))}&open=1`,
+                              )
+                            }
+                          >
+                            New job
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -554,6 +790,12 @@ export function ContactDetailPage() {
 
       {tab === 'Purchases' && (
         <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-text-secondary">Invoice and product history for this customer.</p>
+            <Button variant="outline" size="sm" onClick={downloadPurchasesCsv}>
+              <Download size={14} /> Download CSV
+            </Button>
+          </div>
           <Card>
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-text-secondary">Products bought</h2>
             {purchaseSummary.productsBought.length === 0 ? (
@@ -693,8 +935,8 @@ export function ContactDetailPage() {
             <table className="w-full text-left text-sm">
               <thead className="bg-muted text-xs text-text-secondary">
                 <tr>
-                  {['#', 'Subject', 'Priority', 'Status'].map((h) => (
-                    <th key={h} className="px-4 py-3 font-medium">
+                  {['#', 'Subject', 'Priority', 'Status', ''].map((h) => (
+                    <th key={h || 'a'} className="px-4 py-3 font-medium">
                       {h}
                     </th>
                   ))}
@@ -715,6 +957,11 @@ export function ContactDetailPage() {
                     <td className="px-4 py-3">
                       <Badge color={ticketStatusColor[String(t.status)] ?? 'gray'}>{String(t.status)}</Badge>
                     </td>
+                    <td className="px-4 py-3 text-right">
+                      <Button size="sm" variant="outline" onClick={() => navigate(`/tickets/${t.id}`)}>
+                        <Eye size={14} /> View detail
+                      </Button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -724,25 +971,97 @@ export function ContactDetailPage() {
       )}
 
       {tab === 'Notes' && (
-        <Card>
+        <Card className="space-y-4">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-text-secondary">Add note</label>
+            <textarea
+              className="min-h-24 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
+              placeholder="Customer preference, site access, follow-up…"
+              value={noteDraft}
+              onChange={(e) => setNoteDraft(e.target.value)}
+            />
+            <div className="mt-2 flex justify-end">
+              <Button disabled={noteBusy || !noteDraft.trim()} onClick={() => void addNote()}>
+                {noteBusy ? 'Saving…' : 'Add note'}
+              </Button>
+            </div>
+          </div>
           {notes.length === 0 ? (
-            <p className="text-sm text-text-secondary">No notes yet.</p>
+            <p className="text-sm text-text-secondary">No notes yet — add the first one above.</p>
           ) : (
             <ul className="space-y-3">
-              {notes.map((n) => (
-                <li key={String(n.id)} className="rounded-lg border border-border p-3 text-sm">
-                  <p>{String(n.content)}</p>
-                  <p className="mt-1 text-xs text-text-secondary">
-                    {n.createdAt ? formatDate(String(n.createdAt)) : ''}
-                  </p>
-                </li>
-              ))}
+              {notes.map((n) => {
+                const noteId = String(n.id)
+                const isEditing = editingNoteId === noteId
+                return (
+                  <li key={noteId} className="rounded-lg border border-border p-3 text-sm">
+                    {isEditing ? (
+                      <>
+                        <textarea
+                          className="min-h-20 w-full rounded-[8px] border border-border bg-card p-2 text-sm outline-none focus:border-accent-blue"
+                          value={editingNoteText}
+                          onChange={(e) => setEditingNoteText(e.target.value)}
+                        />
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <Button size="sm" disabled={noteBusy} onClick={() => void saveNoteEdit()}>
+                            Save
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setEditingNoteId(null)
+                              setEditingNoteText('')
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="whitespace-pre-wrap">{String(n.content)}</p>
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-xs text-text-secondary">
+                            {n.createdAt ? formatDate(String(n.createdAt)) : ''}
+                          </p>
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setEditingNoteId(noteId)
+                                setEditingNoteText(String(n.content ?? ''))
+                              }}
+                            >
+                              <Edit3 size={14} /> Edit
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={noteBusy}
+                              onClick={() => void deleteNote(noteId)}
+                            >
+                              <Trash2 size={14} /> Delete
+                            </Button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </li>
+                )
+              })}
             </ul>
           )}
         </Card>
       )}
     </div>
   )
+}
+
+function csvEscape(value: string) {
+  if (/[",\n]/.test(value)) return `"${value.replaceAll('"', '""')}"`
+  return value
 }
 
 const CHART_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444', '#06B6D4']

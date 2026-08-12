@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -22,6 +22,8 @@ import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
+import { assetOriginShort, isThirdPartyOrigin } from '@/lib/assetOrigin'
+import { openPrintableInvoice } from '@/lib/invoicePrint'
 import { openPrintableJobSheet } from '@/lib/jobSheetPrint'
 import { formatCurrency, formatDate, formatDateTime, formatPhone } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
@@ -43,6 +45,14 @@ export function TicketDetailPage() {
   const [completeOpen, setCompleteOpen] = useState(false)
   const [completeStatus, setCompleteStatus] = useState<'RESOLVED' | 'CLOSED'>('RESOLVED')
   const [payDraft, setPayDraft] = useState({ paymentTotal: '', advanceAmount: '', odAmount: '' })
+  const [editDraft, setEditDraft] = useState({
+    subject: '',
+    description: '',
+    stampingDate: '',
+    nextDueDate: '',
+    category: '',
+    channel: '',
+  })
   const [lastInvoice, setLastInvoice] = useState<Record<string, unknown> | null>(null)
 
   const load = useCallback(async () => {
@@ -52,10 +62,19 @@ export function TicketDetailPage() {
       const [row, lookups] = await Promise.all([api.getTicket(id), api.lookups()])
       setTicket(row)
       setUsers(lookups.users)
+      const cf = (row.customFields as Record<string, unknown>) ?? {}
       setPayDraft({
         paymentTotal: String(num(row.paymentTotal) || ''),
         advanceAmount: String(num(row.advanceAmount) || ''),
         odAmount: String(num(row.odAmount) || ''),
+      })
+      setEditDraft({
+        subject: String(row.subject ?? ''),
+        description: String(row.description ?? ''),
+        stampingDate: row.stampingDate ? String(row.stampingDate).slice(0, 10) : '',
+        nextDueDate: row.nextDueDate ? String(row.nextDueDate).slice(0, 10) : '',
+        category: String(cf.category ?? ''),
+        channel: String(cf.channel ?? ''),
       })
     } catch (err) {
       setTicket(null)
@@ -189,18 +208,82 @@ export function TicketDetailPage() {
     }
   }
 
+  function openTaxInvoicePdf(inv: Record<string, unknown>, row?: Record<string, unknown> | null) {
+    const t = row ?? ticket
+    if (!t || !inv) return false
+    const contact = (t.contact as {
+      name?: string
+      phone?: string | null
+      street?: string | null
+      doorNo?: string | null
+      area?: string | null
+      pincode?: string | null
+      location?: string | null
+    } | null) ?? null
+    const account = (t.account as { name?: string } | null) ?? null
+    const address = [contact?.doorNo, contact?.street, contact?.area, contact?.location, contact?.pincode]
+      .filter(Boolean)
+      .join(', ')
+    const linesRaw = (inv.lines as Array<Record<string, unknown>> | undefined) ?? []
+    const lines =
+      linesRaw.length > 0
+        ? linesRaw.map((l) => ({
+            description: String(l.description ?? 'Service'),
+            quantity: num(l.quantity) || 1,
+            unitPrice: num(l.unitPrice),
+            taxPercent: num(l.taxPercent),
+            lineTotal: num(l.lineTotal) || num(l.unitPrice) * (num(l.quantity) || 1),
+          }))
+        : [
+            {
+              description: `Service — ${String(t.subject ?? '')} (TKT-${String(t.ticketNo).padStart(5, '0')})`,
+              quantity: 1,
+              unitPrice: num(inv.grandTotal) || num(t.paymentTotal),
+              taxPercent: 0,
+              lineTotal: num(inv.grandTotal) || num(t.paymentTotal),
+            },
+          ]
+    const grand = num(inv.grandTotal) || lines.reduce((s, l) => s + l.lineTotal, 0)
+    const tax = num(inv.taxTotal)
+    const sub = num(inv.subtotal) || Math.max(0, grand - tax)
+    return openPrintableInvoice({
+      invoiceNumber: String(inv.invoiceNumber ?? 'INV'),
+      status: String(inv.status ?? 'SENT'),
+      invoiceDate: inv.invoiceDate ? formatDate(String(inv.invoiceDate)) : formatDate(new Date().toISOString()),
+      dueDate: inv.dueDate ? formatDate(String(inv.dueDate)) : null,
+      sellerName: tenantName || 'NovaCRM',
+      accountName: account?.name || contact?.name || 'Customer',
+      contactName: contact?.name,
+      billingAddress: address || undefined,
+      notes: inv.notes ? String(inv.notes) : null,
+      ticketRef: `TKT-${String(t.ticketNo).padStart(5, '0')}`,
+      lines,
+      subtotal: sub,
+      taxTotal: tax,
+      discountTotal: num(inv.discountTotal),
+      grandTotal: grand,
+      amountPaid: num(inv.amountPaid),
+    })
+  }
+
   async function invoicePdfAndSend() {
     if (!id) return
     setBusy(true)
     try {
       const updated = await api.createTicketInvoice(id)
-      if (updated.invoice) setLastInvoice(updated.invoice as Record<string, unknown>)
+      const inv = (updated.invoice as Record<string, unknown> | undefined) ?? null
+      if (inv) setLastInvoice(inv)
       addToast({
         type: 'success',
-        message: `Invoice ${String((updated.invoice as { invoiceNumber?: string })?.invoiceNumber ?? '')} ready`,
+        message: inv?.invoiceNumber
+          ? `Tax invoice ${String(inv.invoiceNumber)} ready`
+          : 'Tax invoice ready',
       })
       handleWhatsappResult(updated.whatsapp, 'invoice')
-      downloadJobSheet({ ...ticket, ...updated })
+      if (inv) {
+        const ok = openTaxInvoicePdf(inv, { ...(ticket ?? {}), ...updated })
+        if (!ok) addToast({ type: 'error', message: 'Allow pop-ups to open the tax invoice PDF' })
+      }
       await load()
     } catch (err) {
       addToast({
@@ -210,6 +293,24 @@ export function TicketDetailPage() {
     } finally {
       setBusy(false)
     }
+  }
+
+  async function saveTicketDetails() {
+    if (!editDraft.subject.trim()) {
+      addToast({ type: 'error', message: 'Subject is required' })
+      return
+    }
+    await patchTicket(
+      {
+        subject: editDraft.subject.trim(),
+        description: editDraft.description.trim() || 'Service job',
+        stampingDate: editDraft.stampingDate || null,
+        nextDueDate: editDraft.nextDueDate || null,
+        category: editDraft.category || null,
+        channel: editDraft.channel || null,
+      },
+      'Ticket details saved',
+    )
   }
 
   async function savePayments() {
@@ -268,6 +369,8 @@ export function TicketDetailPage() {
         serialNo: asset?.serialNo ? String(asset.serialNo) : null,
         capacity: asset?.capacity ? String(asset.capacity) : null,
         servicePlan: asset?.servicePlan ? String(asset.servicePlan) : null,
+        assetOrigin: asset?.origin ? String(asset.origin) : null,
+        amcStartDate: asset?.amcStartDate ? formatDate(String(asset.amcStartDate)) : null,
         amcEndDate: asset?.amcEndDate ? formatDate(String(asset.amcEndDate)) : null,
         stampingDate: t.stampingDate ? formatDate(String(t.stampingDate)) : null,
         nextDueDate: t.nextDueDate ? formatDate(String(t.nextDueDate)) : null,
@@ -344,7 +447,17 @@ export function TicketDetailPage() {
   const isPaid = paymentStatus === 'PAID'
   const canDownloadDocs = isDone || isPaid
   const breached = Boolean(ticket.slaBreached)
-  const balance = num(ticket.balanceDue)
+  const balancePreview = useMemo(() => {
+    const pay = Number(payDraft.paymentTotal) || 0
+    const adv = Number(payDraft.advanceAmount) || 0
+    return Math.max(0, pay - adv)
+  }, [payDraft.paymentTotal, payDraft.advanceAmount])
+  const savedBalance = num(ticket.balanceDue)
+  const balanceDirty =
+    payDraft.paymentTotal !== String(num(ticket.paymentTotal) || '') ||
+    payDraft.advanceAmount !== String(num(ticket.advanceAmount) || '') ||
+    payDraft.odAmount !== String(num(ticket.odAmount) || '')
+  const balance = balancePreview
 
   return (
     <div className="mx-auto max-w-5xl space-y-4">
@@ -416,9 +529,29 @@ export function TicketDetailPage() {
           <div>
             <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Machine</div>
             <div className="mt-1 font-medium text-text-primary">{asset?.name ? String(asset.name) : '—'}</div>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {asset?.origin || asset?.servicePlan ? (
+                <>
+                  <Badge color={isThirdPartyOrigin(asset?.origin ? String(asset.origin) : null) ? 'amber' : 'blue'}>
+                    {assetOriginShort(asset?.origin ? String(asset.origin) : null)}
+                  </Badge>
+                  {asset?.servicePlan ? (
+                    <Badge color={asset.servicePlan === 'AMC' ? 'green' : 'gray'}>
+                      {asset.servicePlan === 'AMC' ? 'AMC' : 'Non-AMC'}
+                    </Badge>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
             <div className="mt-0.5 text-xs text-text-secondary">
-              {asset?.servicePlan === 'AMC' ? 'AMC' : asset?.servicePlan ? 'Non-AMC' : ''}
-              {asset?.amcEndDate ? ` · ends ${formatDate(String(asset.amcEndDate))}` : ''}
+              {asset?.servicePlan === 'AMC'
+                ? [
+                    asset?.amcStartDate ? `AMC ${formatDate(String(asset.amcStartDate))}` : null,
+                    asset?.amcEndDate ? `→ ${formatDate(String(asset.amcEndDate))}` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' ') || 'AMC'
+                : ''}
             </div>
           </div>
           <div>
@@ -451,10 +584,74 @@ export function TicketDetailPage() {
         </div>
       </Card>
 
+      {/* Editable job details — same fields as create */}
+      <Card className="p-4 sm:p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-text-primary">Job details</h2>
+          <Button disabled={busy} onClick={() => void saveTicketDetails()}>
+            Save job details
+          </Button>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <Input
+            label="Subject *"
+            className="sm:col-span-2 lg:col-span-3"
+            value={editDraft.subject}
+            onChange={(e) => setEditDraft({ ...editDraft, subject: e.target.value })}
+          />
+          <Input
+            label="Stamping date"
+            type="date"
+            value={editDraft.stampingDate}
+            onChange={(e) => setEditDraft({ ...editDraft, stampingDate: e.target.value })}
+          />
+          <Input
+            label="Next due date"
+            type="date"
+            value={editDraft.nextDueDate}
+            onChange={(e) => setEditDraft({ ...editDraft, nextDueDate: e.target.value })}
+          />
+          <Select
+            label="Category"
+            value={editDraft.category}
+            onChange={(e) => setEditDraft({ ...editDraft, category: e.target.value })}
+            options={[
+              { value: '', label: '—' },
+              { value: 'Breakdown', label: 'Breakdown' },
+              { value: 'Installation', label: 'Installation' },
+              { value: 'Stamping', label: 'Stamping' },
+              { value: 'AMC visit', label: 'AMC visit' },
+              { value: 'Other', label: 'Other' },
+            ]}
+          />
+          <Select
+            label="Channel"
+            value={editDraft.channel}
+            onChange={(e) => setEditDraft({ ...editDraft, channel: e.target.value })}
+            options={[
+              { value: '', label: '—' },
+              { value: 'Walk-in', label: 'Walk-in' },
+              { value: 'Phone', label: 'Phone' },
+              { value: 'WhatsApp', label: 'WhatsApp' },
+              { value: 'Field', label: 'Field' },
+            ]}
+          />
+          <label className="block text-sm sm:col-span-2 lg:col-span-3">
+            <span className="mb-1 block font-medium text-text-secondary">Work notes</span>
+            <textarea
+              className="min-h-28 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
+              value={editDraft.description}
+              onChange={(e) => setEditDraft({ ...editDraft, description: e.target.value })}
+              placeholder="What was done / parts / site notes…"
+            />
+          </label>
+        </div>
+      </Card>
+
       {/* Work + payment — main actions */}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="p-4 sm:p-5">
-          <h2 className="mb-3 text-sm font-semibold text-text-primary">Work</h2>
+          <h2 className="mb-3 text-sm font-semibold text-text-primary">Work status & executives</h2>
           <div className="grid gap-3 sm:grid-cols-2">
             <Select
               label="Status"
@@ -518,7 +715,7 @@ export function TicketDetailPage() {
 
         <Card className="p-4 sm:p-5">
           <div className="mb-3 flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold text-text-primary">Payment & invoice</h2>
+            <h2 className="text-sm font-semibold text-text-primary">Payment & documents</h2>
             <Badge color={isPaid ? 'green' : paymentStatus === 'PARTIAL' ? 'amber' : 'gray'}>
               {labelize(paymentStatus)}
             </Badge>
@@ -544,9 +741,17 @@ export function TicketDetailPage() {
             />
           </div>
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-border bg-surface px-3 py-2 text-sm">
-            <span className="text-text-secondary">Balance due</span>
+            <span className="text-text-secondary">
+              Balance due
+              {balanceDirty ? <span className="ml-1 text-xs text-accent-amber">(updates as you type)</span> : null}
+            </span>
             <span className="text-lg font-semibold text-accent-amber">{formatCurrency(balance)}</span>
           </div>
+          {balanceDirty && savedBalance !== balancePreview ? (
+            <p className="mt-1 text-xs text-text-secondary">
+              Saved balance: {formatCurrency(savedBalance)} — click Save amounts to store
+            </p>
+          ) : null}
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <Button variant="outline" disabled={busy} onClick={() => void savePayments()}>
               Save amounts
@@ -565,14 +770,39 @@ export function TicketDetailPage() {
                 <Send size={16} /> WhatsApp payment due
               </Button>
             ) : (
-              <Button variant="outline" disabled={busy} onClick={() => void sendPaidWhatsApp()}>
-                <MessageCircle size={16} /> WhatsApp paid / invoice
-              </Button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void sendPaidWhatsApp()}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] px-3 text-sm font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-50"
+                style={{ backgroundColor: '#25D366' }}
+              >
+                <MessageCircle size={16} fill="currentColor" /> WhatsApp paid / invoice
+              </button>
             )}
             <Button variant="outline" disabled={busy} onClick={() => void invoicePdfAndSend()}>
               <FileText size={16} /> {isPaid ? 'Invoice PDF + send' : 'Create invoice + due'}
             </Button>
+            {!isPaid && canDownloadDocs ? (
+              <Button variant="outline" disabled={busy} onClick={() => downloadJobSheet()}>
+                <Download size={16} /> Job sheet PDF
+              </Button>
+            ) : null}
           </div>
+          <ul className="mt-3 space-y-1 text-xs leading-relaxed text-text-secondary">
+            <li>
+              <strong className="text-text-primary">Save amounts</strong> — stores OD / Total / Advance only (no PDF, no WhatsApp).
+            </li>
+            <li>
+              <strong className="text-text-primary">Receipt PDF</strong> — service job sheet / payment receipt (machine, executives, stamping, amounts). Print → Save as PDF. No WhatsApp.
+            </li>
+            <li>
+              <strong className="text-text-primary">WhatsApp paid / invoice</strong> — WhatsApp message only (green). No PDF window.
+            </li>
+            <li>
+              <strong className="text-text-primary">Invoice PDF + send</strong> — creates/reuses ERP <em>tax invoice</em>, opens that invoice PDF, and WhatsApps the customer. Different layout from Receipt.
+            </li>
+          </ul>
           {lastInvoice?.invoiceNumber ? (
             <p className="mt-2 text-xs text-accent-green">
               Invoice {String(lastInvoice.invoiceNumber)}
@@ -587,51 +817,59 @@ export function TicketDetailPage() {
             </p>
           ) : isPaid ? (
             <p className="mt-2 text-xs text-text-secondary">
-              Paid{ticket.paidAt ? ` · ${formatDateTime(String(ticket.paidAt))}` : ''}. PDF + WhatsApp receipt available.
+              Paid{ticket.paidAt ? ` · ${formatDateTime(String(ticket.paidAt))}` : ''}. Use Receipt for job sheet; Invoice PDF + send for tax invoice.
             </p>
           ) : (
             <p className="mt-2 text-xs text-text-secondary">
-              Send payment due anytime. After full payment, invoice PDF opens and WhatsApp receipt goes to the customer.
+              Save amounts, then WhatsApp payment due or Create invoice + due. Mark paid fully when cash is received.
             </p>
           )}
         </Card>
       </div>
 
-      {/* Issue + notes */}
-      <Card className="p-4 sm:p-5">
-        <h2 className="mb-2 text-sm font-semibold text-text-primary">Issue / work notes</h2>
-        <p className="mb-4 whitespace-pre-wrap text-sm leading-relaxed text-text-primary">
-          {String(ticket.description)}
-        </p>
-        <h2 className="mb-2 text-sm font-semibold text-text-secondary">Internal conversation</h2>
-        <ul className="mb-3 max-h-64 space-y-2 overflow-y-auto">
-          {messages.length === 0 ? (
-            <li className="rounded-[8px] border border-dashed border-border px-3 py-4 text-center text-sm text-text-secondary">
-              No notes yet
-            </li>
-          ) : (
-            messages.map((m) => (
-              <li key={String(m.id)} className="rounded-[8px] border border-border bg-card px-3 py-2.5 text-sm">
+      {/* Internal conversation */}
+      <Card className="overflow-hidden p-0">
+        <div className="border-b border-border bg-muted/40 px-4 py-3 sm:px-5">
+          <h2 className="text-sm font-semibold text-text-primary">Internal conversation</h2>
+          <p className="mt-0.5 text-xs text-text-secondary">Team notes only — not sent to the customer.</p>
+        </div>
+
+        {messages.length === 0 ? (
+          <p className="px-4 py-2 text-xs text-text-secondary sm:px-5">No notes yet — add the first one below.</p>
+        ) : (
+          <ul className="max-h-72 space-y-2 overflow-y-auto px-4 py-3 sm:px-5">
+            {messages.map((m) => (
+              <li
+                key={String(m.id)}
+                className="rounded-[10px] border border-border bg-card px-3 py-2.5 text-sm shadow-sm"
+              >
                 <div className="mb-1 flex justify-between gap-2 text-xs text-text-secondary">
                   <span className="font-medium text-text-primary">{String(m.authorName)}</span>
-                  <span>{m.createdAt ? formatDate(String(m.createdAt)) : ''}</span>
+                  <span>{m.createdAt ? formatDateTime(String(m.createdAt)) : ''}</span>
                 </div>
-                <p className="leading-relaxed">{String(m.content)}</p>
+                <p className="whitespace-pre-wrap leading-relaxed">{String(m.content)}</p>
               </li>
-            ))
-          )}
-        </ul>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Input
-            className="flex-1"
-            placeholder="Add a note…"
+            ))}
+          </ul>
+        )}
+
+        <div className="border-t border-border bg-surface/60 p-4 sm:p-5">
+          <label className="block text-sm font-medium text-text-secondary">Add note</label>
+          <textarea
+            className="mt-2 min-h-28 w-full resize-y rounded-[10px] border border-border bg-card px-3 py-3 text-sm outline-none transition focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
+            placeholder="Parts used, follow-up, site access, payment discussion…"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') void sendMessage()
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void sendMessage()
             }}
           />
-          <Button onClick={() => void sendMessage()}>Send</Button>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs text-text-secondary">Ctrl+Enter to send</span>
+            <Button disabled={!message.trim()} onClick={() => void sendMessage()}>
+              Send note
+            </Button>
+          </div>
         </div>
       </Card>
 

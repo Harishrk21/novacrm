@@ -122,6 +122,11 @@ enum ServicePlan {
   AMC
   NON_AMC
 }
+/// Machine bought from us (installed base) vs outside unit brought only for repair/service
+enum AssetOrigin {
+  SOLD_BY_US
+  THIRD_PARTY
+}
 enum JobPaymentStatus {
   UNPAID
   PARTIAL
@@ -629,8 +634,11 @@ model CustomerAsset {
   platformSize          String?     @map("platform_size") @db.VarChar(64)
   model                 String?     @db.VarChar(120)
   serialNo              String?     @map("serial_no") @db.VarChar(120)
+  /// Bought from us vs outside machine (repair/service only)
+  origin                AssetOrigin @default(SOLD_BY_US)
   /// AMC contract vs one-off / non-AMC service
   servicePlan           ServicePlan @default(NON_AMC) @map("service_plan")
+  amcStartDate          DateTime?   @map("amc_start_date") @db.Date
   amcEndDate            DateTime?   @map("amc_end_date") @db.Date
   remindersEnabled      Boolean     @default(true) @map("reminders_enabled")
   lastMaintReminderAt   DateTime?   @map("last_maint_reminder_at") @db.DateTime(3)
@@ -643,7 +651,9 @@ model CustomerAsset {
   updatedAt             DateTime    @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt             DateTime?   @map("deleted_at") @db.DateTime(3)
   @@index([tenantId, contactId])
+  @@index([tenantId, origin])
   @@index([tenantId, nextDueDate])
+  @@index([tenantId, amcStartDate])
   @@index([tenantId, amcEndDate])
   @@index([tenantId, serialNo])
   @@map("customer_assets")

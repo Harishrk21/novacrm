@@ -7,7 +7,6 @@ import {
   MessageCircle,
   Package,
   Ticket,
-  UserPlus,
   Users,
   Wrench,
 } from 'lucide-react'

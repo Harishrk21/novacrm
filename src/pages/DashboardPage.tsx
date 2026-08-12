@@ -16,7 +16,6 @@ import {
   TrendingUp,
   Users,
   FileText,
-  UserX,
 } from 'lucide-react'
 import {
   Bar,

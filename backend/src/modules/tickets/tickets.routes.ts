@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { authenticate } from "../../middleware/auth.middleware.js";
 import { requireTenant } from "../../middleware/tenant.middleware.js";
 import { validate } from "../../middleware/validate.middleware.js";
@@ -298,18 +299,22 @@ ticketsRouter.get("/summary", async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   await refreshSlaBreached(t);
   const uid = q.auth!.userId;
-  const base: Record<string, unknown> = { tenantId: t, deletedAt: null };
-  if (isScopedEmployeeRole(q.auth?.role)) {
-    base.AND = [
-      {
-        OR: [
-          { assignedToId: uid },
-          { receivedByUserId: uid },
-          { deliveredByUserId: uid },
-        ],
-      },
-    ];
-  }
+  const scopeAnd: Prisma.TicketWhereInput[] = isScopedEmployeeRole(q.auth?.role)
+    ? [
+        {
+          OR: [
+            { assignedToId: uid },
+            { receivedByUserId: uid },
+            { deliveredByUserId: uid },
+          ],
+        },
+      ]
+    : [];
+  const base: Prisma.TicketWhereInput = {
+    tenantId: t,
+    deletedAt: null,
+    ...(scopeAnd.length ? { AND: scopeAnd } : {}),
+  };
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   const in30 = new Date();
@@ -321,10 +326,7 @@ ticketsRouter.get("/summary", async (q: Request, r: Response) => {
       where: {
         ...base,
         status: { in: [...OPEN] },
-        AND: [
-          ...((base.AND as unknown[]) ?? []),
-          { OR: [{ slaBreached: true }, { slaDueAt: { lt: new Date() } }] },
-        ],
+        AND: [...scopeAnd, { OR: [{ slaBreached: true }, { slaDueAt: { lt: new Date() } }] }],
       },
     }),
     isScopedEmployeeRole(q.auth?.role)
@@ -336,10 +338,7 @@ ticketsRouter.get("/summary", async (q: Request, r: Response) => {
       where: {
         ...base,
         status: { in: ["RESOLVED", "CLOSED"] },
-        AND: [
-          ...((base.AND as unknown[]) ?? []),
-          { OR: [{ resolvedAt: { gte: start } }, { closedAt: { gte: start } }] },
-        ],
+        AND: [...scopeAnd, { OR: [{ resolvedAt: { gte: start } }, { closedAt: { gte: start } }] }],
       },
     }),
     prisma.ticket.groupBy({
@@ -387,11 +386,11 @@ ticketsRouter.get("/", async (q: Request, r: Response) => {
   await refreshSlaBreached(t);
   const p = pagination(q.query);
   const uid = q.auth!.userId;
-  const and: Record<string, unknown>[] = [];
-  const where: Record<string, unknown> = { tenantId: t, deletedAt: null };
+  const and: Prisma.TicketWhereInput[] = [];
+  const where: Prisma.TicketWhereInput = { tenantId: t, deletedAt: null };
 
-  if (q.query.status) where.status = String(q.query.status);
-  if (q.query.priority) where.priority = String(q.query.priority);
+  if (q.query.status) where.status = String(q.query.status) as Prisma.TicketWhereInput["status"];
+  if (q.query.priority) where.priority = String(q.query.priority) as Prisma.TicketWhereInput["priority"];
   if (q.query.contactId) where.contactId = String(q.query.contactId);
   if (q.query.assetId) where.assetId = String(q.query.assetId);
   if (q.query.slaBreached === "1" || q.query.slaBreached === "true") {
@@ -404,7 +403,6 @@ ticketsRouter.get("/", async (q: Request, r: Response) => {
     isScopedEmployeeRole(q.auth?.role);
 
   if (mine) {
-    // Employee / "mine": jobs assigned to me OR I received/delivered
     and.push({
       OR: [
         { assignedToId: uid },

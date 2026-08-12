@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { CheckCircle2, CheckSquare, Clock3, Filter, RefreshCw } from 'lucide-react'
+import { CheckCircle2, Clock3, Filter, RefreshCw } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
 import { Badge, activityStatusColor } from '@/components/ui/Badge'

@@ -297,9 +297,18 @@ ticketsRouter.use(authenticate, requireTenant);
 ticketsRouter.get("/summary", async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   await refreshSlaBreached(t);
+  const uid = q.auth!.userId;
   const base: Record<string, unknown> = { tenantId: t, deletedAt: null };
   if (isScopedEmployeeRole(q.auth?.role)) {
-    base.assignedToId = q.auth!.userId;
+    base.AND = [
+      {
+        OR: [
+          { assignedToId: uid },
+          { receivedByUserId: uid },
+          { deliveredByUserId: uid },
+        ],
+      },
+    ];
   }
   const start = new Date();
   start.setHours(0, 0, 0, 0);
@@ -309,7 +318,14 @@ ticketsRouter.get("/summary", async (q: Request, r: Response) => {
   const [open, overdue, unassigned, resolvedToday, byStatus, openJobs, assetsDue, onlyOpen] = await Promise.all([
     prisma.ticket.count({ where: { ...base, status: { in: [...OPEN] } } }),
     prisma.ticket.count({
-      where: { ...base, status: { in: [...OPEN] }, OR: [{ slaBreached: true }, { slaDueAt: { lt: new Date() } }] },
+      where: {
+        ...base,
+        status: { in: [...OPEN] },
+        AND: [
+          ...((base.AND as unknown[]) ?? []),
+          { OR: [{ slaBreached: true }, { slaDueAt: { lt: new Date() } }] },
+        ],
+      },
     }),
     isScopedEmployeeRole(q.auth?.role)
       ? Promise.resolve(0)
@@ -320,7 +336,10 @@ ticketsRouter.get("/summary", async (q: Request, r: Response) => {
       where: {
         ...base,
         status: { in: ["RESOLVED", "CLOSED"] },
-        OR: [{ resolvedAt: { gte: start } }, { closedAt: { gte: start } }],
+        AND: [
+          ...((base.AND as unknown[]) ?? []),
+          { OR: [{ resolvedAt: { gte: start } }, { closedAt: { gte: start } }] },
+        ],
       },
     }),
     prisma.ticket.groupBy({
@@ -367,35 +386,46 @@ ticketsRouter.get("/", async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   await refreshSlaBreached(t);
   const p = pagination(q.query);
+  const uid = q.auth!.userId;
+  const and: Record<string, unknown>[] = [];
   const where: Record<string, unknown> = { tenantId: t, deletedAt: null };
+
   if (q.query.status) where.status = String(q.query.status);
   if (q.query.priority) where.priority = String(q.query.priority);
   if (q.query.contactId) where.contactId = String(q.query.contactId);
   if (q.query.assetId) where.assetId = String(q.query.assetId);
-  if (q.query.assignedToId === "unassigned") {
+  if (q.query.slaBreached === "1" || q.query.slaBreached === "true") {
+    where.slaBreached = true;
+  }
+
+  const mine =
+    q.query.mine === "1" ||
+    q.query.mine === "true" ||
+    isScopedEmployeeRole(q.auth?.role);
+
+  if (mine) {
+    // Employee / "mine": jobs assigned to me OR I received/delivered
+    and.push({
+      OR: [
+        { assignedToId: uid },
+        { receivedByUserId: uid },
+        { deliveredByUserId: uid },
+      ],
+    });
+  } else if (q.query.assignedToId === "unassigned") {
     where.assignedToId = null;
   } else if (q.query.assignedToId) {
     where.assignedToId = String(q.query.assignedToId);
   }
-  if (q.query.slaBreached === "1" || q.query.slaBreached === "true") {
-    where.slaBreached = true;
-  }
-  if (isScopedEmployeeRole(q.auth?.role)) {
-    where.OR = [
-      { assignedToId: q.auth!.userId },
-      { receivedByUserId: q.auth!.userId },
-      { deliveredByUserId: q.auth!.userId },
-    ];
-  }
+
   if (q.query.search) {
     const s = String(q.query.search);
-    where.AND = [
-      ...(Array.isArray(where.AND) ? (where.AND as unknown[]) : []),
-      {
-        OR: [{ subject: { contains: s } }, { description: { contains: s } }],
-      },
-    ];
+    and.push({
+      OR: [{ subject: { contains: s } }, { description: { contains: s } }],
+    });
   }
+
+  if (and.length) where.AND = and;
 
   const orderBy =
     q.query.sort === "sla"
@@ -532,7 +562,7 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
       advanceAmount,
       paymentStatus,
       paidAt: paymentStatus === "PAID" ? new Date() : null,
-      receivedByUserId: d.receivedByUserId ?? null,
+      receivedByUserId: d.receivedByUserId ?? d.assignedToId ?? null,
       deliveredByUserId: d.deliveredByUserId ?? null,
       slaDueAt,
       customFields,
@@ -540,6 +570,27 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
   });
 
   await syncAssetDates(t, row.assetId, stampingDate, nextDueDate);
+
+  if (row.assignedToId) {
+    await prisma.activity.create({
+      data: {
+        id: newId(),
+        tenantId: t,
+        type: "TASK",
+        title: `Service job #${row.ticketNo} — ${row.subject}`,
+        description: "Assigned to you — open My Tickets to start work.",
+        status: "PENDING",
+        scheduledAt: row.slaDueAt ?? new Date(),
+        assignedToId: row.assignedToId,
+        contactId: row.contactId,
+        customFields: {
+          auto_from: "ticket_create",
+          ticketId: row.id,
+          created_by: q.auth!.userId,
+        },
+      },
+    });
+  }
 
   return success(r, serializeTicket(row as unknown as Record<string, unknown>), "Service job created", 201);
 });
@@ -652,7 +703,29 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
   const existing = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
   if (!existing) throw notFound("Ticket");
 
-  const data: Record<string, unknown> = { ...d };
+  // Whitelist only Ticket columns — never spread raw body into Prisma (avoids silent/ partial failures)
+  const data: Record<string, unknown> = {};
+  const scalarKeys = [
+    "subject",
+    "description",
+    "priority",
+    "status",
+    "contactId",
+    "accountId",
+    "assignedToId",
+    "productId",
+    "assetId",
+    "odAmount",
+    "paymentTotal",
+    "advanceAmount",
+    "paymentStatus",
+    "receivedByUserId",
+    "deliveredByUserId",
+  ] as const;
+  for (const key of scalarKeys) {
+    if (key in d) data[key] = d[key];
+  }
+
   const prevStatus = existing.status;
   const nextStatus = typeof d.status === "string" ? d.status : prevStatus;
 
@@ -667,12 +740,7 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
       ...("category" in d ? { category: d.category ?? null } : {}),
       ...("channel" in d ? { channel: d.channel ?? null } : {}),
     };
-    delete data.category;
-    delete data.channel;
   }
-  delete data.slaHours;
-  delete data.balanceDue;
-  delete data.paidAt;
 
   const nextPaymentTotal = "paymentTotal" in d ? num(d.paymentTotal) : num(existing.paymentTotal);
   const nextAdvance = "advanceAmount" in d ? num(d.advanceAmount) : num(existing.advanceAmount);
@@ -698,10 +766,52 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
     data.slaBreached = true;
   }
 
+  // Always keep Assign to + Received by aligned when either changes
+  if ("assignedToId" in d) {
+    data.assignedToId = d.assignedToId ?? null;
+    if (!("receivedByUserId" in d)) data.receivedByUserId = d.assignedToId ?? null;
+  }
+  if ("receivedByUserId" in d) {
+    data.receivedByUserId = d.receivedByUserId ?? null;
+    if (!("assignedToId" in d)) data.assignedToId = d.receivedByUserId ?? existing.assignedToId;
+  }
+
+  const prevAssignee = existing.assignedToId;
+
   const updated = await prisma.ticket.updateMany({ where: { id, tenantId: t, deletedAt: null }, data });
   if (!updated.count) throw notFound("Ticket");
   const ticket = await prisma.ticket.findFirst({ where: { id, tenantId: t } });
   if (!ticket) throw notFound("Ticket");
+
+  // Notify assignee via My Tasks when ownership changes (never fail the assign itself)
+  if (
+    ticket.assignedToId &&
+    ticket.assignedToId !== prevAssignee &&
+    ["OPEN", "IN_PROGRESS", "PENDING"].includes(String(ticket.status))
+  ) {
+    try {
+      await prisma.activity.create({
+        data: {
+          id: newId(),
+          tenantId: t,
+          type: "TASK",
+          title: `Service job #${ticket.ticketNo} — ${ticket.subject}`.slice(0, 191),
+          description: "Assigned to you — open My Tickets to start work.",
+          status: "PENDING",
+          scheduledAt: ticket.slaDueAt ?? new Date(),
+          assignedToId: ticket.assignedToId,
+          contactId: ticket.contactId,
+          customFields: {
+            auto_from: "ticket_assign",
+            ticketId: ticket.id,
+            created_by: q.auth!.userId,
+          },
+        },
+      });
+    } catch (err) {
+      console.error("ticket assign follow-up failed", err);
+    }
+  }
 
   const stamp = "stampingDate" in d ? parseDate(d.stampingDate) : ticket.stampingDate;
   const due = "nextDueDate" in d ? parseDate(d.nextDueDate) : ticket.nextDueDate;

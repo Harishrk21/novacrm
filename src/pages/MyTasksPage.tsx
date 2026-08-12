@@ -26,8 +26,10 @@ function sortOpen(a: Row, b: Row) {
 }
 
 function related(task: Row) {
-  if (task.dealId) return { to: `/deals/${task.dealId}`, label: 'Deal' }
-  if (task.contactId) return { to: `/contacts/${task.contactId}`, label: 'Contact' }
+  const cf = (task.customFields as Record<string, unknown> | null) ?? null
+  const ticketId = cf?.ticketId ? String(cf.ticketId) : ''
+  if (ticketId) return { to: `/tickets/${ticketId}`, label: 'Ticket' }
+  if (task.contactId) return { to: `/contacts/${task.contactId}`, label: 'Customer' }
   if (task.accountId) return { to: `/accounts/${task.accountId}`, label: 'Account' }
   if (task.leadId) return { to: '/leads', label: 'Lead' }
   return null
@@ -37,6 +39,7 @@ export function MyTasksPage() {
   const user = useAuthStore((s) => s.user)
   const addToast = useUIStore((s) => s.addToast)
   const [items, setItems] = useState<Row[]>([])
+  const [tickets, setTickets] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<Tab>('open')
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -50,8 +53,16 @@ export function MyTasksPage() {
     }
     setLoading(true)
     try {
-      const page = await api.activities({ limit: 200, assignedToId: user.id })
+      const [page, ticketPage] = await Promise.all([
+        api.activities({ limit: 200, assignedToId: user.id }),
+        api.tickets({ limit: 100, mine: 1, sort: 'sla' }),
+      ])
       setItems(page.items)
+      setTickets(
+        (ticketPage.items ?? []).filter((t) =>
+          ['OPEN', 'IN_PROGRESS', 'PENDING'].includes(String(t.status)),
+        ),
+      )
     } catch (e) {
       addToast({
         type: 'error',
@@ -131,14 +142,24 @@ export function MyTasksPage() {
       <PageTip moduleKey="crm.employee" />
 
       <p className="text-sm text-text-secondary">
-        Only tasks assigned to you appear here. Mark each one complete after you finish the call, visit, or follow-up —
-        your admin sees progress under Team work.
+        Live work assigned to you — service tickets and follow-up tasks from the database (not demo data).
       </p>
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Card>
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-[8px] bg-amber-50 text-accent-amber">
+              <Clock3 size={18} />
+            </div>
+            <div>
+              <div className="text-2xl font-semibold">{tickets.length}</div>
+              <div className="text-sm text-text-secondary">Open tickets</div>
+            </div>
+          </div>
+        </Card>
+        <Card>
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-[8px] bg-blue-50 text-accent-blue">
               <Clock3 size={18} />
             </div>
             <div>
@@ -154,22 +175,42 @@ export function MyTasksPage() {
             </div>
             <div>
               <div className="text-2xl font-semibold">{doneItems.length}</div>
-              <div className="text-sm text-text-secondary">Completed</div>
-            </div>
-          </div>
-        </Card>
-        <Card>
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-[8px] bg-blue-50 text-accent-blue">
-              <CheckSquare size={18} />
-            </div>
-            <div>
-              <div className="text-2xl font-semibold">{items.length}</div>
-              <div className="text-sm text-text-secondary">Total assigned</div>
+              <div className="text-sm text-text-secondary">Completed tasks</div>
             </div>
           </div>
         </Card>
       </div>
+
+      {tickets.length > 0 ? (
+        <Card padding={false}>
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <h2 className="font-semibold">Assigned service tickets</h2>
+            <Link to="/tickets" className="text-sm text-accent-blue hover:underline">
+              My tickets →
+            </Link>
+          </div>
+          <ul className="divide-y divide-border">
+            {tickets.map((t) => (
+              <li key={String(t.id)}>
+                <Link
+                  to={`/tickets/${t.id}`}
+                  className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">
+                      #{String(t.ticketNo)} — {String(t.subject)}
+                    </div>
+                    <div className="text-xs text-text-secondary">
+                      {t.slaDueAt ? `SLA ${formatDateTime(String(t.slaDueAt))}` : timeAgo(String(t.createdAt))}
+                    </div>
+                  </div>
+                  <Badge color={t.slaBreached ? 'red' : 'amber'}>{labelize(String(t.status))}</Badge>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
 
       <Card padding={false}>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">

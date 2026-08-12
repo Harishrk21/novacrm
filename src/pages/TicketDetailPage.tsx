@@ -677,16 +677,41 @@ export function TicketDetailPage() {
               options={['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((v) => ({ value: v, label: labelize(v) }))}
             />
             <Select
-              label="Assignee"
+              label="Assign to"
               value={String(ticket.assignedToId ?? '')}
-              onChange={(e) => void patchTicket({ assignedToId: e.target.value || null }, 'Assignee updated')}
+              onChange={(e) =>
+                void patchTicket(
+                  {
+                    assignedToId: e.target.value || null,
+                    receivedByUserId: e.target.value || null,
+                  },
+                  e.target.value
+                    ? `Assigned to ${users.find((u) => u.id === e.target.value)?.name ?? 'employee'} — they will see it on Home / My Tickets`
+                    : 'Unassigned',
+                )
+              }
               options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
             />
+            <p className="sm:col-span-2 -mt-1 text-xs text-text-secondary">
+              Current owner:{' '}
+              <span className="font-medium text-text-primary">
+                {users.find((u) => u.id === String(ticket.assignedToId ?? ''))?.name ??
+                  (ticket.assignee as { name?: string } | undefined)?.name ??
+                  'Nobody'}
+              </span>
+              . Pick the employee again and wait for the green confirmation if the list looks wrong.
+            </p>
             <Select
               label="Received by"
-              value={String(ticket.receivedByUserId ?? '')}
+              value={String(ticket.receivedByUserId ?? ticket.assignedToId ?? '')}
               onChange={(e) =>
-                void patchTicket({ receivedByUserId: e.target.value || null }, 'Received-by updated')
+                void patchTicket(
+                  {
+                    receivedByUserId: e.target.value || null,
+                    assignedToId: e.target.value || null,
+                  },
+                  'Received-by / assignee updated',
+                )
               }
               options={[{ value: '', label: '—' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
             />

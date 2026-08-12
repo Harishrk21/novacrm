@@ -21,6 +21,7 @@ import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS, assetOriginShort } from '@/lib/assetOrigin'
 import { formatCurrency, formatDate } from '@/lib/utils'
+import { isCompanyAdmin, isScopedEmployee } from '@/lib/roles'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 
@@ -73,6 +74,8 @@ export function TicketsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const addToast = useUIStore((s) => s.addToast)
   const authUser = useAuthStore((s) => s.user)
+  const isAdmin = isCompanyAdmin(authUser?.role)
+  const isAgent = isScopedEmployee(authUser?.role)
 
   const [tickets, setTickets] = useState<Record<string, unknown>[]>([])
   const [assets, setAssets] = useState<Record<string, unknown>[]>([])
@@ -97,6 +100,8 @@ export function TicketsPage() {
           status: status || undefined,
           contactId: searchParams.get('contactId') || undefined,
           slaBreached: searchParams.get('slaBreached') || undefined,
+          // Employees always see their own live jobs (server also enforces for AGENT)
+          ...(!isAdmin || isAgent ? { mine: 1 } : {}),
         }),
         api.lookups(),
       ])
@@ -109,7 +114,7 @@ export function TicketsPage() {
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Failed to load jobs' })
     }
-  }, [addToast, authUser?.id, searchParams, status])
+  }, [addToast, authUser?.id, isAdmin, isAgent, searchParams, status])
 
   const loadAssets = useCallback(
     async (contactId: string) => {
@@ -177,6 +182,10 @@ export function TicketsPage() {
     e.preventDefault()
     if (!form.contactId) {
       addToast({ type: 'error', message: 'Select a customer' })
+      return
+    }
+    if (!form.receivedByUserId) {
+      addToast({ type: 'error', message: 'Assign the job to an employee' })
       return
     }
     setSaving(true)
@@ -247,9 +256,9 @@ export function TicketsPage() {
         odAmount: Number(form.odAmount) || 0,
         paymentTotal: Number(form.paymentTotal) || 0,
         advanceAmount: Number(form.advanceAmount) || 0,
-        receivedByUserId: form.receivedByUserId || null,
+        assignedToId: form.receivedByUserId,
+        receivedByUserId: form.receivedByUserId,
         deliveredByUserId: form.deliveredByUserId || null,
-        assignedToId: form.receivedByUserId || authUser?.id || null,
         category: form.category,
         channel: form.channel,
         slaHours: Number(form.slaHours) || 24,
@@ -300,9 +309,9 @@ export function TicketsPage() {
   return (
     <div>
       <PageHeader
-        title="Service jobs"
+        title={isAdmin ? 'Service jobs' : 'My tickets'}
         count={tickets.length}
-        breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Service tickets' }]}
+        breadcrumbs={[{ label: 'Home', to: '/' }, { label: isAdmin ? 'Service tickets' : 'My tickets' }]}
       />
       <PageTabs
         accent="theme"
@@ -312,7 +321,7 @@ export function TicketsPage() {
           if (id === 'create') resetCreate()
         }}
         tabs={[
-          { id: 'list', label: 'All jobs', count: tickets.length },
+          { id: 'list', label: isAdmin ? 'All jobs' : 'Assigned to me', count: tickets.length },
           { id: 'create', label: 'New service job' },
         ]}
       />
@@ -337,8 +346,12 @@ export function TicketsPage() {
           <Card padding={false}>
             {tickets.length === 0 ? (
               <EmptyState
-                title="No service jobs yet"
-                subtitle="Create a service job — customer, machine, payment, executives, next due."
+                title={isAdmin ? 'No service jobs yet' : 'No jobs assigned to you'}
+                subtitle={
+                  isAdmin
+                    ? 'Create a service job — customer, machine, payment, then Assign to an executive.'
+                    : 'When an admin assigns a ticket to you, it shows up here from the live database.'
+                }
                 actionLabel="New service job"
                 onAction={() => setTab('create')}
               />
@@ -658,12 +671,12 @@ export function TicketsPage() {
             </section>
 
             <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">4. Executives</h3>
+              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">4. Assign to</h3>
               <Select
-                label="Executive — received"
+                label="Assign to (technician) *"
                 value={form.receivedByUserId}
                 onChange={(e) => setForm({ ...form, receivedByUserId: e.target.value })}
-                options={[{ value: '', label: 'Select' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
+                options={[{ value: '', label: 'Select employee' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
               />
               <div>
                 <Select
@@ -683,6 +696,9 @@ export function TicketsPage() {
                 onChange={(e) => setForm({ ...form, priority: e.target.value })}
                 options={['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((v) => ({ value: v, label: labelize(v) }))}
               />
+              <p className="sm:col-span-2 lg:col-span-3 -mt-1 text-xs text-text-secondary">
+                The selected employee sees this job on their Home, My Tickets, and My Tasks immediately.
+              </p>
               <label className="block text-sm sm:col-span-2 lg:col-span-3">
                 <span className="mb-1 block font-medium text-text-secondary">Work notes</span>
                 <textarea

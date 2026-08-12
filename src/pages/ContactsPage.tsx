@@ -114,6 +114,7 @@ export function ContactsPage() {
   const [linkFilter, setLinkFilter] = useState('') // '' | linked | unlinked
   const [phone, setPhone] = useState('')
   const [phoneResult, setPhoneResult] = useState<string | null>(null)
+  const [phoneNotFound, setPhoneNotFound] = useState(false)
   const [tab, setTab] = useState<'list' | 'create'>('list')
   const [createStep, setCreateStep] = useState<'customer' | 'product'>('customer')
   const [returnTo, setReturnTo] = useState<string | null>(null)
@@ -181,6 +182,7 @@ export function ContactsPage() {
 
   async function handlePhoneLookup(event: FormEvent) {
     event.preventDefault()
+    setPhoneNotFound(false)
     if (!phone.trim()) {
       setPhoneResult('Enter a phone number or Customer ID (CUS-#####).')
       return
@@ -196,6 +198,7 @@ export function ContactsPage() {
           return
         }
         setPhoneResult('No customer found with that Customer ID.')
+        setPhoneNotFound(true)
         return
       }
       const hits = (await api.contactsLookup(q)) as ContactRow[]
@@ -204,9 +207,27 @@ export function ContactsPage() {
         return
       }
       setPhoneResult('No customer found with this phone number.')
+      setPhoneNotFound(true)
     } catch (err) {
       setPhoneResult(err instanceof ApiClientError ? err.message : 'Lookup failed')
+      setPhoneNotFound(false)
     }
+  }
+
+  function addCustomerFromLookup() {
+    const q = phone.trim()
+    const digits = q.replace(/\D/g, '')
+    const looksPhone = digits.length >= 7 && !/^CUS-/i.test(q)
+    setTab('create')
+    setCreateStep('customer')
+    setReturnTo(null)
+    setForm({
+      ...emptyForm,
+      phone: looksPhone ? q : '',
+      mobile: looksPhone ? q : '',
+    })
+    setPhoneResult(null)
+    setPhoneNotFound(false)
   }
 
   function goNextToProduct(event?: FormEvent) {
@@ -382,6 +403,7 @@ export function ContactsPage() {
                     onChange={(e) => {
                       setPhone(e.target.value)
                       setPhoneResult(null)
+                      setPhoneNotFound(false)
                     }}
                     placeholder="+91 98xxx xxxxx or CUS-00042"
                     className="pl-10"
@@ -389,7 +411,19 @@ export function ContactsPage() {
                 </div>
                 <Button type="submit">Lookup</Button>
               </div>
-              {phoneResult && <p className="mt-2 text-sm text-text-secondary">{phoneResult}</p>}
+              {phoneResult ? (
+                <div className="mt-3 rounded-[8px] border border-border bg-muted/40 px-3 py-2.5">
+                  <p className="text-sm text-text-secondary">{phoneResult}</p>
+                  {phoneNotFound ? (
+                    <Button type="button" className="mt-2" onClick={addCustomerFromLookup}>
+                      <UserPlus size={16} /> Add customer
+                      {phone.trim() ? (
+                        <span className="font-normal opacity-80">— use “{phone.trim()}”</span>
+                      ) : null}
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
             </form>
           </Card>
 

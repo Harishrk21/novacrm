@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  Briefcase,
   CheckCircle2,
   CheckSquare,
   ChevronRight,
@@ -17,8 +16,8 @@ import { Badge, activityStatusColor, leadStatusColor } from '@/components/ui/Bad
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Modal } from '@/components/ui/Modal'
-import { api, ApiClientError, isTenantSession, num } from '@/lib/api'
-import { formatCurrency, formatDateTime, timeAgo } from '@/lib/utils'
+import { api, ApiClientError, isTenantSession } from '@/lib/api'
+import { formatDateTime, timeAgo } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 
@@ -41,7 +40,6 @@ export function EmployeeDashboardPage() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [leads, setLeads] = useState<Row[]>([])
-  const [deals, setDeals] = useState<Row[]>([])
   const [activities, setActivities] = useState<Row[]>([])
   const [tickets, setTickets] = useState<Row[]>([])
   const [summary, setSummary] = useState({ open: 0, overdue: 0, resolvedToday: 0 })
@@ -55,15 +53,20 @@ export function EmployeeDashboardPage() {
     }
     setLoading(true)
     try {
-      const [leadsPage, dealsPage, actsPage, ticketsPage, sum] = await Promise.all([
+      // Live API only — mine=1 returns jobs assigned to / received / delivered by this user.
+      // Scoped agents are also forced to "mine" on the server.
+      const ticketParams: Record<string, string | number | undefined> = {
+        limit: 100,
+        sort: 'sla',
+        mine: 1,
+      }
+      const [leadsPage, actsPage, ticketsPage, sum] = await Promise.all([
         api.leads({ limit: 50, assignedToId: user.id }),
-        api.deals({ limit: 50, ownerUserId: user.id }),
         api.activities({ limit: 100, assignedToId: user.id }),
-        api.tickets({ limit: 100, assignedToId: user.id, sort: 'sla' }),
+        api.tickets(ticketParams),
         api.ticketsSummary(),
       ])
       setLeads(leadsPage.items)
-      setDeals(dealsPage.items)
       setActivities(actsPage.items)
       setTickets(ticketsPage.items)
       setSummary({
@@ -119,8 +122,6 @@ export function EmployeeDashboardPage() {
 
   const current = openTickets.find((t) => String(t.id) === focusId) ?? openTickets[0] ?? null
   const queue = openTickets.filter((t) => String(t.id) !== String(current?.id))
-  const openDeals = deals.filter((d) => !d.closedAt)
-  const pipelineValue = openDeals.reduce((sum, d) => sum + num(d.amount), 0)
 
   async function startWork() {
     if (!current) return
@@ -340,6 +341,41 @@ export function EmployeeDashboardPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card padding={false}>
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <h2 className="font-semibold">My jobs ({tickets.length})</h2>
+            <Link to="/tickets" className="text-sm text-accent-blue hover:underline">
+              All my tickets
+            </Link>
+          </div>
+          <div className="divide-y divide-border">
+            {tickets.slice(0, 8).map((t) => (
+              <Link
+                key={String(t.id)}
+                to={`/tickets/${t.id}`}
+                className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface"
+              >
+                <div className="min-w-0">
+                  <div className="truncate font-medium">
+                    #{String(t.ticketNo)} — {String(t.subject)}
+                  </div>
+                  <div className="text-xs text-text-secondary">
+                    {t.slaDueAt ? `SLA ${formatDateTime(String(t.slaDueAt))}` : timeAgo(String(t.createdAt))}
+                  </div>
+                </div>
+                <Badge color={String(t.slaBreached) === 'true' || t.slaBreached === true ? 'red' : 'amber'}>
+                  {labelize(String(t.status))}
+                </Badge>
+              </Link>
+            ))}
+            {!loading && !tickets.length && (
+              <p className="p-6 text-center text-sm text-text-secondary">
+                No jobs assigned to you yet. When an admin assigns a ticket, it appears here live.
+              </p>
+            )}
+          </div>
+        </Card>
+
+        <Card padding={false}>
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <h2 className="font-semibold">Pending tasks</h2>
             <Link to="/my-tasks" className="text-sm text-accent-blue hover:underline">
               All
@@ -368,46 +404,36 @@ export function EmployeeDashboardPage() {
             )}
           </div>
         </Card>
-
-        <Card padding={false}>
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h2 className="font-semibold">Sales (secondary)</h2>
-            <Link to="/leads" className="text-sm text-accent-blue hover:underline">
-              Leads
-            </Link>
-          </div>
-          <div className="space-y-3 p-4 text-sm">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2 text-text-secondary">
-                <UserPlus size={16} /> My leads
-              </span>
-              <span className="font-semibold">{leads.length}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2 text-text-secondary">
-                <Briefcase size={16} /> Open deals
-              </span>
-              <span className="font-semibold">{openDeals.length}</span>
-            </div>
-            <div className="flex items-center justify-between border-t border-border pt-3">
-              <span className="text-text-secondary">Pipeline value</span>
-              <span className="font-semibold">{formatCurrency(pipelineValue)}</span>
-            </div>
-            {leads.slice(0, 3).map((lead) => (
-              <Link
-                key={String(lead.id)}
-                to="/leads"
-                className="flex items-center justify-between gap-2 rounded-[6px] border border-border px-3 py-2 hover:bg-surface"
-              >
-                <span className="truncate font-medium">{String(lead.name)}</span>
-                <Badge color={leadStatusColor[String(lead.status)] ?? 'slate'}>
-                  {labelize(String(lead.status))}
-                </Badge>
-              </Link>
-            ))}
-          </div>
-        </Card>
       </div>
+
+      <Card padding={false}>
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <h2 className="font-semibold">My leads</h2>
+          <Link to="/leads" className="text-sm text-accent-blue hover:underline">
+            Open leads
+          </Link>
+        </div>
+        <div className="divide-y divide-border">
+          {leads.slice(0, 5).map((lead) => (
+            <Link
+              key={String(lead.id)}
+              to="/leads"
+              className="flex items-center justify-between gap-2 px-4 py-3 hover:bg-surface"
+            >
+              <span className="flex min-w-0 items-center gap-2 truncate font-medium">
+                <UserPlus size={16} className="shrink-0 text-text-secondary" />
+                {String(lead.name)}
+              </span>
+              <Badge color={leadStatusColor[String(lead.status)] ?? 'slate'}>
+                {labelize(String(lead.status))}
+              </Badge>
+            </Link>
+          ))}
+          {!loading && !leads.length && (
+            <p className="p-6 text-center text-sm text-text-secondary">No leads assigned.</p>
+          )}
+        </div>
+      </Card>
 
       <Modal
         open={completeOpen}

@@ -4,8 +4,6 @@ import {
   BarChart3,
   UserPlus,
   Users,
-  Building2,
-  Briefcase,
   Phone,
   Ticket,
   Mail,
@@ -61,16 +59,12 @@ export function Sidebar() {
         { to: '/tickets', icon: Ticket, label: 'Service tickets' },
         { to: '/amc', icon: Shield, label: 'AMC / Non-AMC' },
         { to: '/contacts', icon: Users, label: 'Customers' },
-        { to: '/accounts', icon: Building2, label: 'Accounts' },
         { to: '/activities', icon: Phone, label: 'Activities' },
       ],
     },
     {
       label: 'SALES',
-      items: [
-        { to: '/leads', icon: UserPlus, label: 'Leads' },
-        { to: '/deals', icon: Briefcase, label: 'Deals' },
-      ],
+      items: [{ to: '/leads', icon: UserPlus, label: 'Leads' }],
     },
     {
       label: 'ERP',
@@ -104,17 +98,11 @@ export function Sidebar() {
     },
     {
       label: 'CUSTOMERS',
-      items: [
-        { to: '/contacts', icon: Users, label: 'Customers' },
-        { to: '/accounts', icon: Building2, label: 'Accounts' },
-      ],
+      items: [{ to: '/contacts', icon: Users, label: 'Customers' }],
     },
     {
       label: 'SALES',
-      items: [
-        { to: '/leads', icon: UserPlus, label: 'My Leads' },
-        { to: '/deals', icon: Briefcase, label: 'My Deals' },
-      ],
+      items: [{ to: '/leads', icon: UserPlus, label: 'My Leads' }],
     },
     {
       label: 'ACCOUNT',

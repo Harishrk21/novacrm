@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { Download, Eye, Plus, Trash2 } from 'lucide-react'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { ContactPicker, type ContactPick } from '@/components/contacts/ContactPicker'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -256,7 +257,7 @@ function invoiceStatusColor(status: string): 'gray' | 'blue' | 'amber' | 'green'
 }
 
 export function InvoicesPage() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const t = DEFAULT_TIPS['erp.invoices'] ?? {
     title: 'Invoicing',
     body: 'Add multiple products per invoice, preview totals, then download a printable PDF-ready document. Creating an invoice deducts stock for tracked products. Mark as Sent when you share it; Mark as Paid when payment clears.',
@@ -280,11 +281,23 @@ export function InvoicesPage() {
   })
   const [statusFilter, setStatusFilter] = useState('')
   const [statusBusy, setStatusBusy] = useState(false)
-  const [tab, setTab] = useState<'list' | 'create'>('list')
+  const [tab, setTab] = useState<'list' | 'create' | 'upload'>('list')
   const [previewOpen, setPreviewOpen] = useState(false)
   const [detail, setDetail] = useState<InvoiceDetail | null>(null)
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [uploadForm, setUploadForm] = useState({
+    contactId: '',
+    accountId: '',
+    invoiceNumber: '',
+    invoiceDate: new Date().toISOString().slice(0, 10),
+    amount: '',
+    notes: '',
+  })
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [pickedContact, setPickedContact] = useState<ContactPick | null>(null)
+  const [uploadPicked, setUploadPicked] = useState<ContactPick | null>(null)
   const [form, setForm] = useState({
     accountId: '',
     contactId: '',
@@ -299,6 +312,64 @@ export function InvoicesPage() {
     billingAddress: '',
   })
   const [lines, setLines] = useState<LineDraft[]>([newLine()])
+
+  async function ensureAccountForContact(contact: ContactPick): Promise<string> {
+    if (contact.accountId) return contact.accountId
+    const acc = await api.createAccount({
+      name: contact.name,
+      phone: contact.phone || contact.mobile || null,
+      email: contact.email || null,
+      customFields: { autoFromContact: contact.id },
+    })
+    const accountId = String(acc.id)
+    await api.updateContact(contact.id, { accountId })
+    return accountId
+  }
+
+  async function onPickInvoiceContact(c: ContactPick | null) {
+    setPickedContact(c)
+    if (!c) {
+      setForm((f) => ({ ...f, contactId: '', accountId: '' }))
+      return
+    }
+    try {
+      const accountId = await ensureAccountForContact(c)
+      const acc = accounts.find((a) => a.id === accountId)
+      setForm((f) => ({
+        ...f,
+        contactId: c.id,
+        accountId,
+        placeOfSupply: acc
+          ? [acc.city, acc.state].filter(Boolean).join(', ') || f.placeOfSupply
+          : f.placeOfSupply,
+      }))
+      if (!contacts.some((x) => x.id === c.id)) {
+        setContacts((prev) => [...prev, { id: c.id, name: c.name, accountId }])
+      }
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not link customer account',
+      })
+    }
+  }
+
+  async function onPickUploadContact(c: ContactPick | null) {
+    setUploadPicked(c)
+    if (!c) {
+      setUploadForm((f) => ({ ...f, contactId: '', accountId: '' }))
+      return
+    }
+    try {
+      const accountId = await ensureAccountForContact(c)
+      setUploadForm((f) => ({ ...f, contactId: c.id, accountId }))
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not link customer account',
+      })
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -395,15 +466,52 @@ export function InvoicesPage() {
   useEffect(() => {
     const accountId = searchParams.get('accountId') || ''
     const contactId = searchParams.get('contactId') || ''
-    const shouldOpen = searchParams.get('open') === '1'
-    if (!shouldOpen && !accountId && !contactId) return
+    const open = searchParams.get('open')
+    if (!open && !accountId && !contactId) return
+
+    if (open === 'upload') {
+      setTab('upload')
+      if (contactId) {
+        void api.getContact(contactId).then((row) => {
+          const pick: ContactPick = {
+            id: String(row.id),
+            name: String(row.name),
+            customerCode: row.customerCode ? String(row.customerCode) : null,
+            phone: row.phone ? String(row.phone) : null,
+            mobile: row.mobile ? String(row.mobile) : null,
+            accountId: row.accountId ? String(row.accountId) : accountId || null,
+            email: row.email ? String(row.email) : null,
+          }
+          void onPickUploadContact(pick)
+        }).catch(() => undefined)
+      }
+      setSearchParams({}, { replace: true })
+      return
+    }
+
+    const shouldOpen = open === '1'
     setForm((f) => ({
       ...f,
       accountId: accountId || f.accountId,
       contactId: contactId || f.contactId,
     }))
-    if (shouldOpen || accountId) setTab('create')
-  }, [searchParams])
+    if (contactId) {
+      void api.getContact(contactId).then((row) => {
+        const pick: ContactPick = {
+          id: String(row.id),
+          name: String(row.name),
+          customerCode: row.customerCode ? String(row.customerCode) : null,
+          phone: row.phone ? String(row.phone) : null,
+          mobile: row.mobile ? String(row.mobile) : null,
+          accountId: row.accountId ? String(row.accountId) : accountId || null,
+          email: row.email ? String(row.email) : null,
+        }
+        void onPickInvoiceContact(pick)
+      }).catch(() => undefined)
+    }
+    if (shouldOpen || accountId || contactId) setTab('create')
+    setSearchParams({}, { replace: true })
+  }, [searchParams, setSearchParams])
 
   const accountName = useMemo(
     () => Object.fromEntries(accounts.map((a) => [a.id, a.name])),
@@ -447,7 +555,7 @@ export function InvoicesPage() {
 
   function validate() {
     const next: Record<string, string> = {}
-    if (!form.accountId) next.accountId = 'Select a customer account'
+    if (!form.accountId) next.accountId = 'Select a customer (search by name or phone)'
     if (!form.invoiceDate) next.invoiceDate = 'Invoice date is required'
     if (!lines.length) next.lines = 'Add at least one product line'
     lines.forEach((line, idx) => {
@@ -460,6 +568,88 @@ export function InvoicesPage() {
     })
     setErrors(next)
     return next
+  }
+
+  async function uploadExternalInvoice() {
+    if (!uploadFile) {
+      addToast({ type: 'error', message: 'Choose an invoice file (PDF or image)' })
+      return
+    }
+    if (!uploadForm.accountId && !uploadForm.contactId) {
+      addToast({ type: 'error', message: 'Select a customer or account' })
+      return
+    }
+    setUploading(true)
+    try {
+      let accountId = uploadForm.accountId
+      if (!accountId && uploadForm.contactId) {
+        const contact = contacts.find((c) => c.id === uploadForm.contactId)
+        if (contact?.accountId) {
+          accountId = contact.accountId
+        } else {
+          const name =
+            contacts.find((c) => c.id === uploadForm.contactId)?.name ||
+            'Customer'
+          const acc = await api.createAccount({
+            name: String(name),
+            customFields: { autoFromContact: uploadForm.contactId },
+          })
+          accountId = String(acc.id)
+          if (uploadForm.contactId) {
+            await api.updateContact(uploadForm.contactId, { accountId })
+          }
+        }
+      }
+      const uploaded = await api.uploadFile(uploadFile)
+      const amount = Number(uploadForm.amount) || 0
+      const invNo =
+        uploadForm.invoiceNumber.trim() ||
+        `EXT-${Date.now().toString().slice(-8)}`
+      await api.createInvoice({
+        accountId,
+        contactId: uploadForm.contactId || null,
+        invoiceDate: uploadForm.invoiceDate,
+        dueDate: null,
+        currency: 'INR',
+        notes: uploadForm.notes || 'External client invoice (uploaded)',
+        discountTotal: 0,
+        customFields: {
+          source: 'EXTERNAL_UPLOAD',
+          fileUrl: uploaded.url,
+          originalFileName: uploaded.originalName || uploadFile.name,
+          mimeType: uploaded.mimeType || uploadFile.type,
+        },
+        lines: [
+          {
+            productId: null,
+            description: `External invoice${uploadForm.invoiceNumber ? ` ${uploadForm.invoiceNumber}` : ''}`,
+            quantity: 1,
+            unitPrice: amount,
+            taxPercent: 0,
+          },
+        ],
+      })
+      // Prefer custom invoice number if create generated one differently — status stays DRAFT
+      addToast({ type: 'success', message: `Uploaded external invoice ${invNo}` })
+      setUploadFile(null)
+      setUploadForm({
+        contactId: '',
+        accountId: '',
+        invoiceNumber: '',
+        invoiceDate: new Date().toISOString().slice(0, 10),
+        amount: '',
+        notes: '',
+      })
+      setTab('list')
+      await load()
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Upload failed',
+      })
+    } finally {
+      setUploading(false)
+    }
   }
 
   async function createInvoice() {
@@ -619,7 +809,7 @@ export function InvoicesPage() {
         accent="theme"
         active={tab}
         onChange={(id) => {
-          setTab(id as 'list' | 'create')
+          setTab(id as 'list' | 'create' | 'upload')
           if (id === 'create') {
             setErrors({})
             setLines([newLine()])
@@ -628,6 +818,7 @@ export function InvoicesPage() {
         tabs={[
           { id: 'list', label: 'All invoices', count: items.length },
           { id: 'create', label: 'New invoice' },
+          { id: 'upload', label: 'Upload invoice' },
         ]}
       />
 
@@ -890,6 +1081,77 @@ export function InvoicesPage() {
             )}
           </Card>
         </>
+      ) : tab === 'upload' ? (
+        <FormPanel
+          open
+          accent="sky"
+          eyebrow="Billing"
+          title="Upload external invoice"
+          subtitle="Store a client’s own invoice (PDF/image) against their account — not generated by NovaCRM."
+          onClose={() => setTab('list')}
+          footer={
+            <>
+              <FormPanelCancel onClick={() => setTab('list')} />
+              <Button disabled={uploading} onClick={() => void uploadExternalInvoice()}>
+                {uploading ? 'Uploading…' : 'Save uploaded invoice'}
+              </Button>
+            </>
+          }
+        >
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <ContactPicker
+                label="Customer / shop *"
+                valueId={uploadForm.contactId}
+                selected={uploadPicked}
+                onSelect={(c) => void onPickUploadContact(c)}
+                returnTo="/erp/invoices?open=upload"
+              />
+              <p className="mt-1 text-xs text-text-secondary">
+                Search by name or phone. If not found, choose Add new customer.
+              </p>
+            </div>
+            <Input
+              label="Their invoice number"
+              value={uploadForm.invoiceNumber}
+              onChange={(e) => setUploadForm({ ...uploadForm, invoiceNumber: e.target.value })}
+              placeholder="Optional — as printed on paper"
+            />
+            <Input
+              label="Invoice date"
+              type="date"
+              value={uploadForm.invoiceDate}
+              onChange={(e) => setUploadForm({ ...uploadForm, invoiceDate: e.target.value })}
+            />
+            <Input
+              label="Amount ₹ (optional)"
+              type="number"
+              value={uploadForm.amount}
+              onChange={(e) => setUploadForm({ ...uploadForm, amount: e.target.value })}
+            />
+            <label className="block text-sm sm:col-span-2">
+              <span className="mb-1 block font-medium text-text-secondary">File (PDF or image) *</span>
+              <input
+                type="file"
+                accept="image/*,.pdf,application/pdf"
+                className="block w-full text-sm"
+                onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+              />
+              {uploadFile ? (
+                <span className="mt-1 block text-xs text-text-secondary">{uploadFile.name}</span>
+              ) : null}
+            </label>
+            <label className="block text-sm sm:col-span-2">
+              <span className="mb-1 block font-medium text-text-secondary">Notes</span>
+              <textarea
+                className="min-h-20 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue"
+                value={uploadForm.notes}
+                onChange={(e) => setUploadForm({ ...uploadForm, notes: e.target.value })}
+                placeholder="e.g. Client brought paper invoice from other vendor"
+              />
+            </label>
+          </div>
+        </FormPanel>
       ) : (
         <FormPanel
           open
@@ -911,35 +1173,21 @@ export function InvoicesPage() {
           }
         >
           <div className="grid gap-3 sm:grid-cols-2">
-            <Select
-              label="Customer account *"
-              value={form.accountId}
-              onChange={(e) => {
-                const acc = accounts.find((a) => a.id === e.target.value)
-                setForm({
-                  ...form,
-                  accountId: e.target.value,
-                  contactId: '',
-                  placeOfSupply: acc ? [acc.city, acc.state].filter(Boolean).join(', ') : form.placeOfSupply,
-                })
-              }}
-              options={[
-                { value: '', label: 'Select customer account' },
-                ...accounts.map((a) => ({ value: a.id, label: a.name })),
-              ]}
-            />
-            {errors.accountId && <p className="sm:col-span-2 -mt-2 text-xs text-accent-red">{errors.accountId}</p>}
-            <Select
-              label="Contact"
-              value={form.contactId}
-              onChange={(e) => setForm({ ...form, contactId: e.target.value })}
-              options={[
-                { value: '', label: 'Select contact' },
-                ...contacts
-                  .filter((c) => !form.accountId || c.accountId === form.accountId)
-                  .map((c) => ({ value: c.id, label: c.name })),
-              ]}
-            />
+            <div className="sm:col-span-2">
+              <ContactPicker
+                label="Customer / shop *"
+                valueId={form.contactId}
+                selected={pickedContact}
+                onSelect={(c) => void onPickInvoiceContact(c)}
+                returnTo="/erp/invoices?open=1"
+                error={errors.accountId || errors.contactId}
+              />
+              {form.accountId ? (
+                <p className="mt-1 text-xs text-text-secondary">
+                  Billing account: {accountName[form.accountId] ?? form.accountId}
+                </p>
+              ) : null}
+            </div>
             <Input
               label="Invoice date *"
               type="date"

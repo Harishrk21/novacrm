@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Search, UserPlus } from 'lucide-react'
 import { Avatar } from '@/components/ui/Avatar'
 import { Button } from '@/components/ui/Button'
@@ -19,6 +19,7 @@ import { Select } from '@/components/ui/Select'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError } from '@/lib/api'
+import { ASSET_ORIGIN_OPTIONS } from '@/lib/assetOrigin'
 import { firstError, validateContactForm, type FieldErrors } from '@/lib/formValidation'
 import { formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
@@ -69,8 +70,36 @@ const emptyForm = {
   tags: '',
 }
 
+const MACHINE_TYPES = [
+  { value: 'WEIGHING', label: 'Weighing machine' },
+  { value: 'BILLING', label: 'Billing machine' },
+  { value: 'CCM', label: 'CCM' },
+  { value: 'CCTV', label: 'CCTV' },
+  { value: 'BIOMETRIC', label: 'Biometric' },
+  { value: 'PAPER_SHREDDER', label: 'Paper shredder' },
+  { value: 'PAPER_ROLL', label: 'Paper roll' },
+  { value: 'OTHER', label: 'Other' },
+]
+
+const emptyMachine = {
+  skip: false,
+  machineType: 'WEIGHING',
+  name: '',
+  capacity: '',
+  serialNo: '',
+  model: '',
+  origin: 'SOLD_BY_US',
+  servicePlan: 'NON_AMC',
+  amcStartDate: '',
+  amcEndDate: '',
+  nextDueDate: '',
+  stampingDate: '',
+  remindersEnabled: true,
+}
+
 export function ContactsPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const addToast = useUIStore((s) => s.addToast)
 
   const [items, setItems] = useState<ContactRow[]>([])
@@ -86,7 +115,10 @@ export function ContactsPage() {
   const [phone, setPhone] = useState('')
   const [phoneResult, setPhoneResult] = useState<string | null>(null)
   const [tab, setTab] = useState<'list' | 'create'>('list')
+  const [createStep, setCreateStep] = useState<'customer' | 'product'>('customer')
+  const [returnTo, setReturnTo] = useState<string | null>(null)
   const [form, setForm] = useState(emptyForm)
+  const [machine, setMachine] = useState(emptyMachine)
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<FieldErrors>({})
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
@@ -94,6 +126,24 @@ export function ContactsPage() {
 
   const ids = useMemo(() => items.map((i) => String(i.id)), [items])
   const selection = useRowSelection(ids)
+
+  useEffect(() => {
+    const open = searchParams.get('open') === '1'
+    if (!open) return
+    const phoneQ = searchParams.get('phone') ?? ''
+    const nameQ = searchParams.get('q') ?? ''
+    const back = searchParams.get('returnTo')
+    setTab('create')
+    setCreateStep('customer')
+    setReturnTo(back)
+    setForm((prev) => ({
+      ...prev,
+      phone: phoneQ || prev.phone,
+      name: !phoneQ && nameQ && !/^\d/.test(nameQ) ? nameQ : prev.name,
+      mobile: phoneQ || prev.mobile,
+    }))
+    setSearchParams({}, { replace: true })
+  }, [searchParams, setSearchParams])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -159,12 +209,32 @@ export function ContactsPage() {
     }
   }
 
-  async function handleCreate(event: FormEvent) {
-    event.preventDefault()
+  function goNextToProduct(event?: FormEvent) {
+    event?.preventDefault()
     const nextErrors = validateContactForm(form)
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length) {
       addToast({ type: 'error', message: firstError(nextErrors) })
+      return
+    }
+    setCreateStep('product')
+  }
+
+  async function handleCreate(event: FormEvent) {
+    event.preventDefault()
+    if (createStep === 'customer') {
+      goNextToProduct()
+      return
+    }
+    const nextErrors = validateContactForm(form)
+    setErrors(nextErrors)
+    if (Object.keys(nextErrors).length) {
+      addToast({ type: 'error', message: firstError(nextErrors) })
+      setCreateStep('customer')
+      return
+    }
+    if (!machine.skip && !machine.name.trim()) {
+      addToast({ type: 'error', message: 'Enter product/machine name, or skip this step' })
       return
     }
     setSaving(true)
@@ -201,20 +271,45 @@ export function ContactsPage() {
           : [],
         customFields,
       })
+      if (!machine.skip && machine.name.trim()) {
+        await api.createAsset({
+          contactId: String(created.id),
+          machineType: machine.machineType,
+          name: machine.name.trim(),
+          capacity: machine.capacity || null,
+          serialNo: machine.serialNo || null,
+          model: machine.model || null,
+          origin: machine.origin,
+          servicePlan: machine.servicePlan,
+          amcStartDate: machine.servicePlan === 'AMC' ? machine.amcStartDate || null : null,
+          amcEndDate: machine.servicePlan === 'AMC' ? machine.amcEndDate || null : null,
+          nextDueDate: machine.nextDueDate || null,
+          stampingDate: machine.stampingDate || null,
+          remindersEnabled: machine.remindersEnabled,
+        })
+      }
       setTab('list')
+      setCreateStep('customer')
       setForm(emptyForm)
+      setMachine(emptyMachine)
       setErrors({})
       addToast({
         type: 'success',
         message: created.customerCode
           ? `Customer saved — ID ${String(created.customerCode)}`
-          : 'Contact saved',
+          : 'Customer saved',
       })
-      navigate(`/contacts/${created.id as string}`)
+      if (returnTo) {
+        const sep = returnTo.includes('?') ? '&' : '?'
+        navigate(`${returnTo}${sep}contactId=${encodeURIComponent(String(created.id))}`)
+        setReturnTo(null)
+      } else {
+        navigate(`/contacts/${created.id as string}`)
+      }
     } catch (err) {
       addToast({
         type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Could not create contact',
+        message: err instanceof ApiClientError ? err.message : 'Could not create customer',
       })
     } finally {
       setSaving(false)
@@ -257,12 +352,14 @@ export function ContactsPage() {
           setTab(id as 'list' | 'create')
           if (id === 'create') {
             setForm(emptyForm)
+            setMachine(emptyMachine)
+            setCreateStep('customer')
             setErrors({})
           }
         }}
         tabs={[
-          { id: 'list', label: 'All contacts', count: items.length },
-          { id: 'create', label: 'Add contact' },
+          { id: 'list', label: 'All customers', count: items.length },
+          { id: 'create', label: 'Add customer' },
         ]}
       />
 
@@ -365,7 +462,7 @@ export function ContactsPage() {
             ) : loadError && items.length === 0 ? (
               <EmptyState
                 icon={<UserPlus size={26} />}
-                title="Could not load contacts"
+                title="Could not load customers"
                 subtitle={loadError}
                 actionLabel="Retry"
                 onAction={() => void load()}
@@ -373,17 +470,20 @@ export function ContactsPage() {
             ) : items.length === 0 ? (
               <EmptyState
                 icon={<UserPlus size={26} />}
-                title="No contacts yet"
-                subtitle="Add your first customer or convert a qualified lead."
-                actionLabel="Add contact"
-                onAction={() => setTab('create')}
+                title="No customers yet"
+                subtitle="Add your first customer shop / contact."
+                actionLabel="Add customer"
+                onAction={() => {
+                  setCreateStep('customer')
+                  setTab('create')
+                }}
               />
             ) : (
               <div className="p-4 pt-3">
                 {selection.someSelected ? (
                   <BulkActionBar
                     count={selection.selectedCount}
-                    noun="contact"
+                    noun="customer"
                     busy={busyDelete}
                     onClear={selection.clear}
                     onDelete={() => setConfirm({ ids: selection.selectedIds })}
@@ -470,60 +570,167 @@ export function ContactsPage() {
           open
           accent="theme"
           eyebrow="Customers"
-          title="Add customer"
-          subtitle="Shop / company details as in your SERVICE register — address, phone, location."
+          title={createStep === 'customer' ? 'Add customer' : 'Add product / machine'}
+          subtitle={
+            createStep === 'customer'
+              ? 'Shop details first — then Next to add product (Sold by us or Outside).'
+              : 'Optional. Mark Sold by us vs Outside / repair only. Skip if you only need the customer.'
+          }
           onClose={() => {
             setTab('list')
+            setCreateStep('customer')
             setForm(emptyForm)
+            setMachine(emptyMachine)
             setErrors({})
+            setReturnTo(null)
           }}
           footer={
             <>
               <FormPanelCancel
                 onClick={() => {
+                  if (createStep === 'product') {
+                    setCreateStep('customer')
+                    return
+                  }
                   setTab('list')
                   setForm(emptyForm)
+                  setMachine(emptyMachine)
                   setErrors({})
+                  setReturnTo(null)
                 }}
               />
-              <Button type="submit" form="create-contact" disabled={saving}>
-                {saving ? 'Saving…' : 'Save customer'}
-              </Button>
+              {createStep === 'customer' ? (
+                <Button type="button" onClick={() => goNextToProduct()}>
+                  Next — add product
+                </Button>
+              ) : (
+                <Button type="submit" form="create-contact" disabled={saving}>
+                  {saving ? 'Saving…' : machine.skip ? 'Save customer only' : 'Save customer + product'}
+                </Button>
+              )}
             </>
           }
         >
-          <form id="create-contact" onSubmit={handleCreate} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <Input label="Company / shop name *" value={form.name} error={errors.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="HMS ENTERPRISES" />
-            <Input label="Phone *" value={form.phone} error={errors.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="+91 98xxx xxxxx" />
-            <Input label="Mobile / WhatsApp" value={form.mobile} error={errors.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
-            <Input label="Street" value={form.street} onChange={(e) => setForm({ ...form, street: e.target.value })} />
-            <Input label="Door number" value={form.doorNo} onChange={(e) => setForm({ ...form, doorNo: e.target.value })} />
-            <Input label="Area" value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
-            <Input label="Pin code" value={form.pincode} error={errors.pincode} onChange={(e) => setForm({ ...form, pincode: e.target.value })} />
-            <Input label="Location / landmark" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} className="lg:col-span-2" />
-            <Input label="City" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
-            <Input label="State" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
-            <Input label="Email" type="email" value={form.email} error={errors.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-            <Select
-              label="Account / company (optional)"
-              value={form.accountId}
-              onChange={(e) => setForm({ ...form, accountId: e.target.value })}
-              options={[{ value: '', label: 'No linked account' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
-            />
-            <Select
-              label="Owner"
-              value={form.ownerUserId}
-              onChange={(e) => setForm({ ...form, ownerUserId: e.target.value })}
-              options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
-            />
-            <label className="block text-sm sm:col-span-2 lg:col-span-3">
-              <span className="mb-1 block font-medium text-text-secondary">Notes</span>
-              <textarea
-                className="min-h-24 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
-                value={form.description}
-                onChange={(e) => setForm({ ...form, description: e.target.value })}
-              />
-            </label>
+          <form id="create-contact" onSubmit={(e) => void handleCreate(e)} className="space-y-6">
+            {createStep === 'customer' ? (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <Input label="Company / shop name *" value={form.name} error={errors.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="HMS ENTERPRISES" />
+                <Input label="Phone *" value={form.phone} error={errors.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="+91 98xxx xxxxx" />
+                <Input label="Mobile / WhatsApp" value={form.mobile} error={errors.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
+                <Input label="Street" value={form.street} onChange={(e) => setForm({ ...form, street: e.target.value })} />
+                <Input label="Door number" value={form.doorNo} onChange={(e) => setForm({ ...form, doorNo: e.target.value })} />
+                <Input label="Area" value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
+                <Input label="Pin code" value={form.pincode} error={errors.pincode} onChange={(e) => setForm({ ...form, pincode: e.target.value })} />
+                <Input label="Location / landmark" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} className="lg:col-span-2" />
+                <Input label="City" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
+                <Input label="State" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
+                <Input label="Email" type="email" value={form.email} error={errors.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+                <Select
+                  label="Account / company (optional)"
+                  value={form.accountId}
+                  onChange={(e) => setForm({ ...form, accountId: e.target.value })}
+                  options={[{ value: '', label: 'No linked account' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
+                />
+                <Select
+                  label="Owner"
+                  value={form.ownerUserId}
+                  onChange={(e) => setForm({ ...form, ownerUserId: e.target.value })}
+                  options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
+                />
+                <label className="block text-sm sm:col-span-2 lg:col-span-3">
+                  <span className="mb-1 block font-medium text-text-secondary">Notes</span>
+                  <textarea
+                    className="min-h-24 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
+                    value={form.description}
+                    onChange={(e) => setForm({ ...form, description: e.target.value })}
+                  />
+                </label>
+              </div>
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <label className="flex items-center gap-2 text-sm sm:col-span-2 lg:col-span-3">
+                  <input
+                    type="checkbox"
+                    checked={machine.skip}
+                    onChange={(e) => setMachine({ ...machine, skip: e.target.checked })}
+                  />
+                  Skip product for now — save customer only
+                </label>
+                {!machine.skip ? (
+                  <>
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <Select
+                        label="Origin *"
+                        value={machine.origin}
+                        onChange={(e) => setMachine({ ...machine, origin: e.target.value })}
+                        options={ASSET_ORIGIN_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                      />
+                      <p className="mt-1 text-xs text-text-secondary">
+                        {ASSET_ORIGIN_OPTIONS.find((o) => o.value === machine.origin)?.hint}
+                      </p>
+                    </div>
+                    <Select
+                      label="Type"
+                      value={machine.machineType}
+                      onChange={(e) => setMachine({ ...machine, machineType: e.target.value })}
+                      options={MACHINE_TYPES}
+                    />
+                    <Input
+                      label="Product / machine name *"
+                      className="lg:col-span-2"
+                      value={machine.name}
+                      onChange={(e) => setMachine({ ...machine, name: e.target.value })}
+                      placeholder="WEIGHING SCALE 20KG"
+                    />
+                    <Input label="Capacity" value={machine.capacity} onChange={(e) => setMachine({ ...machine, capacity: e.target.value })} />
+                    <Input label="Model" value={machine.model} onChange={(e) => setMachine({ ...machine, model: e.target.value })} />
+                    <Input label="Serial number" value={machine.serialNo} onChange={(e) => setMachine({ ...machine, serialNo: e.target.value })} />
+                    <Select
+                      label="Service plan"
+                      value={machine.servicePlan}
+                      onChange={(e) => setMachine({ ...machine, servicePlan: e.target.value })}
+                      options={[
+                        { value: 'NON_AMC', label: 'Non-AMC' },
+                        { value: 'AMC', label: 'AMC' },
+                      ]}
+                    />
+                    {machine.origin === 'THIRD_PARTY' ? (
+                      <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
+                        Repair-only / outside products can also take AMC — choose AMC and set dates.
+                      </p>
+                    ) : null}
+                    {machine.servicePlan === 'AMC' ? (
+                      <>
+                        <Input
+                          label="AMC start"
+                          type="date"
+                          value={machine.amcStartDate}
+                          onChange={(e) => setMachine({ ...machine, amcStartDate: e.target.value })}
+                        />
+                        <Input
+                          label="AMC end"
+                          type="date"
+                          value={machine.amcEndDate}
+                          onChange={(e) => setMachine({ ...machine, amcEndDate: e.target.value })}
+                        />
+                      </>
+                    ) : null}
+                    <Input
+                      label="Next due"
+                      type="date"
+                      value={machine.nextDueDate}
+                      onChange={(e) => setMachine({ ...machine, nextDueDate: e.target.value })}
+                    />
+                    <Input
+                      label="Stamping date"
+                      type="date"
+                      value={machine.stampingDate}
+                      onChange={(e) => setMachine({ ...machine, stampingDate: e.target.value })}
+                    />
+                  </>
+                ) : null}
+              </div>
+            )}
           </form>
         </FormPanel>
       )}
@@ -534,11 +741,11 @@ export function ContactsPage() {
         onConfirm={() => {
           if (confirm) void runDelete(confirm.ids)
         }}
-        title={confirm?.ids.length === 1 ? 'Delete contact?' : `Delete ${confirm?.ids.length ?? 0} contacts?`}
+        title={confirm?.ids.length === 1 ? 'Delete customer?' : `Delete ${confirm?.ids.length ?? 0} customers?`}
         body={
           confirm?.ids.length === 1
-            ? 'This contact will be permanently removed.'
-            : 'Selected contacts will be permanently removed.'
+            ? 'This customer will be permanently removed.'
+            : 'Selected customers will be permanently removed.'
         }
       />
     </div>

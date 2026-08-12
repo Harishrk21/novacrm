@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { CalendarDays, Check, Clock, Mail, Pencil, Phone, Plus, RefreshCw, Users } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
+import { ContactPicker, type ContactPick } from '@/components/contacts/ContactPicker'
 import { Avatar } from '@/components/ui/Avatar'
 import { Badge, activityStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -78,6 +80,8 @@ export function ActivitiesPage() {
   const [users, setUsers] = useState<LookupUser[]>([])
   const [contacts, setContacts] = useState<LookupContact[]>([])
   const [deals, setDeals] = useState<LookupDeal[]>([])
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [returnContactId, setReturnContactId] = useState('')
 
   const load = useCallback(async () => {
     if (!isTenantSession()) {
@@ -138,6 +142,15 @@ export function ActivitiesPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    const open = searchParams.get('open') === '1'
+    const contactId = searchParams.get('contactId') || ''
+    if (!open && !contactId) return
+    setModalOpen(true)
+    if (contactId) setReturnContactId(contactId)
+    setSearchParams({}, { replace: true })
+  }, [searchParams, setSearchParams])
 
   const filtered = useMemo(() => {
     if (!date) return activities
@@ -241,12 +254,16 @@ export function ActivitiesPage() {
 
       <ActivityFormPanel
         open={modalOpen}
-        onClose={() => setModalOpen(false)}
+        onClose={() => {
+          setModalOpen(false)
+          setReturnContactId('')
+        }}
         onCreate={create}
         contacts={contacts}
         deals={deals}
         users={users}
         defaultAssigneeId={authUser?.id}
+        initialContactId={returnContactId}
       />
 
       <Card className="mb-4 grid gap-3 md:grid-cols-4">
@@ -419,10 +436,10 @@ function ActivityFormPanel({
   open,
   onClose,
   onCreate,
-  contacts,
   deals,
   users,
   defaultAssigneeId,
+  initialContactId = '',
 }: {
   open: boolean
   onClose: () => void
@@ -431,12 +448,20 @@ function ActivityFormPanel({
   deals: LookupDeal[]
   users: LookupUser[]
   defaultAssigneeId?: string
+  initialContactId?: string
 }) {
   const [linkType, setLinkType] = useState('CONTACT')
-  const linkOptions =
-    linkType === 'CONTACT'
-      ? contacts.map((item) => ({ value: item.id, label: item.name }))
-      : deals.map((item) => ({ value: item.id, label: item.name }))
+  const [pickedContact, setPickedContact] = useState<ContactPick | null>(null)
+  const [linkedId, setLinkedId] = useState('')
+  const dealOptions = deals.map((item) => ({ value: item.id, label: item.name }))
+
+  useEffect(() => {
+    if (!open) return
+    if (initialContactId) {
+      setLinkType('CONTACT')
+      setLinkedId(initialContactId)
+    }
+  }, [open, initialContactId])
 
   return (
     <FormPanel
@@ -470,25 +495,45 @@ function ActivityFormPanel({
           label="Link to"
           name="linkType"
           value={linkType}
-          onChange={(e) => setLinkType(e.target.value)}
+          onChange={(e) => {
+            setLinkType(e.target.value)
+            setLinkedId('')
+            setPickedContact(null)
+          }}
           options={[
-            { value: 'CONTACT', label: 'Contact' },
+            { value: 'CONTACT', label: 'Customer' },
             { value: 'DEAL', label: 'Deal' },
           ]}
         />
-        <Select
-          label={linkType === 'CONTACT' ? 'Contact' : 'Deal'}
-          name="linkedId"
-          options={[
-            {
-              value: '',
-              label: linkOptions.length
-                ? `Select ${linkType === 'CONTACT' ? 'contact' : 'deal'}`
-                : 'No records in database',
-            },
-            ...linkOptions,
-          ]}
-        />
+        {linkType === 'CONTACT' ? (
+          <div className="sm:col-span-2 lg:col-span-2">
+            <ContactPicker
+              label="Customer"
+              valueId={linkedId}
+              selected={pickedContact}
+              returnTo="/activities?open=1"
+              onSelect={(c) => {
+                setPickedContact(c)
+                setLinkedId(c?.id ?? '')
+              }}
+            />
+            <input type="hidden" name="linkedId" value={linkedId} />
+          </div>
+        ) : (
+          <Select
+            label="Deal"
+            name="linkedId"
+            value={linkedId}
+            onChange={(e) => setLinkedId(e.target.value)}
+            options={[
+              {
+                value: '',
+                label: dealOptions.length ? 'Select deal' : 'No deals in database',
+              },
+              ...dealOptions,
+            ]}
+          />
+        )}
         <Input label="Date & time" name="scheduledAt" type="datetime-local" />
         <Input label="Duration (minutes)" name="duration" type="number" min="0" />
         <Select

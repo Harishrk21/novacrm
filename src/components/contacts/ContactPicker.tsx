@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Search, X } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Search, UserPlus, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { formatPhone } from '@/lib/utils'
 import { cn } from '@/lib/utils'
@@ -21,6 +22,8 @@ type Props = {
   onSelect: (contact: ContactPick | null) => void
   error?: string
   className?: string
+  /** Where to return after creating a customer from “not found” */
+  returnTo?: string
 }
 
 function labelFor(c: ContactPick) {
@@ -36,7 +39,9 @@ export function ContactPicker({
   onSelect,
   error,
   className,
+  returnTo = '/tickets?open=1',
 }: Props) {
+  const navigate = useNavigate()
   const inputId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
   const [query, setQuery] = useState('')
@@ -55,8 +60,6 @@ export function ContactPicker({
   useEffect(() => {
     if (!open) return
     const q = query.trim()
-    // Don't search while showing a fully selected label with no edit intent —
-    // if query matches selected label, wait for user to change it
     if (selected && q === labelFor(selected)) {
       setHits([])
       return
@@ -106,7 +109,6 @@ export function ContactPicker({
     return () => document.removeEventListener('mousedown', onDoc)
   }, [])
 
-  // Prefill label when only id is known (deep link)
   useEffect(() => {
     if (!valueId || selected?.id === valueId) return
     let cancelled = false
@@ -132,6 +134,17 @@ export function ContactPicker({
       cancelled = true
     }
   }, [valueId, selected?.id, onSelect])
+
+  function goAddCustomer() {
+    const q = query.trim()
+    const digits = q.replace(/\D/g, '')
+    const looksPhone = digits.length >= 7
+    const params = new URLSearchParams({ open: '1', returnTo })
+    if (looksPhone) params.set('phone', q)
+    else if (q) params.set('q', q)
+    setOpen(false)
+    navigate(`/contacts?${params.toString()}`)
+  }
 
   return (
     <div ref={rootRef} className={cn('relative flex flex-col gap-1', className)}>
@@ -179,42 +192,58 @@ export function ContactPicker({
       </div>
       {error ? <span className="text-xs text-accent-red">{error}</span> : null}
       {open && query.trim().length >= 2 && (!selected || query !== labelFor(selected)) ? (
-        <ul className="absolute top-[calc(100%+4px)] z-30 max-h-56 w-full overflow-auto rounded-[8px] border border-border bg-card py-1 shadow-lg">
+        <ul className="absolute top-[calc(100%+4px)] z-30 max-h-64 w-full overflow-auto rounded-[8px] border border-border bg-card py-1 shadow-lg">
           {loading ? (
             <li className="px-3 py-2 text-sm text-text-secondary">Searching…</li>
-          ) : hits.length === 0 ? (
-            <li className="px-3 py-2 text-sm text-text-secondary">
-              No customers found. Create the contact first under Contacts.
-            </li>
           ) : (
-            hits.map((c) => (
-              <li key={c.id}>
+            <>
+              {hits.map((c) => (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm hover:bg-surface"
+                    onClick={() => {
+                      onSelect(c)
+                      setQuery(labelFor(c))
+                      setOpen(false)
+                    }}
+                  >
+                    <span className="font-medium text-text-primary">
+                      {c.customerCode ? (
+                        <span className="mr-1.5 font-mono text-xs text-accent-blue">{c.customerCode}</span>
+                      ) : null}
+                      {c.name}
+                    </span>
+                    <span className="text-xs text-text-secondary">
+                      {[formatPhone(String(c.phone || c.mobile || '')), c.email].filter(Boolean).join(' · ') ||
+                        'No phone'}
+                    </span>
+                  </button>
+                </li>
+              ))}
+              {hits.length === 0 ? (
+                <li className="px-3 py-2 text-sm text-text-secondary">No customer matches “{query.trim()}”</li>
+              ) : null}
+              <li className="border-t border-border">
                 <button
                   type="button"
-                  className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm hover:bg-surface"
-                  onClick={() => {
-                    onSelect(c)
-                    setQuery(labelFor(c))
-                    setOpen(false)
-                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-semibold text-accent-blue hover:bg-accent-blue/5"
+                  onClick={goAddCustomer}
                 >
-                  <span className="font-medium text-text-primary">
-                    {c.customerCode ? (
-                      <span className="mr-1.5 font-mono text-xs text-accent-blue">{c.customerCode}</span>
-                    ) : null}
-                    {c.name}
-                  </span>
-                  <span className="text-xs text-text-secondary">
-                    {[formatPhone(String(c.phone || c.mobile || '')), c.email].filter(Boolean).join(' · ') ||
-                      'No phone'}
-                  </span>
+                  <UserPlus size={16} />
+                  Add new customer
+                  {query.trim() ? (
+                    <span className="font-normal text-text-secondary">— use “{query.trim()}”</span>
+                  ) : null}
                 </button>
               </li>
-            ))
+            </>
           )}
         </ul>
       ) : null}
-      <p className="text-xs text-text-secondary">Type at least 2 characters — results load from the database.</p>
+      <p className="text-xs text-text-secondary">
+        Type at least 2 characters. If not found, choose <strong>Add new customer</strong>.
+      </p>
     </div>
   )
 }

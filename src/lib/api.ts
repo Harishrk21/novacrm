@@ -572,6 +572,28 @@ export const api = {
     }
     return json.data
   },
+  uploadFile: async (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    const auth = getAuth()
+    const headers = new Headers()
+    if (auth?.accessToken) headers.set('Authorization', `Bearer ${auth.accessToken}`)
+    const res = await fetch(`${API_BASE}/uploads/file`, { method: 'POST', headers, body: form })
+    const json = (await res.json().catch(() => null)) as
+      | {
+          success: true
+          data: { url: string; filename: string; originalName?: string; mimeType?: string; size?: number }
+        }
+      | { success: false; message?: string }
+      | null
+    if (!res.ok || !json || json.success === false) {
+      throw new ApiClientError(res.status, {
+        code: 'UPLOAD_FAILED',
+        message: (json && 'message' in json && json.message) || 'Upload failed',
+      })
+    }
+    return json.data
+  },
 
   myTenant: () =>
     apiFetch<{

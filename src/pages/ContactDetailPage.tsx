@@ -47,7 +47,7 @@ import { ASSET_ORIGIN_OPTIONS, isThirdPartyOrigin } from '@/lib/assetOrigin'
 import { formatCurrency, formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
-type Tab = 'Overview' | 'Machines' | 'Purchases' | 'Deals' | 'Tickets' | 'Notes'
+type Tab = 'Overview' | 'Products' | 'Tickets' | 'Notes'
 
 const MACHINE_TYPES = [
   { value: 'WEIGHING', label: 'Weighing machine' },
@@ -474,9 +474,9 @@ export function ContactDetailPage() {
       <FormPanel
         open={machineOpen}
         accent="theme"
-        eyebrow="Machines"
-        title={editingMachineId ? 'Edit machine' : 'Add machine'}
-        subtitle="Switch to AMC anytime and set AMC start + end. Reminders use next due and AMC end."
+        eyebrow="Products"
+        title={editingMachineId ? 'Edit product' : 'Add product'}
+        subtitle="Sold by us or Outside (repair only). Set AMC start + end when needed."
         onClose={() => {
           setMachineOpen(false)
           setEditingMachineId(null)
@@ -534,6 +534,11 @@ export function ContactDetailPage() {
               { value: 'AMC', label: 'AMC' },
             ]}
           />
+          {machineForm.origin === 'THIRD_PARTY' ? (
+            <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
+              Outside / repair-only machines can still enroll in AMC — set start and end dates below.
+            </p>
+          ) : null}
           {machineForm.servicePlan === 'AMC' ? (
             <>
               <Input
@@ -633,12 +638,10 @@ export function ContactDetailPage() {
         tabs={[
           { id: 'Overview', label: 'Overview' },
           {
-            id: 'Machines',
-            label: 'Machines',
+            id: 'Products',
+            label: 'Products',
             count: ((contact.assets as Array<unknown>) ?? []).length,
           },
-          { id: 'Purchases', label: 'Purchases', count: invoices.length },
-          { id: 'Deals', label: 'Deals', count: deals.length },
           { id: 'Tickets', label: 'Tickets', count: tickets.length },
           { id: 'Notes', label: 'Notes', count: notes.length },
         ]}
@@ -657,11 +660,12 @@ export function ContactDetailPage() {
         />
       )}
 
-      {tab === 'Machines' && (
+      {tab === 'Products' && (
+        <>
         <Card padding={false}>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
             <div>
-              <div className="text-sm font-semibold">Machines / equipment</div>
+              <div className="text-sm font-semibold">Products</div>
               <p className="mt-0.5 text-xs text-text-secondary">
                 {
                   ((contact.assets as Array<Record<string, unknown>>) ?? []).filter(
@@ -678,15 +682,15 @@ export function ContactDetailPage() {
               </p>
             </div>
             <Button size="sm" onClick={openAddMachine}>
-              Add machine
+              Add product
             </Button>
           </div>
           {((contact.assets as Array<Record<string, unknown>>) ?? []).length === 0 ? (
             <EmptyState
               icon={<Package size={22} />}
-              title="No machines yet"
-              subtitle="Add weighing scales, billing machines, CCTV, etc. Mark each as Sold by us or Outside (repair only)."
-              actionLabel="Add machine"
+              title="No products yet"
+              subtitle="Add machines/equipment. Mark each as Sold by us or Outside (repair only)."
+              actionLabel="Add product"
               onAction={openAddMachine}
             />
           ) : (
@@ -695,7 +699,7 @@ export function ContactDetailPage() {
                 <thead className="bg-muted text-xs text-text-secondary">
                   <tr>
                     {[
-                      'Machine',
+                      'Product',
                       'Origin',
                       'Type',
                       'Plan',
@@ -766,6 +770,21 @@ export function ContactDetailPage() {
                           <Button size="sm" variant="outline" onClick={() => openEditMachine(a)}>
                             <Edit3 size={14} /> Edit
                           </Button>
+                          {a.servicePlan !== 'AMC' ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                openEditMachine({
+                                  ...a,
+                                  servicePlan: 'AMC',
+                                  amcStartDate: a.amcStartDate || new Date().toISOString().slice(0, 10),
+                                })
+                              }}
+                            >
+                              Add AMC
+                            </Button>
+                          ) : null}
                           <Button
                             size="sm"
                             variant="outline"
@@ -786,20 +805,24 @@ export function ContactDetailPage() {
             </div>
           )}
         </Card>
-      )}
 
-      {tab === 'Purchases' && (
-        <div className="space-y-4">
+        <div className="mt-4 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm text-text-secondary">Invoice and product history for this customer.</p>
+            <p className="text-sm font-semibold text-text-primary">Purchase / invoice history</p>
             <Button variant="outline" size="sm" onClick={downloadPurchasesCsv}>
               <Download size={14} /> Download CSV
             </Button>
           </div>
           <Card>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-text-secondary">Products bought</h2>
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-text-secondary">
+              Products from our invoices
+            </h2>
             {purchaseSummary.productsBought.length === 0 ? (
-              <EmptyState icon={<CircleDollarSign size={22} />} title="No purchases yet" subtitle="Invoices for this contact or their company will show here." />
+              <EmptyState
+                icon={<CircleDollarSign size={22} />}
+                title="No purchases yet"
+                subtitle="Invoices billed to this customer appear here (Sold by us)."
+              />
             ) : (
               <table className="w-full text-left text-sm">
                 <thead className="bg-muted text-xs text-text-secondary">
@@ -824,88 +847,28 @@ export function ContactDetailPage() {
               </table>
             )}
           </Card>
-          <Card padding={false}>
-            <div className="border-b border-border px-4 py-3 text-sm font-semibold">Invoice history</div>
-            {invoices.length === 0 ? (
-              <EmptyState title="No invoices" subtitle="Create an invoice from ERP → Invoices for this customer." />
-            ) : (
+          {invoices.length > 0 ? (
+            <Card padding={false}>
+              <div className="border-b border-border px-4 py-3 text-sm font-semibold">Invoices</div>
               <div className="divide-y divide-border">
                 {invoices.map((inv) => (
-                  <div key={String(inv.id)} className="px-4 py-4">
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div key={String(inv.id)} className="px-4 py-3 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
-                        <div className="font-mono text-sm font-semibold">{String(inv.invoiceNumber)}</div>
+                        <div className="font-mono font-semibold">{String(inv.invoiceNumber)}</div>
                         <div className="text-xs text-text-secondary">
                           {inv.invoiceDate ? formatDate(String(inv.invoiceDate)) : '—'} · {String(inv.status)}
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className="font-semibold">{formatCurrency(num(inv.grandTotal))}</div>
-                        <div className="text-xs text-text-secondary">
-                          Balance {formatCurrency(num(inv.balanceDue))}
-                        </div>
-                      </div>
+                      <div className="text-right font-semibold">{formatCurrency(num(inv.grandTotal))}</div>
                     </div>
-                    <table className="w-full text-left text-xs">
-                      <thead className="text-text-secondary">
-                        <tr>
-                          <th className="py-1 font-medium">Item</th>
-                          <th className="py-1 font-medium">Qty</th>
-                          <th className="py-1 font-medium">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {((inv.lines as Array<Record<string, unknown>>) ?? []).map((l) => (
-                          <tr key={String(l.id)} className="border-t border-border/60">
-                            <td className="py-1.5">{String(l.description)}</td>
-                            <td className="py-1.5">{num(l.quantity)}</td>
-                            <td className="py-1.5">{formatCurrency(num(l.lineTotal))}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
                   </div>
                 ))}
               </div>
-            )}
-          </Card>
+            </Card>
+          ) : null}
         </div>
-      )}
-
-      {tab === 'Deals' && (
-        <Card padding={false}>
-          {deals.length === 0 ? (
-            <EmptyState icon={<CircleDollarSign size={22} />} title="No deals" subtitle="Convert a lead or create a deal linked to this contact." />
-          ) : (
-            <table className="w-full text-left text-sm">
-              <thead className="bg-muted text-xs text-text-secondary">
-                <tr>
-                  {['Deal', 'Amount', 'Probability', 'Created'].map((h) => (
-                    <th key={h} className="px-4 py-3 font-medium">
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {deals.map((d) => (
-                  <tr key={String(d.id)} className="border-t border-border">
-                    <td className="px-4 py-3 font-medium">
-                      <Link className="text-accent-blue hover:underline" to={`/deals/${d.id}`}>
-                        {String(d.name)}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3">{formatCurrency(num(d.amount))}</td>
-                    <td className="px-4 py-3">{num(d.probability)}%</td>
-                    <td className="px-4 py-3 text-text-secondary">
-                      {d.createdAt ? formatDate(String(d.createdAt)) : '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Card>
+        </>
       )}
 
       {tab === 'Tickets' && (

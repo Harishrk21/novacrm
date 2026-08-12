@@ -20,10 +20,28 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (!file.mimetype.startsWith("image/")) {
       cb(new Error("Only image files are allowed"));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+const docUpload = multer({
+  storage,
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok =
+      file.mimetype.startsWith("image/") ||
+      file.mimetype === "application/pdf" ||
+      file.mimetype === "application/msword" ||
+      file.mimetype ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    if (!ok) {
+      cb(new Error("Only image, PDF, or Word files are allowed"));
       return;
     }
     cb(null, true);
@@ -37,4 +55,20 @@ uploadsRouter.post("/image", upload.single("file"), (req, res) => {
   if (!req.file) throw new AppError("No image uploaded", 400);
   const url = `/uploads/${req.file.filename}`;
   return success(res, { url, filename: req.file.filename }, "Uploaded");
+});
+
+uploadsRouter.post("/file", docUpload.single("file"), (req, res) => {
+  if (!req.file) throw new AppError("No file uploaded", 400);
+  const url = `/uploads/${req.file.filename}`;
+  return success(
+    res,
+    {
+      url,
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+    },
+    "Uploaded",
+  );
 });

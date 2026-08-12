@@ -81,8 +81,9 @@ export function Topbar() {
 
   useEffect(() => {
     const q = search.trim()
-    if (!q || !isTenantSession()) {
+    if (q.length < 2 || !isTenantSession()) {
       setHits([])
+      setSearching(false)
       return
     }
     let cancelled = false
@@ -90,44 +91,42 @@ export function Topbar() {
       void (async () => {
         setSearching(true)
         try {
-          const [contacts, leads, deals, accounts, tickets] = await Promise.all([
-            api.contacts({ limit: 8, search: q }),
-            api.leads({ limit: 8, search: q }),
-            api.deals({ limit: 8, search: q }),
-            api.accounts({ limit: 8, search: q }),
+          // Prefer customers + tickets (name / phone). Don't fail whole search if one API errors.
+          const settled = await Promise.allSettled([
+            api.contacts({ limit: 10, search: q }),
             api.tickets({ limit: 8, search: q }),
+            api.deals({ limit: 5, search: q }),
           ])
           if (cancelled) return
+          const contacts =
+            settled[0].status === 'fulfilled' ? (settled[0].value.items ?? []) : []
+          const tickets =
+            settled[1].status === 'fulfilled' ? (settled[1].value.items ?? []) : []
+          const deals =
+            settled[2].status === 'fulfilled' ? (settled[2].value.items ?? []) : []
+
           const next: SearchHit[] = [
-            ...(contacts.items ?? []).map((c) => ({
+            ...contacts.map((c) => ({
               id: String(c.id),
               type: 'contact',
-              primary: String(c.name),
-              secondary: formatPhone(String(c.phone ?? c.mobile ?? '')) || undefined,
+              primary: [c.customerCode ? String(c.customerCode) : null, String(c.name)]
+                .filter(Boolean)
+                .join(' · '),
+              secondary:
+                formatPhone(String(c.phone ?? c.mobile ?? '')) ||
+                (c.city ? String(c.city) : undefined),
             })),
-            ...(leads.items ?? []).map((l) => ({
-              id: String(l.id),
-              type: 'lead',
-              primary: String(l.name),
-              secondary: String(l.status ?? ''),
-            })),
-            ...(deals.items ?? []).map((d) => ({
-              id: String(d.id),
-              type: 'deal',
-              primary: String(d.name),
-              secondary: formatCurrency(Number(d.amount ?? 0)),
-            })),
-            ...(accounts.items ?? []).map((a) => ({
-              id: String(a.id),
-              type: 'account',
-              primary: String(a.name),
-              secondary: a.industry ? String(a.industry) : undefined,
-            })),
-            ...(tickets.items ?? []).map((t) => ({
+            ...tickets.map((t) => ({
               id: String(t.id),
               type: 'ticket',
               primary: `#${String(t.ticketNo ?? '')} ${String(t.subject ?? '')}`,
               secondary: String(t.status ?? ''),
+            })),
+            ...deals.map((d) => ({
+              id: String(d.id),
+              type: 'deal',
+              primary: String(d.name),
+              secondary: formatCurrency(Number(d.amount ?? 0)),
             })),
           ]
           setHits(next)
@@ -137,7 +136,7 @@ export function Topbar() {
           if (!cancelled) setSearching(false)
         }
       })()
-    }, 250)
+    }, 280)
     return () => {
       cancelled = true
       window.clearTimeout(timer)
@@ -147,10 +146,8 @@ export function Topbar() {
   const grouped = useMemo(() => {
     const g: Record<string, SearchHit[]> = {
       contact: [],
-      lead: [],
-      deal: [],
-      account: [],
       ticket: [],
+      deal: [],
     }
     for (const h of hits) g[h.type]?.push(h)
     return g
@@ -161,9 +158,7 @@ export function Topbar() {
     setSearch('')
     const paths: Record<string, string> = {
       contact: `/contacts/${id}`,
-      lead: `/leads`,
       deal: `/deals/${id}`,
-      account: `/accounts/${id}`,
       ticket: `/tickets/${id}`,
     }
     navigate(paths[type] ?? '/')
@@ -204,32 +199,36 @@ export function Topbar() {
             setSearchOpen(true)
           }}
           onFocus={() => setSearchOpen(true)}
-          placeholder="Search contacts, leads, deals..."
+          placeholder="Search customers by name or phone…"
           className="h-9 w-full rounded-[6px] border border-border bg-surface pl-9 pr-3 text-base outline-none transition-all duration-150 focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
         />
-        {searchOpen && search.trim() && (
+        {searchOpen && search.trim().length >= 2 && (
           <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-96 overflow-y-auto rounded-[8px] border border-border bg-card shadow-[0_4px_12px_rgba(0,0,0,0.12)]">
             {searching ? (
               <div className="p-4 text-center text-sm text-text-secondary">Searching…</div>
             ) : hits.length === 0 ? (
-              <div className="p-4 text-center text-sm text-text-secondary">No results found</div>
+              <div className="p-3">
+                <div className="mb-2 px-1 text-center text-sm text-text-secondary">No customers found</div>
+                <button
+                  type="button"
+                  className="w-full rounded-[8px] border border-dashed border-accent-blue/40 bg-accent-blue/5 px-3 py-2.5 text-left text-sm font-medium text-accent-blue hover:bg-accent-blue/10"
+                  onClick={() => {
+                    const q = encodeURIComponent(search.trim())
+                    setSearchOpen(false)
+                    navigate(`/contacts?open=1&q=${q}`)
+                    setSearch('')
+                  }}
+                >
+                  + Add customer “{search.trim()}”
+                </button>
+              </div>
             ) : (
               <>
-                {(['contact', 'lead', 'deal', 'account', 'ticket'] as const).map((key) =>
+                {(['contact', 'ticket', 'deal'] as const).map((key) =>
                   grouped[key].length ? (
                     <ResultGroup
                       key={key}
-                      title={
-                        key === 'contact'
-                          ? 'CONTACTS'
-                          : key === 'lead'
-                            ? 'LEADS'
-                            : key === 'deal'
-                              ? 'DEALS'
-                              : key === 'account'
-                                ? 'ACCOUNTS'
-                                : 'TICKETS'
-                      }
+                      title={key === 'contact' ? 'CUSTOMERS' : key === 'ticket' ? 'TICKETS' : 'DEALS'}
                     >
                       {grouped[key].map((item) => (
                         <ResultItem
@@ -246,6 +245,11 @@ export function Topbar() {
             )}
           </div>
         )}
+        {searchOpen && search.trim().length > 0 && search.trim().length < 2 ? (
+          <div className="absolute left-0 right-0 top-full z-50 mt-1 rounded-[8px] border border-border bg-card p-3 text-sm text-text-secondary shadow-md">
+            Type at least 2 characters…
+          </div>
+        ) : null}
       </div>
 
       <div className="flex items-center gap-1">

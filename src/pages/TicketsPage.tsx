@@ -588,6 +588,11 @@ export function TicketsPage() {
                   { value: 'AMC', label: 'AMC' },
                 ]}
               />
+              {form.origin === 'THIRD_PARTY' ? (
+                <p className="sm:col-span-2 lg:col-span-3 -mt-1 text-xs text-text-secondary">
+                  Outside / repair machines can also enroll in AMC — pick AMC and set start/end dates.
+                </p>
+              ) : null}
               {form.servicePlan === 'AMC' ? (
                 <>
                   <Input

@@ -54,12 +54,27 @@ export async function list(t: string, q: Record<string, unknown>) {
   const where: Record<string, unknown> = { tenantId: t, deletedAt: null };
   if (q.search) {
     const s = String(q.search).trim();
+    const digits = s.replace(/\D/g, "");
+    const phoneNorm = digits.length >= 7 ? normalizePhone(s) : null;
     where.OR = [
       { name: { contains: s } },
       { email: { contains: s } },
       { phone: { contains: s } },
       { mobile: { contains: s } },
       { customerCode: { contains: s } },
+      ...(digits.length >= 4
+        ? [
+            { phone: { contains: digits } },
+            { mobile: { contains: digits } },
+            { phoneNormalized: { contains: digits } },
+          ]
+        : []),
+      ...(phoneNorm
+        ? [
+            { phoneNormalized: phoneNorm },
+            { phoneNormalized: { contains: phoneNorm.slice(-10) } },
+          ]
+        : []),
     ];
   }
   if (q.customerCode) where.customerCode = String(q.customerCode).trim().toUpperCase();

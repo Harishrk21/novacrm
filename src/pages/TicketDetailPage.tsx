@@ -417,6 +417,12 @@ export function TicketDetailPage() {
     }
   }
 
+  const balancePreview = useMemo(() => {
+    const pay = Number(payDraft.paymentTotal) || 0
+    const adv = Number(payDraft.advanceAmount) || 0
+    return Math.max(0, pay - adv)
+  }, [payDraft.paymentTotal, payDraft.advanceAmount])
+
   if (loading) return <Card className="p-6 text-sm text-text-secondary">Loading ticket…</Card>
   if (!ticket) {
     return (
@@ -447,11 +453,6 @@ export function TicketDetailPage() {
   const isPaid = paymentStatus === 'PAID'
   const canDownloadDocs = isDone || isPaid
   const breached = Boolean(ticket.slaBreached)
-  const balancePreview = useMemo(() => {
-    const pay = Number(payDraft.paymentTotal) || 0
-    const adv = Number(payDraft.advanceAmount) || 0
-    return Math.max(0, pay - adv)
-  }, [payDraft.paymentTotal, payDraft.advanceAmount])
   const savedBalance = num(ticket.balanceDue)
   const balanceDirty =
     payDraft.paymentTotal !== String(num(ticket.paymentTotal) || '') ||

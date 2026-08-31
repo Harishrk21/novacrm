@@ -178,6 +178,9 @@ export function InventoryPage() {
             name: p.name,
             sku: p.sku,
             unit: p.unit,
+            imageUrl: null,
+            productType: undefined,
+            attributes: null,
             purchasePrice: num(p.purchasePrice),
             salePrice: num(p.salePrice),
           })

@@ -191,9 +191,7 @@ export function AmcPage() {
   }
 
   function renderRowCells(a: AssetRow) {
-    const id = String(a.id)
     const contact = a.contact as { id?: string; phone?: string | null } | null | undefined
-    const contactId = contact?.id ? String(contact.id) : a.contactId ? String(a.contactId) : ''
     const due = daysUntil(a.nextDueDate ? String(a.nextDueDate) : null)
     const amcEnd = daysUntil(a.amcEndDate ? String(a.amcEndDate) : null)
     const outside = isThirdPartyOrigin(a.origin ? String(a.origin) : null)
@@ -267,7 +265,7 @@ export function AmcPage() {
     // UPCOMING_AMC_RENEWAL
     return (
       <>
-        <td className="px-4 py-3">{contactCell(a, navigate)}</td>
+        <td className="px-4 py-3">{contactCell(a)}</td>
         <td className="px-4 py-3">{machineCell(a)}</td>
         <td className="px-4 py-3 font-medium">{a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}</td>
         <td className="px-4 py-3">

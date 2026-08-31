@@ -54,8 +54,8 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
     tipType: 'TIP',
   },
   'crm.leads': {
-    title: 'How to use Leads',
-    body: 'Capture every enquiry here. Open the drawer for timeline, fill industry fields, then Convert to create Contact + Account + Deal together.',
+    title: 'Leads → Demo → Sold',
+    body: 'Statuses: Pending, Demo, Converted, Not interested. Choosing Demo asks for a serial — that unit leaves stock until convert marks it sold.',
     tipType: 'TIP',
   },
   'crm.contacts': {
@@ -79,9 +79,9 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
     tipType: 'TIP',
   },
   'erp.inventory': {
-    title: 'Stock discipline',
-    body: 'Never change stock without a movement reason. Sales invoices and purchase receipts should drive inventory automatically.',
-    tipType: 'WARNING',
+    title: 'Serial stock',
+    body: 'Add stock per unique serial + stamping date. History shows in/out and demo issues. Catalog products are models; inventory holds physical pieces.',
+    tipType: 'TIP',
   },
   'erp.invoices': {
     title: 'Invoicing tip',

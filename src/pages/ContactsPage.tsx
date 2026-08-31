@@ -17,6 +17,7 @@ import { ConfirmModal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { SparePartsPanel } from '@/components/contacts/SparePartsPanel'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS } from '@/lib/assetOrigin'
@@ -47,26 +48,26 @@ type ContactRow = {
 
 const emptyForm = {
   name: '',
-  email: '',
-  alternateEmail: '',
-  phone: '',
-  mobile: '',
-  whatsapp: '',
-  title: '',
-  department: '',
-  street: '',
   doorNo: '',
+  street: '',
+  buildingName: '',
   area: '',
   city: '',
   state: '',
   pincode: '',
-  location: '',
-  country: 'IN',
-  addressLine: '',
-  linkedin: '',
-  accountId: '',
+  landmark: '',
+  landline: '',
+  mobile: '',
+  mobile2: '',
+  mobile3: '',
+  whatsapp: '',
+  email: '',
+  gpsLocation: '',
   ownerUserId: '',
+  country: 'IN',
+  phone: '',
   description: '',
+  accountId: '',
   tags: '',
 }
 
@@ -115,7 +116,7 @@ export function ContactsPage() {
   const [phone, setPhone] = useState('')
   const [phoneResult, setPhoneResult] = useState<string | null>(null)
   const [phoneNotFound, setPhoneNotFound] = useState(false)
-  const [tab, setTab] = useState<'list' | 'create'>('list')
+  const [tab, setTab] = useState<'list' | 'create' | 'spare'>('list')
   const [createStep, setCreateStep] = useState<'customer' | 'product'>('customer')
   const [returnTo, setReturnTo] = useState<string | null>(null)
   const [form, setForm] = useState(emptyForm)
@@ -225,6 +226,7 @@ export function ContactsPage() {
       ...emptyForm,
       phone: looksPhone ? q : '',
       mobile: looksPhone ? q : '',
+      landline: '',
     })
     setPhoneResult(null)
     setPhoneNotFound(false)
@@ -261,23 +263,24 @@ export function ContactsPage() {
     setSaving(true)
     try {
       const customFields = {
-        alternate_email: form.alternateEmail.trim() || null,
+        building_name: form.buildingName.trim() || null,
+        landline: form.landline.trim() || null,
+        mobile_2: form.mobile2.trim() || null,
+        mobile_3: form.mobile3.trim() || null,
         whatsapp: form.whatsapp.trim() || form.mobile.trim() || null,
-        address_line: form.addressLine.trim() || form.street.trim() || null,
-        linkedin: form.linkedin.trim() || null,
+        gps_location: form.gpsLocation.trim() || null,
       }
+      const primaryPhone = form.mobile.trim() || form.landline.trim() || form.whatsapp.trim()
       const created = await api.createContact({
         name: form.name.trim(),
         email: form.email.trim() || null,
-        phone: form.phone.trim() || null,
+        phone: form.landline.trim() || primaryPhone || null,
         mobile: form.mobile.trim() || null,
-        title: form.title.trim() || null,
-        department: form.department.trim() || null,
         street: form.street.trim() || null,
         doorNo: form.doorNo.trim() || null,
         area: form.area.trim() || null,
         pincode: form.pincode.trim() || null,
-        location: form.location.trim() || null,
+        location: form.landmark.trim() || null,
         city: form.city.trim() || null,
         state: form.state.trim() || null,
         country: form.country.trim() || 'IN',
@@ -370,7 +373,7 @@ export function ContactsPage() {
         accent="theme"
         active={tab}
         onChange={(id) => {
-          setTab(id as 'list' | 'create')
+          setTab(id as 'list' | 'create' | 'spare')
           if (id === 'create') {
             setForm(emptyForm)
             setMachine(emptyMachine)
@@ -380,9 +383,12 @@ export function ContactsPage() {
         }}
         tabs={[
           { id: 'list', label: 'All customers', count: items.length },
+          { id: 'spare', label: 'Spare parts' },
           { id: 'create', label: 'Add customer' },
         ]}
       />
+
+      {tab === 'spare' ? <SparePartsPanel /> : null}
 
       {tab === 'list' ? (
         <>
@@ -648,28 +654,109 @@ export function ContactsPage() {
           <form id="create-contact" onSubmit={(e) => void handleCreate(e)} className="space-y-6">
             {createStep === 'customer' ? (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                <Input label="Company / shop name *" value={form.name} error={errors.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="HMS ENTERPRISES" />
-                <Input label="Phone *" value={form.phone} error={errors.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="+91 98xxx xxxxx" />
-                <Input label="Mobile / WhatsApp" value={form.mobile} error={errors.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
-                <Input label="Street" value={form.street} onChange={(e) => setForm({ ...form, street: e.target.value })} />
-                <Input label="Door number" value={form.doorNo} onChange={(e) => setForm({ ...form, doorNo: e.target.value })} />
-                <Input label="Area" value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
-                <Input label="Pin code" value={form.pincode} error={errors.pincode} onChange={(e) => setForm({ ...form, pincode: e.target.value })} />
-                <Input label="Location / landmark" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} className="lg:col-span-2" />
-                <Input label="City" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
-                <Input label="State" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
-                <Input label="Email" type="email" value={form.email} error={errors.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-                <Select
-                  label="Account / company (optional)"
-                  value={form.accountId}
-                  onChange={(e) => setForm({ ...form, accountId: e.target.value })}
-                  options={[{ value: '', label: 'No linked account' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
+                <Input
+                  label="Company / shop / customer name *"
+                  value={form.name}
+                  error={errors.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  placeholder="HMS ENTERPRISES"
+                  className="sm:col-span-2 lg:col-span-3"
+                />
+                <Input
+                  label="Door number"
+                  value={form.doorNo}
+                  onChange={(e) => setForm({ ...form, doorNo: e.target.value })}
+                />
+                <Input
+                  label="Street"
+                  value={form.street}
+                  onChange={(e) => setForm({ ...form, street: e.target.value })}
+                />
+                <Input
+                  label="Building name"
+                  value={form.buildingName}
+                  onChange={(e) => setForm({ ...form, buildingName: e.target.value })}
+                />
+                <Input
+                  label="Area"
+                  value={form.area}
+                  onChange={(e) => setForm({ ...form, area: e.target.value })}
+                />
+                <Input
+                  label="City"
+                  value={form.city}
+                  onChange={(e) => setForm({ ...form, city: e.target.value })}
+                />
+                <Input
+                  label="State"
+                  value={form.state}
+                  onChange={(e) => setForm({ ...form, state: e.target.value })}
+                />
+                <Input
+                  label="PIN code"
+                  value={form.pincode}
+                  error={errors.pincode}
+                  onChange={(e) => setForm({ ...form, pincode: e.target.value })}
+                />
+                <Input
+                  label="Landmark"
+                  value={form.landmark}
+                  onChange={(e) => setForm({ ...form, landmark: e.target.value })}
+                  className="sm:col-span-2"
+                />
+                <Input
+                  label="Landline number"
+                  value={form.landline}
+                  error={errors.phone}
+                  onChange={(e) =>
+                    setForm({ ...form, landline: e.target.value, phone: e.target.value })
+                  }
+                />
+                <Input
+                  label="Mobile number 1 *"
+                  value={form.mobile}
+                  error={errors.mobile || errors.phone}
+                  onChange={(e) => setForm({ ...form, mobile: e.target.value })}
+                  placeholder="+91 98xxx xxxxx"
+                />
+                <Input
+                  label="Mobile number 2"
+                  value={form.mobile2}
+                  onChange={(e) => setForm({ ...form, mobile2: e.target.value })}
+                />
+                <Input
+                  label="Mobile number 3"
+                  value={form.mobile3}
+                  onChange={(e) => setForm({ ...form, mobile3: e.target.value })}
+                />
+                <Input
+                  label="WhatsApp number"
+                  value={form.whatsapp}
+                  onChange={(e) => setForm({ ...form, whatsapp: e.target.value })}
+                  placeholder="Defaults to mobile 1 if empty"
+                />
+                <Input
+                  label="Email ID"
+                  type="email"
+                  value={form.email}
+                  error={errors.email}
+                  onChange={(e) => setForm({ ...form, email: e.target.value })}
+                />
+                <Input
+                  label="GPS location"
+                  value={form.gpsLocation}
+                  onChange={(e) => setForm({ ...form, gpsLocation: e.target.value })}
+                  placeholder="Maps link or lat,long"
+                  className="sm:col-span-2 lg:col-span-3"
                 />
                 <Select
-                  label="Owner"
+                  label="Lead — name of the executive"
                   value={form.ownerUserId}
                   onChange={(e) => setForm({ ...form, ownerUserId: e.target.value })}
-                  options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
+                  options={[
+                    { value: '', label: 'Select executive' },
+                    ...users.map((u) => ({ value: u.id, label: u.name })),
+                  ]}
                 />
                 <label className="block text-sm sm:col-span-2 lg:col-span-3">
                   <span className="mb-1 block font-medium text-text-secondary">Notes</span>

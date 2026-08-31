@@ -73,6 +73,7 @@ enum LeadStatus {
   UNQUALIFIED
   LOST
   CONVERTED
+  DEMO
 }
 enum DealPriority {
   LOW
@@ -122,6 +123,13 @@ enum ServicePlan {
   AMC
   NON_AMC
 }
+enum SparePartChangeType {
+  REPLACED
+  INSTALLED
+  REMOVED
+  REPAIRED
+  ADJUSTED
+}
 /// Machine bought from us (installed base) vs outside unit brought only for repair/service
 enum AssetOrigin {
   SOLD_BY_US
@@ -143,6 +151,13 @@ enum StockMovementType {
   ADJUST
   TRANSFER
   RETURN
+}
+
+enum StockUnitStatus {
+  IN_STOCK
+  DEMO
+  SOLD
+  RETURNED
 }
 enum PurchaseOrderStatus {
   DRAFT
@@ -659,6 +674,34 @@ model CustomerAsset {
   @@map("customer_assets")
 }
 
+/// Spare part replacement / change log on a customer machine (load cell, printer head, battery, etc.)
+model SparePartChange {
+  id                String              @id @db.Char(36)
+  tenantId          String              @map("tenant_id") @db.Char(36)
+  contactId         String              @map("contact_id") @db.Char(36)
+  assetId           String?             @map("asset_id") @db.Char(36)
+  ticketId          String?             @map("ticket_id") @db.Char(36)
+  partName          String              @map("part_name") @db.VarChar(191)
+  partCode          String?             @map("part_code") @db.VarChar(64)
+  changeType        SparePartChangeType @default(REPLACED) @map("change_type")
+  quantity          Int                 @default(1) @db.SmallInt
+  oldSerialNo       String?             @map("old_serial_no") @db.VarChar(120)
+  newSerialNo       String?             @map("new_serial_no") @db.VarChar(120)
+  changedAt         DateTime            @map("changed_at") @db.Date
+  performedByUserId String?             @map("performed_by_user_id") @db.Char(36)
+  chargeAmount      Decimal?            @map("charge_amount") @db.Decimal(12, 2)
+  underWarranty     Boolean             @default(false) @map("under_warranty")
+  notes             String?             @db.Text
+  customFields      Json?               @map("custom_fields")
+  createdAt         DateTime            @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt         DateTime?           @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, contactId, changedAt])
+  @@index([tenantId, assetId])
+  @@index([tenantId, changedAt])
+  @@map("spare_part_changes")
+}
+
 model TicketMessage {
   id           String   @id @db.Char(36)
   tenantId     String   @map("tenant_id") @db.Char(36)
@@ -788,6 +831,29 @@ model StockMovement {
   createdAt     DateTime          @default(now()) @map("created_at") @db.DateTime(3)
   @@index([tenantId, productId, movedAt])
   @@map("stock_movements")
+}
+
+/// One physical piece — unique serial. Stamping date = govt verification (like FC for a vehicle).
+model StockUnit {
+  id           String          @id @db.Char(36)
+  tenantId     String          @map("tenant_id") @db.Char(36)
+  productId    String          @map("product_id") @db.Char(36)
+  warehouseId  String          @map("warehouse_id") @db.Char(36)
+  serialNo     String          @map("serial_no") @db.VarChar(120)
+  stampingDate DateTime?       @map("stamping_date") @db.Date
+  notes        String?         @db.Text
+  status       StockUnitStatus @default(IN_STOCK)
+  leadId       String?         @map("lead_id") @db.Char(36)
+  contactId    String?         @map("contact_id") @db.Char(36)
+  customFields Json?           @map("custom_fields")
+  createdAt    DateTime        @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime        @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt    DateTime?       @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, serialNo])
+  @@index([tenantId, productId, status])
+  @@index([tenantId, warehouseId])
+  @@index([tenantId, leadId])
+  @@map("stock_units")
 }
 
 model Vendor {

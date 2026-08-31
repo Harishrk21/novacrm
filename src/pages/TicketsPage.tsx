@@ -54,9 +54,13 @@ const emptyJob = {
   servicePlan: 'NON_AMC',
   amcStartDate: '',
   amcEndDate: '',
+  warrantyType: 'GC',
+  warrantyUntil: '',
   remindersEnabled: true,
   stampingDate: '',
   nextDueDate: '',
+  scheduledDate: '',
+  scheduledTime: '',
   odAmount: '',
   paymentTotal: '',
   advanceAmount: '',
@@ -214,6 +218,10 @@ export function TicketsPage() {
             remindersEnabled: form.remindersEnabled,
             stampingDate: form.stampingDate || null,
             nextDueDate: form.nextDueDate || null,
+            customFields: {
+              warrantyType: form.warrantyType,
+              warrantyUntil: form.warrantyUntil || null,
+            },
           })
           assetId = String(machine.id)
         }
@@ -238,12 +246,23 @@ export function TicketsPage() {
               }
             : { amcStartDate: null, amcEndDate: null }),
           remindersEnabled: form.remindersEnabled,
+          customFields: {
+            warrantyType: form.warrantyType,
+            warrantyUntil: form.warrantyUntil || null,
+          },
         })
       }
 
       const machineLabel =
         form.machineName.trim() ||
         String(assets.find((a) => String(a.id) === form.assetId)?.name ?? 'Service')
+
+      const scheduledAt =
+        form.scheduledDate && form.scheduledTime
+          ? `${form.scheduledDate}T${form.scheduledTime}`
+          : form.scheduledDate
+            ? `${form.scheduledDate}T09:00`
+            : null
 
       const created = await api.createTicket({
         subject: `Service — ${machineLabel}`,
@@ -262,6 +281,12 @@ export function TicketsPage() {
         category: form.category,
         channel: form.channel,
         slaHours: Number(form.slaHours) || 24,
+        customFields: {
+          scheduledAt,
+          visitLog: scheduledAt
+            ? [{ attendedAt: scheduledAt, notes: 'Job registered', engineerId: form.receivedByUserId || null }]
+            : [],
+        },
       })
 
       setTab('list')
@@ -382,13 +407,14 @@ export function TicketsPage() {
                           'Job',
                           'Customer',
                           'Machine',
+                          'Engineer',
+                          'AMC',
                           'Stamping',
                           'OD',
                           'Payment',
                           'Advance',
                           'Balance',
-                          'Received',
-                          'Delivered',
+                          'Pay status',
                           'Next due',
                           'Status',
                           'Actions',
@@ -403,8 +429,9 @@ export function TicketsPage() {
                       {tickets.map((ticket) => {
                         const id = String(ticket.id)
                         const contact = ticket.contact as { name?: string; customerCode?: string } | null
-                        const asset = ticket.asset as { name?: string } | null
+                        const asset = ticket.asset as { name?: string; servicePlan?: string } | null
                         const st = String(ticket.status)
+                        const paySt = String(ticket.paymentStatus ?? 'UNPAID')
                         return (
                           <tr
                             key={id}
@@ -435,6 +462,14 @@ export function TicketsPage() {
                             </td>
                             <td className="max-w-[160px] px-3 py-3">{asset?.name ?? String(ticket.subject)}</td>
                             <td className="px-3 py-3">
+                              {String(ticket.assignedToName ?? ticket.receivedByName ?? '—')}
+                            </td>
+                            <td className="px-3 py-3">
+                              <Badge color={asset?.servicePlan === 'AMC' ? 'green' : 'gray'}>
+                                {asset?.servicePlan === 'AMC' ? 'AMC' : 'Non-AMC'}
+                              </Badge>
+                            </td>
+                            <td className="px-3 py-3">
                               {ticket.stampingDate ? formatDate(String(ticket.stampingDate)) : '—'}
                             </td>
                             <td className="px-3 py-3">{formatCurrency(num(ticket.odAmount))}</td>
@@ -443,8 +478,11 @@ export function TicketsPage() {
                             <td className="px-3 py-3 font-semibold text-accent-amber">
                               {formatCurrency(num(ticket.balanceDue))}
                             </td>
-                            <td className="px-3 py-3">{String(ticket.receivedByName ?? '—')}</td>
-                            <td className="px-3 py-3">{String(ticket.deliveredByName ?? '—')}</td>
+                            <td className="px-3 py-3">
+                              <Badge color={paySt === 'PAID' ? 'green' : paySt === 'PARTIAL' ? 'amber' : 'gray'}>
+                                {labelize(paySt)}
+                              </Badge>
+                            </td>
                             <td className="px-3 py-3">
                               {ticket.nextDueDate ? formatDate(String(ticket.nextDueDate)) : '—'}
                             </td>
@@ -504,6 +542,7 @@ export function TicketsPage() {
                 valueId={form.contactId}
                 selected={pickedContact}
                 onSelect={onPickContact}
+                returnTo="/tickets?open=1"
               />
             </section>
 
@@ -622,6 +661,21 @@ export function TicketsPage() {
                   />
                 </>
               ) : null}
+              <Select
+                label="Warranty (GC / NGC)"
+                value={form.warrantyType}
+                onChange={(e) => setForm({ ...form, warrantyType: e.target.value })}
+                options={[
+                  { value: 'GC', label: 'GC — under company warranty' },
+                  { value: 'NGC', label: 'NGC — chargeable / out of warranty' },
+                ]}
+              />
+              <Input
+                label="Warranty valid until"
+                type="date"
+                value={form.warrantyUntil}
+                onChange={(e) => setForm({ ...form, warrantyUntil: e.target.value })}
+              />
               <label className="flex items-end gap-2 pb-2 text-sm">
                 <input
                   type="checkbox"
@@ -633,7 +687,21 @@ export function TicketsPage() {
             </section>
 
             <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <h3 className="sm:col-span-2 lg:col-span-4 text-sm font-semibold text-text-primary">3. Dates & money</h3>
+              <h3 className="sm:col-span-2 lg:col-span-4 text-sm font-semibold text-text-primary">
+                3. Schedule, dates & payment
+              </h3>
+              <Input
+                label="Scheduled date"
+                type="date"
+                value={form.scheduledDate}
+                onChange={(e) => setForm({ ...form, scheduledDate: e.target.value })}
+              />
+              <Input
+                label="Scheduled time"
+                type="time"
+                value={form.scheduledTime}
+                onChange={(e) => setForm({ ...form, scheduledTime: e.target.value })}
+              />
               <Input
                 label="Stamping date"
                 type="date"
@@ -671,9 +739,34 @@ export function TicketsPage() {
             </section>
 
             <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">4. Assign to</h3>
+              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
+                4. Engineer, issue log & status
+              </h3>
               <Select
-                label="Assign to (technician) *"
+                label="Category"
+                value={form.category}
+                onChange={(e) => setForm({ ...form, category: e.target.value })}
+                options={[
+                  { value: 'Breakdown', label: 'Breakdown' },
+                  { value: 'Installation', label: 'Installation' },
+                  { value: 'Stamping', label: 'Stamping' },
+                  { value: 'AMC visit', label: 'AMC visit' },
+                  { value: 'Other', label: 'Other' },
+                ]}
+              />
+              <Select
+                label="Channel"
+                value={form.channel}
+                onChange={(e) => setForm({ ...form, channel: e.target.value })}
+                options={[
+                  { value: 'Walk-in', label: 'Walk-in' },
+                  { value: 'Phone', label: 'Phone' },
+                  { value: 'WhatsApp', label: 'WhatsApp' },
+                  { value: 'Field', label: 'Field visit' },
+                ]}
+              />
+              <Select
+                label="Assign to (engineer) *"
                 value={form.receivedByUserId}
                 onChange={(e) => setForm({ ...form, receivedByUserId: e.target.value })}
                 options={[{ value: '', label: 'Select employee' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
@@ -700,12 +793,12 @@ export function TicketsPage() {
                 The selected employee sees this job on their Home, My Tickets, and My Tasks immediately.
               </p>
               <label className="block text-sm sm:col-span-2 lg:col-span-3">
-                <span className="mb-1 block font-medium text-text-secondary">Work notes</span>
+                <span className="mb-1 block font-medium text-text-secondary">Issue log</span>
                 <textarea
                   className="min-h-24 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
                   value={form.description}
                   onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  placeholder="What was done / parts / site notes…"
+                  placeholder="Customer complaint, symptoms, parts needed…"
                 />
               </label>
             </section>

@@ -277,5 +277,35 @@ export async function convert(t: string, id: string, user: string, data: any) {
     return { contact, accountId: accountId ?? contact.accountId, deal };
   });
   await invalidate(t);
+  // If this lead had a demo serial out, mark that unit SOLD
+  try {
+    const { markDemoSold } = await import("../inventory/inventory.service.js");
+    await markDemoSold(t, user, id);
+  } catch {
+    /* non-fatal if no demo unit */
+  }
   return result;
+}
+
+export async function issueDemo(t: string, user: string, leadId: string, stockUnitId: string) {
+  const { issueDemoUnit } = await import("../inventory/inventory.service.js");
+  const unit = await issueDemoUnit(t, user, leadId, stockUnitId);
+  await invalidate(t);
+  return { lead: await get(t, leadId), stockUnit: unit };
+}
+
+export async function returnDemo(t: string, user: string, leadId: string, notes?: string) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, tenantId: t, deletedAt: null } });
+  if (!lead) throw notFound("Lead");
+  const cf =
+    lead.customFields && typeof lead.customFields === "object" && !Array.isArray(lead.customFields)
+      ? (lead.customFields as Record<string, unknown>)
+      : {};
+  const unitId = cf.demoStockUnitId ? String(cf.demoStockUnitId) : "";
+  if (!unitId) throw new AppError("No demo unit linked to this enquiry", 400);
+
+  const { returnDemoUnit } = await import("../inventory/inventory.service.js");
+  const unit = await returnDemoUnit(t, user, unitId, { notes, leadId });
+  await invalidate(t);
+  return { lead: await get(t, leadId), stockUnit: unit };
 }

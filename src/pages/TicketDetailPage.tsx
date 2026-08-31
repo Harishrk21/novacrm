@@ -28,6 +28,7 @@ import { openPrintableJobSheet } from '@/lib/jobSheetPrint'
 import { formatCurrency, formatDate, formatDateTime, formatPhone } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
+import { SparePartsPanel } from '@/components/contacts/SparePartsPanel'
 
 const labelize = (value: string) =>
   value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
@@ -54,6 +55,12 @@ export function TicketDetailPage() {
     channel: '',
   })
   const [lastInvoice, setLastInvoice] = useState<Record<string, unknown> | null>(null)
+  const [visitDraft, setVisitDraft] = useState({
+    attendedAt: new Date().toISOString().slice(0, 10),
+    attendedTime: new Date().toTimeString().slice(0, 5),
+    notes: '',
+    engineerId: '',
+  })
 
   const load = useCallback(async () => {
     if (!id) return
@@ -417,11 +424,42 @@ export function TicketDetailPage() {
     }
   }
 
+  async function addVisitEntry() {
+    if (!id || !ticket) return
+    const attendedAt =
+      visitDraft.attendedAt && visitDraft.attendedTime
+        ? `${visitDraft.attendedAt}T${visitDraft.attendedTime}`
+        : visitDraft.attendedAt
+    const cf = (ticket.customFields as Record<string, unknown>) ?? {}
+    const existing = Array.isArray(cf.visitLog) ? cf.visitLog : []
+    const entry = {
+      id: crypto.randomUUID(),
+      attendedAt,
+      notes: visitDraft.notes.trim() || 'Site visit',
+      engineerId: visitDraft.engineerId || String(ticket.assignedToId ?? '') || null,
+    }
+    await patchTicket(
+      {
+        customFields: {
+          ...cf,
+          visitLog: [...existing, entry],
+        },
+      },
+      'Attending visit logged',
+    )
+    setVisitDraft((v) => ({ ...v, notes: '' }))
+  }
+
   const balancePreview = useMemo(() => {
     const pay = Number(payDraft.paymentTotal) || 0
     const adv = Number(payDraft.advanceAmount) || 0
     return Math.max(0, pay - adv)
   }, [payDraft.paymentTotal, payDraft.advanceAmount])
+
+  const visitLog = useMemo(() => {
+    const ticketCf = (ticket?.customFields as Record<string, unknown>) ?? {}
+    return Array.isArray(ticketCf.visitLog) ? (ticketCf.visitLog as Array<Record<string, unknown>>) : []
+  }, [ticket])
 
   if (loading) return <Card className="p-6 text-sm text-text-secondary">Loading ticket…</Card>
   if (!ticket) {
@@ -446,6 +484,8 @@ export function TicketDetailPage() {
   } | null | undefined
   const account = ticket.account as { id: string; name: string } | null | undefined
   const asset = ticket.asset as Record<string, unknown> | null | undefined
+  const assetCf = (asset?.customFields as Record<string, unknown> | undefined) ?? {}
+  const scheduledAt = cf.scheduledAt ? String(cf.scheduledAt) : null
   const status = String(ticket.status)
   const paymentStatus = String(ticket.paymentStatus ?? 'UNPAID')
   const isOpen = ['OPEN', 'IN_PROGRESS', 'PENDING'].includes(status)
@@ -553,13 +593,22 @@ export function TicketDetailPage() {
                     .filter(Boolean)
                     .join(' ') || 'AMC'
                 : ''}
+              {assetCf.warrantyType ? (
+                <span className="mt-1 block">
+                  Warranty: {String(assetCf.warrantyType)}
+                  {assetCf.warrantyUntil ? ` until ${formatDate(String(assetCf.warrantyUntil))}` : ''}
+                </span>
+              ) : null}
             </div>
           </div>
           <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Stamping / Next due</div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Scheduled / due</div>
             <div className="mt-1 text-sm font-medium">
-              {ticket.stampingDate ? formatDate(String(ticket.stampingDate)) : '—'}
-              {' → '}
+              {scheduledAt ? formatDateTime(scheduledAt) : 'Not scheduled'}
+            </div>
+            <div className="mt-0.5 text-xs text-text-secondary">
+              Stamping {ticket.stampingDate ? formatDate(String(ticket.stampingDate)) : '—'}
+              {' · Next '}
               {ticket.nextDueDate ? formatDate(String(ticket.nextDueDate)) : '—'}
             </div>
           </div>
@@ -638,7 +687,7 @@ export function TicketDetailPage() {
             ]}
           />
           <label className="block text-sm sm:col-span-2 lg:col-span-3">
-            <span className="mb-1 block font-medium text-text-secondary">Work notes</span>
+            <span className="mb-1 block font-medium text-text-secondary">Issue log</span>
             <textarea
               className="min-h-28 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
               value={editDraft.description}
@@ -648,6 +697,74 @@ export function TicketDetailPage() {
           </label>
         </div>
       </Card>
+
+      <Card className="p-4 sm:p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold text-text-primary">Attending visits</h2>
+            <p className="text-xs text-text-secondary">Log each site visit as the job progresses.</p>
+          </div>
+        </div>
+        {visitLog.length === 0 ? (
+          <p className="mb-3 text-sm text-text-secondary">No visit logged yet.</p>
+        ) : (
+          <ul className="mb-4 space-y-2">
+            {visitLog.map((v) => (
+              <li key={String(v.id ?? v.attendedAt)} className="rounded-lg border border-border px-3 py-2 text-sm">
+                <div className="flex flex-wrap justify-between gap-2 text-xs text-text-secondary">
+                  <span className="font-medium text-text-primary">
+                    {v.attendedAt ? formatDateTime(String(v.attendedAt)) : '—'}
+                  </span>
+                  <span>
+                    {v.engineerId
+                      ? users.find((u) => u.id === String(v.engineerId))?.name ?? 'Engineer'
+                      : '—'}
+                  </span>
+                </div>
+                <p className="mt-1 whitespace-pre-wrap">{String(v.notes ?? '')}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Input
+            label="Visit date"
+            type="date"
+            value={visitDraft.attendedAt}
+            onChange={(e) => setVisitDraft({ ...visitDraft, attendedAt: e.target.value })}
+          />
+          <Input
+            label="Time"
+            type="time"
+            value={visitDraft.attendedTime}
+            onChange={(e) => setVisitDraft({ ...visitDraft, attendedTime: e.target.value })}
+          />
+          <Select
+            label="Engineer"
+            value={visitDraft.engineerId || String(ticket.assignedToId ?? '')}
+            onChange={(e) => setVisitDraft({ ...visitDraft, engineerId: e.target.value })}
+            options={[{ value: '', label: 'Assignee' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
+          />
+          <Input
+            label="Visit notes"
+            value={visitDraft.notes}
+            onChange={(e) => setVisitDraft({ ...visitDraft, notes: e.target.value })}
+            placeholder="Arrived, diagnosed…"
+          />
+        </div>
+        <Button className="mt-3" disabled={busy} onClick={() => void addVisitEntry()}>
+          Log attending visit
+        </Button>
+      </Card>
+
+      {contact ? (
+        <SparePartsPanel
+          contactId={contact.id}
+          contactName={contact.name}
+          ticketId={id}
+          fixedAssetId={ticket.assetId ? String(ticket.assetId) : undefined}
+        />
+      ) : null}
 
       {/* Work + payment — main actions */}
       <div className="grid gap-4 lg:grid-cols-2">

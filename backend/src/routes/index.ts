@@ -20,6 +20,7 @@ import { usersRouter } from '../modules/users/users.routes.js'
 import { uploadsRouter } from '../modules/uploads/uploads.routes.js'
 import { analyticsRouter } from '../modules/analytics/analytics.routes.js'
 import { activitiesRouter } from '../modules/activities/activities.routes.js'
+import { sparePartsRouter } from '../modules/spareParts/spareParts.routes.js'
 
 export const apiRouter = Router()
 apiRouter.use('/auth', authRouter)
@@ -36,6 +37,7 @@ apiRouter.use('/contacts', contactsRouter)
 apiRouter.use('/deals', dealsRouter)
 apiRouter.use('/tickets', ticketsRouter)
 apiRouter.use('/assets', assetsRouter)
+apiRouter.use('/spare-parts', sparePartsRouter)
 apiRouter.use('/products', productsRouter)
 apiRouter.use('/inventory', inventoryRouter)
 apiRouter.use('/purchase-orders', purchaseOrdersRouter)

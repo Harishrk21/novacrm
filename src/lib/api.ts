@@ -326,6 +326,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  issueLeadDemo: (id: string, stockUnitId: string) =>
+    apiFetch<Record<string, unknown>>(`/leads/${id}/issue-demo`, {
+      method: 'POST',
+      body: JSON.stringify({ stockUnitId }),
+    }),
+  returnLeadDemo: (id: string, notes?: string) =>
+    apiFetch<Record<string, unknown>>(`/leads/${id}/return-demo`, {
+      method: 'POST',
+      body: JSON.stringify({ notes: notes || undefined }),
+    }),
 
   // Contacts
   contacts: (params?: Record<string, string | number | undefined>) =>
@@ -480,6 +490,18 @@ export const api = {
     }),
   deleteAsset: (id: string) => apiFetch<null>(`/assets/${id}`, { method: 'DELETE' }),
 
+  spareParts: (params?: Record<string, string | number | undefined>) =>
+    apiFetch<Page<Record<string, unknown>>>(`/spare-parts${qs(params)}`),
+  getSparePart: (id: string) => apiFetch<Record<string, unknown>>(`/spare-parts/${id}`),
+  createSparePart: (body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>('/spare-parts', { method: 'POST', body: JSON.stringify(body) }),
+  updateSparePart: (id: string, body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>(`/spare-parts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteSparePart: (id: string) => apiFetch<null>(`/spare-parts/${id}`, { method: 'DELETE' }),
+
   // Products / inventory / invoices / POs
   products: (params?: Record<string, string | number | undefined>) =>
     apiFetch<Page<Record<string, unknown>>>(`/products${qs(params)}`),
@@ -498,6 +520,31 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  stockUnits: (params?: Record<string, string | number | undefined>) =>
+    apiFetch<Array<Record<string, unknown>>>(`/inventory/units${qs(params)}`),
+  getStockUnit: (id: string) => apiFetch<Record<string, unknown>>(`/inventory/units/${id}`),
+  addStockUnit: (body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>('/inventory/units', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateStockUnit: (id: string, body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>(`/inventory/units/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  returnDemoUnit: (id: string, notes?: string) =>
+    apiFetch<Record<string, unknown>>(`/inventory/units/${id}/return-demo`, {
+      method: 'POST',
+      body: JSON.stringify({ notes: notes || undefined }),
+    }),
+  stampStockUnit: (id: string, stampingDate: string, notes?: string) =>
+    apiFetch<Record<string, unknown>>(`/inventory/units/${id}/stamp`, {
+      method: 'POST',
+      body: JSON.stringify({ stampingDate, notes: notes || undefined }),
+    }),
+  inventoryHistory: (params?: Record<string, string | number | undefined>) =>
+    apiFetch<Array<Record<string, unknown>>>(`/inventory/history${qs(params)}`),
   invoices: (params?: Record<string, string | number | undefined>) =>
     apiFetch<Page<Record<string, unknown>>>(`/invoices${qs(params)}`),
   getInvoice: (id: string) => apiFetch<Record<string, unknown>>(`/invoices/${id}`),

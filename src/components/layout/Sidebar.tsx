@@ -18,6 +18,7 @@ import {
   BookOpen,
   CheckSquare,
   Shield,
+  Stamp,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
@@ -58,13 +59,14 @@ export function Sidebar() {
       items: [
         { to: '/tickets', icon: Ticket, label: 'Service tickets' },
         { to: '/amc', icon: Shield, label: 'AMC / Non-AMC' },
+        { to: '/stamping', icon: Stamp, label: 'Stamping' },
         { to: '/contacts', icon: Users, label: 'Customers' },
         { to: '/activities', icon: Phone, label: 'Activities' },
       ],
     },
     {
       label: 'SALES',
-      items: [{ to: '/leads', icon: UserPlus, label: 'Leads' }],
+      items: [{ to: '/sale-tracking', icon: UserPlus, label: 'Sale tracking' }],
     },
     {
       label: 'ERP',
@@ -92,6 +94,7 @@ export function Sidebar() {
         { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
         { to: '/tickets', icon: Ticket, label: 'My Tickets' },
         { to: '/amc', icon: Shield, label: 'AMC / Non-AMC' },
+        { to: '/stamping', icon: Stamp, label: 'Stamping' },
         { to: '/my-tasks', icon: CheckSquare, label: 'My Tasks' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
       ],
@@ -102,7 +105,7 @@ export function Sidebar() {
     },
     {
       label: 'SALES',
-      items: [{ to: '/leads', icon: UserPlus, label: 'My Leads' }],
+      items: [{ to: '/sale-tracking', icon: UserPlus, label: 'My sales' }],
     },
     {
       label: 'ACCOUNT',

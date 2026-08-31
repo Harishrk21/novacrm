@@ -85,16 +85,21 @@ export function validateContactForm(form: {
   country: string
   alternateEmail?: string
   pincode?: string
+  landline?: string
+  whatsapp?: string
 }) {
   const errors: FieldErrors = {}
-  if (!form.name.trim()) errors.name = 'Full name is required'
+  if (!form.name.trim()) errors.name = 'Company / shop / customer name is required'
   if (form.email.trim() && !isEmail(form.email)) errors.email = 'Enter a valid email'
   if (form.alternateEmail?.trim() && !isEmail(form.alternateEmail)) {
     errors.alternateEmail = 'Enter a valid alternate email'
   }
-  const phoneDigits = (form.phone || form.mobile || '').replace(/\D/g, '')
+  const phoneDigits = (form.mobile || form.phone || form.landline || form.whatsapp || '').replace(
+    /\D/g,
+    '',
+  )
   if (phoneDigits.length < 8) {
-    errors.phone = 'Phone is required — unique customer identity for walk-ins'
+    errors.phone = 'Mobile number 1 (or landline / WhatsApp) is required'
   }
   if (form.mobile.trim() && form.mobile.replace(/\D/g, '').length < 8) {
     errors.mobile = 'Enter a valid mobile number'

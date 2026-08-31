@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { CalendarClock, Package, Shield, ShieldOff } from 'lucide-react'
+import { CalendarClock, Package, Shield, ShieldOff, Wrench } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -20,8 +20,11 @@ import { assetOriginShort, isThirdPartyOrigin } from '@/lib/assetOrigin'
 import { formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
-type PlanTab = 'AMC' | 'NON_AMC' | 'DUE'
+type PlanTab = 'AMC' | 'NON_AMC' | 'UPCOMING_SERVICE' | 'UPCOMING_AMC_RENEWAL'
 type OriginFilter = 'ALL' | 'SOLD_BY_US' | 'THIRD_PARTY'
+
+const SERVICE_WINDOW_DAYS = 30
+const AMC_RENEWAL_WINDOW_DAYS = 60
 
 function daysUntil(dateStr?: string | null) {
   if (!dateStr) return null
@@ -33,12 +36,62 @@ function daysUntil(dateStr?: string | null) {
   return Math.round((d.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
 }
 
+function daysLabel(days: number | null) {
+  if (days == null) return null
+  if (days < 0) return `${Math.abs(days)}d overdue`
+  if (days === 0) return 'Today'
+  return `${days}d left`
+}
+
+function daysClass(days: number | null) {
+  if (days == null) return 'text-text-secondary'
+  if (days < 0) return 'text-accent-red'
+  if (days <= 7) return 'text-accent-red'
+  if (days <= 30) return 'text-accent-amber'
+  return 'text-text-secondary'
+}
+
+type AssetRow = Record<string, unknown>
+
+function contactCell(a: AssetRow) {
+  const contact = a.contact as
+    | { id?: string; name?: string; phone?: string | null; customerCode?: string | null }
+    | null
+    | undefined
+  const contactId = contact?.id ? String(contact.id) : a.contactId ? String(a.contactId) : ''
+  if (!contactId) return '—'
+  return (
+    <div>
+      <Link to={`/contacts/${contactId}`} className="font-medium text-accent-blue hover:underline">
+        {contact?.customerCode ? (
+          <span className="mr-1 font-mono text-xs">{contact.customerCode}</span>
+        ) : null}
+        {contact?.name ?? 'Customer'}
+      </Link>
+      {contact?.phone ? (
+        <div className="text-xs text-text-secondary">{formatPhone(String(contact.phone))}</div>
+      ) : null}
+    </div>
+  )
+}
+
+function machineCell(a: AssetRow) {
+  return (
+    <div>
+      <div className="font-medium">{String(a.name)}</div>
+      <div className="text-xs text-text-secondary">
+        {[a.machineType, a.serialNo, a.model].filter(Boolean).join(' · ').replaceAll('_', ' ') || '—'}
+      </div>
+    </div>
+  )
+}
+
 export function AmcPage() {
   const navigate = useNavigate()
   const addToast = useUIStore((s) => s.addToast)
   const [tab, setTab] = useState<PlanTab>('AMC')
   const [originFilter, setOriginFilter] = useState<OriginFilter>('ALL')
-  const [rows, setRows] = useState<Record<string, unknown>[]>([])
+  const [rows, setRows] = useState<AssetRow[]>([])
   const [loading, setLoading] = useState(true)
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
   const [busyDelete, setBusyDelete] = useState(false)
@@ -46,7 +99,7 @@ export function AmcPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await api.assets({ limit: 200 })
+      const res = await api.assets({ limit: 300 })
       setRows(res.items ?? [])
     } catch (err) {
       setRows([])
@@ -79,27 +132,42 @@ export function AmcPage() {
 
   const amcRows = useMemo(() => byOrigin.filter((r) => String(r.servicePlan) === 'AMC'), [byOrigin])
   const nonAmcRows = useMemo(() => byOrigin.filter((r) => String(r.servicePlan) !== 'AMC'), [byOrigin])
-  const dueRows = useMemo(() => {
+
+  const upcomingServiceRows = useMemo(() => {
     return byOrigin
-      .map((r) => {
-        const due = daysUntil(r.nextDueDate ? String(r.nextDueDate) : null)
-        const amc = daysUntil(r.amcEndDate ? String(r.amcEndDate) : null)
-        const soon = (due != null && due <= 30) || (amc != null && amc <= 30)
-        return { row: r, due, amc, soon }
-      })
-      .filter((x) => x.soon)
-      .sort((a, b) => {
-        const av = Math.min(a.due ?? 9999, a.amc ?? 9999)
-        const bv = Math.min(b.due ?? 9999, b.amc ?? 9999)
-        return av - bv
-      })
+      .map((r) => ({ row: r, due: daysUntil(r.nextDueDate ? String(r.nextDueDate) : null) }))
+      .filter((x) => x.due != null && x.due <= SERVICE_WINDOW_DAYS)
+      .sort((a, b) => (a.due ?? 9999) - (b.due ?? 9999))
   }, [byOrigin])
 
-  const list =
-    tab === 'AMC' ? amcRows : tab === 'NON_AMC' ? nonAmcRows : dueRows.map((d) => d.row)
+  const upcomingAmcRenewalRows = useMemo(() => {
+    return byOrigin
+      .filter((r) => String(r.servicePlan) === 'AMC')
+      .map((r) => ({ row: r, amcEnd: daysUntil(r.amcEndDate ? String(r.amcEndDate) : null) }))
+      .filter((x) => x.amcEnd != null && x.amcEnd <= AMC_RENEWAL_WINDOW_DAYS)
+      .sort((a, b) => (a.amcEnd ?? 9999) - (b.amcEnd ?? 9999))
+  }, [byOrigin])
+
+  const list: AssetRow[] =
+    tab === 'AMC'
+      ? amcRows
+      : tab === 'NON_AMC'
+        ? nonAmcRows
+        : tab === 'UPCOMING_SERVICE'
+          ? upcomingServiceRows.map((x) => x.row)
+          : upcomingAmcRenewalRows.map((x) => x.row)
 
   const ids = useMemo(() => list.map((i) => String(i.id)), [list])
   const selection = useRowSelection(ids)
+
+  const tableHeaders =
+    tab === 'AMC'
+      ? ['Customer', 'Machine', 'Origin', 'AMC start', 'AMC end', 'Next service', 'Reminders', 'Actions']
+      : tab === 'NON_AMC'
+        ? ['Customer', 'Machine', 'Origin', 'Stamping', 'Next due', 'Plan notes', 'Reminders', 'Actions']
+        : tab === 'UPCOMING_SERVICE'
+          ? ['Customer', 'Machine', 'Service due', 'Days left', 'Plan', 'Stamping', 'Phone', 'Actions']
+          : ['Customer', 'Machine', 'AMC ends', 'Days left', 'AMC period', 'Next service', 'Reminders', 'Actions']
 
   async function runDelete(deleteIds: string[]) {
     setBusyDelete(true)
@@ -122,39 +190,137 @@ export function AmcPage() {
     }
   }
 
+  function renderRowCells(a: AssetRow) {
+    const id = String(a.id)
+    const contact = a.contact as { id?: string; phone?: string | null } | null | undefined
+    const contactId = contact?.id ? String(contact.id) : a.contactId ? String(a.contactId) : ''
+    const due = daysUntil(a.nextDueDate ? String(a.nextDueDate) : null)
+    const amcEnd = daysUntil(a.amcEndDate ? String(a.amcEndDate) : null)
+    const outside = isThirdPartyOrigin(a.origin ? String(a.origin) : null)
+    const plan = String(a.servicePlan) === 'AMC' ? 'AMC' : 'Non-AMC'
+
+    if (tab === 'AMC') {
+      return (
+        <>
+          <td className="px-4 py-3">{contactCell(a)}</td>
+          <td className="px-4 py-3">{machineCell(a)}</td>
+          <td className="px-4 py-3">
+            <Badge color={outside ? 'amber' : 'blue'}>{assetOriginShort(a.origin ? String(a.origin) : null)}</Badge>
+          </td>
+          <td className="px-4 py-3">{a.amcStartDate ? formatDate(String(a.amcStartDate)) : '—'}</td>
+          <td className="px-4 py-3">
+            {a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}
+            {amcEnd != null ? (
+              <div className={`text-xs ${daysClass(amcEnd)}`}>{daysLabel(amcEnd)}</div>
+            ) : null}
+          </td>
+          <td className="px-4 py-3">
+            {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
+            {due != null ? <div className={`text-xs ${daysClass(due)}`}>{daysLabel(due)}</div> : null}
+          </td>
+          <td className="px-4 py-3 text-text-secondary">{a.remindersEnabled === false ? 'Off' : 'On'}</td>
+        </>
+      )
+    }
+
+    if (tab === 'NON_AMC') {
+      return (
+        <>
+          <td className="px-4 py-3">{contactCell(a)}</td>
+          <td className="px-4 py-3">{machineCell(a)}</td>
+          <td className="px-4 py-3">
+            <Badge color={outside ? 'amber' : 'blue'}>{assetOriginShort(a.origin ? String(a.origin) : null)}</Badge>
+          </td>
+          <td className="px-4 py-3">{a.stampingDate ? formatDate(String(a.stampingDate)) : '—'}</td>
+          <td className="px-4 py-3">
+            {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
+            {due != null ? <div className={`text-xs ${daysClass(due)}`}>{daysLabel(due)}</div> : null}
+          </td>
+          <td className="max-w-[200px] truncate px-4 py-3 text-text-secondary">{String(a.notes ?? '—')}</td>
+          <td className="px-4 py-3 text-text-secondary">{a.remindersEnabled === false ? 'Off' : 'On'}</td>
+        </>
+      )
+    }
+
+    if (tab === 'UPCOMING_SERVICE') {
+      return (
+        <>
+          <td className="px-4 py-3">{contactCell(a)}</td>
+          <td className="px-4 py-3">{machineCell(a)}</td>
+          <td className="px-4 py-3 font-medium">
+            {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
+          </td>
+          <td className="px-4 py-3">
+            <Badge color={due != null && due <= 7 ? 'red' : due != null && due <= 30 ? 'amber' : 'gray'}>
+              {daysLabel(due) ?? '—'}
+            </Badge>
+          </td>
+          <td className="px-4 py-3">
+            <Badge color={plan === 'AMC' ? 'green' : 'gray'}>{plan}</Badge>
+          </td>
+          <td className="px-4 py-3">{a.stampingDate ? formatDate(String(a.stampingDate)) : '—'}</td>
+          <td className="px-4 py-3">{contact?.phone ? formatPhone(String(contact.phone)) : '—'}</td>
+        </>
+      )
+    }
+
+    // UPCOMING_AMC_RENEWAL
+    return (
+      <>
+        <td className="px-4 py-3">{contactCell(a, navigate)}</td>
+        <td className="px-4 py-3">{machineCell(a)}</td>
+        <td className="px-4 py-3 font-medium">{a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}</td>
+        <td className="px-4 py-3">
+          <Badge color={amcEnd != null && amcEnd <= 7 ? 'red' : amcEnd != null && amcEnd <= 30 ? 'amber' : 'gray'}>
+            {daysLabel(amcEnd) ?? '—'}
+          </Badge>
+        </td>
+        <td className="px-4 py-3 text-xs">
+          {a.amcStartDate ? formatDate(String(a.amcStartDate)) : '—'} →{' '}
+          {a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}
+        </td>
+        <td className="px-4 py-3">
+          {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
+          {due != null ? <div className={`text-xs ${daysClass(due)}`}>{daysLabel(due)}</div> : null}
+        </td>
+        <td className="px-4 py-3 text-text-secondary">{a.remindersEnabled === false ? 'Off' : 'On'}</td>
+      </>
+    )
+  }
+
+  const emptyTitle =
+    tab === 'UPCOMING_SERVICE'
+      ? `No services due in ${SERVICE_WINDOW_DAYS} days`
+      : tab === 'UPCOMING_AMC_RENEWAL'
+        ? `No AMC renewals in ${AMC_RENEWAL_WINDOW_DAYS} days`
+        : tab === 'NON_AMC'
+          ? 'No Non-AMC machines'
+          : 'No AMC machines'
+
   return (
     <div>
       <PageHeader
-        title="AMC / Non-AMC"
+        title="AMC & Service"
         count={rows.length}
-        breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'AMC / Non-AMC' }]}
+        breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'AMC / Service' }]}
       />
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Card className="flex items-center justify-between py-3">
-          <span className="inline-flex items-center gap-2 text-sm text-text-secondary">
-            <Shield size={16} className="text-accent-green" /> AMC machines
-          </span>
-          <span className="text-xl font-semibold tabular-nums">{amcRows.length}</span>
-        </Card>
-        <Card className="flex items-center justify-between py-3">
-          <span className="inline-flex items-center gap-2 text-sm text-text-secondary">
-            <ShieldOff size={16} /> Non-AMC
-          </span>
-          <span className="text-xl font-semibold tabular-nums">{nonAmcRows.length}</span>
-        </Card>
-        <Card className="flex items-center justify-between py-3">
-          <span className="inline-flex items-center gap-2 text-sm text-text-secondary">
-            <CalendarClock size={16} className="text-accent-amber" /> Due in 30 days
-          </span>
-          <span className="text-xl font-semibold tabular-nums">{dueRows.length}</span>
-        </Card>
-        <Card className="flex items-center justify-between gap-2 py-3">
-          <span className="text-sm text-text-secondary">Sold by us / Outside</span>
-          <span className="text-lg font-semibold tabular-nums">
-            {soldCount} / {outsideCount}
-          </span>
-        </Card>
+      <div className="mb-3 flex flex-wrap gap-2">
+        {[
+          { label: 'AMC', value: amcRows.length, icon: Shield },
+          { label: 'Non-AMC', value: nonAmcRows.length, icon: ShieldOff },
+          { label: 'Upcoming service', value: upcomingServiceRows.length, icon: Wrench },
+          { label: 'AMC renewal', value: upcomingAmcRenewalRows.length, icon: CalendarClock },
+        ].map((card) => (
+          <div
+            key={card.label}
+            className="flex min-w-[130px] flex-1 items-center gap-2 rounded-lg border border-border bg-card px-3 py-2"
+          >
+            <card.icon size={16} className="text-text-secondary" />
+            <span className="text-xs text-text-secondary">{card.label}</span>
+            <span className="ml-auto text-sm font-semibold tabular-nums">{card.value}</span>
+          </div>
+        ))}
       </div>
 
       <div className="mb-3 flex flex-wrap gap-2">
@@ -162,7 +328,7 @@ export function AmcPage() {
           [
             { id: 'ALL', label: 'All origins' },
             { id: 'SOLD_BY_US', label: `Sold by us (${soldCount})` },
-            { id: 'THIRD_PARTY', label: `Outside / repair (${outsideCount})` },
+            { id: 'THIRD_PARTY', label: `Outside (${outsideCount})` },
           ] as const
         ).map((o) => (
           <button
@@ -184,7 +350,8 @@ export function AmcPage() {
         tabs={[
           { id: 'AMC', label: 'AMC', count: amcRows.length },
           { id: 'NON_AMC', label: 'Non-AMC', count: nonAmcRows.length },
-          { id: 'DUE', label: 'Maintenance due', count: dueRows.length },
+          { id: 'UPCOMING_SERVICE', label: 'Upcoming services', count: upcomingServiceRows.length },
+          { id: 'UPCOMING_AMC_RENEWAL', label: 'Upcoming AMC renewal', count: upcomingAmcRenewalRows.length },
         ]}
         active={tab}
         onChange={(id) => setTab(id as PlanTab)}
@@ -196,8 +363,8 @@ export function AmcPage() {
         <Card className="mt-4">
           <EmptyState
             icon={<Package size={22} />}
-            title={tab === 'DUE' ? 'Nothing due in 30 days' : 'No machines in this plan'}
-            subtitle="Add machines on a customer profile and set AMC / Non-AMC + next due dates."
+            title={emptyTitle}
+            subtitle="Add machines on a customer profile with AMC dates and next service due."
             actionLabel="Customers"
             onAction={() => navigate('/contacts')}
           />
@@ -226,27 +393,18 @@ export function AmcPage() {
                         aria-label="Select all"
                       />
                     </th>
-                    {['Customer', 'Machine', 'Origin', 'Plan', 'Next due', 'AMC period', 'Reminders', 'Actions'].map(
-                      (h) => (
-                        <th key={h} className="px-4 py-3 font-medium">
-                          {h}
-                        </th>
-                      ),
-                    )}
+                    {tableHeaders.map((h) => (
+                      <th key={h} className="px-4 py-3 font-medium">
+                        {h}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {list.map((a) => {
                     const id = String(a.id)
-                    const contact = a.contact as
-                      | { id?: string; name?: string; phone?: string | null; customerCode?: string | null }
-                      | null
-                      | undefined
+                    const contact = a.contact as { id?: string } | null | undefined
                     const contactId = contact?.id ? String(contact.id) : a.contactId ? String(a.contactId) : ''
-                    const due = daysUntil(a.nextDueDate ? String(a.nextDueDate) : null)
-                    const amcEnd = daysUntil(a.amcEndDate ? String(a.amcEndDate) : null)
-                    const plan = String(a.servicePlan) === 'AMC' ? 'AMC' : 'Non-AMC'
-                    const outside = isThirdPartyOrigin(a.origin ? String(a.origin) : null)
                     return (
                       <tr key={id} className="border-t border-border">
                         <td className="px-4 py-3">
@@ -256,70 +414,7 @@ export function AmcPage() {
                             aria-label={`Select ${String(a.name)}`}
                           />
                         </td>
-                        <td className="px-4 py-3">
-                          {contactId ? (
-                            <Link
-                              to={`/contacts/${contactId}`}
-                              className="font-medium text-accent-blue hover:underline"
-                            >
-                              {contact?.customerCode ? (
-                                <span className="mr-1 font-mono text-xs">{contact.customerCode}</span>
-                              ) : null}
-                              {contact?.name ?? 'Customer'}
-                            </Link>
-                          ) : (
-                            '—'
-                          )}
-                          {contact?.phone ? (
-                            <div className="text-xs text-text-secondary">{formatPhone(String(contact.phone))}</div>
-                          ) : null}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="font-medium">{String(a.name)}</div>
-                          <div className="text-xs text-text-secondary">
-                            {[a.machineType, a.serialNo].filter(Boolean).join(' · ').replaceAll('_', ' ') || '—'}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge color={outside ? 'amber' : 'blue'}>
-                            {assetOriginShort(a.origin ? String(a.origin) : null)}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge color={plan === 'AMC' ? 'green' : 'gray'}>{plan}</Badge>
-                        </td>
-                        <td className="px-4 py-3">
-                          {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
-                          {due != null ? (
-                            <div
-                              className={`text-xs ${due <= 7 ? 'text-accent-red' : due <= 30 ? 'text-accent-amber' : 'text-text-secondary'}`}
-                            >
-                              {due < 0 ? `${Math.abs(due)}d overdue` : `${due}d left`}
-                            </div>
-                          ) : null}
-                        </td>
-                        <td className="px-4 py-3">
-                          {plan === 'AMC' ? (
-                            <div className="text-xs">
-                              <div>
-                                {a.amcStartDate ? formatDate(String(a.amcStartDate)) : '—'} →{' '}
-                                {a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}
-                              </div>
-                              {amcEnd != null ? (
-                                <div
-                                  className={`text-xs ${amcEnd <= 7 ? 'text-accent-red' : amcEnd <= 30 ? 'text-accent-amber' : 'text-text-secondary'}`}
-                                >
-                                  {amcEnd < 0 ? `${Math.abs(amcEnd)}d overdue` : `${amcEnd}d left`}
-                                </div>
-                              ) : null}
-                            </div>
-                          ) : (
-                            '—'
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-text-secondary">
-                          {a.remindersEnabled === false ? 'Off' : 'On'}
-                        </td>
+                        {renderRowCells(a)}
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1">
                             {contactId ? (

@@ -16,6 +16,7 @@ import { ActivitiesPage } from '@/pages/ActivitiesPage'
 import { TicketsPage } from '@/pages/TicketsPage'
 import { TicketDetailPage } from '@/pages/TicketDetailPage'
 import { AmcPage } from '@/pages/AmcPage'
+import { StampingPage } from '@/pages/StampingPage'
 import { ReportsPage } from '@/pages/ReportsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { UsersPage } from '@/pages/UsersPage'
@@ -48,7 +49,8 @@ export default function App() {
           <Route index element={<DashboardPage />} />
           <Route path="help" element={<HowNovaCrmWorksPage />} />
           <Route path="my-tasks" element={<MyTasksPage />} />
-          <Route path="leads" element={<LeadsPage />} />
+          <Route path="sale-tracking" element={<LeadsPage />} />
+          <Route path="leads" element={<Navigate to="/sale-tracking" replace />} />
           <Route path="contacts" element={<ContactsPage />} />
           <Route path="contacts/:id" element={<ContactDetailPage />} />
           <Route path="accounts" element={<AccountsPage />} />
@@ -66,6 +68,7 @@ export default function App() {
           <Route path="tickets" element={<TicketsPage />} />
           <Route path="tickets/:id" element={<TicketDetailPage />} />
           <Route path="amc" element={<AmcPage />} />
+          <Route path="stamping" element={<StampingPage />} />
           <Route
             path="erp/products"
             element={

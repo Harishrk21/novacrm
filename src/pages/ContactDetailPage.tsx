@@ -41,13 +41,14 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { PageTabs } from '@/components/ui/PageTabs'
+import { SparePartsPanel } from '@/components/contacts/SparePartsPanel'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS, isThirdPartyOrigin } from '@/lib/assetOrigin'
 import { formatCurrency, formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
-type Tab = 'Overview' | 'Products' | 'Tickets' | 'Notes'
+type Tab = 'Overview' | 'Products' | 'SpareParts' | 'Tickets' | 'Notes'
 
 const MACHINE_TYPES = [
   { value: 'WEIGHING', label: 'Weighing machine' },
@@ -81,18 +82,24 @@ export function ContactDetailPage() {
     email: '',
     phone: '',
     mobile: '',
-    title: '',
-    department: '',
+    mobile2: '',
+    mobile3: '',
+    whatsapp: '',
+    landline: '',
+    buildingName: '',
     street: '',
     doorNo: '',
     area: '',
     pincode: '',
-    location: '',
+    landmark: '',
+    gpsLocation: '',
     city: '',
     state: '',
     accountId: '',
+    ownerUserId: '',
     description: '',
   })
+  const [users, setUsers] = useState<Array<{ id: string; name: string }>>([])
   const emptyMachineForm = {
     machineType: 'WEIGHING',
     name: '',
@@ -147,21 +154,28 @@ export function ContactDetailPage() {
       const [row, lookups] = await Promise.all([api.getContact(id), api.lookups()])
       setContact(row)
       setAccounts(lookups.accounts)
+      setUsers(lookups.users)
+      const custom = (row.customFields as Record<string, unknown> | null) ?? {}
       setForm({
         name: String(row.name ?? ''),
         email: String(row.email ?? ''),
         phone: String(row.phone ?? ''),
         mobile: String(row.mobile ?? ''),
-        title: String(row.title ?? ''),
-        department: String(row.department ?? ''),
+        mobile2: String(custom.mobile_2 ?? ''),
+        mobile3: String(custom.mobile_3 ?? ''),
+        whatsapp: String(custom.whatsapp ?? ''),
+        landline: String(custom.landline ?? row.phone ?? ''),
+        buildingName: String(custom.building_name ?? ''),
         street: String(row.street ?? ''),
         doorNo: String(row.doorNo ?? ''),
         area: String(row.area ?? ''),
         pincode: String(row.pincode ?? ''),
-        location: String(row.location ?? ''),
+        landmark: String(row.location ?? ''),
+        gpsLocation: String(custom.gps_location ?? ''),
         city: String(row.city ?? ''),
         state: String(row.state ?? ''),
         accountId: String(row.accountId ?? ''),
+        ownerUserId: String(row.ownerUserId ?? ''),
         description: String(row.description ?? ''),
       })
     } catch {
@@ -178,22 +192,34 @@ export function ContactDetailPage() {
   async function saveEdit() {
     if (!id) return
     try {
+      const prevCustom =
+        contact?.customFields && typeof contact.customFields === 'object'
+          ? (contact.customFields as Record<string, unknown>)
+          : {}
       const updated = await api.updateContact(id, {
         name: form.name,
         email: form.email || null,
-        phone: form.phone || null,
+        phone: form.landline || form.phone || form.mobile || null,
         mobile: form.mobile || null,
-        title: form.title || null,
-        department: form.department || null,
         street: form.street || null,
         doorNo: form.doorNo || null,
         area: form.area || null,
         pincode: form.pincode || null,
-        location: form.location || null,
+        location: form.landmark || null,
         city: form.city || null,
         state: form.state || null,
         accountId: form.accountId || null,
+        ownerUserId: form.ownerUserId || null,
         description: form.description || null,
+        customFields: {
+          ...prevCustom,
+          building_name: form.buildingName.trim() || null,
+          landline: form.landline.trim() || null,
+          mobile_2: form.mobile2.trim() || null,
+          mobile_3: form.mobile3.trim() || null,
+          whatsapp: form.whatsapp.trim() || form.mobile.trim() || null,
+          gps_location: form.gpsLocation.trim() || null,
+        },
       })
       setContact(updated)
       setEditOpen(false)
@@ -424,7 +450,7 @@ export function ContactDetailPage() {
         accent="theme"
         eyebrow="Customers"
         title="Edit customer"
-        subtitle="Shop details — street, door, area, pin, phone, location."
+        subtitle="Company, address, phones, WhatsApp, GPS and executive."
         onClose={() => setEditOpen(false)}
         footer={
           <>
@@ -443,19 +469,57 @@ export function ContactDetailPage() {
           }}
           className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
         >
-          <Input label="Company / shop name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <Input label="Phone" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-          <Input label="Mobile" value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
-          <Input label="Street" value={form.street} onChange={(e) => setForm({ ...form, street: e.target.value })} />
+          <Input
+            label="Company / shop / customer name"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            className="sm:col-span-2 lg:col-span-3"
+          />
           <Input label="Door number" value={form.doorNo} onChange={(e) => setForm({ ...form, doorNo: e.target.value })} />
+          <Input label="Street" value={form.street} onChange={(e) => setForm({ ...form, street: e.target.value })} />
+          <Input
+            label="Building name"
+            value={form.buildingName}
+            onChange={(e) => setForm({ ...form, buildingName: e.target.value })}
+          />
           <Input label="Area" value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
-          <Input label="Pin code" value={form.pincode} onChange={(e) => setForm({ ...form, pincode: e.target.value })} />
-          <Input label="Location" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} className="lg:col-span-2" />
           <Input label="City" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
           <Input label="State" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
-          <Input label="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          <Input label="PIN code" value={form.pincode} onChange={(e) => setForm({ ...form, pincode: e.target.value })} />
+          <Input
+            label="Landmark"
+            value={form.landmark}
+            onChange={(e) => setForm({ ...form, landmark: e.target.value })}
+            className="sm:col-span-2"
+          />
+          <Input
+            label="Landline number"
+            value={form.landline}
+            onChange={(e) => setForm({ ...form, landline: e.target.value, phone: e.target.value })}
+          />
+          <Input label="Mobile number 1" value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
+          <Input label="Mobile number 2" value={form.mobile2} onChange={(e) => setForm({ ...form, mobile2: e.target.value })} />
+          <Input label="Mobile number 3" value={form.mobile3} onChange={(e) => setForm({ ...form, mobile3: e.target.value })} />
+          <Input
+            label="WhatsApp number"
+            value={form.whatsapp}
+            onChange={(e) => setForm({ ...form, whatsapp: e.target.value })}
+          />
+          <Input label="Email ID" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          <Input
+            label="GPS location"
+            value={form.gpsLocation}
+            onChange={(e) => setForm({ ...form, gpsLocation: e.target.value })}
+            className="sm:col-span-2 lg:col-span-3"
+          />
           <Select
-            label="Account"
+            label="Lead — name of the executive"
+            value={form.ownerUserId}
+            onChange={(e) => setForm({ ...form, ownerUserId: e.target.value })}
+            options={[{ value: '', label: 'Select executive' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
+          />
+          <Select
+            label="Account (optional)"
             value={form.accountId}
             onChange={(e) => setForm({ ...form, accountId: e.target.value })}
             options={[{ value: '', label: 'Select account' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
@@ -642,6 +706,7 @@ export function ContactDetailPage() {
             label: 'Products',
             count: ((contact.assets as Array<unknown>) ?? []).length,
           },
+          { id: 'SpareParts', label: 'Spare parts' },
           { id: 'Tickets', label: 'Tickets', count: tickets.length },
           { id: 'Notes', label: 'Notes', count: notes.length },
         ]}
@@ -869,6 +934,10 @@ export function ContactDetailPage() {
           ) : null}
         </div>
         </>
+      )}
+
+      {tab === 'SpareParts' && (
+        <SparePartsPanel contactId={String(contact.id)} contactName={String(contact.name)} />
       )}
 
       {tab === 'Tickets' && (

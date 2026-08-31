@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ImagePlus, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, ImagePlus } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -9,82 +9,82 @@ import { Select } from '@/components/ui/Select'
 import { api, ApiClientError } from '@/lib/api'
 import { assetUrl } from '@/lib/formValidation'
 import { useUIStore } from '@/store/uiStore'
+import { CATALOG_PRODUCT_OPTIONS } from './ProductsPage'
 
-type Row = {
-  key: string
-  sku: string
-  name: string
-  productType: string
-  unit: string
-  categoryId: string
+type CatalogKind = (typeof CATALOG_PRODUCT_OPTIONS)[number]['value']
+
+type FormState = {
+  catalogKind: CatalogKind | ''
+  model: string
+  brand: string
+  warranty: string
+  mrp: string
   salePrice: string
   purchasePrice: string
   taxPercent: string
-  hsnSac: string
-  trackInventory: boolean
-  openingQty: string
+  capacity: string
+  accuracy: string
+  platform: string
   description: string
   imageUrl: string
-  uploading?: boolean
+  uploading: boolean
 }
 
-function blankRow(): Row {
-  return {
-    key: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    sku: '',
-    name: '',
-    productType: 'GOODS',
-    unit: 'NOS',
-    categoryId: '',
-    salePrice: '',
-    purchasePrice: '',
-    taxPercent: '18',
-    hsnSac: '',
-    trackInventory: true,
-    openingQty: '0',
-    description: '',
-    imageUrl: '',
-  }
+function kindLabel(kind: string) {
+  return CATALOG_PRODUCT_OPTIONS.find((o) => o.value === kind)?.label ?? kind
 }
+
+function buildSku(kind: CatalogKind, model: string) {
+  const code = kind.replaceAll('_', '').slice(0, 6)
+  const slug = model
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 24)
+  const suffix = Date.now().toString(36).slice(-4).toUpperCase()
+  return `${code}-${slug || 'MODEL'}-${suffix}`
+}
+
+function buildName(kind: CatalogKind, brand: string, model: string) {
+  const label = kindLabel(kind)
+  const parts = [brand.trim(), model.trim()].filter(Boolean)
+  return parts.length ? `${label} · ${parts.join(' ')}` : label
+}
+
+const empty = (): FormState => ({
+  catalogKind: '',
+  model: '',
+  brand: '',
+  warranty: '',
+  mrp: '',
+  salePrice: '',
+  purchasePrice: '',
+  taxPercent: '18',
+  capacity: '',
+  accuracy: '',
+  platform: '',
+  description: '',
+  imageUrl: '',
+  uploading: false,
+})
 
 export function ProductCreatePage() {
   const navigate = useNavigate()
   const addToast = useUIStore((s) => s.addToast)
-  const [rows, setRows] = useState<Row[]>([blankRow(), blankRow()])
-  const [categories, setCategories] = useState<Array<{ id: string; name: string }>>([])
-  const [warehouseId, setWarehouseId] = useState('')
+  const [form, setForm] = useState<FormState>(empty)
   const [saving, setSaving] = useState(false)
+  const isWeighing = form.catalogKind === 'WEIGHING'
 
-  const load = useCallback(async () => {
-    try {
-      const lookups = await api.lookups()
-      setCategories(lookups.categories)
-      setWarehouseId(lookups.warehouses.find((w) => w.isDefault)?.id ?? lookups.warehouses[0]?.id ?? '')
-    } catch (err) {
-      addToast({
-        type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Failed to load lookups',
-      })
-    }
-  }, [addToast])
-
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  function updateRow(key: string, patch: Partial<Row>) {
-    setRows((list) => list.map((r) => (r.key === key ? { ...r, ...patch } : r)))
-  }
-
-  async function uploadImage(key: string, file?: File | null) {
+  async function uploadImage(file?: File | null) {
     if (!file) return
-    updateRow(key, { uploading: true })
+    setForm((f) => ({ ...f, uploading: true }))
     try {
       const uploaded = await api.uploadImage(file)
-      updateRow(key, { imageUrl: uploaded.url, uploading: false })
+      setForm((f) => ({ ...f, imageUrl: uploaded.url, uploading: false }))
       addToast({ type: 'success', message: 'Image uploaded' })
     } catch (err) {
-      updateRow(key, { uploading: false })
+      setForm((f) => ({ ...f, uploading: false }))
       addToast({
         type: 'error',
         message: err instanceof ApiClientError ? err.message : 'Image upload failed',
@@ -92,49 +92,51 @@ export function ProductCreatePage() {
     }
   }
 
-  async function saveAll() {
-    const valid = rows.filter((r) => r.sku.trim() && r.name.trim())
-    if (!valid.length) {
-      addToast({ type: 'error', message: 'Add at least one product with SKU and name' })
+  async function save() {
+    if (!form.catalogKind) {
+      addToast({ type: 'error', message: 'Select a product type' })
+      return
+    }
+    if (!form.model.trim()) {
+      addToast({ type: 'error', message: 'Enter model number' })
       return
     }
     setSaving(true)
-    let created = 0
     try {
-      for (const row of valid) {
-        const product = await api.createProduct({
-          sku: row.sku.trim(),
-          name: row.name.trim(),
-          productType: row.productType,
-          unit: row.unit || 'NOS',
-          categoryId: row.categoryId || null,
-          salePrice: Number(row.salePrice) || 0,
-          purchasePrice: Number(row.purchasePrice) || 0,
-          taxPercent: Number(row.taxPercent) || 0,
-          hsnSac: row.hsnSac || null,
-          trackInventory: row.trackInventory,
-          description: row.description || null,
-          imageUrl: row.imageUrl.trim() || null,
-          reorderLevel: 5,
-        })
-        const qty = Number(row.openingQty) || 0
-        if (row.trackInventory && qty > 0 && warehouseId && product.id) {
-          await api.adjustStock({
-            productId: String(product.id),
-            warehouseId,
-            quantity: qty,
-            movementType: 'IN',
-            notes: 'Opening stock',
-          })
-        }
-        created += 1
+      const kind = form.catalogKind
+      const attributes: Record<string, unknown> = {
+        catalogKind: kind,
+        brand: form.brand.trim() || null,
+        model: form.model.trim(),
+        warranty: form.warranty.trim() || null,
       }
-      addToast({ type: 'success', message: `Saved ${created} product${created === 1 ? '' : 's'}` })
+      if (kind === 'WEIGHING') {
+        attributes.capacity = form.capacity.trim() || null
+        attributes.accuracy = form.accuracy.trim() || null
+        attributes.platform = form.platform.trim() || null
+      }
+
+      await api.createProduct({
+        sku: buildSku(kind, form.model),
+        name: buildName(kind, form.brand, form.model),
+        productType: 'GOODS',
+        unit: 'NOS',
+        salePrice: Number(form.salePrice) || 0,
+        purchasePrice: Number(form.purchasePrice) || 0,
+        mrp: form.mrp ? Number(form.mrp) : null,
+        taxPercent: Number(form.taxPercent) || 0,
+        trackInventory: true,
+        reorderLevel: 5,
+        description: form.description.trim() || null,
+        imageUrl: form.imageUrl.trim() || null,
+        attributes,
+      })
+      addToast({ type: 'success', message: 'Product added to catalog' })
       navigate('/erp/products')
     } catch (err) {
       addToast({
         type: 'error',
-        message: err instanceof ApiClientError ? err.message : `Failed after saving ${created} product(s)`,
+        message: err instanceof ApiClientError ? err.message : 'Could not save product',
       })
     } finally {
       setSaving(false)
@@ -144,7 +146,7 @@ export function ProductCreatePage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Add products"
+        title="Add product"
         breadcrumbs={[
           { label: 'Home', to: '/' },
           { label: 'Products', to: '/erp/products' },
@@ -157,158 +159,149 @@ export function ProductCreatePage() {
                 <ArrowLeft size={16} /> Back
               </Button>
             </Link>
-            <Button onClick={() => void saveAll()} disabled={saving}>
-              {saving ? 'Saving…' : 'Save all'}
+            <Button onClick={() => void save()} disabled={saving}>
+              {saving ? 'Saving…' : 'Save product'}
             </Button>
           </div>
         }
       />
 
       <Card>
-        <p className="mb-4 text-sm text-text-secondary">
-          Add multiple SKUs on one page. Leave a row blank to skip it. Opening qty is applied to the default warehouse when inventory tracking is on.
-        </p>
+        <div className="mb-4 rounded-[8px] border border-sky-200 bg-sky-50/80 px-3 py-2.5 text-sm text-text-secondary">
+          <span className="font-semibold text-text-primary">Note:</span> You are adding a{' '}
+          <span className="font-medium text-text-primary">catalog product</span> (model / brand / price).
+          Later in <span className="font-medium text-text-primary">Inventory</span>, each unit gets its own{' '}
+          <span className="font-medium text-text-primary">serial number</span> and{' '}
+          <span className="font-medium text-text-primary">stamping date</span> (govt verification stamp).
+        </div>
+
         <div className="space-y-4">
-          {rows.map((row, index) => (
-            <div key={row.key} className="rounded-[10px] border border-border p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="text-sm font-semibold">Product {index + 1}</div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-accent-red"
-                  disabled={rows.length <= 1}
-                  onClick={() => setRows((list) => list.filter((r) => r.key !== row.key))}
-                >
-                  <Trash2 size={14} /> Remove
-                </Button>
+          <Select
+            label="Select product *"
+            value={form.catalogKind}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                catalogKind: e.target.value as CatalogKind | '',
+                capacity: '',
+                accuracy: '',
+                platform: '',
+              })
+            }
+            options={[
+              { value: '', label: 'Choose product type…' },
+              ...CATALOG_PRODUCT_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+            ]}
+          />
+
+          {form.catalogKind ? (
+            <>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Input
+                  label="Model number *"
+                  placeholder="e.g. TT-30 / DS-700"
+                  value={form.model}
+                  onChange={(e) => setForm({ ...form, model: e.target.value })}
+                />
+                <Input
+                  label="Brand"
+                  placeholder="e.g. Precision / ESSAE"
+                  value={form.brand}
+                  onChange={(e) => setForm({ ...form, brand: e.target.value })}
+                />
+                <Input
+                  label="Warranty"
+                  placeholder="e.g. 12 months / 1 year"
+                  value={form.warranty}
+                  onChange={(e) => setForm({ ...form, warranty: e.target.value })}
+                />
               </div>
+
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <div className="flex items-start gap-3 sm:col-span-2 lg:col-span-4">
-                  <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted ring-1 ring-border">
-                    {row.imageUrl ? (
-                      <img src={assetUrl(row.imageUrl)} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      <ImagePlus className="text-text-secondary" size={18} />
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1 space-y-2">
-                    <Input
-                      label="Image URL (optional)"
-                      placeholder="https://… or upload"
-                      value={row.imageUrl}
-                      onChange={(e) => updateRow(row.key, { imageUrl: e.target.value })}
-                    />
-                    <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-accent-blue">
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(e) => void uploadImage(row.key, e.target.files?.[0])}
-                      />
-                      {row.uploading ? 'Uploading…' : 'Upload product image'}
-                    </label>
-                  </div>
-                </div>
                 <Input
-                  label="SKU *"
-                  placeholder="PSI-TT-30"
-                  value={row.sku}
-                  onChange={(e) => updateRow(row.key, { sku: e.target.value })}
-                />
-                <Input
-                  label="Name *"
-                  placeholder="Table Top Scale 30kg"
-                  value={row.name}
-                  onChange={(e) => updateRow(row.key, { name: e.target.value })}
-                />
-                <Select
-                  label="Type"
-                  value={row.productType}
-                  onChange={(e) => updateRow(row.key, { productType: e.target.value })}
-                  options={[
-                    { value: 'GOODS', label: 'Goods' },
-                    { value: 'SERVICE', label: 'Service' },
-                    { value: 'BUNDLE', label: 'Bundle' },
-                  ]}
-                />
-                <Select
-                  label="Category"
-                  value={row.categoryId}
-                  onChange={(e) => updateRow(row.key, { categoryId: e.target.value })}
-                  options={[
-                    { value: '', label: 'Select category' },
-                    ...categories.map((c) => ({ value: c.id, label: c.name })),
-                  ]}
+                  label="MRP ₹"
+                  type="number"
+                  value={form.mrp}
+                  onChange={(e) => setForm({ ...form, mrp: e.target.value })}
                 />
                 <Input
                   label="Sale price ₹"
                   type="number"
-                  placeholder="18500"
-                  value={row.salePrice}
-                  onChange={(e) => updateRow(row.key, { salePrice: e.target.value })}
+                  value={form.salePrice}
+                  onChange={(e) => setForm({ ...form, salePrice: e.target.value })}
                 />
                 <Input
                   label="Purchase price ₹"
                   type="number"
-                  placeholder="12000"
-                  value={row.purchasePrice}
-                  onChange={(e) => updateRow(row.key, { purchasePrice: e.target.value })}
+                  value={form.purchasePrice}
+                  onChange={(e) => setForm({ ...form, purchasePrice: e.target.value })}
                 />
                 <Input
                   label="Tax %"
                   type="number"
-                  placeholder="18"
-                  value={row.taxPercent}
-                  onChange={(e) => updateRow(row.key, { taxPercent: e.target.value })}
-                />
-                <Input
-                  label="HSN / SAC"
-                  placeholder="8423"
-                  value={row.hsnSac}
-                  onChange={(e) => updateRow(row.key, { hsnSac: e.target.value })}
-                />
-                <Input
-                  label="Unit"
-                  placeholder="NOS"
-                  value={row.unit}
-                  onChange={(e) => updateRow(row.key, { unit: e.target.value })}
-                />
-                <Input
-                  label="Opening qty"
-                  type="number"
-                  placeholder="10"
-                  value={row.openingQty}
-                  onChange={(e) => updateRow(row.key, { openingQty: e.target.value })}
-                  disabled={!row.trackInventory}
-                />
-                <label className="flex items-end gap-2 pb-2 text-sm font-medium text-text-secondary">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 accent-accent-blue"
-                    checked={row.trackInventory}
-                    onChange={(e) => updateRow(row.key, { trackInventory: e.target.checked })}
-                  />
-                  Track inventory
-                </label>
-                <Input
-                  className="sm:col-span-2 lg:col-span-4"
-                  label="Description"
-                  placeholder="Capacity, warranty, notes…"
-                  value={row.description}
-                  onChange={(e) => updateRow(row.key, { description: e.target.value })}
+                  value={form.taxPercent}
+                  onChange={(e) => setForm({ ...form, taxPercent: e.target.value })}
                 />
               </div>
-            </div>
-          ))}
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => setRows((list) => [...list, blankRow()])}>
-            <Plus size={16} /> Add another product
-          </Button>
-          <Button onClick={() => void saveAll()} disabled={saving}>
-            {saving ? 'Saving…' : 'Save all products'}
-          </Button>
+
+              {isWeighing ? (
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Input
+                    label="Capacity"
+                    placeholder="e.g. 30 kg / 300 kg"
+                    value={form.capacity}
+                    onChange={(e) => setForm({ ...form, capacity: e.target.value })}
+                  />
+                  <Input
+                    label="Accuracy"
+                    placeholder="e.g. 2 g / 50 g"
+                    value={form.accuracy}
+                    onChange={(e) => setForm({ ...form, accuracy: e.target.value })}
+                  />
+                  <Input
+                    label="Platform"
+                    placeholder="e.g. 600×600 mm"
+                    value={form.platform}
+                    onChange={(e) => setForm({ ...form, platform: e.target.value })}
+                  />
+                </div>
+              ) : null}
+
+              <label className="block text-sm">
+                <span className="mb-1 block font-medium text-text-secondary">Description</span>
+                <textarea
+                  className="min-h-24 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
+                  placeholder="Optional notes about this catalog product…"
+                  value={form.description}
+                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                />
+              </label>
+
+              <div className="flex flex-wrap items-start gap-4">
+                <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted ring-1 ring-border">
+                  {form.imageUrl ? (
+                    <img src={assetUrl(form.imageUrl)} alt="" className="h-full w-full object-cover" />
+                  ) : (
+                    <ImagePlus className="text-text-secondary" size={22} />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="text-sm font-medium text-text-secondary">Product image</div>
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-[6px] border border-border bg-card px-3 py-2 text-sm font-medium text-accent-blue hover:bg-surface">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => void uploadImage(e.target.files?.[0])}
+                    />
+                    {form.uploading ? 'Uploading…' : 'Upload image'}
+                  </label>
+                </div>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-text-secondary">Select a product type above to continue.</p>
+          )}
         </div>
       </Card>
     </div>

@@ -357,7 +357,6 @@ ticketsRouter.get("/summary", async (q: Request, r: Response) => {
         OR: [
           { nextDueDate: { lte: in30, not: null } },
           { amcEndDate: { lte: in30, not: null } },
-          { stampingDate: { lte: in30, not: null } },
         ],
       },
     }),
@@ -522,10 +521,14 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
   const slaDueAt = d.slaHours ? new Date(Date.now() + d.slaHours * 3600_000) : null;
   const stampingDate = parseDate(d.stampingDate);
   const nextDueDate = parseDate(d.nextDueDate);
+  const paymentTotal = d.paymentTotal ?? 0;
+  const advanceAmount = d.advanceAmount ?? 0;
   const customFields = {
     ...(d.customFields ?? {}),
     ...(d.category ? { category: d.category } : {}),
     ...(d.channel ? { channel: d.channel } : {}),
+    baseServiceCharge: paymentTotal,
+    sparePartsTotal: 0,
   };
 
   const subject =
@@ -534,8 +537,6 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
       ? `Service — ${(await prisma.customerAsset.findFirst({ where: { id: d.assetId } }))?.name ?? "machine"}`
       : "Service job");
 
-  const paymentTotal = d.paymentTotal ?? 0;
-  const advanceAmount = d.advanceAmount ?? 0;
   const paymentStatus =
     d.paymentStatus ?? derivePaymentStatus(paymentTotal, advanceAmount);
 

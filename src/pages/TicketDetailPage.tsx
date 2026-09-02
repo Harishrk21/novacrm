@@ -763,6 +763,7 @@ export function TicketDetailPage() {
           contactName={contact.name}
           ticketId={id}
           fixedAssetId={ticket.assetId ? String(ticket.assetId) : undefined}
+          onTicketUpdated={() => void load()}
         />
       ) : null}
 

@@ -409,7 +409,7 @@ export function EmployeeDashboardPage() {
       <Card padding={false}>
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <h2 className="font-semibold">My leads</h2>
-          <Link to="/leads" className="text-sm text-accent-blue hover:underline">
+          <Link to="/sale-tracking" className="text-sm text-accent-blue hover:underline">
             Open leads
           </Link>
         </div>
@@ -417,7 +417,7 @@ export function EmployeeDashboardPage() {
           {leads.slice(0, 5).map((lead) => (
             <Link
               key={String(lead.id)}
-              to="/leads"
+              to="/sale-tracking"
               className="flex items-center justify-between gap-2 px-4 py-3 hover:bg-surface"
             >
               <span className="flex min-w-0 items-center gap-2 truncate font-medium">

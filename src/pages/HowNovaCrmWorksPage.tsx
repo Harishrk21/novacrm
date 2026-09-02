@@ -290,7 +290,7 @@ export function HowNovaCrmWorksPage() {
             .
           </p>
           <Link
-            to="/leads"
+            to="/sale-tracking"
             className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-accent-blue hover:underline"
           >
             <Briefcase size={14} /> Sales leads (secondary) →

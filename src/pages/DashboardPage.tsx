@@ -677,7 +677,7 @@ function AdminDashboardPage() {
                   sub={formatCurrency(invoiceRevenue)}
                 />
                 <KpiCard
-                  to="/leads"
+                  to="/sale-tracking"
                   label="Conversion"
                   value={`${conversionRate}%`}
                   change={leadGrowthLabel}
@@ -691,7 +691,7 @@ function AdminDashboardPage() {
             {dash === 'leads' && (
               <>
                 <KpiCard
-                  to="/leads"
+                  to="/sale-tracking"
                   label="Total leads"
                   value={String(filteredLeads.length)}
                   change={leadGrowthLabel}
@@ -701,7 +701,7 @@ function AdminDashboardPage() {
                   sub={`${newLeads} new`}
                 />
                 <KpiCard
-                  to="/leads?status=QUALIFIED"
+                  to="/sale-tracking?status=QUALIFIED"
                   label="Qualified"
                   value={String(qualified)}
                   change={leadGrowthLabel}
@@ -711,7 +711,7 @@ function AdminDashboardPage() {
                   sub={`${contactedLeads} contacted`}
                 />
                 <KpiCard
-                  to="/leads?status=CONVERTED"
+                  to="/sale-tracking?status=CONVERTED"
                   label="Converted"
                   value={String(filteredLeads.filter((l) => l.status === 'CONVERTED').length)}
                   change={leadGrowthLabel}
@@ -721,7 +721,7 @@ function AdminDashboardPage() {
                   sub={`${conversionRate}% rate`}
                 />
                 <KpiCard
-                  to="/leads?status=LOST"
+                  to="/sale-tracking?status=LOST"
                   label="Unqualified / lost"
                   value={String(
                     filteredLeads.filter((l) => l.status === 'UNQUALIFIED' || l.status === 'LOST').length,
@@ -945,7 +945,7 @@ function AdminDashboardPage() {
                         ownerId: l.assignedToId,
                         badge: 'ASSIGNED',
                         badgeColor: 'blue' as const,
-                        to: '/leads',
+                        to: '/sale-tracking',
                       })),
                     ].slice(0, 8)
 

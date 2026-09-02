@@ -27,6 +27,7 @@ import { firstError, validateLeadForm, type FieldErrors } from '@/lib/formValida
 import { formatDate, formatPhone, formatCurrency } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
+import { isCompanyAdmin } from '@/lib/roles'
 
 /** Internal API statuses with labels matching sales desk language */
 const STATUS_OPTIONS = [
@@ -76,6 +77,7 @@ export function LeadsPage() {
   const addToast = useUIStore((s) => s.addToast)
   const authUser = useAuthStore((s) => s.user)
   const isAgent = authUser?.role === 'AGENT'
+  const isAdmin = isCompanyAdmin(authUser?.role)
   const tip = DEFAULT_TIPS['crm.leads'] ?? {
     title: 'Sale tracking',
     body: 'Record every sale enquiry — pick an existing customer or add a new one, then track demo units and conversion.',
@@ -139,7 +141,7 @@ export function LeadsPage() {
     try {
       const [leads, lookups, productPage] = await Promise.all([
         api.leads({
-          limit: 100,
+          limit: 500,
           search: search || undefined,
           status: status || undefined,
           ...(isAgent && authUser?.id
@@ -683,7 +685,7 @@ export function LeadsPage() {
           <EmptyState title="No leads" subtitle="Add your first enquiry with full buyer details." actionLabel="Add lead" onAction={() => setOpen(true)} />
         ) : (
           <div className="p-4 pt-3">
-            {selection.someSelected ? (
+            {isAdmin && selection.someSelected ? (
               <BulkActionBar
                 count={selection.selectedCount}
                 noun="lead"

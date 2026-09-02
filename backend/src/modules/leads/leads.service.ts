@@ -123,6 +123,9 @@ export async function create(t: string, user: string, data: Record<string, unkno
 export async function update(t: string, id: string, data: Record<string, unknown>) {
   await validateRefs(t, data);
   const before = await get(t, id);
+  if (data.status === "CONVERTED" && before.status !== "CONVERTED") {
+    throw new AppError("Use POST /leads/:id/convert to convert enquiries", 400);
+  }
   const r = await prisma.lead.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data: {
@@ -146,6 +149,17 @@ export async function update(t: string, id: string, data: Record<string, unknown
 }
 
 export async function remove(t: string, id: string) {
+  const lead = await prisma.lead.findFirst({ where: { id, tenantId: t, deletedAt: null } });
+  if (!lead) throw notFound("Lead");
+  const cf =
+    lead.customFields && typeof lead.customFields === "object" && !Array.isArray(lead.customFields)
+      ? (lead.customFields as Record<string, unknown>)
+      : {};
+  const demoUnitId = cf.demoStockUnitId ? String(cf.demoStockUnitId) : "";
+  if (demoUnitId && lead.status === "DEMO") {
+    const { returnDemoUnit } = await import("../inventory/inventory.service.js");
+    await returnDemoUnit(t, "system", demoUnitId, { notes: "Lead deleted", leadId: id });
+  }
   const r = await prisma.lead.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data: { deletedAt: new Date() },

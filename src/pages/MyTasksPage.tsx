@@ -31,7 +31,7 @@ function related(task: Row) {
   if (ticketId) return { to: `/tickets/${ticketId}`, label: 'Ticket' }
   if (task.contactId) return { to: `/contacts/${task.contactId}`, label: 'Customer' }
   if (task.accountId) return { to: `/accounts/${task.accountId}`, label: 'Account' }
-  if (task.leadId) return { to: '/leads', label: 'Lead' }
+  if (task.leadId) return { to: '/sale-tracking', label: 'Lead' }
   return null
 }
 

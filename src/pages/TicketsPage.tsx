@@ -99,13 +99,12 @@ export function TicketsPage() {
     try {
       const [res, lookups] = await Promise.all([
         api.tickets({
-          limit: 100,
+          limit: 500,
           sort: 'sla',
           status: status || undefined,
           contactId: searchParams.get('contactId') || undefined,
           slaBreached: searchParams.get('slaBreached') || undefined,
-          // Employees always see their own live jobs (server also enforces for AGENT)
-          ...(!isAdmin || isAgent ? { mine: 1 } : {}),
+          ...(isAgent ? { mine: 1 } : {}),
         }),
         api.lookups(),
       ])
@@ -140,6 +139,21 @@ export function TicketsPage() {
     void load()
   }, [load])
 
+  function applyAssetToForm(a: Record<string, unknown>) {
+    setForm((f) => ({
+      ...f,
+      assetId: String(a.id),
+      newMachine: false,
+      stampingDate: a.stampingDate ? String(a.stampingDate).slice(0, 10) : '',
+      nextDueDate: a.nextDueDate ? String(a.nextDueDate).slice(0, 10) : '',
+      servicePlan: a.servicePlan ? String(a.servicePlan) : 'NON_AMC',
+      amcStartDate: a.amcStartDate ? String(a.amcStartDate).slice(0, 10) : '',
+      amcEndDate: a.amcEndDate ? String(a.amcEndDate).slice(0, 10) : '',
+      origin: a.origin ? String(a.origin) : f.origin,
+      remindersEnabled: a.remindersEnabled !== false,
+    }))
+  }
+
   useEffect(() => {
     const contactId = searchParams.get('contactId')
     const assetId = searchParams.get('assetId')
@@ -154,6 +168,14 @@ export function TicketsPage() {
     }
     if (shouldOpen) setTab('create')
   }, [loadAssets, searchParams])
+
+  useEffect(() => {
+    const assetId = searchParams.get('assetId') || form.assetId
+    if (!assetId || assets.length === 0) return
+    const a = assets.find((x) => String(x.id) === assetId)
+    if (a) applyAssetToForm(a)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrate once when assets load for URL assetId
+  }, [assets, searchParams.get('assetId')])
 
   const onPickContact = useCallback(
     (c: ContactPick | null) => {
@@ -225,32 +247,6 @@ export function TicketsPage() {
           })
           assetId = String(machine.id)
         }
-      } else if (
-        assetId &&
-        (form.stampingDate ||
-          form.nextDueDate ||
-          form.servicePlan ||
-          form.amcEndDate ||
-          form.amcStartDate ||
-          form.origin)
-      ) {
-        await api.updateAsset(assetId, {
-          ...(form.stampingDate ? { stampingDate: form.stampingDate } : {}),
-          ...(form.nextDueDate ? { nextDueDate: form.nextDueDate } : {}),
-          ...(form.origin ? { origin: form.origin } : {}),
-          ...(form.servicePlan ? { servicePlan: form.servicePlan } : {}),
-          ...(form.servicePlan === 'AMC'
-            ? {
-                amcStartDate: form.amcStartDate || null,
-                amcEndDate: form.amcEndDate || null,
-              }
-            : { amcStartDate: null, amcEndDate: null }),
-          remindersEnabled: form.remindersEnabled,
-          customFields: {
-            warrantyType: form.warrantyType,
-            warrantyUntil: form.warrantyUntil || null,
-          },
-        })
       }
 
       const machineLabel =
@@ -382,7 +378,7 @@ export function TicketsPage() {
               />
             ) : (
               <div className="p-4 pt-3">
-                {selection.someSelected ? (
+                {isAdmin && selection.someSelected ? (
                   <BulkActionBar
                     count={selection.selectedCount}
                     noun="job"
@@ -565,17 +561,8 @@ export function TicketsPage() {
                   value={form.assetId}
                   onChange={(e) => {
                     const a = assets.find((x) => String(x.id) === e.target.value)
-                    setForm({
-                      ...form,
-                      assetId: e.target.value,
-                      stampingDate: a?.stampingDate ? String(a.stampingDate).slice(0, 10) : form.stampingDate,
-                      nextDueDate: a?.nextDueDate ? String(a.nextDueDate).slice(0, 10) : form.nextDueDate,
-                      servicePlan: a?.servicePlan ? String(a.servicePlan) : form.servicePlan,
-                      amcStartDate: a?.amcStartDate ? String(a.amcStartDate).slice(0, 10) : form.amcStartDate,
-                      amcEndDate: a?.amcEndDate ? String(a.amcEndDate).slice(0, 10) : form.amcEndDate,
-                      origin: a?.origin ? String(a.origin) : form.origin,
-                      remindersEnabled: a?.remindersEnabled !== false,
-                    })
+                    if (a) applyAssetToForm(a)
+                    else setForm({ ...form, assetId: e.target.value })
                   }}
                   options={[
                     { value: '', label: 'Select machine' },

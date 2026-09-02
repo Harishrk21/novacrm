@@ -24,11 +24,11 @@ import { EmailsPage } from '@/pages/EmailsPage'
 import { WhatsAppPage } from '@/pages/WhatsAppPage'
 import { AdminApp } from '@/pages/admin/AdminApp'
 import { LoginPage } from '@/pages/LoginPage'
+import { LeadsRedirect } from '@/components/routing/LeadsRedirect'
 import {
   InventoryPage,
   InvoicesPage,
   ProductsPage,
-  ProductCreatePage,
   ProductDetailPage,
   PurchaseOrdersPage,
 } from '@/pages/erp/ErpPages'
@@ -50,7 +50,7 @@ export default function App() {
           <Route path="help" element={<HowNovaCrmWorksPage />} />
           <Route path="my-tasks" element={<MyTasksPage />} />
           <Route path="sale-tracking" element={<LeadsPage />} />
-          <Route path="leads" element={<Navigate to="/sale-tracking" replace />} />
+          <Route path="leads" element={<LeadsRedirect />} />
           <Route path="contacts" element={<ContactsPage />} />
           <Route path="contacts/:id" element={<ContactDetailPage />} />
           <Route path="accounts" element={<AccountsPage />} />
@@ -81,7 +81,7 @@ export default function App() {
             path="erp/products/new"
             element={
               <RequireCompanyAdmin>
-                <ProductCreatePage />
+                <Navigate to="/erp/products?tab=create" replace />
               </RequireCompanyAdmin>
             }
           />

@@ -18,6 +18,8 @@ import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError } from '@/lib/api'
 import { assetOriginShort, isThirdPartyOrigin } from '@/lib/assetOrigin'
 import { formatDate, formatPhone } from '@/lib/utils'
+import { isCompanyAdmin } from '@/lib/roles'
+import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 
 type PlanTab = 'AMC' | 'NON_AMC' | 'UPCOMING_SERVICE' | 'UPCOMING_AMC_RENEWAL'
@@ -89,6 +91,7 @@ function machineCell(a: AssetRow) {
 export function AmcPage() {
   const navigate = useNavigate()
   const addToast = useUIStore((s) => s.addToast)
+  const isAdmin = isCompanyAdmin(useAuthStore((s) => s.user?.role))
   const [tab, setTab] = useState<PlanTab>('AMC')
   const [originFilter, setOriginFilter] = useState<OriginFilter>('ALL')
   const [rows, setRows] = useState<AssetRow[]>([])
@@ -99,7 +102,7 @@ export function AmcPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await api.assets({ limit: 300 })
+      const res = await api.assets({ limit: 500 })
       setRows(res.items ?? [])
     } catch (err) {
       setRows([])
@@ -370,7 +373,7 @@ export function AmcPage() {
       ) : (
         <Card className="mt-4 overflow-hidden" padding={false}>
           <div className="p-4 pt-3">
-            {selection.someSelected ? (
+            {isAdmin && selection.someSelected ? (
               <BulkActionBar
                 count={selection.selectedCount}
                 noun="machine"

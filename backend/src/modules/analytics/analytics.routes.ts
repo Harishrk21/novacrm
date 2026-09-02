@@ -384,7 +384,11 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
       where: { tenantId: t, deletedAt: null, nextDueDate: { lte: in30, not: null } },
     }),
     prisma.customerAsset.count({
-      where: { tenantId: t, deletedAt: null, stampingDate: { lte: in30, not: null } },
+      where: {
+        tenantId: t,
+        deletedAt: null,
+        OR: [{ stampingDate: null }, { nextDueDate: { lte: in30, not: null } }],
+      },
     }),
   ]);
 

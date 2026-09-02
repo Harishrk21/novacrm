@@ -207,6 +207,17 @@ assetsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respons
   await prisma.customerAsset.updateMany({ where: { id, tenantId: t, deletedAt: null }, data });
   const row = await prisma.customerAsset.findFirst({ where: { id, tenantId: t } });
   if (!row) throw notFound("Machine");
+
+  if (row.serialNo && ("stampingDate" in d || "nextDueDate" in d)) {
+    const { syncStampingAcrossRegisters } = await import("../inventory/inventory.service.js");
+    await syncStampingAcrossRegisters(t, {
+      serialNo: row.serialNo,
+      contactId: row.contactId,
+      stampingDate: row.stampingDate,
+      nextDueDate: row.nextDueDate,
+    });
+  }
+
   return success(r, serialize(row), "Machine updated");
 });
 

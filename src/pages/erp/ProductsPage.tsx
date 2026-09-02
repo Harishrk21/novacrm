@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { ChevronDown, ImagePlus, Package, SlidersHorizontal, X } from 'lucide-react'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -142,6 +143,7 @@ export function ProductsPage() {
     tipType: 'TIP' as const,
   }
   const addToast = useUIStore((s) => s.addToast)
+  const [searchParams] = useSearchParams()
   const [items, setItems] = useState<Record<string, unknown>[]>([])
   const [tab, setTab] = useState<'list' | 'create'>('list')
   const [saving, setSaving] = useState(false)
@@ -172,6 +174,10 @@ export function ProductsPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (searchParams.get('tab') === 'create') setTab('create')
+  }, [searchParams])
 
   const brands = useMemo(() => {
     const set = new Set<string>()

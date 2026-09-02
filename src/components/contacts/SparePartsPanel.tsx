@@ -47,6 +47,8 @@ type Props = {
   ticketId?: string
   /** Pre-select machine on create */
   fixedAssetId?: string
+  /** Called after spare parts change (e.g. refresh ticket payment total) */
+  onTicketUpdated?: () => void
 }
 
 export function SparePartsPanel({
@@ -54,6 +56,7 @@ export function SparePartsPanel({
   contactName,
   ticketId: fixedTicketId,
   fixedAssetId,
+  onTicketUpdated,
 }: Props) {
   const addToast = useUIStore((s) => s.addToast)
   const [rows, setRows] = useState<Record<string, unknown>[]>([])
@@ -169,6 +172,15 @@ export function SparePartsPanel({
       addToast({ type: 'error', message: 'Part name is required' })
       return
     }
+    const qty = Number(form.quantity)
+    if (!Number.isFinite(qty) || qty < 1) {
+      addToast({ type: 'error', message: 'Quantity must be at least 1' })
+      return
+    }
+    if (form.chargeAmount && Number(form.chargeAmount) < 0) {
+      addToast({ type: 'error', message: 'Charge cannot be negative' })
+      return
+    }
     setSaving(true)
     try {
       const body = {
@@ -178,7 +190,7 @@ export function SparePartsPanel({
         partName: form.partName.trim(),
         partCode: form.partCode.trim() || null,
         changeType: form.changeType,
-        quantity: Number(form.quantity) || 1,
+        quantity: qty,
         oldSerialNo: form.oldSerialNo.trim() || null,
         newSerialNo: form.newSerialNo.trim() || null,
         changedAt: form.changedAt || null,
@@ -192,6 +204,7 @@ export function SparePartsPanel({
       addToast({ type: 'success', message: editId ? 'Spare part updated' : 'Spare part recorded' })
       setFormOpen(false)
       await load()
+      onTicketUpdated?.()
     } catch (err) {
       addToast({
         type: 'error',
@@ -207,6 +220,7 @@ export function SparePartsPanel({
       await api.deleteSparePart(id)
       addToast({ type: 'success', message: 'Deleted' })
       await load()
+      onTicketUpdated?.()
     } catch (err) {
       addToast({
         type: 'error',

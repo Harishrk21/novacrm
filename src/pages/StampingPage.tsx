@@ -131,12 +131,12 @@ function renewalDueFromStamp(stampingDate?: string | null) {
   return d.toISOString().slice(0, 10)
 }
 
-function stampFilter(row: { stampingDate?: string | null }, filter: FilterTab) {
+function stampFilter(row: StampRow, filter: FilterTab) {
   const stamp = row.stampingDate ? String(row.stampingDate).slice(0, 10) : null
   if (filter === 'PENDING') return !stamp
   if (filter === 'STAMPED') return Boolean(stamp)
   if (filter === 'DUE_RENEWAL') {
-    const renewal = renewalDueFromStamp(stamp)
+    const renewal = renewalFor(row)
     const days = daysUntil(renewal)
     return days != null && days <= RENEWAL_WINDOW_DAYS
   }

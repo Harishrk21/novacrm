@@ -358,6 +358,42 @@ export async function addStockUnit(
   return getUnit(t, unit.id);
 }
 
+function addYears(date: Date, years: number) {
+  const d = new Date(date);
+  d.setUTCFullYear(d.getUTCFullYear() + years);
+  return d;
+}
+
+/** Keep warehouse serial stamping aligned with the customer machine register when serial matches */
+export async function syncStampingAcrossRegisters(
+  t: string,
+  opts: {
+    serialNo?: string | null;
+    contactId?: string | null;
+    stampingDate?: Date | null;
+    nextDueDate?: Date | null;
+  },
+) {
+  const serial = opts.serialNo?.trim().toUpperCase();
+  if (!serial) return;
+  const stampData: Record<string, unknown> = {};
+  if (opts.stampingDate) stampData.stampingDate = opts.stampingDate;
+  if (opts.nextDueDate) stampData.nextDueDate = opts.nextDueDate;
+  if (!Object.keys(stampData).length) return;
+
+  await prisma.stockUnit.updateMany({
+    where: { tenantId: t, serialNo: serial, deletedAt: null },
+    data: stampData,
+  });
+
+  if (opts.contactId) {
+    await prisma.customerAsset.updateMany({
+      where: { tenantId: t, contactId: opts.contactId, serialNo: serial, deletedAt: null },
+      data: stampData,
+    });
+  }
+}
+
 export async function updateStockUnit(
   t: string,
   id: string,
@@ -394,16 +430,86 @@ export async function updateStockUnit(
     if (!wh) throw notFound("Warehouse");
   }
 
+  if (d.status && d.status !== existing.status) {
+    throw new AppError(
+      "Use demo issue/return or lead convert to change unit status — do not patch status directly",
+      400,
+    );
+  }
+
+  const newWarehouseId = d.warehouseId && d.warehouseId !== existing.warehouseId ? d.warehouseId : null;
+
+  if (newWarehouseId && existing.status === "IN_STOCK") {
+    await prisma.$transaction(async (tx) => {
+      const dec = await tx.stockLevel.findUnique({
+        where: {
+          tenantId_productId_warehouseId: {
+            tenantId: t,
+            productId: existing.productId,
+            warehouseId: existing.warehouseId,
+          },
+        },
+      });
+      const decNext = (dec?.quantityOnHand ?? new Prisma.Decimal(0)).sub(1);
+      if (decNext.isNegative()) throw new AppError("Insufficient stock at source warehouse", 409);
+      if (dec) {
+        await tx.stockLevel.update({
+          where: { id: dec.id },
+          data: { quantityOnHand: decNext },
+        });
+      }
+      await tx.stockLevel.upsert({
+        where: {
+          tenantId_productId_warehouseId: {
+            tenantId: t,
+            productId: existing.productId,
+            warehouseId: newWarehouseId,
+          },
+        },
+        create: {
+          id: newId(),
+          tenantId: t,
+          productId: existing.productId,
+          warehouseId: newWarehouseId,
+          quantityOnHand: 1,
+        },
+        update: {
+          quantityOnHand: { increment: 1 },
+        },
+      });
+      await tx.stockUnit.updateMany({
+        where: { id, tenantId: t, deletedAt: null },
+        data: {
+          warehouseId: newWarehouseId,
+          ...(d.serialNo ? { serialNo: d.serialNo.trim().toUpperCase() } : {}),
+          ...("stampingDate" in d ? { stampingDate: parseDate(d.stampingDate) } : {}),
+          ...("notes" in d ? { notes: d.notes?.trim() || null } : {}),
+        },
+      });
+    });
+    return getUnit(t, id);
+  }
+
   await prisma.stockUnit.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data: {
-      ...(d.warehouseId ? { warehouseId: d.warehouseId } : {}),
+      ...(newWarehouseId ? { warehouseId: newWarehouseId } : {}),
       ...(d.serialNo ? { serialNo: d.serialNo.trim().toUpperCase() } : {}),
       ...("stampingDate" in d ? { stampingDate: parseDate(d.stampingDate) } : {}),
       ...("notes" in d ? { notes: d.notes?.trim() || null } : {}),
-      ...(d.status ? { status: d.status } : {}),
     },
   });
+
+  if ("stampingDate" in d && d.stampingDate) {
+    const stamp = parseDate(d.stampingDate);
+    const nextDue = stamp ? addYears(stamp, 1) : null;
+    await syncStampingAcrossRegisters(t, {
+      serialNo: d.serialNo?.trim().toUpperCase() ?? existing.serialNo,
+      contactId: existing.contactId,
+      stampingDate: stamp,
+      nextDueDate: nextDue,
+    });
+  }
 
   return getUnit(t, id);
 }
@@ -463,6 +569,14 @@ export async function recordStamping(
         performedBy: user,
       },
     });
+  });
+
+  const nextDue = addYears(stamp, 1);
+  await syncStampingAcrossRegisters(t, {
+    serialNo: unit.serialNo,
+    contactId: unit.contactId,
+    stampingDate: stamp,
+    nextDueDate: nextDue,
   });
 
   return getUnit(t, unit.id);
@@ -544,6 +658,15 @@ export async function issueDemoUnit(t: string, user: string, leadId: string, sto
     throw new AppError(`Unit ${unit.serialNo} is not available (status: ${unit.status})`, 409);
   }
 
+  const leadCf =
+    lead.customFields && typeof lead.customFields === "object" && !Array.isArray(lead.customFields)
+      ? (lead.customFields as Record<string, unknown>)
+      : {};
+  const existingDemoId = leadCf.demoStockUnitId ? String(leadCf.demoStockUnitId) : "";
+  if (existingDemoId && lead.status === "DEMO") {
+    throw new AppError("This enquiry already has a demo unit out. Return it before issuing another.", 409);
+  }
+
   const product = await prisma.product.findFirst({
     where: { id: unit.productId, tenantId: t, deletedAt: null },
     select: {
@@ -558,10 +681,6 @@ export async function issueDemoUnit(t: string, user: string, leadId: string, sto
     },
   });
 
-  const leadCf =
-    lead.customFields && typeof lead.customFields === "object" && !Array.isArray(lead.customFields)
-      ? (lead.customFields as Record<string, unknown>)
-      : {};
   const contactId = leadCf.contact_id ? String(leadCf.contact_id) : null;
   const unitCf =
     unit.customFields && typeof unit.customFields === "object" && !Array.isArray(unit.customFields)
@@ -677,6 +796,7 @@ export async function returnDemoUnit(
       data: {
         status: "IN_STOCK",
         leadId: null,
+        contactId: null,
         customFields: {
           ...unitCf,
           demoReturnedAt: returnedAt,
@@ -760,7 +880,7 @@ export async function returnDemoUnit(
   return getUnit(t, unit.id);
 }
 
-/** Mark demo unit sold when lead converts */
+/** Mark demo unit sold when lead converts — creates customer machine when possible */
 export async function markDemoSold(t: string, user: string, leadId: string) {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, tenantId: t, deletedAt: null } });
   if (!lead) throw notFound("Lead");
@@ -776,23 +896,117 @@ export async function markDemoSold(t: string, user: string, leadId: string) {
   });
   if (!unit || unit.status === "SOLD") return unit;
 
-  await prisma.stockUnit.update({
-    where: { id: unit.id },
-    data: { status: "SOLD" },
+  const product = await prisma.product.findFirst({
+    where: { id: unit.productId, tenantId: t, deletedAt: null },
+    select: { id: true, name: true, sku: true, productType: true, attributes: true },
   });
-  await prisma.stockMovement.create({
-    data: {
-      id: newId(),
-      tenantId: t,
-      productId: unit.productId,
-      warehouseId: unit.warehouseId,
-      movementType: "OUT",
-      quantity: 0,
-      notes: `Demo converted to sale · serial ${unit.serialNo}`,
-      referenceType: "LEAD_SALE",
-      referenceId: leadId,
-      performedBy: user,
-    },
+
+  const contactId =
+    lead.convertedContactId ??
+    (cf.contact_id ? String(cf.contact_id) : null) ??
+    unit.contactId ??
+    null;
+
+  const unitCf =
+    unit.customFields && typeof unit.customFields === "object" && !Array.isArray(unit.customFields)
+      ? (unit.customFields as Record<string, unknown>)
+      : {};
+  const attrs =
+    unitCf.productAttributes && typeof unitCf.productAttributes === "object"
+      ? (unitCf.productAttributes as Record<string, unknown>)
+      : product?.attributes && typeof product.attributes === "object"
+        ? (product.attributes as Record<string, unknown>)
+        : {};
+
+  const stampingDate = unit.stampingDate;
+  const nextDueDate = stampingDate ? addYears(stampingDate, 1) : null;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.stockUnit.update({
+      where: { id: unit.id },
+      data: {
+        status: "SOLD",
+        leadId: null,
+        contactId: contactId ?? unit.contactId,
+        customFields: {
+          ...unitCf,
+          soldAt: new Date().toISOString(),
+          soldLeadId: leadId,
+        },
+      },
+    });
+
+    if (contactId) {
+      const existingAsset = await tx.customerAsset.findFirst({
+        where: {
+          tenantId: t,
+          contactId,
+          serialNo: unit.serialNo,
+          deletedAt: null,
+        },
+      });
+      if (!existingAsset) {
+        const capacity = attrs.capacity ? String(attrs.capacity) : null;
+        const accuracy = attrs.accuracy ? String(attrs.accuracy) : null;
+        const platformSize = attrs.platform ? String(attrs.platform) : null;
+        await tx.customerAsset.create({
+          data: {
+            id: newId(),
+            tenantId: t,
+            contactId,
+            machineType: (product?.productType as any) ?? "WEIGHING",
+            name: product?.name ?? `Scale ${unit.serialNo}`,
+            model: product?.sku ?? null,
+            serialNo: unit.serialNo,
+            capacity,
+            accuracy,
+            platformSize,
+            origin: "SOLD_BY_US",
+            servicePlan: "NON_AMC",
+            stampingDate,
+            nextDueDate,
+            customFields: {
+              stockUnitId: unit.id,
+              productId: unit.productId,
+              convertedFromLeadId: leadId,
+            },
+          },
+        });
+      } else if (stampingDate) {
+        await tx.customerAsset.update({
+          where: { id: existingAsset.id },
+          data: {
+            stampingDate,
+            nextDueDate: nextDueDate ?? existingAsset.nextDueDate,
+          },
+        });
+      }
+    }
+
+    await tx.stockMovement.create({
+      data: {
+        id: newId(),
+        tenantId: t,
+        productId: unit.productId,
+        warehouseId: unit.warehouseId,
+        movementType: "OUT",
+        quantity: 0,
+        notes: `Demo converted to sale · serial ${unit.serialNo}`,
+        referenceType: "LEAD_SALE",
+        referenceId: leadId,
+        performedBy: user,
+      },
+    });
   });
+
+  if (contactId && stampingDate) {
+    await syncStampingAcrossRegisters(t, {
+      serialNo: unit.serialNo,
+      contactId,
+      stampingDate,
+      nextDueDate,
+    });
+  }
+
   return getUnit(t, unit.id);
 }

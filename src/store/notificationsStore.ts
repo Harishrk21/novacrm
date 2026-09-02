@@ -83,7 +83,7 @@ export const useNotificationsStore = create<State>((set, get) => ({
           message: String(a.title ?? 'Activity'),
           createdAt: String(a.scheduledAt ?? a.updatedAt ?? a.createdAt ?? new Date().toISOString()),
           isRead: readIds.has(`act-${String(a.id)}`),
-          href: '/activities',
+          href: isAdmin ? '/activities' : '/my-tasks',
           kind: overdue ? 'OVERDUE' : 'TASK',
         })
       }
@@ -100,7 +100,7 @@ export const useNotificationsStore = create<State>((set, get) => ({
           message: `${String(l.name)}${l.company ? ` · ${String(l.company)}` : ''} (${status})`,
           createdAt: String(l.updatedAt ?? l.createdAt ?? new Date().toISOString()),
           isRead: readIds.has(`lead-${String(l.id)}`),
-          href: '/leads',
+          href: '/sale-tracking',
           kind: 'LEAD',
         })
       }

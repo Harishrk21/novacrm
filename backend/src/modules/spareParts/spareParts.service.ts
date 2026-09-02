@@ -2,12 +2,56 @@ import { Prisma, SparePartChangeType } from "@prisma/client";
 import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { pagination, pageResult } from "../../common/utils/pagination.js";
-import { notFound } from "../../common/errors.js";
+import { AppError, notFound } from "../../common/errors.js";
 
 function parseDate(v: unknown): Date {
   if (!v || v === "") return new Date();
   const d = new Date(String(v).slice(0, 10) + "T00:00:00.000Z");
   return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
+async function validateTicketRef(t: string, ticketId: string, contactId: string) {
+  const ticket = await prisma.ticket.findFirst({
+    where: { id: ticketId, tenantId: t, deletedAt: null },
+  });
+  if (!ticket) throw notFound("Service job");
+  if (ticket.contactId && ticket.contactId !== contactId) {
+    throw new AppError("Service job belongs to a different customer", 400);
+  }
+  return ticket;
+}
+
+async function syncTicketPaymentFromSpares(t: string, ticketId: string) {
+  const ticket = await prisma.ticket.findFirst({
+    where: { id: ticketId, tenantId: t, deletedAt: null },
+  });
+  if (!ticket) return;
+
+  const spares = await prisma.sparePartChange.findMany({
+    where: { tenantId: t, ticketId, deletedAt: null },
+  });
+  const spareTotal = spares.reduce((sum, row) => {
+    if (row.underWarranty) return sum;
+    return sum + Number(row.chargeAmount ?? 0) * Number(row.quantity ?? 1);
+  }, 0);
+
+  const cf =
+    ticket.customFields && typeof ticket.customFields === "object" && !Array.isArray(ticket.customFields)
+      ? (ticket.customFields as Record<string, unknown>)
+      : {};
+  let base = Number(cf.baseServiceCharge);
+  if (!Number.isFinite(base)) {
+    base = Math.max(0, Number(ticket.paymentTotal) - spareTotal);
+  }
+  const paymentTotal = base + spareTotal;
+
+  await prisma.ticket.updateMany({
+    where: { id: ticketId, tenantId: t },
+    data: {
+      paymentTotal,
+      customFields: { ...cf, baseServiceCharge: base, sparePartsTotal: spareTotal },
+    },
+  });
 }
 
 function serialize(row: Record<string, unknown>) {
@@ -137,6 +181,17 @@ export async function create(t: string, userId: string, d: Record<string, unknow
     if (!asset) throw notFound("Machine / product");
   }
 
+  if (d.ticketId) {
+    await validateTicketRef(t, String(d.ticketId), contact.id);
+  }
+
+  if (d.performedByUserId) {
+    const performer = await prisma.user.findFirst({
+      where: { id: String(d.performedByUserId), tenantId: t, deletedAt: null, status: "ACTIVE" },
+    });
+    if (!performer) throw notFound("Technician");
+  }
+
   const row = await prisma.sparePartChange.create({
     data: {
       id: newId(),
@@ -161,6 +216,7 @@ export async function create(t: string, userId: string, d: Record<string, unknow
       customFields: d.customFields ?? undefined,
     },
   });
+  if (row.ticketId) await syncTicketPaymentFromSpares(t, row.ticketId);
   return get(t, row.id);
 }
 
@@ -180,6 +236,10 @@ export async function update(t: string, id: string, d: Record<string, unknown>) 
       },
     });
     if (!asset) throw notFound("Machine / product");
+  }
+
+  if (d.ticketId) {
+    await validateTicketRef(t, String(d.ticketId), existing.contactId);
   }
 
   await prisma.sparePartChange.updateMany({
@@ -213,13 +273,23 @@ export async function update(t: string, id: string, d: Record<string, unknown>) 
       ...("notes" in d ? { notes: d.notes ? String(d.notes).trim() : null } : {}),
     },
   });
+  const ticketId = d.ticketId !== undefined ? (d.ticketId ? String(d.ticketId) : null) : existing.ticketId;
+  if (ticketId) await syncTicketPaymentFromSpares(t, ticketId);
+  if (existing.ticketId && existing.ticketId !== ticketId) {
+    await syncTicketPaymentFromSpares(t, existing.ticketId);
+  }
   return get(t, id);
 }
 
 export async function remove(t: string, id: string) {
+  const existing = await prisma.sparePartChange.findFirst({
+    where: { id, tenantId: t, deletedAt: null },
+  });
+  if (!existing) throw notFound("Spare part record");
   const r = await prisma.sparePartChange.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data: { deletedAt: new Date() },
   });
   if (!r.count) throw notFound("Spare part record");
+  if (existing.ticketId) await syncTicketPaymentFromSpares(t, existing.ticketId);
 }

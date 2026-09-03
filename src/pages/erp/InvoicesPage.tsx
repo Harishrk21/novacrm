@@ -466,8 +466,12 @@ export function InvoicesPage() {
   useEffect(() => {
     const accountId = searchParams.get('accountId') || ''
     const contactId = searchParams.get('contactId') || ''
+    const productId = searchParams.get('productId') || ''
+    const serialNo = searchParams.get('serialNo') || ''
+    const unitPrice = searchParams.get('unitPrice') || ''
+    const taxPercent = searchParams.get('taxPercent') || ''
     const open = searchParams.get('open')
-    if (!open && !accountId && !contactId) return
+    if (!open && !accountId && !contactId && !productId) return
 
     if (open === 'upload') {
       setTab('upload')
@@ -509,9 +513,22 @@ export function InvoicesPage() {
         void onPickInvoiceContact(pick)
       }).catch(() => undefined)
     }
-    if (shouldOpen || accountId || contactId) setTab('create')
+    if (productId && products.length) {
+      const p = products.find((x) => x.id === productId)
+      const line = newLine()
+      line.productId = productId
+      line.description = serialNo
+        ? `${p?.sku ?? ''} — ${p?.name ?? 'Product'} · S/N ${serialNo}`.trim()
+        : p
+          ? `${p.sku} — ${p.name}`
+          : ''
+      line.unitPrice = unitPrice || (p ? String(p.salePrice) : '')
+      line.taxPercent = taxPercent || (p ? String(p.taxPercent) : '18')
+      setLines([line])
+    }
+    if (shouldOpen || accountId || contactId || productId) setTab('create')
     setSearchParams({}, { replace: true })
-  }, [searchParams, setSearchParams])
+  }, [searchParams, setSearchParams, products])
 
   const accountName = useMemo(
     () => Object.fromEntries(accounts.map((a) => [a.id, a.name])),

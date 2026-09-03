@@ -9,6 +9,7 @@ import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { notFound } from "../../common/errors.js";
 import { paramId } from "../../common/utils/params.js";
+import { ensureStandardWarehouses } from "../inventory/warehouses.service.js";
 
 /** Dropdown / lookup data for forms across CRM + ERP */
 export const metaRouter = Router();
@@ -16,6 +17,7 @@ metaRouter.use(authenticate, requireTenant);
 
 metaRouter.get("/lookups", async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
+  await ensureStandardWarehouses(t);
   const [sources, stages, users, warehouses, categories, accounts, contacts, products, vendors] =
     await Promise.all([
       prisma.leadSource.findMany({ where: { tenantId: t, isActive: true }, orderBy: { name: "asc" } }),
@@ -27,7 +29,7 @@ metaRouter.get("/lookups", async (q: Request, r: Response) => {
       }),
       prisma.warehouse.findMany({
         where: { tenantId: t, deletedAt: null, isActive: true },
-        orderBy: { name: "asc" },
+        orderBy: [{ code: "asc" }],
       }),
       prisma.productCategory.findMany({
         where: { tenantId: t, deletedAt: null },

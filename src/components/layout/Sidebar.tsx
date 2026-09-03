@@ -24,9 +24,10 @@ import { cn } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { Avatar } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
-import { BrandLogo } from '@/components/BrandLogo'
+import { HmsLogo } from '@/components/HmsLogo'
 import { useAuthStore } from '@/store/authStore'
 import { isCompanyAdmin, roleLabel } from '@/lib/roles'
+import { APP_NAME } from '@/lib/branding'
 
 type NavItem = {
   to: string
@@ -125,14 +126,14 @@ export function Sidebar() {
       <div className={cn('flex h-14 items-center border-b border-white/10 px-3', collapsed && 'justify-center px-2')}>
         {collapsed ? (
           <img
-            src="/nova-logo.png"
-            alt="Nova"
-            className="h-8 w-8 rounded object-cover object-top"
+            src="/hms-logo.png"
+            alt={APP_NAME}
+            className="h-8 w-auto max-w-[48px] object-contain object-left"
             draggable={false}
           />
         ) : (
-          <div className="rounded-md bg-white px-2 py-1">
-            <BrandLogo size="sm" className="max-w-[160px]" />
+          <div className="min-w-0 rounded-md bg-[#0a0a0a] px-2 py-2">
+            <HmsLogo size="sm" />
           </div>
         )}
       </div>

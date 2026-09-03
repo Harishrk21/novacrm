@@ -21,6 +21,7 @@ import { BrandLogo } from '@/components/BrandLogo'
 import { api, isTenantSession } from '@/lib/api'
 import { timeAgo, formatCurrency, formatPhone, cn } from '@/lib/utils'
 import { PALETTES, type ColorPalette } from '@/lib/theme'
+import { APP_NAME } from '@/lib/branding'
 
 type SearchHit = { id: string; primary: string; secondary?: string; type: string }
 
@@ -36,7 +37,7 @@ export function Topbar() {
   const authUser = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
   const displayName = authUser?.name ?? 'User'
-  const workspace = authUser?.tenantName ?? authUser?.tenantSlug ?? 'Workspace'
+  const workspace = authUser?.tenantName ?? authUser?.tenantSlug ?? APP_NAME
   const userId = authUser?.id ?? ''
 
   const notifs = useNotificationsStore((s) => s.items)

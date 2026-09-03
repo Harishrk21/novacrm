@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { AppError, notFound } from "../../common/errors.js";
+import { getWarehouseByCode } from "./warehouses.service.js";
 
 function parseDate(v: string | null | undefined) {
   if (!v) return null;
@@ -682,6 +683,15 @@ export async function issueDemoUnit(t: string, user: string, leadId: string, sto
   });
 
   const contactId = leadCf.contact_id ? String(leadCf.contact_id) : null;
+  const executiveUser = lead.assignedToId
+    ? await prisma.user.findFirst({
+        where: { id: lead.assignedToId, tenantId: t, deletedAt: null },
+        select: { id: true, name: true },
+      })
+    : null;
+  const executiveWarehouse = await getWarehouseByCode(t, "EXECUTIVE");
+  if (!executiveWarehouse) throw new AppError("Executive warehouse not configured", 500);
+
   const unitCf =
     unit.customFields && typeof unit.customFields === "object" && !Array.isArray(unit.customFields)
       ? (unit.customFields as Record<string, unknown>)
@@ -693,6 +703,7 @@ export async function issueDemoUnit(t: string, user: string, leadId: string, sto
       where: { id: unit.id },
       data: {
         status: "DEMO",
+        warehouseId: executiveWarehouse.id,
         leadId,
         contactId: contactId ?? null,
         customFields: {
@@ -704,6 +715,9 @@ export async function issueDemoUnit(t: string, user: string, leadId: string, sto
           demoPhone: lead.phone ?? null,
           demoCity: lead.city ?? null,
           demoState: lead.state ?? null,
+          demoExecutiveId: executiveUser?.id ?? null,
+          demoExecutiveName: executiveUser?.name ?? null,
+          demoEnquiryDate: leadCf.enquiry_date ?? issuedAt.slice(0, 10),
           productName: product?.name ?? null,
           productSku: product?.sku ?? null,
           productSalePrice: product?.salePrice != null ? Number(product.salePrice) : null,
@@ -759,7 +773,9 @@ export async function issueDemoUnit(t: string, user: string, leadId: string, sto
           demoProductName: product?.name ?? null,
           demoProductSku: product?.sku ?? null,
           demoIssuedAt: issuedAt,
-          demoWarehouseId: unit.warehouseId,
+          demoWarehouseId: executiveWarehouse.id,
+          demoExecutiveId: executiveUser?.id ?? null,
+          demoExecutiveName: executiveUser?.name ?? null,
         },
       },
     });
@@ -785,6 +801,8 @@ export async function returnDemoUnit(
 
   const leadId = opts?.leadId ?? unit.leadId ?? null;
   const returnedAt = new Date().toISOString();
+  const mainWarehouse = await getWarehouseByCode(t, "MAIN");
+  if (!mainWarehouse) throw new AppError("Main warehouse not configured", 500);
   const unitCf =
     unit.customFields && typeof unit.customFields === "object" && !Array.isArray(unit.customFields)
       ? (unit.customFields as Record<string, unknown>)
@@ -795,6 +813,7 @@ export async function returnDemoUnit(
       where: { id: unit.id },
       data: {
         status: "IN_STOCK",
+        warehouseId: mainWarehouse.id,
         leadId: null,
         contactId: null,
         customFields: {
@@ -811,7 +830,7 @@ export async function returnDemoUnit(
         tenantId_productId_warehouseId: {
           tenantId: t,
           productId: unit.productId,
-          warehouseId: unit.warehouseId,
+          warehouseId: mainWarehouse.id,
         },
       },
     });
@@ -821,14 +840,14 @@ export async function returnDemoUnit(
         tenantId_productId_warehouseId: {
           tenantId: t,
           productId: unit.productId,
-          warehouseId: unit.warehouseId,
+          warehouseId: mainWarehouse.id,
         },
       },
       create: {
         id: newId(),
         tenantId: t,
         productId: unit.productId,
-        warehouseId: unit.warehouseId,
+        warehouseId: mainWarehouse.id,
         quantityOnHand: next,
       },
       update: { quantityOnHand: next },
@@ -839,7 +858,7 @@ export async function returnDemoUnit(
         id: newId(),
         tenantId: t,
         productId: unit.productId,
-        warehouseId: unit.warehouseId,
+        warehouseId: mainWarehouse.id,
         movementType: "RETURN",
         quantity: 1,
         notes:

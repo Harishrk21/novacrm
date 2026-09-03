@@ -26,8 +26,9 @@ import { Input } from '@/components/ui/Input'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
+import { ProductImage } from '@/components/ProductImage'
 import { api, ApiClientError, num } from '@/lib/api'
-import { assetUrl } from '@/lib/formValidation'
+import { productRequiresStamping } from '@/lib/productCatalog'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
@@ -124,7 +125,7 @@ export function InventoryPage() {
   const [history, setHistory] = useState<HistoryRow[]>([])
   const [levels, setLevels] = useState<Array<Record<string, unknown>>>([])
   const [products, setProducts] = useState<CatalogProduct[]>([])
-  const [warehouses, setWarehouses] = useState<Array<{ id: string; name: string }>>([])
+  const [warehouses, setWarehouses] = useState<Array<{ id: string; name: string; code?: string }>>([])
   const [tab, setTab] = useState<'list' | 'add' | 'history' | 'demo'>('list')
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -150,6 +151,23 @@ export function InventoryPage() {
     () => Object.fromEntries(products.map((p) => [p.id, p])),
     [products],
   )
+
+  const addFormRequiresStamping = useMemo(() => {
+    const product = products.find((p) => p.id === form.productId)
+    return product ? productRequiresStamping(product) : false
+  }, [products, form.productId])
+
+  const editFormRequiresStamping = useMemo(() => {
+    if (!editUnit) return false
+    const product = editUnit.product ?? productMap[editUnit.productId]
+    return product ? productRequiresStamping(product) : false
+  }, [editUnit, productMap])
+
+  const viewUnitRequiresStamping = useMemo(() => {
+    if (!viewUnit) return false
+    const product = viewUnit.product ?? productMap[viewUnit.productId]
+    return product ? productRequiresStamping(product) : false
+  }, [viewUnit, productMap])
 
   const load = useCallback(async () => {
     try {
@@ -188,10 +206,16 @@ export function InventoryPage() {
       }
       const merged = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name))
       setProducts(merged)
-      setWarehouses(lookups.warehouses)
+      const WAREHOUSE_ORDER = ['MAIN', 'STORE', 'EXECUTIVE', 'STAMPING']
+      const sortedWarehouses = [...lookups.warehouses].sort((a, b) => {
+        const ai = WAREHOUSE_ORDER.indexOf(String(a.code ?? '').toUpperCase())
+        const bi = WAREHOUSE_ORDER.indexOf(String(b.code ?? '').toUpperCase())
+        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
+      })
+      setWarehouses(sortedWarehouses)
       setForm((f) => ({
         ...f,
-        warehouseId: f.warehouseId || lookups.warehouses[0]?.id || '',
+        warehouseId: f.warehouseId || sortedWarehouses[0]?.id || '',
         productId: f.productId || preselectProduct || merged[0]?.id || '',
       }))
       if (preselectProduct) setTab('add')
@@ -305,6 +329,7 @@ export function InventoryPage() {
                 name: u.product.name,
                 sku: u.product.sku,
                 imageUrl: u.product.imageUrl,
+                attributes: (u.product.attributes as Record<string, unknown> | null) ?? null,
               }
             : null),
           total: 0,
@@ -335,6 +360,11 @@ export function InventoryPage() {
   const drillGroup = useMemo(
     () => (drillProductId ? groups.find((g) => g.productId === drillProductId) ?? null : null),
     [groups, drillProductId],
+  )
+
+  const anyGroupRequiresStamping = useMemo(
+    () => groups.some((g) => g.product && productRequiresStamping(g.product)),
+    [groups],
   )
 
   const summary = useMemo(() => {
@@ -400,7 +430,7 @@ export function InventoryPage() {
         productId: form.productId,
         warehouseId: form.warehouseId,
         serialNo: form.serialNo.trim(),
-        stampingDate: form.stampingDate || null,
+        stampingDate: addFormRequiresStamping ? form.stampingDate || null : null,
         notes: form.notes.trim() || null,
       })
       addToast({ type: 'success', message: `Added serial ${form.serialNo.trim().toUpperCase()}` })
@@ -432,7 +462,7 @@ export function InventoryPage() {
       await api.updateStockUnit(editUnit.id, {
         warehouseId: editForm.warehouseId,
         serialNo: editForm.serialNo.trim(),
-        stampingDate: editForm.stampingDate || null,
+        stampingDate: editFormRequiresStamping ? editForm.stampingDate || null : null,
         notes: editForm.notes.trim() || null,
       })
       addToast({ type: 'success', message: 'Stock unit updated' })
@@ -620,16 +650,12 @@ export function InventoryPage() {
               </Button>
               <Card className="mt-2 mb-4 py-4">
                 <div className="flex flex-wrap items-start gap-4">
-                  {(() => {
-                    const img = assetUrl(drillGroup.product?.imageUrl)
-                    return img ? (
-                      <img src={img} alt="" className="h-14 w-14 rounded object-cover ring-1 ring-border" />
-                    ) : (
-                      <div className="flex h-14 w-14 items-center justify-center rounded bg-muted">
-                        <Package size={20} />
-                      </div>
-                    )
-                  })()}
+                  <ProductImage
+                    src={drillGroup.product?.imageUrl}
+                    className="h-14 w-14 rounded object-cover ring-1 ring-border"
+                    fallbackClassName="h-14 w-14 rounded ring-1 ring-border"
+                    iconSize={20}
+                  />
                   <div className="min-w-0 flex-1">
                     <div className="text-lg font-semibold">{drillGroup.product?.name ?? 'Product'}</div>
                     <div className="font-mono text-xs text-text-secondary">{drillGroup.product?.sku}</div>
@@ -668,8 +694,17 @@ export function InventoryPage() {
                     <table className="w-full min-w-[900px] text-left text-sm">
                       <thead className="bg-muted text-xs text-text-secondary">
                         <tr>
-                          {['Serial no.', 'Warehouse', 'Stamping date', 'Status', 'Notes', 'Added', 'Actions'].map(
-                            (h) => (
+                          {[
+                            'Serial no.',
+                            'Warehouse',
+                            ...(drillGroup.product && productRequiresStamping(drillGroup.product)
+                              ? ['Stamping date']
+                              : []),
+                            'Status',
+                            'Notes',
+                            'Added',
+                            'Actions',
+                          ].map((h) => (
                               <th key={h} className="px-4 py-3 font-medium">
                                 {h}
                               </th>
@@ -682,9 +717,11 @@ export function InventoryPage() {
                           <tr key={row.id} className="border-t border-border">
                             <td className="px-4 py-3 font-mono font-semibold">{row.serialNo}</td>
                             <td className="px-4 py-3">{row.warehouse?.name ?? '—'}</td>
-                            <td className="px-4 py-3">
-                              {row.stampingDate ? formatDate(String(row.stampingDate)) : '—'}
-                            </td>
+                            {drillGroup.product && productRequiresStamping(drillGroup.product) ? (
+                              <td className="px-4 py-3">
+                                {row.stampingDate ? formatDate(String(row.stampingDate)) : '—'}
+                              </td>
+                            ) : null}
                             <td className="px-4 py-3">
                               <Badge color={STATUS_COLOR[row.status] ?? 'gray'}>
                                 {row.status.replace('_', ' ')}
@@ -742,7 +779,9 @@ export function InventoryPage() {
                           'Warehouses',
                           'Latest stamp',
                           '',
-                        ].map((h) => (
+                        ]
+                          .filter((h) => h !== 'Latest stamp' || anyGroupRequiresStamping)
+                          .map((h) => (
                           <th key={h || 'go'} className="px-4 py-3 font-medium">
                             {h}
                           </th>
@@ -751,7 +790,7 @@ export function InventoryPage() {
                     </thead>
                     <tbody>
                       {groups.map((g) => {
-                        const img = assetUrl(g.product?.imageUrl)
+                        const showStamping = g.product ? productRequiresStamping(g.product) : false
                         return (
                           <tr
                             key={g.productId}
@@ -760,17 +799,11 @@ export function InventoryPage() {
                           >
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-3">
-                                {img ? (
-                                  <img
-                                    src={img}
-                                    alt=""
-                                    className="h-9 w-9 rounded object-cover ring-1 ring-border"
-                                  />
-                                ) : (
-                                  <div className="flex h-9 w-9 items-center justify-center rounded bg-muted">
-                                    <Package size={14} />
-                                  </div>
-                                )}
+                                <ProductImage
+                                  src={g.product?.imageUrl}
+                                  className="h-9 w-9 rounded object-cover ring-1 ring-border"
+                                  fallbackClassName="h-9 w-9 rounded ring-1 ring-border"
+                                />
                                 <div>
                                   <div className="font-medium">{g.product?.name ?? '—'}</div>
                                   <div className="font-mono text-xs text-text-secondary">
@@ -796,9 +829,13 @@ export function InventoryPage() {
                             <td className="px-4 py-3 text-text-secondary">
                               {g.warehouses.join(', ') || '—'}
                             </td>
-                            <td className="px-4 py-3 text-text-secondary">
-                              {g.latestStamp ? formatDate(g.latestStamp) : '—'}
-                            </td>
+                            {showStamping ? (
+                              <td className="px-4 py-3 text-text-secondary">
+                                {g.latestStamp ? formatDate(g.latestStamp) : '—'}
+                              </td>
+                            ) : anyGroupRequiresStamping ? (
+                              <td className="px-4 py-3 text-text-secondary">—</td>
+                            ) : null}
                             <td className="px-4 py-3 text-text-secondary">
                               <ChevronRight size={16} />
                             </td>
@@ -844,6 +881,7 @@ export function InventoryPage() {
                       'Specs',
                       'Sale price',
                       'Customer / lead',
+                      'Executive',
                       'Phone',
                       'Demo issued',
                       'Stamping',
@@ -899,6 +937,9 @@ export function InventoryPage() {
                           ) : (
                             '—'
                           )}
+                        </td>
+                        <td className="px-4 py-3 text-sm font-medium">
+                          {cf.demoExecutiveName ? String(cf.demoExecutiveName) : '—'}
                         </td>
                         <td className="px-4 py-3">
                           {party && 'phone' in party && party.phone
@@ -1052,13 +1093,21 @@ export function InventoryPage() {
                 placeholder="e.g. BM-2026-00421"
               />
               <div>
-                <Input
-                  label="Stamping date"
-                  type="date"
-                  value={form.stampingDate}
-                  onChange={(e) => setForm({ ...form, stampingDate: e.target.value })}
-                />
-                <p className="mt-1 text-xs text-text-secondary">Usually sold within ~10 days of stamping</p>
+                {addFormRequiresStamping ? (
+                  <>
+                    <Input
+                      label="Stamping date"
+                      type="date"
+                      value={form.stampingDate}
+                      onChange={(e) => setForm({ ...form, stampingDate: e.target.value })}
+                    />
+                    <p className="mt-1 text-xs text-text-secondary">Usually sold within ~10 days of stamping</p>
+                  </>
+                ) : form.productId ? (
+                  <p className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-text-secondary">
+                    Govt. stamping is not required for this product — serial only.
+                  </p>
+                ) : null}
               </div>
               <div className="sm:col-span-2">
                 <Input
@@ -1101,7 +1150,9 @@ export function InventoryPage() {
               ['Product', viewUnit.product?.name ?? productMap[viewUnit.productId]?.name],
               ['SKU', viewUnit.product?.sku ?? productMap[viewUnit.productId]?.sku],
               ['Warehouse', viewUnit.warehouse?.name],
-              ['Stamping date', viewUnit.stampingDate ? formatDate(String(viewUnit.stampingDate)) : '—'],
+              ...(viewUnitRequiresStamping
+                ? [['Stamping date', viewUnit.stampingDate ? formatDate(String(viewUnit.stampingDate)) : '—']]
+                : []),
               ['Added', viewUnit.createdAt ? formatDate(String(viewUnit.createdAt)) : '—'],
               ['Updated', viewUnit.updatedAt ? formatDate(String(viewUnit.updatedAt)) : '—'],
             ].map(([k, v]) => (
@@ -1155,12 +1206,18 @@ export function InventoryPage() {
               error={errors.serialNo}
               onChange={(e) => setEditForm({ ...editForm, serialNo: e.target.value })}
             />
-            <Input
-              label="Stamping date"
-              type="date"
-              value={editForm.stampingDate}
-              onChange={(e) => setEditForm({ ...editForm, stampingDate: e.target.value })}
-            />
+            {editFormRequiresStamping ? (
+              <Input
+                label="Stamping date"
+                type="date"
+                value={editForm.stampingDate}
+                onChange={(e) => setEditForm({ ...editForm, stampingDate: e.target.value })}
+              />
+            ) : (
+              <p className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-text-secondary sm:col-span-2">
+                Govt. stamping is not required for this product.
+              </p>
+            )}
             <div className="sm:col-span-2">
               <Input
                 label="Notes"

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ChevronDown, ImagePlus, Package, SlidersHorizontal, X } from 'lucide-react'
+import { ChevronDown, Package, SlidersHorizontal, Stamp, X } from 'lucide-react'
+import { ProductImage } from '@/components/ProductImage'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/Badge'
@@ -19,9 +20,18 @@ import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
+import { Switch } from '@/components/ui/Switch'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
-import { assetUrl } from '@/lib/formValidation'
+import { cn } from '@/lib/utils'
+import {
+  defaultRequiresStamping,
+  formatWarrantyMonths,
+  productAttrs,
+  truncateProductName,
+  WARRANTY_MONTH_OPTIONS,
+  warrantyMonthsFromAttrs,
+} from '@/lib/productCatalog'
 import { formatCurrency } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
@@ -42,7 +52,8 @@ type ProductForm = {
   catalogKind: CatalogKind | ''
   model: string
   brand: string
-  warranty: string
+  warrantyMonths: string
+  requiresStamping: boolean
   mrp: string
   salePrice: string
   purchasePrice: string
@@ -59,7 +70,8 @@ const emptyForm = (): ProductForm => ({
   catalogKind: '',
   model: '',
   brand: '',
-  warranty: '',
+  warrantyMonths: '',
+  requiresStamping: false,
   mrp: '',
   salePrice: '',
   purchasePrice: '',
@@ -91,22 +103,25 @@ function buildSku(kind: CatalogKind, model: string) {
 function buildName(kind: CatalogKind, brand: string, model: string) {
   const label = kindLabel(kind)
   const parts = [brand.trim(), model.trim()].filter(Boolean)
-  return parts.length ? `${label} · ${parts.join(' ')}` : label
-}
-
-function attrsOf(p: Record<string, unknown>) {
-  return (p.attributes as Record<string, unknown> | null) ?? {}
+  const name = parts.length ? `${label} · ${parts.join(' ')}` : label
+  return truncateProductName(name)
 }
 
 function productToForm(p: Record<string, unknown>): ProductForm {
-  const a = attrsOf(p)
+  const a = productAttrs(p)
   const kind = String(a.catalogKind ?? '') as CatalogKind | ''
   const valid = CATALOG_PRODUCT_OPTIONS.some((o) => o.value === kind)
   return {
     catalogKind: valid ? kind : '',
     model: String(a.model ?? ''),
     brand: String(a.brand ?? ''),
-    warranty: String(a.warranty ?? ''),
+    warrantyMonths: warrantyMonthsFromAttrs(a),
+    requiresStamping:
+      typeof a.requiresStamping === 'boolean'
+        ? a.requiresStamping
+        : valid
+          ? defaultRequiresStamping(kind)
+          : false,
     mrp: p.mrp != null ? String(num(p.mrp)) : '',
     salePrice: p.salePrice != null ? String(num(p.salePrice)) : '',
     purchasePrice: p.purchasePrice != null ? String(num(p.purchasePrice)) : '',
@@ -126,7 +141,9 @@ function buildAttributes(form: ProductForm) {
     catalogKind: kind,
     brand: form.brand.trim() || null,
     model: form.model.trim(),
-    warranty: form.warranty.trim() || null,
+    warrantyMonths: form.warrantyMonths ? Number(form.warrantyMonths) : null,
+    warranty: form.warrantyMonths ? `${form.warrantyMonths} months` : null,
+    requiresStamping: form.requiresStamping,
   }
   if (kind === 'WEIGHING') {
     attributes.capacity = form.capacity.trim() || null
@@ -182,7 +199,7 @@ export function ProductsPage() {
   const brands = useMemo(() => {
     const set = new Set<string>()
     for (const p of items) {
-      const brand = String(attrsOf(p).brand ?? '').trim()
+      const brand = String(productAttrs(p).brand ?? '').trim()
       if (brand) set.add(brand)
     }
     return [...set].sort((a, b) => a.localeCompare(b))
@@ -191,7 +208,7 @@ export function ProductsPage() {
   const filtered = useMemo(() => {
     const q = filterQ.trim().toLowerCase()
     return items.filter((p) => {
-      const a = attrsOf(p)
+      const a = productAttrs(p)
       const kind = String(a.catalogKind ?? '')
       const brand = String(a.brand ?? '')
       if (filterKind && kind !== filterKind) return false
@@ -352,23 +369,69 @@ export function ProductsPage() {
         <Select
           label="Select product *"
           value={state.catalogKind}
-          onChange={(e) =>
+          onChange={(e) => {
+            const catalogKind = e.target.value as CatalogKind | ''
             set({
               ...state,
-              catalogKind: e.target.value as CatalogKind | '',
+              catalogKind,
               capacity: '',
               accuracy: '',
               platform: '',
+              requiresStamping: catalogKind ? defaultRequiresStamping(catalogKind) : false,
             })
-          }
+          }}
           options={[
             { value: '', label: 'Choose product type…' },
             ...CATALOG_PRODUCT_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
           ]}
         />
 
+        {!state.catalogKind ? (
+          <p className="rounded-[8px] border border-dashed border-border bg-muted/20 px-3 py-2.5 text-sm text-text-secondary">
+            Select a product type above to enter model, warranty, pricing, and{' '}
+            <span className="font-medium text-text-primary">govt. stamping</span> settings.
+          </p>
+        ) : null}
+
         {state.catalogKind ? (
           <>
+            <div
+              className={cn(
+                'flex flex-wrap items-center justify-between gap-4 rounded-[10px] border-2 px-4 py-4 shadow-sm',
+                state.requiresStamping
+                  ? 'border-accent-blue bg-accent-blue/10'
+                  : 'border-border bg-muted/40',
+              )}
+            >
+              <div className="flex min-w-0 flex-1 items-start gap-3">
+                <span
+                  className={cn(
+                    'mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
+                    state.requiresStamping ? 'bg-accent-blue text-white' : 'bg-muted text-text-secondary',
+                  )}
+                >
+                  <Stamp size={18} />
+                </span>
+                <div className="min-w-0">
+                  <div className="text-sm font-bold text-text-primary">Govt. stamping required</div>
+                  <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+                    Controls whether stamping date fields appear in Inventory, Customers, Service tickets, and
+                    Stamping register. Weighing scales → usually ON. CCTV / paper roll → OFF.
+                  </p>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-3 rounded-lg border border-border bg-card px-3 py-2">
+                <span className="text-sm font-semibold text-text-primary">
+                  {state.requiresStamping ? 'Yes' : 'No'}
+                </span>
+                <Switch
+                  checked={state.requiresStamping}
+                  onChange={(checked) => set({ ...state, requiresStamping: checked })}
+                  label="Govt. stamping required"
+                />
+              </div>
+            </div>
+
             <div className="grid gap-3 sm:grid-cols-3">
               <Input
                 label="Model number *"
@@ -382,11 +445,14 @@ export function ProductsPage() {
                 value={state.brand}
                 onChange={(e) => set({ ...state, brand: e.target.value })}
               />
-              <Input
+              <Select
                 label="Warranty"
-                placeholder="e.g. 12 months / 1 year"
-                value={state.warranty}
-                onChange={(e) => set({ ...state, warranty: e.target.value })}
+                value={state.warrantyMonths}
+                onChange={(e) => set({ ...state, warrantyMonths: e.target.value })}
+                options={[
+                  { value: '', label: 'Select warranty…' },
+                  ...WARRANTY_MONTH_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+                ]}
               />
             </div>
 
@@ -451,13 +517,12 @@ export function ProductsPage() {
             </label>
 
             <div className="flex flex-wrap items-start gap-4">
-              <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted ring-1 ring-border">
-                {state.imageUrl ? (
-                  <img src={assetUrl(state.imageUrl)} alt="" className="h-full w-full object-cover" />
-                ) : (
-                  <ImagePlus className="text-text-secondary" size={22} />
-                )}
-              </div>
+              <ProductImage
+                src={state.imageUrl}
+                className="h-20 w-20 shrink-0 rounded-lg object-cover ring-1 ring-border"
+                fallbackClassName="h-20 w-20 shrink-0 rounded-lg ring-1 ring-border"
+                iconSize={22}
+              />
               <div className="min-w-0 flex-1 space-y-2">
                 <div className="text-sm font-medium text-text-secondary">Product image</div>
                 <label className="inline-flex cursor-pointer items-center gap-2 rounded-[6px] border border-border bg-card px-3 py-2 text-sm font-medium text-accent-blue hover:bg-surface">
@@ -621,8 +686,7 @@ export function ProductsPage() {
                     <tbody>
                       {filtered.map((p) => {
                         const id = String(p.id)
-                        const img = assetUrl(p.imageUrl as string | null)
-                        const a = attrsOf(p)
+                        const a = productAttrs(p)
                         const kind = a.catalogKind ? kindLabel(String(a.catalogKind)) : ''
                         return (
                           <tr key={id} className="border-t border-border hover:bg-surface">
@@ -635,17 +699,11 @@ export function ProductsPage() {
                             </td>
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-3">
-                                {img ? (
-                                  <img
-                                    src={img}
-                                    alt=""
-                                    className="h-9 w-9 rounded object-cover ring-1 ring-border"
-                                  />
-                                ) : (
-                                  <div className="flex h-9 w-9 items-center justify-center rounded bg-muted text-text-secondary">
-                                    <Package size={14} />
-                                  </div>
-                                )}
+                                <ProductImage
+                                  src={p.imageUrl as string | null}
+                                  className="h-9 w-9 rounded object-cover ring-1 ring-border"
+                                  fallbackClassName="h-9 w-9 rounded ring-1 ring-border"
+                                />
                                 <div className="min-w-0">
                                   <div className="truncate font-medium text-text-primary">
                                     {String(p.name)}
@@ -687,7 +745,7 @@ export function ProductsPage() {
           accent="theme"
           eyebrow="Catalog"
           title="Add product"
-          subtitle="Store generic product information here. Serial numbers and stamping dates are added later in Inventory for each physical unit."
+          subtitle="Choose product type, set stamping (yes/no), warranty, and pricing. Serial numbers are added later in Inventory."
           onClose={() => setTab('list')}
           footer={
             <>
@@ -702,8 +760,16 @@ export function ProductsPage() {
             <span className="font-semibold text-text-primary">Note:</span> You are adding a{' '}
             <span className="font-medium text-text-primary">catalog product</span> (model / brand / price).
             Later in <span className="font-medium text-text-primary">Inventory</span>, each unit gets its own{' '}
-            <span className="font-medium text-text-primary">serial number</span> and{' '}
-            <span className="font-medium text-text-primary">stamping date</span>.
+            <span className="font-medium text-text-primary">serial number</span>
+            {form.requiresStamping ? (
+              <>
+                {' '}
+                and <span className="font-medium text-text-primary">stamping date</span>
+              </>
+            ) : (
+              <> (stamping not required for this product type)</>
+            )}
+            .
           </div>
           {catalogFields(form, setForm, 'create')}
         </FormPanel>
@@ -731,14 +797,14 @@ export function ProductsPage() {
           }
         >
           {(() => {
-            const a = attrsOf(viewProduct)
+            const a = productAttrs(viewProduct)
             const kind = a.catalogKind ? kindLabel(String(a.catalogKind)) : '—'
-            const img = assetUrl(viewProduct.imageUrl as string | null)
             const rows: Array<[string, string]> = [
               ['Type', kind],
               ['Model', String(a.model ?? '—')],
               ['Brand', String(a.brand ?? '—')],
-              ['Warranty', String(a.warranty ?? '—')],
+              ['Warranty', formatWarrantyMonths(a.warrantyMonths ?? a.warranty)],
+              ['Govt. stamping', a.requiresStamping === false ? 'Not required' : 'Required'],
               ['MRP', viewProduct.mrp != null ? formatCurrency(num(viewProduct.mrp)) : '—'],
               ['Sale price', formatCurrency(num(viewProduct.salePrice))],
               ['Purchase price', formatCurrency(num(viewProduct.purchasePrice))],
@@ -754,13 +820,12 @@ export function ProductsPage() {
             return (
               <div className="space-y-4">
                 <div className="flex items-start gap-4">
-                  {img ? (
-                    <img src={img} alt="" className="h-20 w-20 rounded-lg object-cover ring-1 ring-border" />
-                  ) : (
-                    <div className="flex h-20 w-20 items-center justify-center rounded-lg bg-muted">
-                      <Package size={22} />
-                    </div>
-                  )}
+                  <ProductImage
+                    src={viewProduct.imageUrl as string | null}
+                    className="h-20 w-20 rounded-lg object-cover ring-1 ring-border"
+                    fallbackClassName="h-20 w-20 rounded-lg ring-1 ring-border"
+                    iconSize={22}
+                  />
                   <div>
                     <Badge color="blue">{kind}</Badge>
                     <div className="mt-2 font-mono text-xs text-text-secondary">

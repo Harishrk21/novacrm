@@ -31,7 +31,18 @@ async function main(){
  const stageDefs=[{code:"ENQUIRY",name:"Enquiry",probability:10,colorHex:"#64748B"},{code:"SITE_SURVEY",name:"Site Survey",probability:30,colorHex:"#0EA5E9"},{code:"QUOTATION",name:"Quotation",probability:50,colorHex:"#2563EB"},{code:"NEGOTIATION",name:"Negotiation",probability:75,colorHex:"#F59E0B"},{code:"WON",name:"Won",probability:100,colorHex:"#10B981",isWon:true},{code:"LOST",name:"Lost",probability:0,colorHex:"#EF4444",isLost:true}];
  const stages=[];for(const [sortOrder,s]of stageDefs.entries()){stages.push(await prisma.pipelineStage.upsert({where:{tenantId_code:{tenantId:tenant.id,code:s.code}},update:{...s,sortOrder,isActive:true},create:{id:uuid(),tenantId:tenant.id,...s,sortOrder}}))}
  const sourceDefs=["Website","Dealer Referral","Exhibition","IndiaMART"];const sources=[];for(const name of sourceDefs){const code=name.toUpperCase().replace(/[^A-Z0-9]+/g,"_");sources.push(await prisma.leadSource.upsert({where:{tenantId_code:{tenantId:tenant.id,code}},update:{name,isActive:true},create:{id:uuid(),tenantId:tenant.id,name,code}}))}
- const warehouse=await prisma.warehouse.upsert({where:{tenantId_code:{tenantId:tenant.id,code:"MAIN"}},update:{isActive:true,isDefault:true,deletedAt:null},create:{id:uuid(),tenantId:tenant.id,code:"MAIN",name:"Main Warehouse",isDefault:true}});
+ const warehouse=await prisma.warehouse.upsert({where:{tenantId_code:{tenantId:tenant.id,code:"MAIN"}},update:{isActive:true,isDefault:true,deletedAt:null,name:"Main warehouse"},create:{id:uuid(),tenantId:tenant.id,code:"MAIN",name:"Main warehouse",isDefault:true}});
+ for (const w of [
+  { code: "STORE", name: "Store", isDefault: false },
+  { code: "EXECUTIVE", name: "Executive", isDefault: false },
+  { code: "STAMPING", name: "Stamping", isDefault: false },
+ ] as const) {
+  await prisma.warehouse.upsert({
+    where: { tenantId_code: { tenantId: tenant.id, code: w.code } },
+    update: { isActive: true, deletedAt: null, name: w.name },
+    create: { id: uuid(), tenantId: tenant.id, code: w.code, name: w.name, isDefault: w.isDefault },
+  });
+ }
  const productCategory=await prisma.productCategory.findFirst({where:{tenantId:tenant.id,code:"SCALES",deletedAt:null}})??await prisma.productCategory.create({data:{id:uuid(),tenantId:tenant.id,code:"SCALES",name:"Weighing Scales"}});
  const productDefs=[
   {sku:"PS-300",name:"Platform Scale 300 kg",salePrice:18500,purchasePrice:12500,attributes:{capacity_kg:300,accuracy_g:50,platform_size:"600x600 mm"}},

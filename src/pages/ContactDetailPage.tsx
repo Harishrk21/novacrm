@@ -619,16 +619,12 @@ export function ContactDetailPage() {
               />
             </>
           ) : null}
-          <Input label="Stamping date" type="date" value={machineForm.stampingDate} onChange={(e) => setMachineForm({ ...machineForm, stampingDate: e.target.value })} />
-          <Input label="Next due date" type="date" value={machineForm.nextDueDate} onChange={(e) => setMachineForm({ ...machineForm, nextDueDate: e.target.value })} />
-          <label className="flex items-end gap-2 pb-2 text-sm sm:col-span-2 lg:col-span-3">
-            <input
-              type="checkbox"
-              checked={machineForm.remindersEnabled}
-              onChange={(e) => setMachineForm({ ...machineForm, remindersEnabled: e.target.checked })}
-            />
-            Auto WhatsApp reminders (~1 week before maintenance due and AMC end)
-          </label>
+          {machineForm.machineType === 'WEIGHING' ? (
+            <>
+              <Input label="Stamping date" type="date" value={machineForm.stampingDate} onChange={(e) => setMachineForm({ ...machineForm, stampingDate: e.target.value })} />
+              <Input label="Next due date" type="date" value={machineForm.nextDueDate} onChange={(e) => setMachineForm({ ...machineForm, nextDueDate: e.target.value })} />
+            </>
+          ) : null}
           <Input label="Notes" value={machineForm.notes} onChange={(e) => setMachineForm({ ...machineForm, notes: e.target.value })} className="sm:col-span-2 lg:col-span-3" />
         </div>
       </FormPanel>

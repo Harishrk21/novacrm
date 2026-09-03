@@ -21,6 +21,11 @@ import { SparePartsPanel } from '@/components/contacts/SparePartsPanel'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS } from '@/lib/assetOrigin'
+import {
+  machineTypeRequiresStamping,
+  productAttrs,
+  productRequiresStamping,
+} from '@/lib/productCatalog'
 import { firstError, validateContactForm, type FieldErrors } from '@/lib/formValidation'
 import { formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
@@ -84,6 +89,7 @@ const MACHINE_TYPES = [
 
 const emptyMachine = {
   skip: false,
+  catalogProductId: '',
   machineType: 'WEIGHING',
   name: '',
   capacity: '',
@@ -93,9 +99,25 @@ const emptyMachine = {
   servicePlan: 'NON_AMC',
   amcStartDate: '',
   amcEndDate: '',
-  nextDueDate: '',
+  nextServiceDate: '',
   stampingDate: '',
+  stampingValidity: '',
   remindersEnabled: true,
+}
+
+type CatalogProduct = {
+  id: string
+  name: string
+  sku: string
+  attributes?: Record<string, unknown> | null
+}
+
+function addOneYear(dateStr: string) {
+  if (!dateStr) return ''
+  const d = new Date(dateStr.slice(0, 10))
+  if (Number.isNaN(d.getTime())) return ''
+  d.setFullYear(d.getFullYear() + 1)
+  return d.toISOString().slice(0, 10)
 }
 
 export function ContactsPage() {
@@ -106,6 +128,7 @@ export function ContactsPage() {
   const [items, setItems] = useState<ContactRow[]>([])
   const [accounts, setAccounts] = useState<Array<{ id: string; name: string }>>([])
   const [users, setUsers] = useState<Array<{ id: string; name: string }>>([])
+  const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -151,7 +174,7 @@ export function ContactsPage() {
     setLoading(true)
     setLoadError(null)
     try {
-      const [contactsRes, lookups] = await Promise.all([
+      const [contactsRes, lookups, productPage] = await Promise.all([
         api.contacts({
           limit: 100,
           search: search || undefined,
@@ -161,10 +184,19 @@ export function ContactsPage() {
           hasAccount: linkFilter === 'linked' ? '1' : linkFilter === 'unlinked' ? '0' : undefined,
         }),
         api.lookups(),
+        api.products({ limit: 500 }),
       ])
       setItems((contactsRes.items ?? []) as ContactRow[])
       setAccounts(lookups.accounts)
       setUsers(lookups.users)
+      setCatalogProducts(
+        (productPage.items ?? []).map((p) => ({
+          id: String(p.id),
+          name: String(p.name ?? ''),
+          sku: String(p.sku ?? ''),
+          attributes: (p.attributes as Record<string, unknown> | null) ?? null,
+        })),
+      )
     } catch (err) {
       const message = err instanceof ApiClientError ? err.message : 'Failed to load contacts'
       setLoadError(message)
@@ -243,12 +275,39 @@ export function ContactsPage() {
     setCreateStep('product')
   }
 
-  async function handleCreate(event: FormEvent) {
+  const selectedCatalogProduct = useMemo(
+    () => catalogProducts.find((p) => p.id === machine.catalogProductId) ?? null,
+    [catalogProducts, machine.catalogProductId],
+  )
+
+  const machineRequiresStamping = useMemo(() => {
+    if (selectedCatalogProduct) return productRequiresStamping(selectedCatalogProduct)
+    return machineTypeRequiresStamping(machine.machineType, catalogProducts)
+  }, [selectedCatalogProduct, machine.machineType, catalogProducts])
+
+  const showStampingFields =
+    !machine.skip && machine.origin === 'SOLD_BY_US' && machineRequiresStamping
+
+  const catalogProductsForType = useMemo(
+    () =>
+      catalogProducts.filter(
+        (p) => String(productAttrs(p).catalogKind ?? '') === machine.machineType,
+      ),
+    [catalogProducts, machine.machineType],
+  )
+
+  function patchMachine(next: Partial<typeof machine>) {
+    setMachine((prev) => {
+      const merged = { ...prev, ...next }
+      if ('stampingDate' in next && merged.servicePlan === 'AMC' && next.stampingDate) {
+        merged.stampingValidity = addOneYear(String(next.stampingDate))
+      }
+      return merged
+    })
+  }
+
+  async function handleSave(event: FormEvent) {
     event.preventDefault()
-    if (createStep === 'customer') {
-      goNextToProduct()
-      return
-    }
     const nextErrors = validateContactForm(form)
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length) {
@@ -256,10 +315,7 @@ export function ContactsPage() {
       setCreateStep('customer')
       return
     }
-    if (!machine.skip && !machine.name.trim()) {
-      addToast({ type: 'error', message: 'Enter product/machine name, or skip this step' })
-      return
-    }
+    const saveProduct = !machine.skip && machine.name.trim()
     setSaving(true)
     try {
       const customFields = {
@@ -295,7 +351,7 @@ export function ContactsPage() {
           : [],
         customFields,
       })
-      if (!machine.skip && machine.name.trim()) {
+      if (saveProduct) {
         await api.createAsset({
           contactId: String(created.id),
           machineType: machine.machineType,
@@ -307,9 +363,17 @@ export function ContactsPage() {
           servicePlan: machine.servicePlan,
           amcStartDate: machine.servicePlan === 'AMC' ? machine.amcStartDate || null : null,
           amcEndDate: machine.servicePlan === 'AMC' ? machine.amcEndDate || null : null,
-          nextDueDate: machine.nextDueDate || null,
-          stampingDate: machine.stampingDate || null,
+          nextDueDate:
+            machine.servicePlan === 'AMC'
+              ? showStampingFields
+                ? machine.stampingValidity || null
+                : null
+              : machine.nextServiceDate || null,
+          stampingDate: showStampingFields ? machine.stampingDate || null : null,
           remindersEnabled: machine.remindersEnabled,
+          customFields: machine.catalogProductId
+            ? { catalogProductId: machine.catalogProductId }
+            : undefined,
         })
       }
       setTab('list')
@@ -640,19 +704,19 @@ export function ContactsPage() {
                 }}
               />
               {createStep === 'customer' ? (
-                <Button type="button" onClick={() => goNextToProduct()}>
+                <Button type="submit" form="customer-step">
                   Next — add product
                 </Button>
               ) : (
-                <Button type="submit" form="create-contact" disabled={saving}>
+                <Button type="submit" form="product-step" disabled={saving}>
                   {saving ? 'Saving…' : machine.skip ? 'Save customer only' : 'Save customer + product'}
                 </Button>
               )}
             </>
           }
         >
-          <form id="create-contact" onSubmit={(e) => void handleCreate(e)} className="space-y-6">
-            {createStep === 'customer' ? (
+          {createStep === 'customer' ? (
+            <form id="customer-step" onSubmit={(e) => goNextToProduct(e)} className="space-y-6">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <Input
                   label="Company / shop / customer name *"
@@ -767,7 +831,9 @@ export function ContactsPage() {
                   />
                 </label>
               </div>
-            ) : (
+            </form>
+          ) : (
+            <form id="product-step" onSubmit={(e) => void handleSave(e)} className="space-y-6">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <label className="flex items-center gap-2 text-sm sm:col-span-2 lg:col-span-3">
                   <input
@@ -783,7 +849,7 @@ export function ContactsPage() {
                       <Select
                         label="Origin *"
                         value={machine.origin}
-                        onChange={(e) => setMachine({ ...machine, origin: e.target.value })}
+                        onChange={(e) => patchMachine({ origin: e.target.value })}
                         options={ASSET_ORIGIN_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
                       />
                       <p className="mt-1 text-xs text-text-secondary">
@@ -793,23 +859,42 @@ export function ContactsPage() {
                     <Select
                       label="Type"
                       value={machine.machineType}
-                      onChange={(e) => setMachine({ ...machine, machineType: e.target.value })}
+                      onChange={(e) =>
+                        patchMachine({
+                          machineType: e.target.value,
+                          catalogProductId: '',
+                        })
+                      }
                       options={MACHINE_TYPES}
                     />
+                    {catalogProductsForType.length > 0 ? (
+                      <Select
+                        label="Catalog product"
+                        className="lg:col-span-2"
+                        value={machine.catalogProductId}
+                        onChange={(e) => patchMachine({ catalogProductId: e.target.value })}
+                        options={[
+                          { value: '', label: 'Select from catalog (optional)…' },
+                          ...catalogProductsForType.map((p) => ({
+                            value: p.id,
+                            label: p.name,
+                          })),
+                        ]}
+                      />
+                    ) : null}
                     <Input
-                      label="Product / machine name *"
+                      label="Product / machine name"
                       className="lg:col-span-2"
                       value={machine.name}
-                      onChange={(e) => setMachine({ ...machine, name: e.target.value })}
-                      placeholder="WEIGHING SCALE 20KG"
+                      onChange={(e) => patchMachine({ name: e.target.value })}
                     />
-                    <Input label="Capacity" value={machine.capacity} onChange={(e) => setMachine({ ...machine, capacity: e.target.value })} />
-                    <Input label="Model" value={machine.model} onChange={(e) => setMachine({ ...machine, model: e.target.value })} />
-                    <Input label="Serial number" value={machine.serialNo} onChange={(e) => setMachine({ ...machine, serialNo: e.target.value })} />
+                    <Input label="Capacity" value={machine.capacity} onChange={(e) => patchMachine({ capacity: e.target.value })} />
+                    <Input label="Model" value={machine.model} onChange={(e) => patchMachine({ model: e.target.value })} />
+                    <Input label="Serial number" value={machine.serialNo} onChange={(e) => patchMachine({ serialNo: e.target.value })} />
                     <Select
                       label="Service plan"
                       value={machine.servicePlan}
-                      onChange={(e) => setMachine({ ...machine, servicePlan: e.target.value })}
+                      onChange={(e) => patchMachine({ servicePlan: e.target.value })}
                       options={[
                         { value: 'NON_AMC', label: 'Non-AMC' },
                         { value: 'AMC', label: 'AMC' },
@@ -817,42 +902,66 @@ export function ContactsPage() {
                     />
                     {machine.origin === 'THIRD_PARTY' ? (
                       <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
-                        Repair-only / outside products can also take AMC — choose AMC and set dates.
+                        Outside / repair-only machines can also take AMC — choose AMC and set dates.
                       </p>
                     ) : null}
                     {machine.servicePlan === 'AMC' ? (
                       <>
                         <Input
-                          label="AMC start"
+                          label="AMC start date"
                           type="date"
                           value={machine.amcStartDate}
-                          onChange={(e) => setMachine({ ...machine, amcStartDate: e.target.value })}
+                          onChange={(e) => patchMachine({ amcStartDate: e.target.value })}
                         />
                         <Input
-                          label="AMC end"
+                          label="AMC end date"
                           type="date"
                           value={machine.amcEndDate}
-                          onChange={(e) => setMachine({ ...machine, amcEndDate: e.target.value })}
+                          onChange={(e) => patchMachine({ amcEndDate: e.target.value })}
                         />
+                        {showStampingFields ? (
+                          <>
+                            <Input
+                              label="Stamping date"
+                              type="date"
+                              value={machine.stampingDate}
+                              onChange={(e) => patchMachine({ stampingDate: e.target.value })}
+                            />
+                            <Input
+                              label="Stamping validity"
+                              type="date"
+                              value={machine.stampingValidity}
+                              onChange={(e) => patchMachine({ stampingValidity: e.target.value })}
+                            />
+                            <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
+                              Stamping validity is usually one year from the stamping date (govt. renewal due).
+                            </p>
+                          </>
+                        ) : null}
                       </>
-                    ) : null}
-                    <Input
-                      label="Next due"
-                      type="date"
-                      value={machine.nextDueDate}
-                      onChange={(e) => setMachine({ ...machine, nextDueDate: e.target.value })}
-                    />
-                    <Input
-                      label="Stamping date"
-                      type="date"
-                      value={machine.stampingDate}
-                      onChange={(e) => setMachine({ ...machine, stampingDate: e.target.value })}
-                    />
+                    ) : (
+                      <>
+                        <Input
+                          label="Next service date"
+                          type="date"
+                          value={machine.nextServiceDate}
+                          onChange={(e) => patchMachine({ nextServiceDate: e.target.value })}
+                        />
+                        {showStampingFields ? (
+                          <Input
+                            label="Stamping date"
+                            type="date"
+                            value={machine.stampingDate}
+                            onChange={(e) => patchMachine({ stampingDate: e.target.value })}
+                          />
+                        ) : null}
+                      </>
+                    )}
                   </>
                 ) : null}
               </div>
-            )}
-          </form>
+            </form>
+          )}
         </FormPanel>
       )}
 

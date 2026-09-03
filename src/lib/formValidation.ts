@@ -116,10 +116,14 @@ export function validateContactForm(form: {
 export function assetUrl(pathOrUrl?: string | null) {
   if (!pathOrUrl) return ''
   if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) return pathOrUrl
+  const normalized = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`
   const api = import.meta.env.VITE_API_URL as string | undefined
   if (api) {
     const origin = api.replace(/\/api\/?$/, '')
-    return `${origin}${pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`}`
+    return `${origin}${normalized}`
   }
-  return pathOrUrl
+  if (typeof window !== 'undefined' && normalized.startsWith('/uploads/')) {
+    return normalized
+  }
+  return normalized
 }

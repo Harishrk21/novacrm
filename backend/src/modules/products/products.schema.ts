@@ -19,7 +19,7 @@ const imageUrl = z
 const body = z.object({
   categoryId: z.string().min(1).max(36).nullable().optional(),
   sku: z.string().min(1).max(64),
-  name: z.string().min(1),
+  name: z.string().min(1).max(191),
   description: z.string().nullable().optional(),
   productType: z.enum(["GOODS", "SERVICE", "BUNDLE"]).optional(),
   unit: z.string().optional(),

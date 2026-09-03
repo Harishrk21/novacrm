@@ -42,6 +42,7 @@ import { formatCurrency, formatDate, timeAgo } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { EmployeeDashboardPage } from '@/pages/EmployeeDashboardPage'
+import { APP_NAME } from '@/lib/branding'
 import type { Account, Activity, Contact, Deal, DealStage, Lead, LeadSource, LeadStatus, User } from '@/types'
 
 const FUNNEL_STAGES: DealStage[] = ['PROSPECT', 'QUALIFIED', 'PROPOSAL', 'NEGOTIATION', 'WON']
@@ -500,7 +501,7 @@ function AdminDashboardPage() {
     <div className="space-y-5">
       <PageHeader
         title={dashTitle}
-        breadcrumbs={[{ label: 'Home' }, { label: 'Dashboard' }, { label: dashTitle }]}
+        breadcrumbs={[{ label: APP_NAME }, { label: dashTitle }]}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Select

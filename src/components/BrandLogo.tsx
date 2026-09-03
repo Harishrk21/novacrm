@@ -14,7 +14,7 @@ const heights = {
   hero: 'h-20 sm:h-24',
 } as const
 
-export function BrandLogo({ className, size = 'md', alt = 'Nova CRM+ERP' }: BrandLogoProps) {
+export function BrandLogo({ className, size = 'md', alt = 'HMS Enterprises' }: BrandLogoProps) {
   return (
     <img
       src="/nova-logo.png"

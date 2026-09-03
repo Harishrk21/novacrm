@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
+import { STANDARD_WAREHOUSES } from "../inventory/warehouses.service.js";
 import { AppError, notFound } from "../../common/errors.js";
 
 export const listTenants = async () => {
@@ -177,16 +178,18 @@ export async function createTenant(data: CreateTenantInput, adminId: string) {
       });
     }
 
-    await tx.warehouse.create({
-      data: {
-        id: newId(),
-        tenantId: tenant.id,
-        code: "MAIN",
-        name: data.city ? `Main Warehouse — ${data.city}` : "Main Warehouse",
-        isDefault: true,
-        isActive: true,
-      },
-    });
+    for (const w of STANDARD_WAREHOUSES) {
+      await tx.warehouse.create({
+        data: {
+          id: newId(),
+          tenantId: tenant.id,
+          code: w.code,
+          name: w.name,
+          isDefault: w.isDefault,
+          isActive: true,
+        },
+      });
+    }
 
     for (const [sequenceKey, prefix] of [
       ["INVOICE", "INV-"],

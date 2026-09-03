@@ -32,10 +32,10 @@ export function Drawer({ open, onClose, title, children, width = 480, footer }: 
       />
       <aside
         className={cn(
-          'fixed right-0 top-0 z-50 flex h-full flex-col bg-card shadow-[-4px_0_24px_rgba(0,0,0,0.1)] transition-transform duration-150',
+          'fixed right-0 top-0 z-50 flex h-full w-full flex-col bg-card shadow-[-4px_0_24px_rgba(0,0,0,0.1)] transition-transform duration-150',
           open ? 'translate-x-0' : 'translate-x-full',
         )}
-        style={{ width }}
+        style={{ maxWidth: width }}
       >
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <div className="min-w-0 flex-1">{title}</div>

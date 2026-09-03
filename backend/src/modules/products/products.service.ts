@@ -115,14 +115,46 @@ async function category(t: string, id?: string | null) {
   }
 }
 
+const productDataKeys = [
+  "categoryId",
+  "sku",
+  "name",
+  "description",
+  "productType",
+  "unit",
+  "hsnSac",
+  "salePrice",
+  "purchasePrice",
+  "mrp",
+  "taxPercent",
+  "trackInventory",
+  "reorderLevel",
+  "isActive",
+  "imageUrl",
+  "attributes",
+  "customFields",
+] as const;
+
+function pickProductData(d: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  for (const key of productDataKeys) {
+    if (key in d) out[key] = d[key];
+  }
+  if (typeof out.name === "string") out.name = out.name.trim().slice(0, 191);
+  if (typeof out.sku === "string") out.sku = out.sku.trim().slice(0, 64);
+  return out;
+}
+
 export async function create(t: string, d: any) {
   await category(t, d.categoryId);
-  return prisma.product.create({ data: { ...d, id: newId(), tenantId: t } });
+  const data = pickProductData(d);
+  return prisma.product.create({ data: { ...data, id: newId(), tenantId: t } });
 }
 
 export async function update(t: string, id: string, d: any) {
   await category(t, d.categoryId);
-  const r = await prisma.product.updateMany({ where: { id, tenantId: t, deletedAt: null }, data: d });
+  const data = pickProductData(d);
+  const r = await prisma.product.updateMany({ where: { id, tenantId: t, deletedAt: null }, data });
   if (!r.count) throw notFound("Product");
   return get(t, id);
 }

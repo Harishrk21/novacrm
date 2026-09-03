@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   Building2,
   ChevronRight,
@@ -22,6 +22,7 @@ import { Select } from '@/components/ui/Select'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { api, ApiClientError, num } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS, assetOriginShort } from '@/lib/assetOrigin'
+import { assetRequiresStamping, productRequiresStamping } from '@/lib/productCatalog'
 import { formatCurrency, formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
@@ -158,6 +159,7 @@ function attrLine(attrs?: Record<string, unknown> | null) {
 
 export function StampingPage() {
   const addToast = useUIStore((s) => s.addToast)
+  const [searchParams, setSearchParams] = useSearchParams()
   const [mainTab, setMainTab] = useState<'warehouse' | 'customer'>('warehouse')
   const [workflowTab, setWorkflowTab] = useState<WorkflowTab>('ALL')
   const [filter, setFilter] = useState<FilterTab>('ALL')
@@ -165,7 +167,7 @@ export function StampingPage() {
   const [search, setSearch] = useState('')
   const [units, setUnits] = useState<StockRow[]>([])
   const [assets, setAssets] = useState<AssetRow[]>([])
-  const [products, setProducts] = useState<Array<{ id: string; name: string; sku: string }>>([])
+  const [products, setProducts] = useState<Array<{ id: string; name: string; sku: string; attributes?: Record<string, unknown> | null }>>([])
   const [loading, setLoading] = useState(true)
 
   const [detailUnit, setDetailUnit] = useState<StockRow | null>(null)
@@ -207,6 +209,7 @@ export function StampingPage() {
           id: String(p.id),
           name: String(p.name ?? ''),
           sku: String(p.sku ?? ''),
+          attributes: (p.attributes as Record<string, unknown> | null) ?? null,
         })),
       )
     } catch (err) {
@@ -223,52 +226,80 @@ export function StampingPage() {
     void load()
   }, [load])
 
-  const productOptions = useMemo(
-    () => products.map((p) => ({ value: p.id, label: p.name, sublabel: p.sku })),
+  useEffect(() => {
+    const unitId = searchParams.get('unitId')
+    if (!unitId || loading) return
+    const u = units.find((x) => x.id === unitId)
+    if (u) {
+      setMainTab('warehouse')
+      setDetailUnit(u)
+      setDetailAsset(null)
+      setStampDate(new Date().toISOString().slice(0, 10))
+      setSearchParams({}, { replace: true })
+    }
+  }, [searchParams, units, loading, setSearchParams])
+
+  const stampingUnits = useMemo(
+    () => units.filter((u) => (u.product ? productRequiresStamping(u.product) : true)),
+    [units],
+  )
+
+  const stampingAssets = useMemo(
+    () => assets.filter((a) => assetRequiresStamping({ machineType: a.machineType })),
+    [assets],
+  )
+
+  const stampingProducts = useMemo(
+    () => products.filter((p) => productRequiresStamping(p)),
     [products],
   )
 
+  const productOptions = useMemo(
+    () => stampingProducts.map((p) => ({ value: p.id, label: p.name, sublabel: p.sku })),
+    [stampingProducts],
+  )
+
   const serialOptions = useMemo(() => {
-    return units
+    return stampingUnits
       .filter((u) => !createProductId || u.productId === createProductId)
       .map((u) => ({
         value: u.id,
         label: `${u.serialNo} · ${u.product?.name ?? 'Product'}${u.stampingDate ? ` · stamped ${formatDate(String(u.stampingDate))}` : ' · pending'}`,
         sublabel: u.warehouse?.name ?? '',
       }))
-  }, [units, createProductId])
+  }, [stampingUnits, createProductId])
 
   const workflowCounts = useMemo(() => {
-    const rows = [...units, ...assets]
+    const rows = [...stampingUnits, ...stampingAssets]
     return {
       due: rows.filter((r) => isStampingDue(r)).length,
       inProgress: rows.filter((r) => isStampingInProgress(r) && !isStampingDue(r)).length,
     }
-  }, [units, assets])
+  }, [stampingAssets, stampingUnits])
 
   const counts = useMemo(() => {
-    const rows = mainTab === 'warehouse' ? units : assets
+    const rows = mainTab === 'warehouse' ? stampingUnits : stampingAssets
     return {
       pending: rows.filter((r) => stampFilter(r, 'PENDING')).length,
       stamped: rows.filter((r) => stampFilter(r, 'STAMPED')).length,
       due: rows.filter((r) => stampFilter(r, 'DUE_RENEWAL')).length,
     }
-  }, [assets, mainTab, units])
+  }, [stampingAssets, mainTab, stampingUnits])
 
   const filteredUnits = useMemo(() => {
     const q = search.trim().toLowerCase()
-    return units.filter((u) => {
+    return stampingUnits.filter((u) => {
       if (!workflowFilter(u, workflowTab)) return false
       if (!stampFilter(u, filter)) return false
       if (!q) return true
       const hay = `${u.serialNo} ${u.product?.name ?? ''} ${u.product?.sku ?? ''}`.toLowerCase()
       return hay.includes(q)
     })
-  }, [units, filter, search, workflowTab])
+  }, [stampingUnits, filter, search, workflowTab])
 
   const filteredAssets = useMemo(() => {
     const q = search.trim().toLowerCase()
-    return assets.filter((a) => {
+    return stampingAssets.filter((a) => {
       if (!workflowFilter(a, workflowTab)) return false
       if (!stampFilter(a, filter)) return false
       if (originFilter === 'SOLD_BY_US' && a.origin !== 'SOLD_BY_US') return false
@@ -278,11 +309,11 @@ export function StampingPage() {
       const hay = `${a.name} ${a.serialNo ?? ''} ${c?.name ?? ''}`.toLowerCase()
       return hay.includes(q)
     })
-  }, [assets, filter, originFilter, search, workflowTab])
+  }, [stampingAssets, filter, originFilter, search, workflowTab])
 
   function openCreate(kind: 'warehouse' | 'customer') {
     setCreateKind(kind)
-    setCreateProductId(products[0]?.id ?? '')
+    setCreateProductId(stampingProducts[0]?.id ?? '')
     setCreateUnitId('')
     setPickedContact(null)
     setCreateAssetId('')

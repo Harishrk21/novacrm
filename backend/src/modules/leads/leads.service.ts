@@ -126,6 +126,23 @@ export async function update(t: string, id: string, data: Record<string, unknown
   if (data.status === "CONVERTED" && before.status !== "CONVERTED") {
     throw new AppError("Use POST /leads/:id/convert to convert enquiries", 400);
   }
+
+  // Demo → Not interested: return serial to main warehouse before marking LOST
+  if (data.status === "LOST" && before.status === "DEMO") {
+    const cf =
+      before.customFields && typeof before.customFields === "object" && !Array.isArray(before.customFields)
+        ? (before.customFields as Record<string, unknown>)
+        : {};
+    const demoUnitId = cf.demoStockUnitId ? String(cf.demoStockUnitId) : "";
+    if (demoUnitId) {
+      const { returnDemoUnit } = await import("../inventory/inventory.service.js");
+      await returnDemoUnit(t, "system", demoUnitId, {
+        notes: "Customer not interested — demo returned to stock",
+        leadId: id,
+      });
+    }
+  }
+
   const r = await prisma.lead.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data: {

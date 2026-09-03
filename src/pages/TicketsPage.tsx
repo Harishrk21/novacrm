@@ -20,6 +20,7 @@ import { Select } from '@/components/ui/Select'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS, assetOriginShort } from '@/lib/assetOrigin'
+import { assetRequiresStamping } from '@/lib/productCatalog'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { isCompanyAdmin, isScopedEmployee } from '@/lib/roles'
 import { useUIStore } from '@/store/uiStore'
@@ -198,6 +199,16 @@ export function TicketsPage() {
     return Math.max(0, pay - adv)
   }, [form.advanceAmount, form.paymentTotal])
 
+  const formRequiresStamping = useMemo(() => {
+    if (form.assetId) {
+      const asset = assets.find((a) => String(a.id) === form.assetId)
+      if (asset) {
+        return assetRequiresStamping({ machineType: String(asset.machineType ?? 'WEIGHING') })
+      }
+    }
+    return form.machineType === 'WEIGHING'
+  }, [form.assetId, form.machineType, assets])
+
   function resetCreate() {
     setForm({ ...emptyJob, receivedByUserId: authUser?.id || '' })
     setPickedContact(null)
@@ -238,8 +249,8 @@ export function TicketsPage() {
             amcStartDate: form.servicePlan === 'AMC' ? form.amcStartDate || null : null,
             amcEndDate: form.servicePlan === 'AMC' ? form.amcEndDate || null : null,
             remindersEnabled: form.remindersEnabled,
-            stampingDate: form.stampingDate || null,
-            nextDueDate: form.nextDueDate || null,
+            stampingDate: formRequiresStamping ? form.stampingDate || null : null,
+            nextDueDate: formRequiresStamping ? form.nextDueDate || null : null,
             customFields: {
               warrantyType: form.warrantyType,
               warrantyUntil: form.warrantyUntil || null,
@@ -266,8 +277,8 @@ export function TicketsPage() {
         priority: form.priority,
         contactId: form.contactId,
         assetId,
-        stampingDate: form.stampingDate || null,
-        nextDueDate: form.nextDueDate || null,
+        stampingDate: formRequiresStamping ? form.stampingDate || null : null,
+        nextDueDate: formRequiresStamping ? form.nextDueDate || null : null,
         odAmount: Number(form.odAmount) || 0,
         paymentTotal: Number(form.paymentTotal) || 0,
         advanceAmount: Number(form.advanceAmount) || 0,
@@ -663,14 +674,6 @@ export function TicketsPage() {
                 value={form.warrantyUntil}
                 onChange={(e) => setForm({ ...form, warrantyUntil: e.target.value })}
               />
-              <label className="flex items-end gap-2 pb-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={form.remindersEnabled}
-                  onChange={(e) => setForm({ ...form, remindersEnabled: e.target.checked })}
-                />
-                WhatsApp reminders (1 week before due / AMC)
-              </label>
             </section>
 
             <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -689,18 +692,22 @@ export function TicketsPage() {
                 value={form.scheduledTime}
                 onChange={(e) => setForm({ ...form, scheduledTime: e.target.value })}
               />
-              <Input
-                label="Stamping date"
-                type="date"
-                value={form.stampingDate}
-                onChange={(e) => setForm({ ...form, stampingDate: e.target.value })}
-              />
-              <Input
-                label="Next due date"
-                type="date"
-                value={form.nextDueDate}
-                onChange={(e) => setForm({ ...form, nextDueDate: e.target.value })}
-              />
+              {formRequiresStamping ? (
+                <>
+                  <Input
+                    label="Stamping date"
+                    type="date"
+                    value={form.stampingDate}
+                    onChange={(e) => setForm({ ...form, stampingDate: e.target.value })}
+                  />
+                  <Input
+                    label="Next due date"
+                    type="date"
+                    value={form.nextDueDate}
+                    onChange={(e) => setForm({ ...form, nextDueDate: e.target.value })}
+                  />
+                </>
+              ) : null}
               <Input
                 label="OD details ₹"
                 type="number"

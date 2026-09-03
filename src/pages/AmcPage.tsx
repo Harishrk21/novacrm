@@ -165,12 +165,12 @@ export function AmcPage() {
 
   const tableHeaders =
     tab === 'AMC'
-      ? ['Customer', 'Machine', 'Origin', 'AMC start', 'AMC end', 'Next service', 'Reminders', 'Actions']
+      ? ['Customer', 'Machine', 'Origin', 'AMC start', 'AMC end', 'Next service', 'Actions']
       : tab === 'NON_AMC'
-        ? ['Customer', 'Machine', 'Origin', 'Stamping', 'Next due', 'Plan notes', 'Reminders', 'Actions']
+        ? ['Customer', 'Machine', 'Origin', 'Stamping', 'Next due', 'Plan notes', 'Actions']
         : tab === 'UPCOMING_SERVICE'
           ? ['Customer', 'Machine', 'Service due', 'Days left', 'Plan', 'Stamping', 'Phone', 'Actions']
-          : ['Customer', 'Machine', 'AMC ends', 'Days left', 'AMC period', 'Next service', 'Reminders', 'Actions']
+          : ['Customer', 'Machine', 'AMC ends', 'Days left', 'AMC period', 'Next service', 'Actions']
 
   async function runDelete(deleteIds: string[]) {
     setBusyDelete(true)
@@ -219,7 +219,6 @@ export function AmcPage() {
             {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
             {due != null ? <div className={`text-xs ${daysClass(due)}`}>{daysLabel(due)}</div> : null}
           </td>
-          <td className="px-4 py-3 text-text-secondary">{a.remindersEnabled === false ? 'Off' : 'On'}</td>
         </>
       )
     }
@@ -238,7 +237,6 @@ export function AmcPage() {
             {due != null ? <div className={`text-xs ${daysClass(due)}`}>{daysLabel(due)}</div> : null}
           </td>
           <td className="max-w-[200px] truncate px-4 py-3 text-text-secondary">{String(a.notes ?? '—')}</td>
-          <td className="px-4 py-3 text-text-secondary">{a.remindersEnabled === false ? 'Off' : 'On'}</td>
         </>
       )
     }
@@ -284,7 +282,6 @@ export function AmcPage() {
           {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
           {due != null ? <div className={`text-xs ${daysClass(due)}`}>{daysLabel(due)}</div> : null}
         </td>
-        <td className="px-4 py-3 text-text-secondary">{a.remindersEnabled === false ? 'Off' : 'On'}</td>
       </>
     )
   }

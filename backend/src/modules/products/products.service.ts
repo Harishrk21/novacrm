@@ -148,13 +148,18 @@ function pickProductData(d: Record<string, unknown>) {
 export async function create(t: string, d: any) {
   await category(t, d.categoryId);
   const data = pickProductData(d);
-  return prisma.product.create({ data: { ...data, id: newId(), tenantId: t } });
+  return prisma.product.create({
+    data: { ...data, id: newId(), tenantId: t } as Parameters<typeof prisma.product.create>[0]["data"],
+  });
 }
 
 export async function update(t: string, id: string, d: any) {
   await category(t, d.categoryId);
   const data = pickProductData(d);
-  const r = await prisma.product.updateMany({ where: { id, tenantId: t, deletedAt: null }, data });
+  const r = await prisma.product.updateMany({
+    where: { id, tenantId: t, deletedAt: null },
+    data: data as Parameters<typeof prisma.product.updateMany>[0]["data"],
+  });
   if (!r.count) throw notFound("Product");
   return get(t, id);
 }

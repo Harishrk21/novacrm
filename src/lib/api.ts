@@ -308,6 +308,9 @@ export const api = {
         purchasePrice: string | number
         unit: string
         taxPercent: string | number
+        imageUrl?: string | null
+        productType?: string | null
+        attributes?: Record<string, unknown> | null
       }>
       vendors: Array<{ id: string; name: string }>
     }>('/meta/lookups'),

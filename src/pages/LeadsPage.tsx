@@ -1435,7 +1435,7 @@ export function LeadsPage() {
         }}
         title="Create tax invoice?"
         subtitle="Product, price & GST can be pre-filled from the demo unit."
-        accent="green"
+        accent="emerald"
         footer={
           <>
             <Button

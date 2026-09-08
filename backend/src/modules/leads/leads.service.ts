@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { normalizePhone } from "../../common/utils/phone.js";
@@ -613,7 +614,7 @@ export async function addDemoUpdate(
         demoLastUpdateNote: note.slice(0, 240),
         demoLastUpdateBy: entry.authorName,
         demoLastUpdateDay: dayNumber,
-      },
+      } as Prisma.InputJsonValue,
     },
   });
   await invalidate(t);

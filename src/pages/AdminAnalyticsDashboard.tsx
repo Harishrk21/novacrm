@@ -710,7 +710,7 @@ function OverviewPov({
                   >
                     <div className="min-w-0">
                       <div className="truncate font-medium">
-                        {formatServiceId(t.ticketNo)} · {String(t.subject)}
+                        {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} · {String(t.subject)}
                       </div>
                       <div className="mt-0.5 text-xs text-text-secondary">
                         {labelize(String(t.status))}
@@ -917,7 +917,7 @@ function ServicePov({
               to={`/tickets/${String(t.id)}`}
               className="rounded-[8px] border border-border px-3 py-2 text-sm hover:border-accent-blue/40"
             >
-              <div className="font-medium truncate">{formatServiceId(t.ticketNo)} · {String(t.subject)}</div>
+              <div className="font-medium truncate">{formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} · {String(t.subject)}</div>
               <div className="mt-1 text-xs text-text-secondary">{labelize(String(t.status))} · {String(t.priority)}</div>
             </Link>
           ))}
@@ -932,7 +932,6 @@ function ServicePov({
 
 function SalesPov({
   analytics,
-  chartColors,
   target,
   targetPct,
 }: {
@@ -1023,17 +1022,17 @@ function SalesPov({
             ) : (
               (analytics.recentLeads ?? []).map((l) => (
                 <Link
-                  key={l.id}
-                  to={`/sale-tracking/${l.id}`}
+                  key={String(l.id)}
+                  to={`/sale-tracking/${String(l.id)}`}
                   className="flex items-center justify-between gap-2 rounded-[8px] border border-border px-3 py-2 text-sm hover:border-accent-blue/40"
                 >
                   <div className="min-w-0">
-                    <div className="truncate font-medium">{l.name}</div>
+                    <div className="truncate font-medium">{String(l.name ?? '')}</div>
                     <div className="text-xs text-text-secondary">
-                      {[l.company, l.city].filter(Boolean).join(' · ') || '—'}
+                      {[l.company, l.city].filter(Boolean).map(String).join(' · ') || '—'}
                     </div>
                   </div>
-                  <Badge color="blue">{labelize(l.status)}</Badge>
+                  <Badge color="blue">{labelize(String(l.status ?? ''))}</Badge>
                 </Link>
               ))
             )}

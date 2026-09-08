@@ -6,11 +6,13 @@ interface CardProps {
   className?: string
   hover?: boolean
   padding?: boolean
+  id?: string
 }
 
-export function Card({ children, className, hover, padding = true }: CardProps) {
+export function Card({ children, className, hover, padding = true, id }: CardProps) {
   return (
     <div
+      id={id}
       className={cn(
         'rounded-[8px] border border-border bg-card shadow-[var(--shadow-card)]',
         hover && 'transition-shadow duration-150 hover:shadow-[var(--shadow-hover)]',

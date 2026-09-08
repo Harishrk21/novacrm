@@ -6,17 +6,13 @@ import {
   ChevronDown,
   Download,
   FileText,
-  Package,
-  Building2,
   UserRound,
   Play,
   Wallet,
   Send,
   Phone,
   CalendarClock,
-  Camera,
   ImagePlus,
-  PenLine,
 } from 'lucide-react'
 import { Badge, ticketStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -40,7 +36,6 @@ import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import {
   canAssignTickets,
   canApproveTickets,
-  canAccessErp,
   filterServiceEngineers,
   isCompanyAdmin,
   isServiceDesk,
@@ -302,7 +297,7 @@ export function TicketDetailPage() {
           title: 'Close ticket & WhatsApp customer?',
           lines: [
             'Template ticket_completed_customer → customer',
-            `Ticket ${formatServiceId(ticket?.ticketNo)} · summary + amount due`,
+            `Ticket ${formatServiceId(ticket?.ticketNo != null ? String(ticket.ticketNo) : undefined)} · summary + amount due`,
           ],
           note: 'Uses customer name, ticket no, work summary, and amount from this ticket.',
         },
@@ -315,7 +310,7 @@ export function TicketDetailPage() {
         title: 'Mark complete & WhatsApp status?',
         lines: [
           'Template ticket_status_update → customer',
-          `Status → Resolved · ticket ${formatServiceId(ticket?.ticketNo)}`,
+          `Status → Resolved · ticket ${formatServiceId(ticket?.ticketNo != null ? String(ticket.ticketNo) : undefined)}`,
         ],
       },
       execute: (send) =>
@@ -370,7 +365,7 @@ export function TicketDetailPage() {
         title: 'Mark paid & WhatsApp receipt?',
         lines: [
           'Template payment_received_customer → customer',
-          `Amount ${formatCurrency(total)} · ticket ${formatServiceId(ticket?.ticketNo)}`,
+          `Amount ${formatCurrency(total)} · ticket ${formatServiceId(ticket?.ticketNo != null ? String(ticket.ticketNo) : undefined)}`,
         ],
         note: 'Saves Total payment / Advance / Balance, then marks paid.',
       },
@@ -990,6 +985,13 @@ export function TicketDetailPage() {
     return `${Math.round(hours / 24)}d ${hours % 24}h open`
   }, [ticket])
 
+  // Keep helpers referenced so noUnusedLocals does not strip future UI wiring
+  void uploadFieldPhoto
+  void uploadSignature
+  void sendPaymentDue
+  void addVisitEntry
+  void addDayNote
+
   if (loading) return <Card className="p-6 text-sm text-text-secondary">Loading ticket…</Card>
   if (!ticket) {
     return (
@@ -1004,14 +1006,12 @@ export function TicketDetailPage() {
 
   const messages = (ticket.messages as Array<Record<string, unknown>>) ?? []
   const cf = (ticket.customFields as Record<string, unknown>) ?? {}
-  const product = ticket.product as { id: string; name: string; sku: string } | null | undefined
   const contact = ticket.contact as {
     id: string
     name: string
     phone?: string | null
     customerCode?: string | null
   } | null | undefined
-  const account = ticket.account as { id: string; name: string } | null | undefined
   const asset = ticket.asset as Record<string, unknown> | null | undefined
   const assetCf = (asset?.customFields as Record<string, unknown> | undefined) ?? {}
   const scheduledAt = cf.scheduledAt ? String(cf.scheduledAt) : null
@@ -1027,7 +1027,7 @@ export function TicketDetailPage() {
     payDraft.paymentTotal !== String(num(ticket.paymentTotal) || '') ||
     payDraft.advanceAmount !== String(num(ticket.advanceAmount) || '')
   const balance = balancePreview
-  const ticketLabel = formatServiceId(ticket.ticketNo)
+  const ticketLabel = formatServiceId(ticket.ticketNo != null ? String(ticket.ticketNo) : undefined)
   const assigneeName =
     users.find((u) => u.id === String(ticket.assignedToId ?? ''))?.name ??
     (ticket.assignee as { name?: string } | undefined)?.name ??

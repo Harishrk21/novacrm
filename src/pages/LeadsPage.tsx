@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Package, Plus, Search, ShieldCheck, TrendingUp, UserX, Users } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ContactPicker, type ContactPick } from '@/components/contacts/ContactPicker'
@@ -17,14 +17,14 @@ import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
-import { ConfirmModal, Modal } from '@/components/ui/Modal'
+import { ConfirmModal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
 import { firstError, validateLeadForm, type FieldErrors } from '@/lib/formValidation'
-import { formatDate, formatPhone, formatCurrency } from '@/lib/utils'
+import { formatDate, formatPhone } from '@/lib/utils'
 import { productRequiresStamping } from '@/lib/productCatalog'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -112,10 +112,10 @@ export function LeadsPage() {
     Array<{ id: string; name: string; sku: string; salePrice?: number; taxPercent?: number; attributes?: Record<string, unknown> | null }>
   >([])
   const [createDemoUnits, setCreateDemoUnits] = useState<Array<{ id: string; serialNo: string; stampingDate?: string | null }>>([])
-  const [stampingGateOpen, setStampingGateOpen] = useState(false)
-  const [pendingStampUnitId, setPendingStampUnitId] = useState('')
-  const [invoicePromptOpen, setInvoicePromptOpen] = useState(false)
-  const [invoicePromptCtx, setInvoicePromptCtx] = useState<{
+  const [, setStampingGateOpen] = useState(false)
+  const [, setPendingStampUnitId] = useState('')
+  const [, setInvoicePromptOpen] = useState(false)
+  const [, setInvoicePromptCtx] = useState<{
     contactId: string
     productId: string
     serialNo: string
@@ -142,11 +142,11 @@ export function LeadsPage() {
   }))
   const [dailyNote, setDailyNote] = useState('')
   const [dailyDate, setDailyDate] = useState(new Date().toISOString().slice(0, 10))
-  const [dailySaving, setDailySaving] = useState(false)
+  const [, setDailySaving] = useState(false)
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null)
   const [convertOpen, setConvertOpen] = useState(false)
   const [convertStageId, setConvertStageId] = useState('')
-  const [demoOpen, setDemoOpen] = useState(false)
+  const [, setDemoOpen] = useState(false)
   const [demoUnits, setDemoUnits] = useState<
     Array<{
       id: string
@@ -170,8 +170,8 @@ export function LeadsPage() {
   const [demoProductFilter, setDemoProductFilter] = useState('')
   const [demoFamilyCode, setDemoFamilyCode] = useState('')
   const [demoIndustryCode, setDemoIndustryCode] = useState('')
-  const [demoSaving, setDemoSaving] = useState(false)
-  const [demoReturning, setDemoReturning] = useState(false)
+  const [, setDemoSaving] = useState(false)
+  const [, setDemoReturning] = useState(false)
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<FieldErrors>({})
   const [loading, setLoading] = useState(true)
@@ -263,10 +263,6 @@ export function LeadsPage() {
     }
   }, [searchParams])
 
-  const sourceName = useMemo(
-    () => Object.fromEntries(sources.map((s) => [s.id, s.name])),
-    [sources],
-  )
   const userName = useMemo(() => Object.fromEntries(users.map((u) => [u.id, u.name])), [users])
   const salesExecs = useMemo(() => filterSalesExecutives(users), [users])
   /** Admins see everyone; sales execs only themselves (locked owner). */
@@ -912,6 +908,16 @@ export function LeadsPage() {
       setConfirm(null)
     }
   }
+
+  // Keep helpers referenced so noUnusedLocals does not strip future UI wiring
+  void saveDailyUpdate
+  void selectedDemoUnit
+  void filteredDemoUnits
+  void demoPickerProductOptions
+  void reassignLead
+  void returnDemoFromLead
+  void confirmDemoIssue
+  void updateLeadStatus
 
   return (
     <div className="min-w-0 max-w-full">

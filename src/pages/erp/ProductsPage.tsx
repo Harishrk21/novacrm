@@ -615,7 +615,7 @@ export function ProductsPage() {
           </Button>
         }
       />
-      <FeatureTip tip={tip} />
+      <FeatureTip title={tip.title} body={tip.body} tipType={tip.tipType} />
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {groupedCount.map(([name, count]) => (

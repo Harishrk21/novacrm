@@ -1016,7 +1016,7 @@ export function ContactDetailPage() {
                   <tr key={String(t.id)} className="border-t border-border">
                     <td className="px-4 py-3">
                       <Link className="font-mono text-accent-blue hover:underline" to={`/tickets/${t.id}`}>
-                        {formatServiceId(t.ticketNo)}
+                        {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)}
                       </Link>
                     </td>
                     <td className="px-4 py-3">{String(t.subject)}</td>

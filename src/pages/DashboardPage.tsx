@@ -153,7 +153,6 @@ function SalesExecutiveHomePage() {
 }
 
 function WarehouseHomePage() {
-  const role = useAuthStore((s) => s.user?.role)
   return (
     <div className="space-y-4">
       <PageHeader
@@ -192,7 +191,6 @@ function WarehouseHomePage() {
 
 function ServiceDeskHomePage() {
   const addToast = useUIStore((s) => s.addToast)
-  const role = useAuthStore((s) => s.user?.role)
   const [loading, setLoading] = useState(true)
   const [summary, setSummary] = useState({
     open: 0,
@@ -299,7 +297,7 @@ function ServiceDeskHomePage() {
                   >
                     <div className="min-w-0">
                       <div className="truncate text-sm font-medium">
-                        {formatServiceId(t.ticketNo)} · {String(t.subject)}
+                        {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} · {String(t.subject)}
                       </div>
                     </div>
                     <Badge color={ticketStatusColor[st] ?? 'gray'}>{st.replaceAll('_', ' ')}</Badge>

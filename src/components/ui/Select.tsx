@@ -5,9 +5,10 @@ interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
   label?: string
   options: { value: string; label: string }[]
   placeholder?: string
+  error?: string
 }
 
-export function Select({ label, options, placeholder, className, id, ...props }: SelectProps) {
+export function Select({ label, options, placeholder, className, id, error, ...props }: SelectProps) {
   const selectId = id ?? label?.toLowerCase().replace(/\s+/g, '-')
   return (
     <div className="flex flex-col gap-1">
@@ -20,8 +21,10 @@ export function Select({ label, options, placeholder, className, id, ...props }:
         id={selectId}
         className={cn(
           'h-9 w-full rounded-[6px] border border-border bg-card px-3 text-base text-text-primary outline-none transition-all duration-150 focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20',
+          error && 'border-red-500 focus:border-red-500 focus:ring-red-500/20',
           className,
         )}
+        aria-invalid={Boolean(error) || undefined}
         {...props}
       >
         {placeholder && (
@@ -33,6 +36,7 @@ export function Select({ label, options, placeholder, className, id, ...props }:
           </option>
         ))}
       </select>
+      {error ? <p className="text-xs text-red-600">{error}</p> : null}
     </div>
   )
 }

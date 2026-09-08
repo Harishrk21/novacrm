@@ -137,7 +137,7 @@ export function Topbar() {
             ...tickets.map((t) => ({
               id: String(t.id),
               type: 'ticket',
-              primary: `${formatServiceId(t.ticketNo)} ${String(t.subject ?? '')}`,
+              primary: `${formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} ${String(t.subject ?? '')}`,
               secondary: String(t.status ?? ''),
             })),
             ...deals.map((d) => ({

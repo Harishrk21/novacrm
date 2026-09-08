@@ -278,7 +278,7 @@ export function EmployeeDashboardPage() {
         ) : current ? (
           <div className="rounded-[10px] border border-border bg-white p-5 shadow-sm">
             <h3 className="text-xl font-semibold text-text-primary">
-              {formatServiceId(current.ticketNo)} — {String(current.subject)}
+              {formatServiceId(current.ticketNo != null ? String(current.ticketNo) : undefined)} — {String(current.subject)}
             </h3>
             {current.description ? (
               <p className="mt-2 line-clamp-3 text-sm text-text-secondary">{String(current.description)}</p>
@@ -326,7 +326,7 @@ export function EmployeeDashboardPage() {
                       {idx + 2}
                     </span>
                     <span className="truncate font-medium">
-                      {formatServiceId(t.ticketNo)} {String(t.subject)}
+                      {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} {String(t.subject)}
                     </span>
                   </span>
                   <ChevronRight size={16} className="shrink-0 text-text-secondary" />
@@ -354,7 +354,7 @@ export function EmployeeDashboardPage() {
               >
                 <div className="min-w-0">
                   <div className="truncate font-medium">
-                    {formatServiceId(t.ticketNo)} — {String(t.subject)}
+                    {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} — {String(t.subject)}
                   </div>
                   <div className="text-xs text-text-secondary">
                     {t.slaDueAt ? `SLA ${formatDateTime(String(t.slaDueAt))}` : timeAgo(String(t.createdAt))}
@@ -440,7 +440,7 @@ export function EmployeeDashboardPage() {
         title="Complete service?"
         subtitle={
           current
-            ? `${formatServiceId(current.ticketNo)} — ${String(current.subject)}`
+            ? `${formatServiceId(current.ticketNo != null ? String(current.ticketNo) : undefined)} — ${String(current.subject)}`
             : undefined
         }
         size="sm"

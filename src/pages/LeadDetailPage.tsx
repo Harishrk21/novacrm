@@ -523,11 +523,11 @@ export function LeadDetailPage() {
           <div className="mt-1 truncate text-sm font-semibold" title={productLabel}>
             {productLabel}
           </div>
-          {(cf.demoCatalogFamily || cf.demoCatalogIndustry) && (
+          {(cf.demoCatalogFamily || cf.demoCatalogIndustry) ? (
             <div className="mt-0.5 truncate text-xs text-text-secondary">
               {[cf.demoCatalogFamily, cf.demoCatalogIndustry].filter(Boolean).map(String).join(' · ')}
             </div>
-          )}
+          ) : null}
         </Card>
         <Card className="px-4 py-3">
           <div className="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">

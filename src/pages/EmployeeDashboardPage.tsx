@@ -12,10 +12,12 @@ import {
 } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
+import { Avatar } from '@/components/ui/Avatar'
 import { Badge, activityStatusColor, leadStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Modal } from '@/components/ui/Modal'
+import { formatServiceId } from '@/lib/serviceId'
 import { api, ApiClientError, isTenantSession } from '@/lib/api'
 import { formatDateTime, timeAgo } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
@@ -195,7 +197,12 @@ export function EmployeeDashboardPage() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title={`Hi, ${user?.name?.split(' ')[0] ?? 'there'}`}
+        title={
+          <span className="inline-flex items-center gap-3">
+            <Avatar name={user?.name ?? 'User'} src={user?.avatarUrl} size="lg" />
+            <span>{`Hi, ${user?.name?.split(' ')[0] ?? 'there'}`}</span>
+          </span>
+        }
         breadcrumbs={[{ label: 'Service desk' }, { label: 'My work' }]}
         actions={
           <div className="flex flex-wrap gap-2">
@@ -217,14 +224,6 @@ export function EmployeeDashboardPage() {
       />
 
       <PageTip moduleKey="crm.employee" />
-
-      <div className="rounded-[10px] border border-sky-200 bg-sky-50/70 px-4 py-3 text-sm text-text-secondary">
-        <span className="font-semibold text-text-primary">Service desk</span> — look up the customer in
-        Contacts, work your tickets by SLA, then Complete service (WhatsApp notifies the customer).{' '}
-        <Link to="/help" className="font-medium text-accent-blue hover:underline">
-          How it works →
-        </Link>
-      </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {stats.map((s) => (
@@ -279,7 +278,7 @@ export function EmployeeDashboardPage() {
         ) : current ? (
           <div className="rounded-[10px] border border-border bg-white p-5 shadow-sm">
             <h3 className="text-xl font-semibold text-text-primary">
-              #{String(current.ticketNo)} — {String(current.subject)}
+              {formatServiceId(current.ticketNo)} — {String(current.subject)}
             </h3>
             {current.description ? (
               <p className="mt-2 line-clamp-3 text-sm text-text-secondary">{String(current.description)}</p>
@@ -327,7 +326,7 @@ export function EmployeeDashboardPage() {
                       {idx + 2}
                     </span>
                     <span className="truncate font-medium">
-                      #{String(t.ticketNo)} {String(t.subject)}
+                      {formatServiceId(t.ticketNo)} {String(t.subject)}
                     </span>
                   </span>
                   <ChevronRight size={16} className="shrink-0 text-text-secondary" />
@@ -355,7 +354,7 @@ export function EmployeeDashboardPage() {
               >
                 <div className="min-w-0">
                   <div className="truncate font-medium">
-                    #{String(t.ticketNo)} — {String(t.subject)}
+                    {formatServiceId(t.ticketNo)} — {String(t.subject)}
                   </div>
                   <div className="text-xs text-text-secondary">
                     {t.slaDueAt ? `SLA ${formatDateTime(String(t.slaDueAt))}` : timeAgo(String(t.createdAt))}
@@ -441,7 +440,7 @@ export function EmployeeDashboardPage() {
         title="Complete service?"
         subtitle={
           current
-            ? `Ticket #${String(current.ticketNo)} — ${String(current.subject)}`
+            ? `${formatServiceId(current.ticketNo)} — ${String(current.subject)}`
             : undefined
         }
         size="sm"

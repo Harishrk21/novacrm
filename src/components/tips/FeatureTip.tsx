@@ -84,8 +84,8 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
     tipType: 'TIP',
   },
   'erp.invoices': {
-    title: 'Invoicing tip',
-    body: 'Prefer creating invoices from Sales Orders so CRM deals, stock and payments stay in sync.',
+    title: 'Proforma invoices (not Tally tax invoices)',
+    body: 'Create and print proforma estimates from CRM for customers. Final GST tax invoices and collections stay in Tally — handled by warehouse/billing.',
     tipType: 'TIP',
   },
   'erp.purchase_orders': {
@@ -139,8 +139,8 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
     tipType: 'TIP',
   },
   'crm.help': {
-    title: 'Service → done',
-    body: 'Contact history → Service ticket → Work → Resolved → WhatsApp. Sales leads are secondary under the Sales menu.',
+    title: 'Role-based guide',
+    body: 'How it works opens from the ? icon in the header (right-side panel), or Full page under Main → How it works. It adapts to your login.',
     tipType: 'TIP',
   },
   'settings.custom_fields': {

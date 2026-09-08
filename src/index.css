@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* App theme toggle uses data-theme on <html>, not prefers-color-scheme */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @theme {
   --color-sidebar-bg: #0F172A;
   --color-sidebar-text: #94A3B8;
@@ -162,4 +165,90 @@ header,
 aside,
 main {
   transition: background-color 220ms ease, border-color 220ms ease, color 220ms ease;
+}
+
+/* Sale tracking / page motion */
+@keyframes st-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes st-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes st-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.st-enter {
+  animation: st-fade-up 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.st-enter-scale {
+  animation: st-scale-in 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.st-delay-1 {
+  animation-delay: 60ms;
+}
+.st-delay-2 {
+  animation-delay: 120ms;
+}
+.st-delay-3 {
+  animation-delay: 180ms;
+}
+.st-delay-4 {
+  animation-delay: 240ms;
+}
+.st-delay-5 {
+  animation-delay: 300ms;
+}
+
+.st-kpi {
+  transition:
+    transform 200ms ease,
+    box-shadow 200ms ease,
+    border-color 200ms ease;
+}
+
+.st-kpi:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-hover);
+}
+
+.st-row {
+  transition: background-color 160ms ease, transform 160ms ease;
+}
+
+.st-row:hover {
+  background-color: color-mix(in srgb, var(--color-accent-blue) 6%, var(--color-card));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .st-enter,
+  .st-enter-scale,
+  .st-kpi,
+  .st-row {
+    animation: none !important;
+    transition: none !important;
+  }
 }

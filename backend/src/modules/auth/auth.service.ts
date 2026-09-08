@@ -10,13 +10,39 @@ const hash = (token: string) => crypto.createHash("sha256").update(token).digest
 const expiryDate = () => { const match = env.JWT_REFRESH_EXPIRY.match(/^(\d+)([dhm])$/); const n = Number(match?.[1] ?? 7); const unit = match?.[2] ?? "d"; return new Date(Date.now() + n * (unit === "d" ? 86400000 : unit === "h" ? 3600000 : 60000)); };
 function accessToken(payload: object) { return jwt.sign(payload, env.JWT_ACCESS_SECRET, { expiresIn: env.JWT_ACCESS_EXPIRY as SignOptions["expiresIn"] }); }
 async function issueRefresh(subject: { userId?: string; platformAdminId?: string }, meta: Meta) { const id = newId(); const token = jwt.sign({ kind: "refresh", tokenId: id }, env.JWT_REFRESH_SECRET, { expiresIn: env.JWT_REFRESH_EXPIRY as SignOptions["expiresIn"], jwtid: id }); await prisma.refreshToken.create({ data: { id, ...subject, tokenHash: hash(token), expiresAt: expiryDate(), userAgent: meta.userAgent?.slice(0,255), ipAddress: meta.ip } }); return token; }
-export async function platformLogin(email: string, password: string, meta: Meta) { const admin = await prisma.platformAdmin.findFirst({ where: { email, status: "ACTIVE", deletedAt: null } }); if (!admin || !(await bcrypt.compare(password, admin.passwordHash))) throw new AppError("Invalid credentials", 401); await prisma.platformAdmin.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } }); const refreshToken = await issueRefresh({ platformAdminId: admin.id }, meta); return { accessToken: accessToken({ kind: "platform", adminId: admin.id, role: admin.role }), refreshToken, user: { id: admin.id, name: admin.name, email: admin.email, role: admin.role, kind: "platform" } }; }
+
+/** Legacy Precision demo emails → HMS Enterprises (single-company dashboard). */
+const LEGACY_STAFF_EMAILS: Record<string, string> = {
+  "demo@precisionscales.in": "admin@hmsenterprises.in",
+  "desk@precisionscales.in": "desk@hmsenterprises.in",
+  "engineer@precisionscales.in": "engineer@hmsenterprises.in",
+  "warehouse@precisionscales.in": "warehouse@hmsenterprises.in",
+  "sales@precisionscales.in": "sales@hmsenterprises.in",
+  "karthik@precisionscales.in": "karthik@hmsenterprises.in",
+  "priya@precisionscales.in": "priya@hmsenterprises.in",
+  "arun@precisionscales.in": "arun@hmsenterprises.in",
+};
+
+function loginEmailCandidates(email: string): string[] {
+  const e = email.trim().toLowerCase();
+  const set = new Set<string>([e]);
+  if (LEGACY_STAFF_EMAILS[e]) set.add(LEGACY_STAFF_EMAILS[e]);
+  for (const [legacy, modern] of Object.entries(LEGACY_STAFF_EMAILS)) {
+    if (modern === e) set.add(legacy);
+  }
+  return [...set];
+}
+
+export async function platformLogin(_email: string, _password: string, _meta: Meta) {
+  throw new AppError("Platform admin is disabled — this is the HMS Enterprises company dashboard only", 403);
+}
 export async function tenantLogin(
   locator: { tenantSlug?: string; tenantCode?: string },
   email: string,
   password: string,
   meta: Meta,
 ) {
+  const emails = loginEmailCandidates(email);
   let tenantId: string | undefined;
   if (locator.tenantSlug || locator.tenantCode) {
     const tenant = await prisma.tenant.findFirst({
@@ -31,7 +57,7 @@ export async function tenantLogin(
   } else {
     const candidates = await prisma.user.findMany({
       where: {
-        email,
+        email: { in: emails },
         status: "ACTIVE",
         deletedAt: null,
       },
@@ -58,7 +84,7 @@ export async function tenantLogin(
     tenantId = matches[0].tenantId;
   }
   const user = await prisma.user.findFirst({
-    where: { tenantId, email, status: "ACTIVE", deletedAt: null },
+    where: { tenantId, email: { in: emails }, status: "ACTIVE", deletedAt: null },
   });
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
     throw new AppError("Invalid credentials", 401);
@@ -85,9 +111,12 @@ export async function tenantLogin(
       id: user.id,
       name: user.name,
       email: user.email,
+      phone: user.phone,
+      avatarUrl: user.avatarUrl,
       role: role.code,
       tenantId: user.tenantId,
       tenantSlug: tenant?.slug,
+      tenantName: tenant?.name,
       kind: "tenant",
     },
   };

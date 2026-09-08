@@ -1,18 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
   CheckCircle2,
-  Clock3,
+  ChevronDown,
   Download,
   FileText,
-  MessageCircle,
   Package,
   Building2,
   UserRound,
   Play,
   Wallet,
   Send,
+  Phone,
+  CalendarClock,
+  Camera,
+  ImagePlus,
+  PenLine,
 } from 'lucide-react'
 import { Badge, ticketStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -29,23 +33,83 @@ import { formatCurrency, formatDate, formatDateTime, formatPhone } from '@/lib/u
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { SparePartsPanel } from '@/components/contacts/SparePartsPanel'
+import { formatServiceId } from '@/lib/serviceId'
+import { MissingBanner, focusFirstMissing, sectionErrorClass } from '@/components/ui/MissingField'
+import { WhatsAppSendConfirm, type WhatsAppConfirmPayload } from '@/components/whatsapp/WhatsAppSendConfirm'
+import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
+import {
+  canAssignTickets,
+  canApproveTickets,
+  canAccessErp,
+  filterServiceEngineers,
+  isCompanyAdmin,
+  isServiceDesk,
+  isServiceEngineer,
+  type LookupUser,
+} from '@/lib/roles'
+import { AiAssistCard } from '@/components/ai/AiAssistCard'
 
 const labelize = (value: string) =>
   value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
+
+const PAYMENT_METHODS = [
+  { value: 'CASH', label: 'Cash' },
+  { value: 'UPI', label: 'UPI / GPay' },
+  { value: 'NEFT', label: 'NEFT' },
+  { value: 'RTGS', label: 'RTGS' },
+  { value: 'CHEQUE', label: 'Cheque' },
+  { value: 'CARD', label: 'Card' },
+  { value: 'OTHER', label: 'Other' },
+] as const
+
+const STATUS_TRANSITIONS: Record<string, string[]> = {
+  OPEN: ['OPEN', 'IN_PROGRESS', 'PENDING', 'RESOLVED'],
+  IN_PROGRESS: ['IN_PROGRESS', 'PENDING', 'OPEN', 'RESOLVED'],
+  PENDING: ['PENDING', 'IN_PROGRESS', 'OPEN', 'RESOLVED'],
+  RESOLVED: ['RESOLVED', 'CLOSED', 'IN_PROGRESS'],
+  CLOSED: ['CLOSED', 'IN_PROGRESS'],
+}
+
+const ONLINE_PAY = new Set(['UPI', 'NEFT', 'RTGS', 'CARD'])
 
 export function TicketDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const addToast = useUIStore((s) => s.addToast)
   const tenantName = useAuthStore((s) => s.user?.tenantName)
+  const authUser = useAuthStore((s) => s.user)
+  const role = authUser?.role
+  const isAdmin = isCompanyAdmin(role) || canAssignTickets(role)
+  const isDesk = isServiceDesk(role)
+  const isEngineer = isServiceEngineer(role)
+  /** Advance / total / balance — engineer + admin */
+  const showPayment = isAdmin || isEngineer
+  /** Invoice, mark paid, WhatsApp docs — admin only */
+  const showPaymentAdminTools = isAdmin
+  const showAssign = canAssignTickets(role)
+  const showApprove = canApproveTickets(role)
   const [ticket, setTicket] = useState<Record<string, unknown> | null>(null)
-  const [users, setUsers] = useState<Array<{ id: string; name: string }>>([])
+  const [users, setUsers] = useState<LookupUser[]>([])
   const [message, setMessage] = useState('')
+  const [dayNote, setDayNote] = useState('')
+  const [billMenuOpen, setBillMenuOpen] = useState(false)
+  const billMenuRef = useRef<HTMLDivElement>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [completeOpen, setCompleteOpen] = useState(false)
   const [completeStatus, setCompleteStatus] = useState<'RESOLVED' | 'CLOSED'>('RESOLVED')
-  const [payDraft, setPayDraft] = useState({ paymentTotal: '', advanceAmount: '', odAmount: '' })
+  const [waPending, setWaPending] = useState<{
+    payload: WhatsAppConfirmPayload
+    execute: (sendWhatsApp: boolean) => Promise<void>
+  } | null>(null)
+  const [payDraft, setPayDraft] = useState({
+    paymentTotal: '',
+    advanceAmount: '',
+    paymentMethod: 'CASH',
+    paymentReference: '',
+    paymentProofUrl: '',
+  })
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [editDraft, setEditDraft] = useState({
     subject: '',
     description: '',
@@ -53,6 +117,10 @@ export function TicketDetailPage() {
     nextDueDate: '',
     category: '',
     channel: '',
+    vcNumber: '',
+    stampingQuarter: '',
+    plateNo: '',
+    verificationClass: '',
   })
   const [lastInvoice, setLastInvoice] = useState<Record<string, unknown> | null>(null)
   const [visitDraft, setVisitDraft] = useState({
@@ -61,42 +129,106 @@ export function TicketDetailPage() {
     notes: '',
     engineerId: '',
   })
+  const [evidenceBusy, setEvidenceBusy] = useState(false)
 
-  const load = useCallback(async () => {
+  const engineers = useMemo(() => filterServiceEngineers(users), [users])
+  const engineerOptions = useMemo(
+    () =>
+      engineers.map((u) => ({
+        value: u.id,
+        label: u.name,
+      })),
+    [engineers],
+  )
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!id) return
-    setLoading(true)
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const [row, lookups] = await Promise.all([api.getTicket(id), api.lookups()])
       setTicket(row)
       setUsers(lookups.users)
-      const cf = (row.customFields as Record<string, unknown>) ?? {}
-      setPayDraft({
-        paymentTotal: String(num(row.paymentTotal) || ''),
-        advanceAmount: String(num(row.advanceAmount) || ''),
-        odAmount: String(num(row.odAmount) || ''),
-      })
-      setEditDraft({
-        subject: String(row.subject ?? ''),
-        description: String(row.description ?? ''),
-        stampingDate: row.stampingDate ? String(row.stampingDate).slice(0, 10) : '',
-        nextDueDate: row.nextDueDate ? String(row.nextDueDate).slice(0, 10) : '',
-        category: String(cf.category ?? ''),
-        channel: String(cf.channel ?? ''),
-      })
+      // On background poll, do not wipe in-progress payment / issue edits
+      if (!silent) {
+        const cf = (row.customFields as Record<string, unknown>) ?? {}
+        const legal = (cf.stampingLegal as Record<string, unknown> | undefined) ?? {}
+        setPayDraft({
+          paymentTotal: String(num(row.paymentTotal) || ''),
+          advanceAmount: String(num(row.advanceAmount) || ''),
+          paymentMethod: String(row.paymentMethod || 'CASH'),
+          paymentReference: String(row.paymentReference || ''),
+          paymentProofUrl: String(row.paymentProofUrl || ''),
+        })
+        setEditDraft({
+          subject: String(row.subject ?? ''),
+          description: String(row.description ?? ''),
+          stampingDate: row.stampingDate ? String(row.stampingDate).slice(0, 10) : '',
+          nextDueDate: row.nextDueDate ? String(row.nextDueDate).slice(0, 10) : '',
+          category: String(cf.category ?? ''),
+          channel: String(cf.channel ?? ''),
+          vcNumber: String(legal.vcNumber ?? ''),
+          stampingQuarter: String(legal.stampingQuarter ?? ''),
+          plateNo: String(legal.plateNo ?? ''),
+          verificationClass: String(legal.verificationClass ?? ''),
+        })
+      }
     } catch (err) {
-      setTicket(null)
-      addToast({
-        type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Could not open this service job',
-      })
+      if (!silent) {
+        setTicket(null)
+        addToast({
+          type: 'error',
+          message: err instanceof ApiClientError ? err.message : 'Could not open this service job',
+        })
+      }
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast, id])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!billMenuOpen) return
+    function onDocClick(e: MouseEvent) {
+      if (billMenuRef.current && !billMenuRef.current.contains(e.target as Node)) {
+        setBillMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [billMenuOpen])
+
+  // Desk: quiet poll while waiting for admin assign (no full-page loading flash)
+  useEffect(() => {
+    if (!(isDesk && !isAdmin)) return
+    const waiting = String(ticket?.status) === 'OPEN' && !ticket?.assignedToId
+    if (!waiting) return
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return
+      void load({ silent: true })
+    }, 20000)
+    const onFocus = () => void load({ silent: true })
+    window.addEventListener('focus', onFocus)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [isDesk, isAdmin, ticket?.status, ticket?.assignedToId, load])
+
+  // Admin: quiet poll for engineer progress — never remount the page
+  useEffect(() => {
+    if (!isAdmin || !id) return
+    const st = String(ticket?.status ?? '')
+    if (st === 'CLOSED') return
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return
+      void load({ silent: true })
+    }, 30000)
+    return () => window.clearInterval(timer)
+  }, [isAdmin, id, ticket?.status, load])
 
   function handleWhatsappResult(
     whatsapp?: {
@@ -141,23 +273,127 @@ export function TicketDetailPage() {
   }
 
   function askComplete(nextStatus: 'RESOLVED' | 'CLOSED' = 'RESOLVED') {
+    if (nextStatus === 'RESOLVED' && !ticket?.assignedToId) {
+      addToast({ type: 'error', message: 'Assign an engineer before marking complete' })
+      return
+    }
+    if (nextStatus === 'CLOSED') {
+      const total = num(ticket?.paymentTotal)
+      const adv = num(ticket?.advanceAmount)
+      const free = total <= 0 && adv <= 0
+      const paid = String(ticket?.paymentStatus ?? '') === 'PAID'
+      if (!free && !paid) {
+        addToast({
+          type: 'error',
+          message: 'Mark paid (method + proof if online) before approving & closing',
+        })
+        return
+      }
+    }
     setCompleteStatus(nextStatus)
     setCompleteOpen(true)
   }
 
   async function confirmComplete() {
     setCompleteOpen(false)
-    await patchTicket(
-      { status: completeStatus },
-      completeStatus === 'CLOSED' ? 'Ticket closed' : 'Service marked complete',
-    )
+    if (completeStatus === 'CLOSED') {
+      setWaPending({
+        payload: {
+          title: 'Close ticket & WhatsApp customer?',
+          lines: [
+            'Template ticket_completed_customer → customer',
+            `Ticket ${formatServiceId(ticket?.ticketNo)} · summary + amount due`,
+          ],
+          note: 'Uses customer name, ticket no, work summary, and amount from this ticket.',
+        },
+        execute: (send) => approveCompleted(send),
+      })
+      return
+    }
+    setWaPending({
+      payload: {
+        title: 'Mark complete & WhatsApp status?',
+        lines: [
+          'Template ticket_status_update → customer',
+          `Status → Resolved · ticket ${formatServiceId(ticket?.ticketNo)}`,
+        ],
+      },
+      execute: (send) =>
+        patchTicket(
+          { status: 'RESOLVED', sendWhatsApp: send, whatsappNote: 'Service marked complete — pending admin approval' },
+          'Service marked complete',
+        ),
+    })
   }
 
   async function markPaidFully() {
     if (!id) return
+    const method = payDraft.paymentMethod || 'CASH'
+    const total = Number(payDraft.paymentTotal) || 0
+    const ok = focusFirstMissing(
+      [
+        {
+          key: 'paymentTotal',
+          sectionId: 'section-payment',
+          ok: total > 0,
+          message: 'Total payment is required (enter the job charge). Close as free job if ₹0.',
+        },
+        {
+          key: 'paymentMethod',
+          sectionId: 'section-payment',
+          ok: Boolean(method),
+          message: 'Select payment method (Cash / UPI / …).',
+        },
+        {
+          key: 'paymentReference',
+          sectionId: 'section-payment',
+          ok: !ONLINE_PAY.has(method) && method !== 'CHEQUE' ? true : Boolean(payDraft.paymentReference.trim()),
+          message: ONLINE_PAY.has(method)
+            ? 'UTR / transaction reference is missing for online payment.'
+            : 'Cheque number is missing.',
+        },
+        {
+          key: 'paymentProofUrl',
+          sectionId: 'section-payment',
+          ok: !ONLINE_PAY.has(method) ? true : Boolean(payDraft.paymentProofUrl.trim()),
+          message: 'Payment proof screenshot / receipt is missing for online payment.',
+        },
+      ],
+      setFieldErrors,
+    )
+    if (!ok) {
+      addToast({ type: 'error', message: 'Missing payment details — jumped to Payment (highlighted red).' })
+      return
+    }
+    setWaPending({
+      payload: {
+        title: 'Mark paid & WhatsApp receipt?',
+        lines: [
+          'Template payment_received_customer → customer',
+          `Amount ${formatCurrency(total)} · ticket ${formatServiceId(ticket?.ticketNo)}`,
+        ],
+        note: 'Saves Total payment / Advance / Balance, then marks paid.',
+      },
+      execute: (send) => doMarkPaid(send),
+    })
+  }
+
+  async function doMarkPaid(sendWhatsApp: boolean) {
+    if (!id) return
+    const method = payDraft.paymentMethod || 'CASH'
     setBusy(true)
     try {
-      const updated = await api.markTicketPaid(id)
+      const total = Number(payDraft.paymentTotal) || 0
+      const advance = Number(payDraft.advanceAmount) || 0
+      const updated = await api.markTicketPaid(id, {
+        paymentMethod: method as 'CASH' | 'UPI' | 'NEFT' | 'RTGS' | 'CHEQUE' | 'CARD' | 'OTHER',
+        paymentReference: payDraft.paymentReference.trim() || null,
+        paymentProofUrl: payDraft.paymentProofUrl.trim() || null,
+        paymentTotal: total,
+        advanceAmount: advance,
+        sendWhatsApp,
+      })
+      setFieldErrors({})
       setTicket((prev) => ({ ...(prev ?? {}), ...updated }))
       if (updated.invoice) setLastInvoice(updated.invoice as Record<string, unknown>)
       addToast({
@@ -169,7 +405,7 @@ export function TicketDetailPage() {
       if (updated.invoiceError) {
         addToast({ type: 'warning', message: String(updated.invoiceError) })
       }
-      handleWhatsappResult(updated.whatsapp, 'paid')
+      if (sendWhatsApp) handleWhatsappResult(updated.whatsapp, 'paid')
       await load()
     } catch (err) {
       addToast({
@@ -178,6 +414,68 @@ export function TicketDetailPage() {
       })
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function uploadPaymentProof(file?: File | null) {
+    if (!file) return
+    setEvidenceBusy(true)
+    try {
+      const uploaded = await api.uploadFile(file)
+      setPayDraft((p) => ({ ...p, paymentProofUrl: uploaded.url }))
+      addToast({ type: 'success', message: 'Payment proof uploaded' })
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Upload failed',
+      })
+    } finally {
+      setEvidenceBusy(false)
+    }
+  }
+
+  async function uploadFieldPhoto(file?: File | null) {
+    if (!file || !id || !ticket) return
+    setEvidenceBusy(true)
+    try {
+      const uploaded = await api.uploadImage(file)
+      const cf = (ticket.customFields as Record<string, unknown>) ?? {}
+      const photos = Array.isArray(cf.fieldPhotos) ? [...(cf.fieldPhotos as Array<Record<string, unknown>>)] : []
+      photos.push({
+        id: crypto.randomUUID(),
+        url: uploaded.url,
+        caption: file.name,
+        at: new Date().toISOString(),
+        byUserId: authUser?.id ?? null,
+        byName: authUser?.name ?? null,
+      })
+      await patchTicket({ customFields: { ...cf, fieldPhotos: photos } }, 'Field photo added')
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Photo upload failed',
+      })
+    } finally {
+      setEvidenceBusy(false)
+    }
+  }
+
+  async function uploadSignature(file?: File | null) {
+    if (!file || !id) return
+    setEvidenceBusy(true)
+    try {
+      const uploaded = await api.uploadImage(file)
+      await patchTicket(
+        { signatureUrl: uploaded.url },
+        'Customer signature saved',
+      )
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Signature upload failed',
+      })
+    } finally {
+      setEvidenceBusy(false)
     }
   }
 
@@ -209,6 +507,25 @@ export function TicketDetailPage() {
       addToast({
         type: 'error',
         message: err instanceof ApiClientError ? err.message : 'Could not send WhatsApp',
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function sendBillSummaryToCustomer() {
+    if (!id) return
+    downloadJobSheet()
+    setBusy(true)
+    try {
+      const updated = await api.createTicketInvoice(id)
+      if (updated.invoice) setLastInvoice(updated.invoice as Record<string, unknown>)
+      handleWhatsappResult(updated.whatsapp, 'invoice')
+      await load()
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not send bill to customer',
       })
     } finally {
       setBusy(false)
@@ -258,7 +575,7 @@ export function TicketDetailPage() {
       status: String(inv.status ?? 'SENT'),
       invoiceDate: inv.invoiceDate ? formatDate(String(inv.invoiceDate)) : formatDate(new Date().toISOString()),
       dueDate: inv.dueDate ? formatDate(String(inv.dueDate)) : null,
-      sellerName: tenantName || 'NovaCRM',
+      sellerName: tenantName || 'HMS Enterprises',
       accountName: account?.name || contact?.name || 'Customer',
       contactName: contact?.name,
       billingAddress: address || undefined,
@@ -307,6 +624,7 @@ export function TicketDetailPage() {
       addToast({ type: 'error', message: 'Subject is required' })
       return
     }
+    const cf = (ticket?.customFields as Record<string, unknown>) ?? {}
     await patchTicket(
       {
         subject: editDraft.subject.trim(),
@@ -315,19 +633,17 @@ export function TicketDetailPage() {
         nextDueDate: editDraft.nextDueDate || null,
         category: editDraft.category || null,
         channel: editDraft.channel || null,
+        customFields: {
+          ...cf,
+          stampingLegal: {
+            vcNumber: editDraft.vcNumber.trim() || null,
+            stampingQuarter: editDraft.stampingQuarter.trim() || null,
+            plateNo: editDraft.plateNo.trim() || null,
+            verificationClass: editDraft.verificationClass.trim() || null,
+          },
+        },
       },
       'Ticket details saved',
-    )
-  }
-
-  async function savePayments() {
-    await patchTicket(
-      {
-        paymentTotal: Number(payDraft.paymentTotal) || 0,
-        advanceAmount: Number(payDraft.advanceAmount) || 0,
-        odAmount: Number(payDraft.odAmount) || 0,
-      },
-      'Payment amounts updated',
     )
   }
 
@@ -355,7 +671,7 @@ export function TicketDetailPage() {
         (t.invoice as { invoiceNumber?: string } | undefined)?.invoiceNumber ||
         ''
       const ok = openPrintableJobSheet({
-        companyName: tenantName || 'NovaCRM',
+        companyName: tenantName || 'HMS Enterprises',
         ticketNo: String(t.ticketNo ?? ''),
         subject: String(t.subject ?? ''),
         status: String(t.status ?? ''),
@@ -381,7 +697,7 @@ export function TicketDetailPage() {
         amcEndDate: asset?.amcEndDate ? formatDate(String(asset.amcEndDate)) : null,
         stampingDate: t.stampingDate ? formatDate(String(t.stampingDate)) : null,
         nextDueDate: t.nextDueDate ? formatDate(String(t.nextDueDate)) : null,
-        odAmount: num(t.odAmount),
+        odAmount: 0,
         paymentTotal: num(t.paymentTotal),
         advanceAmount: num(t.advanceAmount),
         balanceDue: num(t.balanceDue),
@@ -450,6 +766,145 @@ export function TicketDetailPage() {
     setVisitDraft((v) => ({ ...v, notes: '' }))
   }
 
+  async function addDayNote() {
+    if (!id || !ticket || !dayNote.trim()) return
+    const cf = (ticket.customFields as Record<string, unknown>) ?? {}
+    const existing = Array.isArray(cf.dayNotes) ? (cf.dayNotes as Array<Record<string, unknown>>) : []
+    const entry = {
+      id: crypto.randomUUID(),
+      date: new Date().toISOString().slice(0, 10),
+      at: new Date().toISOString(),
+      note: dayNote.trim(),
+      byUserId: authUser?.id ?? null,
+      byName: authUser?.name ?? 'Engineer',
+      day: existing.length + 1,
+    }
+    await patchTicket(
+      {
+        customFields: {
+          ...cf,
+          dayNotes: [...existing, entry],
+        },
+      },
+      `Day ${entry.day} note saved`,
+    )
+    setDayNote('')
+  }
+
+  async function assignAndStart(userId: string) {
+    if (!userId) return
+    const prevId = ticket?.assignedToId ? String(ticket.assignedToId) : ''
+    const prevName =
+      users.find((u) => u.id === prevId)?.name ??
+      (ticket?.assignee as { name?: string } | undefined)?.name ??
+      'Unassigned'
+    const nextUser = users.find((u) => u.id === userId)
+    const nextName = nextUser?.name ?? 'engineer'
+    const nextPhone = (nextUser as { phone?: string | null } | undefined)?.phone
+    setWaPending({
+      payload: {
+        title: 'Assign engineer & WhatsApp them?',
+        lines: [
+          `Template ticket_assigned_engineer → ${nextName}${nextPhone ? ` (${nextPhone})` : ' — no mobile on user!'}`,
+          'Params: engineer, ticket no, customer, phone, location, issue',
+        ],
+        note: nextPhone
+          ? 'Uses the engineer mobile from Users & Roles. Choose Send so they get the job alert.'
+          : 'Add this engineer’s mobile under Users & Roles first, or WhatsApp cannot send.',
+      },
+      execute: async (send) => {
+        const updated = await api.updateTicket(id!, {
+          assignedToId: userId,
+          receivedByUserId: userId,
+          status: 'IN_PROGRESS',
+          sendWhatsApp: send,
+          whatsappNote: 'Engineer assigned — work started',
+        })
+        setTicket((prev) => ({ ...(prev ?? {}), ...updated }))
+        addToast({
+          type: 'success',
+          message:
+            prevId && prevId !== userId
+              ? `Reassigned ${prevName} → ${nextName}`
+              : 'Engineer assigned — status In progress',
+        })
+        const engWa = (updated as { engineerWhatsapp?: { notified?: boolean; reason?: string } })
+          .engineerWhatsapp
+        if (send) {
+          if (engWa?.notified) {
+            addToast({ type: 'success', message: 'WhatsApp sent to engineer' })
+          } else {
+            addToast({
+              type: 'warning',
+              message: `Engineer WhatsApp not sent${engWa?.reason ? `: ${engWa.reason}` : ''}`,
+            })
+          }
+        }
+        if (prevId && prevId !== userId && id) {
+          try {
+            await api.addTicketMessage(id, {
+              content: `Reassigned from ${prevName} to ${nextName} by admin.`,
+              isInternal: true,
+            })
+          } catch {
+            /* non-blocking */
+          }
+        }
+        await load()
+      },
+    })
+  }
+
+  async function approveCompleted(sendWhatsApp = false) {
+    if (!id) return
+    const total = Math.max(num(ticket?.paymentTotal), Number(payDraft.paymentTotal) || 0)
+    const adv = Math.max(num(ticket?.advanceAmount), Number(payDraft.advanceAmount) || 0)
+    const free = total <= 0 && adv <= 0
+    const paid = String(ticket?.paymentStatus ?? '') === 'PAID'
+    if (!free && !paid) {
+      focusFirstMissing(
+        [
+          {
+            key: 'paymentTotal',
+            sectionId: 'section-payment',
+            ok: false,
+            message: 'Mark paid first (Total payment → Advance → Balance, then Mark paid).',
+          },
+        ],
+        setFieldErrors,
+      )
+      addToast({
+        type: 'error',
+        message: 'Missing — mark paid before approving & closing (scrolled to Payment).',
+      })
+      return
+    }
+    setBusy(true)
+    try {
+      const updated = await api.updateTicket(id, { status: 'CLOSED', sendWhatsApp })
+      if (sendWhatsApp) handleWhatsappResult(updated.whatsapp, 'complete')
+      const contactId = ticket?.contactId ? String(ticket.contactId) : ''
+      const params = new URLSearchParams({
+        open: 'create',
+        type: 'service',
+        ticketId: String(id),
+      })
+      if (contactId) params.set('contactId', contactId)
+      addToast({
+        type: 'success',
+        message: 'Ticket closed — opening service invoice…',
+      })
+      navigate(`/erp/invoices?${params.toString()}`)
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not close ticket',
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const balancePreview = useMemo(() => {
     const pay = Number(payDraft.paymentTotal) || 0
     const adv = Number(payDraft.advanceAmount) || 0
@@ -459,6 +914,80 @@ export function TicketDetailPage() {
   const visitLog = useMemo(() => {
     const ticketCf = (ticket?.customFields as Record<string, unknown>) ?? {}
     return Array.isArray(ticketCf.visitLog) ? (ticketCf.visitLog as Array<Record<string, unknown>>) : []
+  }, [ticket])
+
+  const dayNotes = useMemo(() => {
+    const ticketCf = (ticket?.customFields as Record<string, unknown>) ?? {}
+    return Array.isArray(ticketCf.dayNotes) ? (ticketCf.dayNotes as Array<Record<string, unknown>>) : []
+  }, [ticket])
+
+  const progressTimeline = useMemo(() => {
+    if (!ticket) return [] as Array<{ at: string; title: string; detail?: string; tone: string }>
+    const items: Array<{ at: string; title: string; detail?: string; tone: string }> = []
+    items.push({
+      at: String(ticket.createdAt ?? ''),
+      title: 'Ticket created',
+      detail: String(ticket.subject ?? ''),
+      tone: 'blue',
+    })
+    if (ticket.assignedToId) {
+      const name =
+        users.find((u) => u.id === String(ticket.assignedToId))?.name ??
+        (ticket.assignee as { name?: string } | undefined)?.name ??
+        'Engineer'
+      items.push({
+        at: String(ticket.updatedAt ?? ticket.createdAt ?? ''),
+        title: 'Engineer assigned',
+        detail: name,
+        tone: 'purple',
+      })
+    }
+    for (const n of dayNotes) {
+      items.push({
+        at: String(n.at ?? n.createdAt ?? (n.date ? `${String(n.date)}T12:00:00.000Z` : '')),
+        title: `Day ${String(n.day ?? '')} note`,
+        detail: String(n.note ?? n.text ?? '').slice(0, 160),
+        tone: 'amber',
+      })
+    }
+    for (const v of visitLog) {
+      items.push({
+        at: String(v.attendedAt ?? v.at ?? ''),
+        title: 'Visit logged',
+        detail: String(v.notes ?? '').slice(0, 160),
+        tone: 'gray',
+      })
+    }
+    if (ticket.resolvedAt || String(ticket.status) === 'RESOLVED' || String(ticket.status) === 'CLOSED') {
+      items.push({
+        at: String(ticket.resolvedAt ?? ticket.updatedAt ?? ''),
+        title: 'Marked complete (pending approval)',
+        detail: 'Waiting for admin approval',
+        tone: 'amber',
+      })
+    }
+    if (ticket.closedAt || String(ticket.status) === 'CLOSED') {
+      items.push({
+        at: String(ticket.closedAt ?? ''),
+        title: 'Approved & closed',
+        detail: 'Job sheet and invoice available',
+        tone: 'green',
+      })
+    }
+    return items.filter((i) => i.at).sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime())
+  }, [ticket, dayNotes, visitLog, users])
+
+  const openDurationLabel = useMemo(() => {
+    if (!ticket?.createdAt) return null
+    const start = new Date(String(ticket.createdAt)).getTime()
+    const end = ticket.closedAt
+      ? new Date(String(ticket.closedAt)).getTime()
+      : ticket.resolvedAt
+        ? new Date(String(ticket.resolvedAt)).getTime()
+        : Date.now()
+    const hours = Math.max(0, Math.round((end - start) / 3600_000))
+    if (hours < 24) return `${hours}h open`
+    return `${Math.round(hours / 24)}d ${hours % 24}h open`
   }, [ticket])
 
   if (loading) return <Card className="p-6 text-sm text-text-secondary">Loading ticket…</Card>
@@ -496,296 +1025,719 @@ export function TicketDetailPage() {
   const savedBalance = num(ticket.balanceDue)
   const balanceDirty =
     payDraft.paymentTotal !== String(num(ticket.paymentTotal) || '') ||
-    payDraft.advanceAmount !== String(num(ticket.advanceAmount) || '') ||
-    payDraft.odAmount !== String(num(ticket.odAmount) || '')
+    payDraft.advanceAmount !== String(num(ticket.advanceAmount) || '')
   const balance = balancePreview
+  const ticketLabel = formatServiceId(ticket.ticketNo)
+  const assigneeName =
+    users.find((u) => u.id === String(ticket.assignedToId ?? ''))?.name ??
+    (ticket.assignee as { name?: string } | undefined)?.name ??
+    null
 
-  return (
-    <div className="mx-auto max-w-5xl space-y-4">
-      <div className="flex flex-wrap items-start gap-3">
+  const outsideMachine = isThirdPartyOrigin(asset?.origin ? String(asset.origin) : null)
+  const stepCreated = true
+  const stepAssigned =
+    Boolean(ticket.assignedToId) || ['IN_PROGRESS', 'PENDING', 'RESOLVED', 'CLOSED'].includes(status)
+  const stepWorking = ['IN_PROGRESS', 'PENDING', 'RESOLVED', 'CLOSED'].includes(status)
+  const stepDone = status === 'RESOLVED' || status === 'CLOSED'
+  const waitingAssign = status === 'OPEN' && !ticket.assignedToId
+
+  const machineRows: Array<{ label: string; value: string }> = [
+    { label: 'Machine name', value: asset?.name ? String(asset.name) : '—' },
+    { label: 'Type', value: asset?.machineType ? labelize(String(asset.machineType)) : '—' },
+    { label: 'Model', value: asset?.model ? String(asset.model) : '—' },
+    { label: 'Serial no.', value: asset?.serialNo ? String(asset.serialNo) : '—' },
+    { label: 'Capacity', value: asset?.capacity ? String(asset.capacity) : '—' },
+    { label: 'Accuracy', value: asset?.accuracy ? String(asset.accuracy) : '—' },
+    { label: 'Platform size', value: asset?.platformSize ? String(asset.platformSize) : '—' },
+    {
+      label: 'Origin',
+      value: asset?.origin ? (outsideMachine ? 'Outside / repair' : 'Sold by us') : '—',
+    },
+    // AMC / Non-AMC only for machines sold by us — not outside repair
+    ...(!outsideMachine
+      ? [
+          {
+            label: 'Service plan',
+            value: asset?.servicePlan === 'AMC' ? 'AMC' : asset?.servicePlan ? 'Non-AMC' : '—',
+          },
+          {
+            label: 'AMC period',
+            value:
+              asset?.servicePlan === 'AMC'
+                ? [
+                    asset.amcStartDate ? formatDate(String(asset.amcStartDate)) : null,
+                    asset.amcEndDate ? formatDate(String(asset.amcEndDate)) : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' → ') || '—'
+                : '—',
+          },
+        ]
+      : []),
+    {
+      label: 'Stamping date',
+      value: asset?.stampingDate
+        ? formatDate(String(asset.stampingDate))
+        : ticket.stampingDate
+          ? formatDate(String(ticket.stampingDate))
+          : '—',
+    },
+    {
+      label: 'Next due',
+      value: asset?.nextDueDate
+        ? formatDate(String(asset.nextDueDate))
+        : ticket.nextDueDate
+          ? formatDate(String(ticket.nextDueDate))
+          : '—',
+    },
+    {
+      label: 'Warranty',
+      value: assetCf.warrantyType
+        ? `${String(assetCf.warrantyType)}${assetCf.warrantyUntil ? ` until ${formatDate(String(assetCf.warrantyUntil))}` : ''}`
+        : '—',
+    },
+  ]
+
+  const ticketOverview = (
+    <>
+      <div className="flex flex-wrap items-center gap-3">
         <Button variant="ghost" onClick={() => navigate('/tickets')}>
           <ArrowLeft size={16} /> Back
         </Button>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-xl font-semibold text-text-primary sm:text-2xl">
-              #{String(ticket.ticketNo)} — {String(ticket.subject)}
+            <h1 className="font-mono text-xl font-semibold tracking-tight text-text-primary sm:text-2xl">
+              {ticketLabel}
             </h1>
             <Badge color={breached ? 'red' : ticketStatusColor[status] ?? 'gray'}>{labelize(status)}</Badge>
-            <Badge color={isPaid ? 'green' : paymentStatus === 'PARTIAL' ? 'amber' : 'gray'}>
-              {labelize(paymentStatus)}
-            </Badge>
+            {isAdmin && showPayment ? (
+              <Badge color={isPaid ? 'green' : paymentStatus === 'PARTIAL' ? 'amber' : 'gray'}>
+                {labelize(paymentStatus)}
+              </Badge>
+            ) : null}
             {breached ? <Badge color="red">SLA overdue</Badge> : null}
           </div>
-          <p className="mt-1 text-sm text-text-secondary">
-            {[contact?.name, account?.name, cf.category, cf.channel].filter(Boolean).map(String).join(' · ') ||
-              'Service ticket'}
+          <p className="mt-0.5 truncate text-sm text-text-secondary">
+            {String(ticket.subject)}
+            {contact?.name ? ` · ${contact.name}` : ''}
           </p>
+          <p className="mt-0.5 font-mono text-[11px] text-text-secondary">Unique ticket ID · {ticketLabel}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {isOpen && status === 'OPEN' ? (
-            <Button disabled={busy} onClick={() => void patchTicket({ status: 'IN_PROGRESS' }, 'Work started')}>
+          <Button variant="outline" disabled={busy} onClick={() => void load()}>
+            Refresh
+          </Button>
+          {(isDesk || isAdmin) && (
+            <Link to="/tickets?open=1">
+              <Button variant="outline">New ticket</Button>
+            </Link>
+          )}
+        </div>
+      </div>
+
+      <Card className="p-4">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {[
+            { label: 'Created', on: stepCreated },
+            { label: 'Admin assign', on: stepAssigned },
+            { label: 'In progress', on: stepWorking },
+            { label: 'Completed', on: stepDone },
+          ].map((s, i) => (
+            <div key={s.label} className="flex items-center gap-2">
+              <span
+                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                  s.on ? 'bg-accent-blue text-white' : 'bg-surface text-text-secondary ring-1 ring-border'
+                }`}
+              >
+                {i + 1}
+              </span>
+              <span className={`text-sm ${s.on ? 'font-medium text-text-primary' : 'text-text-secondary'}`}>
+                {s.label}
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div
+          className={`mt-3 flex flex-wrap items-center justify-between gap-3 rounded-[10px] border px-3 py-3 ${
+            waitingAssign
+              ? 'border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100'
+              : stepDone
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-950 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-100'
+                : 'border-sky-200 bg-sky-50 text-sky-950 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-100'
+          }`}
+        >
+          <div className="min-w-0">
+            <div className="text-xs font-semibold uppercase tracking-wide opacity-80">Assigned executive</div>
+            <div className="mt-0.5 text-base font-semibold">
+              {waitingAssign ? 'Not assigned yet — waiting for admin' : (assigneeName ?? 'Engineer assigned')}
+            </div>
+            <p className="mt-0.5 text-xs opacity-80">
+              {waitingAssign
+                ? 'This updates automatically when admin assigns someone.'
+                : `Status: ${labelize(status)}`}
+            </p>
+          </div>
+          {!waitingAssign && assigneeName ? <Badge color="blue">{assigneeName}</Badge> : null}
+        </div>
+      </Card>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <div className="space-y-4">
+          <Card className="overflow-hidden p-0">
+            <div className="border-b border-border bg-surface/70 px-4 py-2.5">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Customer</h2>
+            </div>
+            <div className="grid gap-3 p-4 sm:grid-cols-2">
+              {contact ? (
+                <>
+                  <div className="sm:col-span-2">
+                    <Link
+                      to={`/contacts/${contact.id}`}
+                      className="text-base font-semibold text-accent-blue hover:underline"
+                    >
+                      {contact.customerCode ? (
+                        <span className="mr-1.5 font-mono text-xs text-text-secondary">{contact.customerCode}</span>
+                      ) : null}
+                      {contact.name}
+                    </Link>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">Phone</div>
+                    {contact.phone ? (
+                      <a
+                        href={`tel:${String(contact.phone).replace(/\D/g, '')}`}
+                        className="mt-0.5 inline-flex items-center gap-2 text-sm text-text-primary"
+                      >
+                        <Phone size={14} className="text-text-secondary" />
+                        {formatPhone(String(contact.phone))}
+                      </a>
+                    ) : (
+                      <p className="mt-0.5 text-sm text-text-secondary">—</p>
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">Channel</div>
+                    <p className="mt-0.5 text-sm text-text-primary">
+                      {cf.channel ? String(cf.channel) : '—'}
+                      {cf.category ? ` · ${String(cf.category)}` : ''}
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-text-secondary">No customer linked</p>
+              )}
+            </div>
+          </Card>
+
+          <Card className="overflow-hidden p-0">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-surface/70 px-4 py-2.5">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Machine details</h2>
+              <div className="flex flex-wrap gap-1.5">
+                {asset?.origin ? (
+                  <Badge color={outsideMachine ? 'amber' : 'blue'}>
+                    {assetOriginShort(String(asset.origin))}
+                  </Badge>
+                ) : null}
+                {!outsideMachine && asset?.servicePlan ? (
+                  <Badge color={asset.servicePlan === 'AMC' ? 'green' : 'gray'}>
+                    {asset.servicePlan === 'AMC' ? 'AMC' : 'Non-AMC'}
+                  </Badge>
+                ) : null}
+              </div>
+            </div>
+            {asset ? (
+              <div className="grid gap-px bg-border sm:grid-cols-2 lg:grid-cols-3">
+                {machineRows.map((row) => (
+                  <div key={row.label} className="bg-card px-4 py-3">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
+                      {row.label}
+                    </div>
+                    <div className="mt-0.5 break-words text-sm font-medium text-text-primary">{row.value}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="p-4 text-sm text-text-secondary">No machine linked to this ticket.</p>
+            )}
+          </Card>
+
+          <Card className="p-4">
+            <div className="flex items-start gap-3">
+              <CalendarClock size={18} className="mt-0.5 shrink-0 text-text-secondary" />
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Schedule</div>
+                <div className="mt-1 grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <div className="text-[10px] text-text-secondary">Visit / scheduled</div>
+                    <div className="text-sm font-medium">
+                      {scheduledAt ? formatDateTime(scheduledAt) : 'Not scheduled'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-text-secondary">SLA due</div>
+                    <div className={`text-sm font-medium ${breached ? 'text-accent-red' : ''}`}>
+                      {ticket.slaDueAt ? formatDateTime(String(ticket.slaDueAt)) : '—'}
+                      {breached ? ' · overdue' : ''}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        {isDesk && !isAdmin ? (
+          <div className="space-y-4">
+            <Card className="p-4 sm:p-5">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-semibold text-text-primary">Issue log</h2>
+                  <p className="text-xs text-text-secondary">Customer complaint / what was reported</p>
+                </div>
+                <Button disabled={busy} onClick={() => void saveTicketDetails()}>
+                  Save
+                </Button>
+              </div>
+              <div className="mb-3 rounded-[8px] border border-border bg-surface px-3 py-2">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">Subject</div>
+                <div className="mt-0.5 text-sm font-medium text-text-primary">{String(ticket.subject)}</div>
+              </div>
+              <textarea
+                className="min-h-[220px] w-full rounded-[10px] border border-border bg-card p-3 text-sm leading-relaxed outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
+                value={editDraft.description}
+                onChange={(e) => setEditDraft({ ...editDraft, description: e.target.value })}
+                placeholder="Describe the issue clearly for the engineer…"
+              />
+            </Card>
+
+            <AiAssistCard
+              title="Ticket AI"
+              subtitle="Suggest only — never auto-assigns, completes, or marks paid."
+              actions={[
+                {
+                  id: 'triage',
+                  label: 'Suggest priority / category',
+                  run: () =>
+                    api.aiTicketAssist({
+                      action: 'triage',
+                      ticketId: id,
+                      text: editDraft.description || String(ticket?.description ?? ''),
+                      contactId: ticket?.contactId ? String(ticket.contactId) : undefined,
+                    }),
+                },
+                {
+                  id: 'draft_summary',
+                  label: 'Draft summary',
+                  run: () =>
+                    api.aiTicketAssist({
+                      action: 'draft_summary',
+                      ticketId: id,
+                      text: editDraft.description || String(ticket?.description ?? ''),
+                    }),
+                },
+                {
+                  id: 'whatsapp_draft',
+                  label: 'Draft WhatsApp',
+                  run: () =>
+                    api.aiTicketAssist({
+                      action: 'whatsapp_draft',
+                      ticketId: id,
+                      text: visitDraft.notes || editDraft.description,
+                    }),
+                },
+                {
+                  id: 'sla_risk',
+                  label: 'SLA risk one-liner',
+                  run: () => api.aiTicketAssist({ action: 'sla_risk', ticketId: id }),
+                },
+              ]}
+              onApply={(actionId, result) => {
+                if (actionId === 'triage') {
+                  if (typeof result.priority === 'string') {
+                    void patchTicket({ priority: String(result.priority) }, 'Priority suggested by AI')
+                  }
+                  if (typeof result.category === 'string') {
+                    setEditDraft((d) => ({ ...d, category: String(result.category) }))
+                  }
+                  if (typeof result.summary === 'string') {
+                    setEditDraft((d) => ({
+                      ...d,
+                      description: String(result.summary),
+                      subject: typeof result.subject === 'string' ? String(result.subject) : d.subject,
+                    }))
+                  }
+                }
+                if (actionId === 'draft_summary' && typeof result.summary === 'string') {
+                  setEditDraft((d) => ({
+                    ...d,
+                    description: String(result.summary),
+                    subject: typeof result.subject === 'string' ? String(result.subject) : d.subject,
+                  }))
+                }
+                if (actionId === 'whatsapp_draft' && typeof result.message === 'string') {
+                  setMessage(String(result.message))
+                }
+              }}
+            />
+
+            <Card className="overflow-hidden p-0">
+              <div className="border-b border-border bg-surface/70 px-4 py-2.5">
+                <h2 className="text-sm font-semibold text-text-primary">Team notes</h2>
+                <p className="text-xs text-text-secondary">Internal only — not sent to customer</p>
+              </div>
+              {messages.length === 0 ? (
+                <p className="px-4 py-3 text-sm text-text-secondary">No notes yet.</p>
+              ) : (
+                <ul className="max-h-56 space-y-2 overflow-y-auto px-4 py-3">
+                  {messages.map((m) => (
+                    <li key={String(m.id)} className="rounded-lg border border-border bg-card px-3 py-2 text-sm">
+                      <div className="mb-1 flex justify-between gap-2 text-xs text-text-secondary">
+                        <span className="font-medium text-text-primary">{String(m.authorName)}</span>
+                        <span>{m.createdAt ? formatDateTime(String(m.createdAt)) : ''}</span>
+                      </div>
+                      <p className="whitespace-pre-wrap">{String(m.content)}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="border-t border-border p-4">
+                <textarea
+                  className="min-h-[72px] w-full rounded-[8px] border border-border bg-card px-3 py-2 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
+                  placeholder="Quick note for admin / engineer…"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void sendMessage()
+                  }}
+                />
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <span className="text-xs text-text-secondary">Ctrl+Enter</span>
+                  <Button size="sm" disabled={!message.trim()} onClick={() => void sendMessage()}>
+                    Send note
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <Card className="p-4 sm:p-5">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-semibold text-text-primary">Issue log</h2>
+                  <p className="text-xs text-text-secondary">Customer complaint / what was reported</p>
+                </div>
+                <Button disabled={busy} onClick={() => void saveTicketDetails()}>
+                  Save
+                </Button>
+              </div>
+              <Input
+                label="Subject"
+                value={editDraft.subject}
+                onChange={(e) => setEditDraft({ ...editDraft, subject: e.target.value })}
+                className="mb-3"
+              />
+              <textarea
+                className="min-h-[180px] w-full rounded-[10px] border border-border bg-card p-3 text-sm leading-relaxed outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
+                value={editDraft.description}
+                onChange={(e) => setEditDraft({ ...editDraft, description: e.target.value })}
+                placeholder="Describe the issue clearly…"
+              />
+            </Card>
+          </div>
+        )}
+      </div>
+    </>
+  )
+
+  // Service desk — overview + issue tools only
+  if (isDesk && !isAdmin) {
+    return <div className="w-full space-y-4">{ticketOverview}</div>
+  }
+
+  return (
+    <div className="w-full space-y-4">
+      {ticketOverview}
+
+      <div className="flex flex-wrap gap-2">
+          {showAssign && status === 'OPEN' ? (
+            <div className="flex flex-wrap items-end gap-2">
+              <Select
+                label="Assign engineer"
+                className="min-w-[12rem]"
+                value={String(ticket.assignedToId ?? '')}
+                onChange={(e) => {
+                  if (e.target.value) void assignAndStart(e.target.value)
+                }}
+                options={[
+                  { value: '', label: engineerOptions.length ? 'Select engineer…' : 'No engineers in Users' },
+                  ...engineerOptions,
+                ]}
+              />
+            </div>
+          ) : null}
+          {isEngineer && isOpen && status === 'OPEN' ? (
+            <Button
+              disabled={busy}
+              onClick={() =>
+                setWaPending({
+                  payload: {
+                    title: 'Start work & WhatsApp customer?',
+                    lines: ['Template ticket_status_update → customer (In progress)'],
+                  },
+                  execute: (send) =>
+                    patchTicket(
+                      {
+                        status: 'IN_PROGRESS',
+                        sendWhatsApp: send,
+                        whatsappNote: 'Engineer started work',
+                      },
+                      'Work started',
+                    ),
+                })
+              }
+            >
               <Play size={16} /> Start
             </Button>
           ) : null}
-          {isOpen && status !== 'PENDING' ? (
+          {isAdmin && isOpen && status === 'OPEN' && ticket.assignedToId ? (
             <Button
-              variant="outline"
               disabled={busy}
-              onClick={() => void patchTicket({ status: 'PENDING' }, 'Marked waiting')}
+              onClick={() =>
+                setWaPending({
+                  payload: {
+                    title: 'Start work & WhatsApp customer?',
+                    lines: ['Template ticket_status_update → customer (In progress)'],
+                  },
+                  execute: (send) =>
+                    patchTicket(
+                      {
+                        status: 'IN_PROGRESS',
+                        sendWhatsApp: send,
+                        whatsappNote: 'Work started',
+                      },
+                      'Work started',
+                    ),
+                })
+              }
             >
-              <Clock3 size={16} /> Waiting
+              <Play size={16} /> Start
             </Button>
           ) : null}
-          {isOpen ? (
+          {isEngineer && isOpen ? (
+            <Button disabled={busy} onClick={() => askComplete('RESOLVED')}>
+              <CheckCircle2 size={16} /> Mark complete
+            </Button>
+          ) : null}
+          {showApprove && status === 'RESOLVED' ? (
+            <Button
+              disabled={
+                busy ||
+                (String(ticket.paymentStatus) !== 'PAID' &&
+                  !(num(ticket.paymentTotal) <= 0 && num(ticket.advanceAmount) <= 0))
+              }
+              onClick={() => void approveCompleted()}
+              title={
+                String(ticket.paymentStatus) !== 'PAID' &&
+                !(num(ticket.paymentTotal) <= 0 && num(ticket.advanceAmount) <= 0)
+                  ? 'Mark paid first'
+                  : undefined
+              }
+            >
+              <CheckCircle2 size={16} /> Approve — service completed
+            </Button>
+          ) : null}
+          {isAdmin && status === 'CLOSED' ? (
+            <div className="relative" ref={billMenuRef}>
+              <div className="flex overflow-hidden rounded-[8px] border border-border">
+                <Button
+                  variant="outline"
+                  className="rounded-none border-0 border-r border-border"
+                  disabled={busy}
+                  onClick={() => downloadJobSheet()}
+                >
+                  <Download size={16} /> Bill summary
+                </Button>
+                <Button
+                  variant="outline"
+                  className="rounded-none border-0 px-2"
+                  disabled={busy}
+                  aria-label="Bill summary options"
+                  onClick={() => setBillMenuOpen((o) => !o)}
+                >
+                  <ChevronDown size={16} className={billMenuOpen ? 'rotate-180' : ''} />
+                </Button>
+              </div>
+              {billMenuOpen ? (
+                <div className="absolute right-0 z-20 mt-1 min-w-[220px] rounded-[10px] border border-border bg-card py-1 shadow-lg">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface"
+                    onClick={() => {
+                      setBillMenuOpen(false)
+                      downloadJobSheet()
+                    }}
+                  >
+                    <Download size={14} /> Download bill summary
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface"
+                    onClick={() => {
+                      setBillMenuOpen(false)
+                      void sendBillSummaryToCustomer()
+                    }}
+                  >
+                    <Send size={14} /> Send bill to customer
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {isAdmin && isOpen && !isEngineer ? (
             <Button disabled={busy} onClick={() => askComplete('RESOLVED')}>
               <CheckCircle2 size={16} /> Complete
             </Button>
           ) : null}
-          {canDownloadDocs ? (
+          {canDownloadDocs && showPaymentAdminTools && status !== 'CLOSED' ? (
             <Button variant="outline" onClick={() => downloadJobSheet()}>
               <Download size={16} /> PDF
             </Button>
           ) : null}
-        </div>
       </div>
 
-      {/* Customer + machine — top facts */}
-      <Card className="p-4 sm:p-5">
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Customer</div>
-            {contact ? (
-              <Link className="mt-1 block font-medium text-accent-blue hover:underline" to={`/contacts/${contact.id}`}>
-                {contact.customerCode ? <span className="mr-1 font-mono text-xs">{contact.customerCode}</span> : null}
-                {contact.name}
-              </Link>
-            ) : (
-              <div className="mt-1 text-sm text-text-secondary">—</div>
-            )}
-            {contact?.phone ? (
-              <div className="mt-0.5 text-xs text-text-secondary">{formatPhone(String(contact.phone))}</div>
-            ) : null}
-          </div>
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Machine</div>
-            <div className="mt-1 font-medium text-text-primary">{asset?.name ? String(asset.name) : '—'}</div>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {asset?.origin || asset?.servicePlan ? (
-                <>
-                  <Badge color={isThirdPartyOrigin(asset?.origin ? String(asset.origin) : null) ? 'amber' : 'blue'}>
-                    {assetOriginShort(asset?.origin ? String(asset.origin) : null)}
-                  </Badge>
-                  {asset?.servicePlan ? (
-                    <Badge color={asset.servicePlan === 'AMC' ? 'green' : 'gray'}>
-                      {asset.servicePlan === 'AMC' ? 'AMC' : 'Non-AMC'}
-                    </Badge>
-                  ) : null}
-                </>
-              ) : null}
+      {isAdmin && status === 'RESOLVED' ? (
+        <Card className="border-amber-300/60 bg-amber-50/50 p-4 dark:border-amber-800/50 dark:bg-amber-950/30">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="font-semibold text-text-primary">Pending your approval</div>
+              <p className="mt-0.5 text-sm text-text-secondary">
+                Engineer marked complete. Mark paid (method + proof if online) if there is a charge, then approve &
+                close. Customer WhatsApp completion sends on close.
+                {openDurationLabel ? ` · Open for ${openDurationLabel}` : ''}
+              </p>
             </div>
-            <div className="mt-0.5 text-xs text-text-secondary">
-              {asset?.servicePlan === 'AMC'
-                ? [
-                    asset?.amcStartDate ? `AMC ${formatDate(String(asset.amcStartDate))}` : null,
-                    asset?.amcEndDate ? `→ ${formatDate(String(asset.amcEndDate))}` : null,
-                  ]
-                    .filter(Boolean)
-                    .join(' ') || 'AMC'
-                : ''}
-              {assetCf.warrantyType ? (
-                <span className="mt-1 block">
-                  Warranty: {String(assetCf.warrantyType)}
-                  {assetCf.warrantyUntil ? ` until ${formatDate(String(assetCf.warrantyUntil))}` : ''}
-                </span>
-              ) : null}
-            </div>
+            <Button
+              disabled={
+                busy ||
+                (String(ticket.paymentStatus) !== 'PAID' &&
+                  !(num(ticket.paymentTotal) <= 0 && num(ticket.advanceAmount) <= 0))
+              }
+              onClick={() => void approveCompleted()}
+            >
+              <CheckCircle2 size={16} /> Approve & close
+            </Button>
           </div>
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Scheduled / due</div>
-            <div className="mt-1 text-sm font-medium">
-              {scheduledAt ? formatDateTime(scheduledAt) : 'Not scheduled'}
-            </div>
-            <div className="mt-0.5 text-xs text-text-secondary">
-              Stamping {ticket.stampingDate ? formatDate(String(ticket.stampingDate)) : '—'}
-              {' · Next '}
-              {ticket.nextDueDate ? formatDate(String(ticket.nextDueDate)) : '—'}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Links</div>
-            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm">
-              {account ? (
-                <Link className="inline-flex items-center gap-1 text-accent-blue hover:underline" to={`/accounts/${account.id}`}>
-                  <Building2 size={13} /> {account.name}
-                </Link>
-              ) : null}
-              {product ? (
-                <Link
-                  className="inline-flex items-center gap-1 text-accent-blue hover:underline"
-                  to={`/erp/products/${product.id}`}
-                >
-                  <Package size={13} /> {product.name}
-                </Link>
-              ) : null}
-              {!account && !product ? <span className="text-text-secondary">—</span> : null}
-            </div>
-          </div>
-        </div>
-      </Card>
-
-      {/* Editable job details — same fields as create */}
-      <Card className="p-4 sm:p-5">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-text-primary">Job details</h2>
-          <Button disabled={busy} onClick={() => void saveTicketDetails()}>
-            Save job details
-          </Button>
-        </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <Input
-            label="Subject *"
-            className="sm:col-span-2 lg:col-span-3"
-            value={editDraft.subject}
-            onChange={(e) => setEditDraft({ ...editDraft, subject: e.target.value })}
-          />
-          <Input
-            label="Stamping date"
-            type="date"
-            value={editDraft.stampingDate}
-            onChange={(e) => setEditDraft({ ...editDraft, stampingDate: e.target.value })}
-          />
-          <Input
-            label="Next due date"
-            type="date"
-            value={editDraft.nextDueDate}
-            onChange={(e) => setEditDraft({ ...editDraft, nextDueDate: e.target.value })}
-          />
-          <Select
-            label="Category"
-            value={editDraft.category}
-            onChange={(e) => setEditDraft({ ...editDraft, category: e.target.value })}
-            options={[
-              { value: '', label: '—' },
-              { value: 'Breakdown', label: 'Breakdown' },
-              { value: 'Installation', label: 'Installation' },
-              { value: 'Stamping', label: 'Stamping' },
-              { value: 'AMC visit', label: 'AMC visit' },
-              { value: 'Other', label: 'Other' },
-            ]}
-          />
-          <Select
-            label="Channel"
-            value={editDraft.channel}
-            onChange={(e) => setEditDraft({ ...editDraft, channel: e.target.value })}
-            options={[
-              { value: '', label: '—' },
-              { value: 'Walk-in', label: 'Walk-in' },
-              { value: 'Phone', label: 'Phone' },
-              { value: 'WhatsApp', label: 'WhatsApp' },
-              { value: 'Field', label: 'Field' },
-            ]}
-          />
-          <label className="block text-sm sm:col-span-2 lg:col-span-3">
-            <span className="mb-1 block font-medium text-text-secondary">Issue log</span>
-            <textarea
-              className="min-h-28 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
-              value={editDraft.description}
-              onChange={(e) => setEditDraft({ ...editDraft, description: e.target.value })}
-              placeholder="What was done / parts / site notes…"
-            />
-          </label>
-        </div>
-      </Card>
-
-      <Card className="p-4 sm:p-5">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="text-sm font-semibold text-text-primary">Attending visits</h2>
-            <p className="text-xs text-text-secondary">Log each site visit as the job progresses.</p>
-          </div>
-        </div>
-        {visitLog.length === 0 ? (
-          <p className="mb-3 text-sm text-text-secondary">No visit logged yet.</p>
-        ) : (
-          <ul className="mb-4 space-y-2">
-            {visitLog.map((v) => (
-              <li key={String(v.id ?? v.attendedAt)} className="rounded-lg border border-border px-3 py-2 text-sm">
-                <div className="flex flex-wrap justify-between gap-2 text-xs text-text-secondary">
-                  <span className="font-medium text-text-primary">
-                    {v.attendedAt ? formatDateTime(String(v.attendedAt)) : '—'}
-                  </span>
-                  <span>
-                    {v.engineerId
-                      ? users.find((u) => u.id === String(v.engineerId))?.name ?? 'Engineer'
-                      : '—'}
-                  </span>
-                </div>
-                <p className="mt-1 whitespace-pre-wrap">{String(v.notes ?? '')}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <Input
-            label="Visit date"
-            type="date"
-            value={visitDraft.attendedAt}
-            onChange={(e) => setVisitDraft({ ...visitDraft, attendedAt: e.target.value })}
-          />
-          <Input
-            label="Time"
-            type="time"
-            value={visitDraft.attendedTime}
-            onChange={(e) => setVisitDraft({ ...visitDraft, attendedTime: e.target.value })}
-          />
-          <Select
-            label="Engineer"
-            value={visitDraft.engineerId || String(ticket.assignedToId ?? '')}
-            onChange={(e) => setVisitDraft({ ...visitDraft, engineerId: e.target.value })}
-            options={[{ value: '', label: 'Assignee' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
-          />
-          <Input
-            label="Visit notes"
-            value={visitDraft.notes}
-            onChange={(e) => setVisitDraft({ ...visitDraft, notes: e.target.value })}
-            placeholder="Arrived, diagnosed…"
-          />
-        </div>
-        <Button className="mt-3" disabled={busy} onClick={() => void addVisitEntry()}>
-          Log attending visit
-        </Button>
-      </Card>
-
-      {contact ? (
-        <SparePartsPanel
-          contactId={contact.id}
-          contactName={contact.name}
-          ticketId={id}
-          fixedAssetId={ticket.assetId ? String(ticket.assetId) : undefined}
-          onTicketUpdated={() => void load()}
-        />
+        </Card>
       ) : null}
 
-      {/* Work + payment — main actions */}
-      <div className="grid gap-4 lg:grid-cols-2">
+      {isAdmin && status === 'CLOSED' ? (
+        <Card className="border-emerald-300/50 bg-emerald-50/40 p-4 dark:border-emerald-800/40 dark:bg-emerald-950/25">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="font-semibold text-text-primary">Service completed</div>
+              <p className="mt-0.5 text-sm text-text-secondary">
+                Download the job sheet report and tax invoice / bill for this service.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" disabled={busy} onClick={() => downloadJobSheet()}>
+                <Download size={16} /> Job sheet PDF
+              </Button>
+              <Button disabled={busy} onClick={() => void invoicePdfAndSend()}>
+                <FileText size={16} /> Invoice / bill
+              </Button>
+            </div>
+          </div>
+        </Card>
+      ) : null}
+
+      {isAdmin ? (
         <Card className="p-4 sm:p-5">
-          <h2 className="mb-3 text-sm font-semibold text-text-primary">Work status & executives</h2>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold text-text-primary">Progress timeline</h2>
+            <div className="flex flex-wrap gap-2 text-xs text-text-secondary">
+              {openDurationLabel ? <Badge color="gray">{openDurationLabel}</Badge> : null}
+              {breached ? <Badge color="red">SLA breached</Badge> : null}
+              {!ticket.assignedToId && status === 'OPEN' ? (
+                <Badge color="amber">Needs engineer</Badge>
+              ) : null}
+            </div>
+          </div>
+          {progressTimeline.length === 0 ? (
+            <p className="text-sm text-text-secondary">No timeline events yet.</p>
+          ) : (
+            <ol className="relative space-y-3 border-l border-border pl-4">
+              {progressTimeline.map((ev, idx) => (
+                <li key={`${ev.at}-${idx}`} className="relative">
+                  <span className="absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full bg-accent" />
+                  <div className="text-xs text-text-secondary">
+                    {ev.at ? formatDateTime(ev.at) : '—'}
+                  </div>
+                  <div className="font-medium text-text-primary">{ev.title}</div>
+                  {ev.detail ? (
+                    <div className="text-sm text-text-secondary">{ev.detail}</div>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          )}
+          <p className="mt-3 text-xs text-text-secondary">
+            Day notes and visits from the engineer appear here so you can see why a job is taking longer.
+            Use <strong>Assign to</strong> below to reassign if the current engineer cannot finish properly.
+          </p>
+        </Card>
+      ) : null}
+
+      {/* Work + payment — admin; engineer sees read-only assignment */}
+      {(isAdmin || isEngineer) ? (
+      <div className={`grid gap-4 ${showPayment ? 'lg:grid-cols-2' : ''}`}>
+        <Card
+          id="section-assignment"
+          className={`scroll-mt-24 p-4 sm:p-5 ${sectionErrorClass(Boolean(fieldErrors.assignedToId))}`}
+        >
+          <h2 className="mb-3 text-sm font-semibold text-text-primary">
+            {showAssign ? 'Work status & executives' : 'Assignment'}
+          </h2>
+          {fieldErrors.assignedToId ? <MissingBanner message={fieldErrors.assignedToId} className="mb-3" /> : null}
           <div className="grid gap-3 sm:grid-cols-2">
+            {showAssign ? (
+              <>
             <Select
               label="Status"
               value={status}
               onChange={(e) => {
                 const next = e.target.value
+                if (next === status) return
                 if (next === 'RESOLVED' || next === 'CLOSED') {
-                  askComplete(next)
+                  askComplete(next as 'RESOLVED' | 'CLOSED')
                   return
                 }
-                void patchTicket({ status: next }, 'Status updated')
+                setWaPending({
+                  payload: {
+                    title: 'Update status & WhatsApp customer?',
+                    lines: [`Template ticket_status_update → customer (${labelize(next)})`],
+                  },
+                  execute: (send) =>
+                    patchTicket(
+                      {
+                        status: next,
+                        sendWhatsApp: send,
+                        whatsappNote: `Status is now ${labelize(next)}`,
+                      },
+                      'Status updated',
+                    ),
+                })
               }}
-              options={['OPEN', 'IN_PROGRESS', 'PENDING', 'RESOLVED', 'CLOSED'].map((v) => ({
+              options={(STATUS_TRANSITIONS[status] ?? [status]).map((v) => ({
                 value: v,
-                label: labelize(v),
+                label:
+                  v === 'CLOSED'
+                    ? 'Closed (approve — paid required)'
+                    : v === 'RESOLVED'
+                      ? 'Resolved (mark complete)'
+                      : labelize(v),
               }))}
             />
             <Select
@@ -795,20 +1747,19 @@ export function TicketDetailPage() {
               options={['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((v) => ({ value: v, label: labelize(v) }))}
             />
             <Select
-              label="Assign to"
+              label={ticket.assignedToId ? 'Reassign engineer' : 'Assign to'}
               value={String(ticket.assignedToId ?? '')}
-              onChange={(e) =>
+              onChange={(e) => {
+                if (e.target.value) {
+                  void assignAndStart(e.target.value)
+                  return
+                }
                 void patchTicket(
-                  {
-                    assignedToId: e.target.value || null,
-                    receivedByUserId: e.target.value || null,
-                  },
-                  e.target.value
-                    ? `Assigned to ${users.find((u) => u.id === e.target.value)?.name ?? 'employee'} — they will see it on Home / My Tickets`
-                    : 'Unassigned',
+                  { assignedToId: null, receivedByUserId: null },
+                  'Unassigned',
                 )
-              }
-              options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
+              }}
+              options={[{ value: '', label: 'Unassigned' }, ...engineerOptions]}
             />
             <p className="sm:col-span-2 -mt-1 text-xs text-text-secondary">
               Current owner:{' '}
@@ -817,7 +1768,7 @@ export function TicketDetailPage() {
                   (ticket.assignee as { name?: string } | undefined)?.name ??
                   'Nobody'}
               </span>
-              . Pick the employee again and wait for the green confirmation if the list looks wrong.
+              . Only <strong>Service engineer</strong> role users appear here (add them under Users &amp; Roles with mobile for WhatsApp).
             </p>
             <Select
               label="Received by"
@@ -831,7 +1782,7 @@ export function TicketDetailPage() {
                   'Received-by / assignee updated',
                 )
               }
-              options={[{ value: '', label: '—' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
+              options={[{ value: '', label: '—' }, ...engineerOptions]}
             />
             <div className="sm:col-span-2">
               <Select
@@ -842,11 +1793,32 @@ export function TicketDetailPage() {
                 }
                 options={[
                   { value: '', label: 'Fill after delivery' },
-                  ...users.map((u) => ({ value: u.id, label: u.name })),
+                  ...engineerOptions,
                 ]}
               />
               <p className="mt-1 text-xs text-text-secondary">Optional at create — set after delivery.</p>
             </div>
+              </>
+            ) : (
+              <div className="sm:col-span-2 space-y-2 text-sm">
+                <div>
+                  <span className="text-xs font-semibold uppercase text-text-secondary">Status</span>
+                  <div className="mt-0.5 font-medium">{labelize(status)}</div>
+                </div>
+                <div>
+                  <span className="text-xs font-semibold uppercase text-text-secondary">Assigned to</span>
+                  <div className="mt-0.5 font-medium">
+                    {users.find((u) => u.id === String(ticket.assignedToId ?? ''))?.name ??
+                      (ticket.assignee as { name?: string } | undefined)?.name ??
+                      '—'}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-xs font-semibold uppercase text-text-secondary">Priority</span>
+                  <div className="mt-0.5 font-medium">{labelize(String(ticket.priority))}</div>
+                </div>
+              </div>
+            )}
             <div className="sm:col-span-2 text-xs text-text-secondary">
               SLA due:{' '}
               <span className={breached ? 'font-medium text-accent-red' : 'font-medium text-text-primary'}>
@@ -857,25 +1829,41 @@ export function TicketDetailPage() {
           </div>
         </Card>
 
-        <Card className="p-4 sm:p-5">
+        {showPayment ? (
+        <Card
+          id="section-payment"
+          className={`scroll-mt-24 p-4 sm:p-5 ${sectionErrorClass(Boolean(fieldErrors.paymentTotal || fieldErrors.paymentMethod || fieldErrors.paymentReference || fieldErrors.paymentProofUrl))}`}
+        >
           <div className="mb-3 flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold text-text-primary">Payment & documents</h2>
+            <h2 className="text-sm font-semibold text-text-primary">
+              {showPaymentAdminTools ? 'Payment & documents' : 'Payment — advance & balance'}
+            </h2>
             <Badge color={isPaid ? 'green' : paymentStatus === 'PARTIAL' ? 'amber' : 'gray'}>
               {labelize(paymentStatus)}
             </Badge>
           </div>
+          {(fieldErrors.paymentTotal || fieldErrors.paymentMethod || fieldErrors.paymentReference || fieldErrors.paymentProofUrl) ? (
+            <div className="mb-3 space-y-2">
+              {fieldErrors.paymentTotal ? <MissingBanner message={fieldErrors.paymentTotal} /> : null}
+              {fieldErrors.paymentMethod ? <MissingBanner message={fieldErrors.paymentMethod} /> : null}
+              {fieldErrors.paymentReference ? <MissingBanner message={fieldErrors.paymentReference} /> : null}
+              {fieldErrors.paymentProofUrl ? <MissingBanner message={fieldErrors.paymentProofUrl} /> : null}
+            </div>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-3">
             <Input
-              label="OD ₹"
-              type="number"
-              value={payDraft.odAmount}
-              onChange={(e) => setPayDraft({ ...payDraft, odAmount: e.target.value })}
-            />
-            <Input
-              label="Total ₹"
+              label="Total payment ₹"
               type="number"
               value={payDraft.paymentTotal}
-              onChange={(e) => setPayDraft({ ...payDraft, paymentTotal: e.target.value })}
+              error={fieldErrors.paymentTotal}
+              onChange={(e) => {
+                setPayDraft({ ...payDraft, paymentTotal: e.target.value })
+                setFieldErrors((prev) => {
+                  const next = { ...prev }
+                  delete next.paymentTotal
+                  return next
+                })
+              }}
             />
             <Input
               label="Advance ₹"
@@ -883,23 +1871,80 @@ export function TicketDetailPage() {
               value={payDraft.advanceAmount}
               onChange={(e) => setPayDraft({ ...payDraft, advanceAmount: e.target.value })}
             />
+            <div className="rounded-[8px] border border-border bg-surface px-3 py-2">
+              <div className="text-xs text-text-secondary">Balance (auto)</div>
+              <div className="text-lg font-bold text-accent-amber">{formatCurrency(balancePreview)}</div>
+            </div>
           </div>
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-border bg-surface px-3 py-2 text-sm">
-            <span className="text-text-secondary">
-              Balance due
-              {balanceDirty ? <span className="ml-1 text-xs text-accent-amber">(updates as you type)</span> : null}
-            </span>
-            <span className="text-lg font-semibold text-accent-amber">{formatCurrency(balance)}</span>
+          {showPaymentAdminTools ? (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <Select
+                label="Payment method *"
+                value={payDraft.paymentMethod}
+                onChange={(e) => setPayDraft({ ...payDraft, paymentMethod: e.target.value })}
+                options={[...PAYMENT_METHODS]}
+                disabled={isPaid}
+              />
+              <Input
+                label={ONLINE_PAY.has(payDraft.paymentMethod) ? 'UTR / txn ref *' : 'Reference (cheque no.)'}
+                value={payDraft.paymentReference}
+                onChange={(e) => setPayDraft({ ...payDraft, paymentReference: e.target.value })}
+                disabled={isPaid}
+                placeholder={ONLINE_PAY.has(payDraft.paymentMethod) ? 'UPI / bank UTR' : 'Optional'}
+              />
+              <div className="sm:col-span-2">
+                <span className="mb-1 block text-sm font-medium text-text-secondary">
+                  Payment proof {ONLINE_PAY.has(payDraft.paymentMethod) ? '*' : '(optional)'}
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-[8px] border border-border bg-surface px-3 py-2 text-sm disabled:opacity-50">
+                    <ImagePlus size={16} />
+                    {evidenceBusy ? 'Uploading…' : 'Upload screenshot / receipt'}
+                    <input
+                      type="file"
+                      accept="image/*,application/pdf"
+                      className="hidden"
+                      disabled={isPaid}
+                      onChange={(e) => void uploadPaymentProof(e.target.files?.[0])}
+                    />
+                  </label>
+                  {payDraft.paymentProofUrl ? (
+                    <a
+                      href={payDraft.paymentProofUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-sm text-accent-blue underline"
+                    >
+                      View proof
+                    </a>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-border bg-surface px-3 py-2 text-sm">
+              <span className="text-text-secondary">
+                Balance remaining
+                {balanceDirty ? <span className="ml-1 text-xs text-accent-amber">(live)</span> : null}
+              </span>
+              <span className="text-lg font-semibold text-accent-amber">{formatCurrency(balance)}</span>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-border bg-surface px-3 py-2 text-sm">
+              <span className="text-text-secondary">Advance collected</span>
+              <span className="text-lg font-semibold text-text-primary">
+                {formatCurrency(Number(payDraft.advanceAmount) || 0)}
+              </span>
+            </div>
           </div>
           {balanceDirty && savedBalance !== balancePreview ? (
             <p className="mt-1 text-xs text-text-secondary">
-              Saved balance: {formatCurrency(savedBalance)} — click Save amounts to store
+              Unsaved draft — totals are stored when you mark paid
             </p>
           ) : null}
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <Button variant="outline" disabled={busy} onClick={() => void savePayments()}>
-              Save amounts
-            </Button>
+            {showPaymentAdminTools ? (
+              <>
             {!isPaid ? (
               <Button disabled={busy} onClick={() => void markPaidFully()}>
                 <Wallet size={16} /> Mark paid fully
@@ -910,8 +1955,12 @@ export function TicketDetailPage() {
               </Button>
             )}
             {!isPaid ? (
-              <Button variant="outline" disabled={busy || balance <= 0} onClick={() => void sendPaymentDue()}>
-                <Send size={16} /> WhatsApp payment due
+              <Button
+                variant="outline"
+                disabled
+                title="payment_due_customer template skipped — not in use"
+              >
+                <Send size={16} /> Payment due WA (disabled)
               </Button>
             ) : (
               <button
@@ -919,12 +1968,17 @@ export function TicketDetailPage() {
                 disabled={busy}
                 onClick={() => void sendPaidWhatsApp()}
                 className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] px-3 text-sm font-semibold text-white shadow-sm transition hover:brightness-110 disabled:opacity-50"
-                style={{ backgroundColor: '#25D366' }}
+                style={{ backgroundColor: WA_GREEN }}
               >
-                <MessageCircle size={16} fill="currentColor" /> WhatsApp paid / invoice
+                <WhatsAppIcon size={16} color="#fff" /> WhatsApp paid / invoice
               </button>
             )}
-            <Button variant="outline" disabled={busy} onClick={() => void invoicePdfAndSend()}>
+            <Button
+              variant="outline"
+              disabled={busy || (!isDone && !isPaid)}
+              onClick={() => void invoicePdfAndSend()}
+              title={!isDone ? 'Invoice only after Mark complete (RESOLVED)' : undefined}
+            >
               <FileText size={16} /> {isPaid ? 'Invoice PDF + send' : 'Create invoice + due'}
             </Button>
             {!isPaid && canDownloadDocs ? (
@@ -932,22 +1986,27 @@ export function TicketDetailPage() {
                 <Download size={16} /> Job sheet PDF
               </Button>
             ) : null}
+              </>
+            ) : (
+              <p className="sm:col-span-2 text-xs text-text-secondary">
+                Enter total charge and advance collected. Balance updates automatically. Admin handles invoices and final paid status.
+              </p>
+            )}
           </div>
+          {showPaymentAdminTools ? (
           <ul className="mt-3 space-y-1 text-xs leading-relaxed text-text-secondary">
             <li>
-              <strong className="text-text-primary">Save amounts</strong> — stores OD / Total / Advance only (no PDF, no WhatsApp).
+              <strong className="text-text-primary">Mark paid</strong> — saves Total / Advance / Balance, requires method; UPI/NEFT/RTGS/Card need UTR + proof. Writes ERP payment ledger.
             </li>
             <li>
-              <strong className="text-text-primary">Receipt PDF</strong> — service job sheet / payment receipt (machine, executives, stamping, amounts). Print → Save as PDF. No WhatsApp.
+              <strong className="text-text-primary">Approve & close</strong> — only after paid (or ₹0 free job) and RESOLVED.
             </li>
             <li>
-              <strong className="text-text-primary">WhatsApp paid / invoice</strong> — WhatsApp message only (green). No PDF window.
-            </li>
-            <li>
-              <strong className="text-text-primary">Invoice PDF + send</strong> — creates/reuses ERP <em>tax invoice</em>, opens that invoice PDF, and WhatsApps the customer. Different layout from Receipt.
+              <strong className="text-text-primary">Invoice</strong> — only after Mark complete (RESOLVED). Linked by service ticket id.
             </li>
           </ul>
-          {lastInvoice?.invoiceNumber ? (
+          ) : null}
+          {showPaymentAdminTools && lastInvoice?.invoiceNumber ? (
             <p className="mt-2 text-xs text-accent-green">
               Invoice {String(lastInvoice.invoiceNumber)}
               {lastInvoice.id ? (
@@ -959,17 +2018,33 @@ export function TicketDetailPage() {
                 </>
               ) : null}
             </p>
-          ) : isPaid ? (
+          ) : showPaymentAdminTools && isPaid ? (
             <p className="mt-2 text-xs text-text-secondary">
-              Paid{ticket.paidAt ? ` · ${formatDateTime(String(ticket.paidAt))}` : ''}. Use Receipt for job sheet; Invoice PDF + send for tax invoice.
+              Paid via {labelize(String(ticket.paymentMethod || payDraft.paymentMethod))}
+              {ticket.paymentReference ? ` · ref ${String(ticket.paymentReference)}` : ''}
+              {ticket.paidAt ? ` · ${formatDateTime(String(ticket.paidAt))}` : ''}.
             </p>
-          ) : (
+          ) : showPaymentAdminTools ? (
             <p className="mt-2 text-xs text-text-secondary">
-              Save amounts, then WhatsApp payment due or Create invoice + due. Mark paid fully when cash is received.
+              Collect payment with method/proof, then mark paid. Approve & close unlocks after paid + RESOLVED.
             </p>
-          )}
+          ) : null}
         </Card>
+        ) : null}
       </div>
+      ) : null}
+
+      {contact && (isAdmin || isEngineer) ? (
+        <div id="section-spares" className="scroll-mt-24">
+          <SparePartsPanel
+            contactId={contact.id}
+            contactName={contact.name}
+            ticketId={id}
+            fixedAssetId={ticket.assetId ? String(ticket.assetId) : undefined}
+            onTicketUpdated={() => void load()}
+          />
+        </div>
+      ) : null}
 
       {/* Internal conversation */}
       <Card className="overflow-hidden p-0">
@@ -1021,7 +2096,7 @@ export function TicketDetailPage() {
         open={completeOpen}
         onClose={() => setCompleteOpen(false)}
         title={completeStatus === 'CLOSED' ? 'Close service ticket?' : 'Complete service?'}
-        subtitle={`Ticket #${String(ticket.ticketNo)} — ${String(ticket.subject)}`}
+        subtitle={`${ticketLabel} — ${String(ticket.subject)}`}
         size="sm"
         accent="emerald"
         footer={
@@ -1037,8 +2112,11 @@ export function TicketDetailPage() {
         }
       >
         <p className="text-sm leading-relaxed text-text-secondary">
-          Completes the job and WhatsApps the customer when possible. Then use <strong>Mark paid fully</strong> to
-          create the invoice PDF and send payment confirmation.
+          {completeStatus === 'RESOLVED' && isEngineer
+            ? 'Marks service done and sends for admin approval. Status becomes Resolved until an admin approves as Completed.'
+            : completeStatus === 'CLOSED'
+              ? 'Approves the completed service and closes this ticket.'
+              : 'Completes the job and WhatsApps the customer when possible. Admin can then handle payment and documents.'}
         </p>
         {contact ? (
           <div className="mt-4 rounded-[10px] border border-border bg-surface px-3 py-3 text-sm">
@@ -1053,6 +2131,23 @@ export function TicketDetailPage() {
           </div>
         ) : null}
       </Modal>
+
+      <WhatsAppSendConfirm
+        open={Boolean(waPending)}
+        payload={waPending?.payload ?? null}
+        busy={busy}
+        onCancel={() => setWaPending(null)}
+        onConfirmSend={() => {
+          const run = waPending?.execute
+          setWaPending(null)
+          if (run) void run(true)
+        }}
+        onConfirmSkip={() => {
+          const run = waPending?.execute
+          setWaPending(null)
+          if (run) void run(false)
+        }}
+      />
     </div>
   )
 }

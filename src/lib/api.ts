@@ -189,7 +189,18 @@ export const api = {
     apiFetch<{
       accessToken: string
       refreshToken: string
-      user: { id: string; name: string; email: string; role: string; tenantId: string; tenantSlug?: string; kind: string }
+      user: {
+        id: string
+        name: string
+        email: string
+        phone?: string | null
+        avatarUrl?: string | null
+        role: string
+        tenantId: string
+        tenantSlug?: string
+        tenantName?: string
+        kind: string
+      }
     }>('/auth/login', { method: 'POST', body: JSON.stringify(payload), skipAuth: true }),
   me: () => apiFetch<Record<string, unknown>>('/auth/me'),
   updateProfile: (body: Record<string, unknown>) =>
@@ -219,13 +230,46 @@ export const api = {
       skipAuth: !refreshToken,
     }),
 
-  analytics: (range?: string) =>
+  analytics: (params?: {
+    range?: string
+    from?: string
+    to?: string
+    assigneeId?: string
+    sourceId?: string
+    ticketStatus?: string
+    leadStatus?: string
+    city?: string
+  }) =>
     apiFetch<{
       range: string
+      from?: string
+      to?: string
+      filters?: Record<string, string | null>
+      generatedAt?: string
       salesTargets?: { revenueTarget: number; targetPeriod: string; currency: string }
       kpis: Record<string, number>
       leadsByStatus: Array<{ name: string; value: number }>
       leadsBySource: Array<{ name: string; leads: number }>
+      leadsByOwner?: Array<{
+        id: string
+        name: string
+        total: number
+        pending: number
+        demo: number
+        converted: number
+        conversionRate: number
+      }>
+      leadMonthly?: Array<{ month: string; created: number; converted: number }>
+      performers?: Array<{
+        id: string
+        name: string
+        ticketsOpen: number
+        ticketsResolved: number
+        leadsConverted: number
+        leadsTotal: number
+        serviceCollected: number
+        score: number
+      }>
       ticketsByStatus: Array<{ name: string; value: number }>
       ticketsByPriority: Array<{ name: string; value: number }>
       ticketsByCategory: Array<{ name: string; value: number }>
@@ -238,6 +282,18 @@ export const api = {
         breached: number
       }>
       ticketMonthly: Array<{ month: string; created: number; resolved: number; breached: number }>
+      enquiryByStatus?: Array<{ name: string; value: number; code?: string }>
+      stockByStatus?: Array<{ name: string; value: number }>
+      attentionTickets?: Array<{
+        id: string
+        ticketNo: number
+        subject: string
+        status: string
+        priority: string
+        slaDueAt?: string | null
+        slaBreached?: boolean
+        balanceDue?: number
+      }>
       funnel: Array<{
         stage: string
         code: string
@@ -258,15 +314,60 @@ export const api = {
         win: number
         openValue: number
       }>
-      byCity: Array<{ city: string; accounts: number; leads: number; revenue: number }>
+      byCity: Array<{ city: string; accounts: number; leads: number; tickets?: number; revenue: number }>
       byIndustry: Array<{ name: string; value: number }>
-      monthlyRevenue: Array<{ month: string; current: number; last: number }>
+      monthlyRevenue: Array<{ month: string; proforma?: number; servicePaid?: number; current?: number; last?: number }>
       activityMonthly?: Array<{ month: string; completed: number; pending: number; total: number }>
       activityByType: Array<{ name: string; value: number }>
       recentActivities: Array<Record<string, unknown>>
       recentLeads: Array<Record<string, unknown>>
       users: Array<{ id: string; name: string }>
-    }>(`/analytics/summary${qs({ range })}`),
+      sources?: Array<{ id: string; name: string }>
+      cities?: string[]
+    }>(`/analytics/summary${qs(params ?? {})}`),
+
+  aiDashboardAsk: (body: { question: string; range?: string; mode?: 'ask' | 'overview' | 'spikes' }) =>
+    apiFetch<{
+      answer: string
+      bullets: string[]
+      links: Array<{ label: string; to: string }>
+      caution?: string
+      model?: string
+      range?: string
+      mode?: string
+      generatedAt?: string
+      cached?: boolean
+    }>('/ai/dashboard-ask', { method: 'POST', body: JSON.stringify(body) }),
+
+  aiTicketAssist: (body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>('/ai/ticket-assist', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  aiSalesAssist: (body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>('/ai/sales-assist', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  aiWarehouseAssist: (body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>('/ai/warehouse-assist', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  aiCustomerAssist: (body: { contactId: string; action?: string }) =>
+    apiFetch<Record<string, unknown>>('/ai/customer-assist', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  aiPolish: (body: { text: string; action?: string; target?: string }) =>
+    apiFetch<{ result: string; caution?: string; bullets?: string[]; model?: string; cached?: boolean }>(
+      '/ai/polish',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
 
   platformStats: () => apiFetch<Record<string, unknown>>('/platform/dashboard/stats'),
   listTenants: () => apiFetch<unknown[]>('/platform/tenants'),
@@ -295,9 +396,17 @@ export const api = {
         colorHex?: string | null
         sortOrder?: number
       }>
-      users: Array<{ id: string; name: string; email: string; avatarUrl?: string | null }>
+      users: Array<{
+        id: string
+        name: string
+        email: string
+        phone?: string | null
+        roleCode?: string | null
+        roleName?: string | null
+        avatarUrl?: string | null
+      }>
       warehouses: Array<{ id: string; name: string; code: string; isDefault?: boolean }>
-      categories: Array<{ id: string; name: string; code: string }>
+      categories: Array<{ id: string; name: string; code: string; parentId?: string | null }>
       accounts: Array<{ id: string; name: string; phone?: string; email?: string }>
       contacts: Array<{ id: string; name: string; phone?: string; email?: string; accountId?: string }>
       products: Array<{
@@ -334,10 +443,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ stockUnitId }),
     }),
-  returnLeadDemo: (id: string, notes?: string) =>
+  returnLeadDemo: (
+    id: string,
+    body?: { notes?: string; outcome?: 'NOT_INTERESTED' | 'READY_TO_BUY'; stageId?: string },
+  ) =>
     apiFetch<Record<string, unknown>>(`/leads/${id}/return-demo`, {
       method: 'POST',
-      body: JSON.stringify({ notes: notes || undefined }),
+      body: JSON.stringify(body ?? {}),
+    }),
+  addLeadDemoUpdate: (id: string, body: { note: string; updateDate?: string }) =>
+    apiFetch<Record<string, unknown>>(`/leads/${id}/demo-update`, {
+      method: 'POST',
+      body: JSON.stringify(body),
     }),
 
   // Contacts
@@ -453,14 +570,24 @@ export const api = {
         body: JSON.stringify(body),
       },
     ),
-  markTicketPaid: (id: string) =>
+  markTicketPaid: (
+    id: string,
+    body: {
+      paymentMethod: 'CASH' | 'UPI' | 'NEFT' | 'RTGS' | 'CHEQUE' | 'CARD' | 'OTHER'
+      paymentReference?: string | null
+      paymentProofUrl?: string | null
+      sendWhatsApp?: boolean
+      paymentTotal?: number
+      advanceAmount?: number
+    },
+  ) =>
     apiFetch<
       Record<string, unknown> & {
         whatsapp?: { notified: boolean; reason?: string; fallbackWaLink?: string | null }
         invoice?: Record<string, unknown> | null
         invoiceError?: string | null
       }
-    >(`/tickets/${id}/mark-paid`, { method: 'POST' }),
+    >(`/tickets/${id}/mark-paid`, { method: 'POST', body: JSON.stringify(body) }),
   sendTicketPaymentDue: (id: string) =>
     apiFetch<Record<string, unknown> & { whatsapp?: { notified: boolean; reason?: string; fallbackWaLink?: string | null } }>(
       `/tickets/${id}/payment-due`,
@@ -591,9 +718,21 @@ export const api = {
         avatarUrl?: string | null
         status: string
         lastLoginAt?: string | null
+        createdAt?: string
         role?: { id: string; code: string; name: string } | null
+        employee?: {
+          id: string
+          employeeCode: string
+          department?: string | null
+          designation?: string | null
+          joinDate?: string | null
+          salary?: number | null
+          notes?: string | null
+          status?: string
+        } | null
       }>
     }>('/users'),
+  getUser: (id: string) => apiFetch<Record<string, unknown>>(`/users/${id}`),
   createUser: (body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>('/users', { method: 'POST', body: JSON.stringify(body) }),
   updateUser: (id: string, body: Record<string, unknown>) =>
@@ -602,6 +741,52 @@ export const api = {
       body: JSON.stringify(body),
     }),
   deleteUser: (id: string) => apiFetch<null>(`/users/${id}`, { method: 'DELETE' }),
+
+  notifications: (params?: { limit?: number; unreadOnly?: boolean }) => {
+    const q = new URLSearchParams()
+    if (params?.limit) q.set('limit', String(params.limit))
+    if (params?.unreadOnly) q.set('unreadOnly', 'true')
+    const qs = q.toString()
+    return apiFetch<{
+      unreadCount: number
+      items: Array<{
+        id: string
+        title: string
+        message: string
+        type: string
+        entityType?: string | null
+        entityId?: string | null
+        isRead: boolean
+        readAt?: string | null
+        createdAt: string
+        href?: string
+      }>
+    }>(`/notifications${qs ? `?${qs}` : ''}`)
+  },
+  markNotificationRead: (id: string) =>
+    apiFetch<{ id: string; isRead: boolean }>(`/notifications/${id}/read`, { method: 'PATCH' }),
+  markAllNotificationsRead: () =>
+    apiFetch<{ updated: number }>('/notifications/read-all', { method: 'POST' }),
+
+  whatsappCloudStatus: () =>
+    apiFetch<{
+      configured: boolean
+      phoneNumberId: string | null
+      businessAccountId: string | null
+      appId: string | null
+      apiVersion: string
+      verifyTokenSet: boolean
+      verifyToken?: string | null
+      hasAppSecret: boolean
+      webhookPath: string
+      webhookUrlHint?: string
+      note?: string
+    }>('/integrations/whatsapp/cloud/status'),
+  testWhatsAppCloud: (to: string) =>
+    apiFetch<{ ok: boolean; messageId?: string; provider: string }>(
+      '/integrations/whatsapp/cloud/test',
+      { method: 'POST', body: JSON.stringify({ to }) },
+    ),
 
   uploadImage: async (file: File) => {
     const form = new FormData()

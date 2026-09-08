@@ -1,40 +1,65 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { authenticate } from "../../middleware/auth.middleware.js";
-import { requireTenant } from "../../middleware/tenant.middleware.js";
+import { requireTenant, requireTenantAdmin } from "../../middleware/tenant.middleware.js";
 import { success } from "../../common/utils/response.js";
 import { prisma } from "../../config/database.js";
 
 export const analyticsRouter = Router();
 analyticsRouter.use(authenticate, requireTenant);
 
-analyticsRouter.get("/summary", async (q: Request, r: Response) => {
-  const t = q.auth!.tenantId!;
-  const range = String(q.query.range ?? "month");
+function parseRangeBounds(q: Request["query"]) {
   const now = new Date();
-  const from = new Date(now);
-  if (range === "week") from.setDate(from.getDate() - 7);
+  const range = String(q.range ?? "month");
+  let from = new Date(now);
+  let to = new Date(now);
+
+  if (q.from) {
+    const parsed = new Date(String(q.from));
+    if (!Number.isNaN(parsed.getTime())) from = parsed;
+  } else if (range === "week") from.setDate(from.getDate() - 7);
   else if (range === "quarter") from.setMonth(from.getMonth() - 3);
   else if (range === "year") from.setFullYear(from.getFullYear() - 1);
   else from.setMonth(from.getMonth() - 1);
 
+  if (q.to) {
+    const parsed = new Date(String(q.to));
+    if (!Number.isNaN(parsed.getTime())) {
+      to = parsed;
+      to.setHours(23, 59, 59, 999);
+    }
+  }
+
   const prevFrom = new Date(from);
-  const span = now.getTime() - from.getTime();
+  const span = Math.max(1, to.getTime() - from.getTime());
   prevFrom.setTime(from.getTime() - span);
 
+  return { range, from, to, prevFrom, now };
+}
+
+analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Response) => {
+  const t = q.auth!.tenantId!;
+  const { range, from, to, prevFrom, now } = parseRangeBounds(q.query);
+  const filterAssignee = q.query.assigneeId ? String(q.query.assigneeId) : "";
+  const filterSource = q.query.sourceId ? String(q.query.sourceId) : "";
+  const filterTicketStatus = q.query.ticketStatus ? String(q.query.ticketStatus) : "";
+  const filterLeadStatus = q.query.leadStatus ? String(q.query.leadStatus) : "";
+  const filterCity = q.query.city ? String(q.query.city).trim().toLowerCase() : "";
+
   const [
-    leads,
+    leadsRaw,
     deals,
     stages,
     sources,
     users,
     accounts,
     activities,
-    invoices,
+    invoicesRaw,
     products,
-    tickets,
+    ticketsRaw,
     stock,
     contactCount,
+    stockUnitGroups,
   ] = await Promise.all([
     prisma.lead.findMany({
       where: { tenantId: t, deletedAt: null },
@@ -49,6 +74,9 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
         createdAt: true,
         company: true,
         name: true,
+        customFields: true,
+        updatedAt: true,
+        convertedAt: true,
       },
     }),
     prisma.deal.findMany({
@@ -104,6 +132,8 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
         status: true,
         invoiceDate: true,
         accountId: true,
+        serviceTicketId: true,
+        createdById: true,
       },
     }),
     prisma.product.count({ where: { tenantId: t, deletedAt: null } }),
@@ -125,10 +155,12 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
         paymentTotal: true,
         advanceAmount: true,
         odAmount: true,
+        paymentStatus: true,
         nextDueDate: true,
         stampingDate: true,
         resolvedAt: true,
         closedAt: true,
+        paidAt: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -138,22 +170,59 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
       select: { quantityOnHand: true, quantityReserved: true },
     }),
     prisma.contact.count({ where: { tenantId: t, deletedAt: null } }),
+    prisma.stockUnit.groupBy({
+      by: ["status"],
+      where: { tenantId: t, deletedAt: null },
+      _count: { _all: true },
+    }),
   ]);
+
+  const cityMatch = (city?: string | null) =>
+    !filterCity || String(city ?? "").trim().toLowerCase() === filterCity;
+
+  const leads = leadsRaw.filter((l) => {
+    if (filterAssignee && l.assignedToId !== filterAssignee) return false;
+    if (filterSource && l.sourceId !== filterSource) return false;
+    if (filterLeadStatus && l.status !== filterLeadStatus) return false;
+    if (!cityMatch(l.city)) return false;
+    return true;
+  });
+
+  const tickets = ticketsRaw.filter((x) => {
+    if (filterAssignee && x.assignedToId !== filterAssignee) return false;
+    if (filterTicketStatus && x.status !== filterTicketStatus) return false;
+    if (filterCity) {
+      const cf =
+        x.customFields && typeof x.customFields === "object" && !Array.isArray(x.customFields)
+          ? (x.customFields as Record<string, unknown>)
+          : {};
+      const city = String(cf.city ?? "");
+      if (!cityMatch(city)) return false;
+    }
+    return true;
+  });
+
+  const accountIdsInCity = filterCity
+    ? new Set(accounts.filter((a) => cityMatch(a.city)).map((a) => a.id))
+    : null;
+  const invoices = invoicesRaw.filter((i) => {
+    if (filterAssignee && i.createdById !== filterAssignee) return false;
+    if (accountIdsInCity && i.accountId && !accountIdsInCity.has(i.accountId)) return false;
+    return true;
+  });
 
   const stageMap = Object.fromEntries(stages.map((s) => [s.id, s]));
   const sourceMap = Object.fromEntries(sources.map((s) => [s.id, s.name]));
   const userMap = Object.fromEntries(users.map((u) => [u.id, u.name]));
   const accountMap = Object.fromEntries(accounts.map((a) => [a.id, a]));
 
-  const leadsInRange = leads.filter((l) => l.createdAt >= from);
+  const leadsInRange = leads.filter((l) => l.createdAt >= from && l.createdAt <= to);
   const leadsPrev = leads.filter((l) => l.createdAt >= prevFrom && l.createdAt < from);
-  const dealsInRange = deals.filter((d) => d.createdAt >= from);
+  const dealsInRange = deals.filter((d) => d.createdAt >= from && d.createdAt <= to);
   const dealsPrev = deals.filter((d) => d.createdAt >= prevFrom && d.createdAt < from);
 
   const wonDeals = deals.filter((d) => stageMap[d.stageId]?.isWon);
   const openDeals = deals.filter((d) => !stageMap[d.stageId]?.isWon && !stageMap[d.stageId]?.isLost);
-  const wonRevenue = wonDeals.reduce((s, d) => s + Number(d.amount), 0);
-  const openPipeline = openDeals.reduce((s, d) => s + Number(d.amount), 0);
   const invoiceRevenue = invoices.reduce((s, i) => s + Number(i.grandTotal), 0);
 
   const leadsByStatus: Record<string, number> = {};
@@ -163,6 +232,27 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
     name: s.name,
     leads: leads.filter((l) => l.sourceId === s.id).length,
   }));
+
+  const leadsByOwner = users
+    .map((u) => {
+      const owned = leads.filter((l) => l.assignedToId === u.id);
+      const converted = owned.filter((l) => l.status === "CONVERTED").length;
+      const demo = owned.filter((l) => l.status === "DEMO").length;
+      const pending = owned.filter((l) =>
+        ["NEW", "CONTACTED", "QUALIFIED"].includes(l.status),
+      ).length;
+      return {
+        id: u.id,
+        name: u.name,
+        total: owned.length,
+        pending,
+        demo,
+        converted,
+        conversionRate: owned.length ? Math.round((converted / owned.length) * 1000) / 10 : 0,
+      };
+    })
+    .filter((row) => row.total > 0)
+    .sort((a, b) => b.converted - a.converted || b.total - a.total);
 
   const funnel = stages.map((stage) => {
     const stageDeals = deals.filter((d) => d.stageId === stage.id);
@@ -183,76 +273,112 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
     width: `${Math.max(12, Math.round((f.count / topFunnel) * 100))}%`,
   }));
 
-  const team = users.map((u) => {
-    const owned = deals.filter((d) => d.ownerUserId === u.id);
-    const won = owned.filter((d) => stageMap[d.stageId]?.isWon);
-    const revenue = won.reduce((s, d) => s + Number(d.amount), 0);
-    return {
-      id: u.id,
-      name: u.name,
-      deals: owned.length,
-      wonDeals: won.length,
-      revenue,
-      win: owned.length ? Math.round((won.length / owned.length) * 100) : 0,
-      openValue: owned
-        .filter((d) => !stageMap[d.stageId]?.isWon && !stageMap[d.stageId]?.isLost)
-        .reduce((s, d) => s + Number(d.amount), 0),
-    };
-  }).sort((a, b) => b.revenue - a.revenue);
+  const openTicketStatuses = new Set(["OPEN", "IN_PROGRESS", "PENDING"]);
 
-  const byCityMap: Record<string, { city: string; accounts: number; leads: number; revenue: number }> = {};
+  const performers = users
+    .map((u) => {
+      const myTickets = tickets.filter((x) => x.assignedToId === u.id);
+      const ticketsResolved = myTickets.filter(
+        (x) => x.status === "RESOLVED" || x.status === "CLOSED",
+      ).length;
+      const ticketsOpen = myTickets.filter((x) => openTicketStatuses.has(x.status)).length;
+      const serviceCollected = myTickets
+        .filter((x) => String(x.paymentStatus) === "PAID")
+        .reduce((s, x) => s + Number(x.paymentTotal ?? 0), 0);
+      const myLeads = leads.filter((l) => l.assignedToId === u.id);
+      const leadsConverted = myLeads.filter((l) => l.status === "CONVERTED").length;
+      const score =
+        ticketsResolved * 10 + leadsConverted * 15 + Math.round(serviceCollected / 1000);
+      return {
+        id: u.id,
+        name: u.name,
+        ticketsOpen,
+        ticketsResolved,
+        leadsConverted,
+        leadsTotal: myLeads.length,
+        serviceCollected,
+        score,
+      };
+    })
+    .filter((p) => p.ticketsResolved + p.leadsConverted + p.ticketsOpen + p.leadsTotal > 0)
+    .sort((a, b) => b.score - a.score);
+
+  const team = performers.map((p) => ({
+    id: p.id,
+    name: p.name,
+    deals: p.leadsTotal,
+    wonDeals: p.leadsConverted,
+    revenue: p.serviceCollected,
+    win: p.leadsTotal ? Math.round((p.leadsConverted / p.leadsTotal) * 100) : 0,
+    openValue: p.ticketsOpen,
+  }));
+
+  const byCityMap: Record<
+    string,
+    { city: string; accounts: number; leads: number; tickets: number; revenue: number }
+  > = {};
   for (const a of accounts) {
+    if (!cityMatch(a.city)) continue;
     const city = a.city || "Unknown";
-    if (!byCityMap[city]) byCityMap[city] = { city, accounts: 0, leads: 0, revenue: 0 };
+    if (!byCityMap[city]) byCityMap[city] = { city, accounts: 0, leads: 0, tickets: 0, revenue: 0 };
     byCityMap[city].accounts += 1;
   }
   for (const l of leads) {
     const city = l.city || "Unknown";
-    if (!byCityMap[city]) byCityMap[city] = { city, accounts: 0, leads: 0, revenue: 0 };
+    if (!byCityMap[city]) byCityMap[city] = { city, accounts: 0, leads: 0, tickets: 0, revenue: 0 };
     byCityMap[city].leads += 1;
   }
-  for (const d of wonDeals) {
-    const acc = d.accountId ? accountMap[d.accountId] : null;
-    const city = acc?.city || "Unknown";
-    if (!byCityMap[city]) byCityMap[city] = { city, accounts: 0, leads: 0, revenue: 0 };
-    byCityMap[city].revenue += Number(d.amount);
+  for (const x of tickets) {
+    const cf =
+      x.customFields && typeof x.customFields === "object" && !Array.isArray(x.customFields)
+        ? (x.customFields as Record<string, unknown>)
+        : {};
+    const city = String(cf.city ?? accountMap[x.accountId ?? ""]?.city ?? "Unknown") || "Unknown";
+    if (!byCityMap[city]) byCityMap[city] = { city, accounts: 0, leads: 0, tickets: 0, revenue: 0 };
+    byCityMap[city].tickets += 1;
+    if (String(x.paymentStatus) === "PAID") {
+      byCityMap[city].revenue += Number(x.paymentTotal ?? 0);
+    }
+  }
+  for (const inv of invoices) {
+    const city = inv.accountId ? accountMap[inv.accountId]?.city || "Unknown" : "Unknown";
+    if (!byCityMap[city]) byCityMap[city] = { city, accounts: 0, leads: 0, tickets: 0, revenue: 0 };
+    byCityMap[city].revenue += Number(inv.grandTotal);
   }
   const byCity = Object.values(byCityMap).sort((a, b) => b.revenue - a.revenue);
 
   const byIndustryMap: Record<string, number> = {};
   for (const a of accounts) {
+    if (!cityMatch(a.city)) continue;
     const ind = a.industry || "Other";
     byIndustryMap[ind] = (byIndustryMap[ind] ?? 0) + 1;
   }
   const byIndustry = Object.entries(byIndustryMap).map(([name, value]) => ({ name, value }));
 
-  // Monthly revenue from won deals + invoices (last 7 months)
-  const months: Array<{ month: string; current: number; last: number }> = [];
+  const months: Array<{ month: string; proforma: number; servicePaid: number }> = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const label = d.toLocaleString("en-IN", { month: "short" });
     const next = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-    const lastStart = new Date(d.getFullYear() - 1, d.getMonth(), 1);
-    const lastEnd = new Date(d.getFullYear() - 1, d.getMonth() + 1, 1);
-    const current = wonDeals
+    const proforma = invoices
+      .filter((x) => x.invoiceDate >= d && x.invoiceDate < next)
+      .reduce((s, x) => s + Number(x.grandTotal), 0);
+    const servicePaid = tickets
       .filter((x) => {
-        const c = x.closedAt ?? x.createdAt;
-        return c >= d && c < next;
+        if (String(x.paymentStatus) !== "PAID") return false;
+        const at = x.paidAt ?? x.closedAt ?? x.resolvedAt;
+        return at != null && at >= d && at < next;
       })
-      .reduce((s, x) => s + Number(x.amount), 0);
-    const last = wonDeals
-      .filter((x) => {
-        const c = x.closedAt ?? x.createdAt;
-        return c >= lastStart && c < lastEnd;
-      })
-      .reduce((s, x) => s + Number(x.amount), 0);
-    months.push({ month: label, current, last });
+      .reduce((s, x) => s + Number(x.paymentTotal ?? 0), 0);
+    months.push({ month: label, proforma, servicePaid });
   }
 
   const activityByType: Record<string, number> = {};
   for (const a of activities) activityByType[a.type] = (activityByType[a.type] ?? 0) + 1;
   const completedActivities = activities.filter((a) => a.status === "COMPLETED").length;
-  const pendingActivities = activities.filter((a) => a.status === "PENDING" || a.status === "OVERDUE").length;
+  const pendingActivities = activities.filter(
+    (a) => a.status === "PENDING" || a.status === "OVERDUE",
+  ).length;
 
   const leadGrowth =
     leadsPrev.length === 0
@@ -268,17 +394,84 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
       : Math.round(((dealsInRange.length - dealsPrev.length) / dealsPrev.length) * 100);
 
   const stockUnits = stock.reduce((s, r) => s + Number(r.quantityOnHand), 0);
+  const stockByStatus = stockUnitGroups.map((g) => ({
+    name: g.status,
+    value: g._count._all,
+  }));
+  const demoOut = stockByStatus.find((s) => s.name === "DEMO")?.value ?? 0;
+  const inStock = stockByStatus.find((s) => s.name === "IN_STOCK")?.value ?? 0;
 
-  const ticketsInRange = tickets.filter((x) => x.createdAt >= from);
+  const ticketsInRange = tickets.filter((x) => x.createdAt >= from && x.createdAt <= to);
   const ticketsPrev = tickets.filter((x) => x.createdAt >= prevFrom && x.createdAt < from);
-  const openTicketStatuses = new Set(["OPEN", "IN_PROGRESS", "PENDING"]);
   const openTickets = tickets.filter((x) => openTicketStatuses.has(x.status));
   const resolvedTickets = tickets.filter((x) => x.status === "RESOLVED" || x.status === "CLOSED");
   const resolvedInRange = tickets.filter((x) => {
     const doneAt = x.resolvedAt ?? x.closedAt;
-    return doneAt != null && doneAt >= from && doneAt <= now;
+    return doneAt != null && doneAt >= from && doneAt <= to;
   });
   const breachedTickets = tickets.filter((x) => x.slaBreached);
+  const awaitingAssignment = tickets.filter((x) => x.status === "OPEN" && !x.assignedToId).length;
+  const awaitingApproval = tickets.filter((x) => x.status === "RESOLVED").length;
+  const serviceCollected = tickets
+    .filter((x) => String(x.paymentStatus) === "PAID")
+    .reduce((s, x) => s + Number(x.paymentTotal ?? 0), 0);
+  const serviceCollectedInRange = tickets
+    .filter((x) => {
+      if (String(x.paymentStatus) !== "PAID") return false;
+      const at = x.paidAt ?? x.closedAt ?? x.resolvedAt;
+      return at != null && at >= from && at <= to;
+    })
+    .reduce((s, x) => s + Number(x.paymentTotal ?? 0), 0);
+
+  const enquiriesPending = leads.filter((l) =>
+    ["NEW", "CONTACTED", "QUALIFIED"].includes(l.status),
+  ).length;
+  const enquiriesDemo = leads.filter((l) => l.status === "DEMO").length;
+  const enquiriesConverted = leads.filter((l) => l.status === "CONVERTED").length;
+  const enquiriesLost = leads.filter((l) => l.status === "LOST" || l.status === "UNQUALIFIED").length;
+  const enquiryByStatus = [
+    { name: "Pending", value: enquiriesPending, code: "NEW" },
+    { name: "Demo", value: enquiriesDemo, code: "DEMO" },
+    { name: "Converted", value: enquiriesConverted, code: "CONVERTED" },
+    { name: "Closed", value: enquiriesLost, code: "LOST" },
+  ];
+
+  const leadMonthly: Array<{ month: string; created: number; converted: number }> = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const label = d.toLocaleString("en-IN", { month: "short" });
+    const next = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+    leadMonthly.push({
+      month: label,
+      created: leads.filter((l) => l.createdAt >= d && l.createdAt < next).length,
+      converted: leads.filter((l) => {
+        const at = l.convertedAt ?? (l.status === "CONVERTED" ? l.updatedAt : null);
+        return at != null && at >= d && at < next;
+      }).length,
+    });
+  }
+
+  const attentionTickets = [...openTickets]
+    .sort((a, b) => {
+      if (a.slaBreached !== b.slaBreached) return a.slaBreached ? -1 : 1;
+      const as = a.slaDueAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      const bs = b.slaDueAt?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      return as - bs;
+    })
+    .slice(0, 8)
+    .map((x) => ({
+      id: x.id,
+      ticketNo: x.ticketNo,
+      subject: x.subject,
+      status: x.status,
+      priority: x.priority,
+      slaDueAt: x.slaDueAt,
+      slaBreached: x.slaBreached,
+      assignedToId: x.assignedToId,
+      paymentStatus: x.paymentStatus,
+      balanceDue: Math.max(0, Number(x.paymentTotal ?? 0) - Number(x.advanceAmount ?? 0)),
+    }));
+
   const ticketGrowth =
     ticketsPrev.length === 0
       ? ticketsInRange.length > 0
@@ -412,7 +605,8 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
       )
     : 0;
 
-  const activityMonthly: Array<{ month: string; completed: number; pending: number; total: number }> = [];
+  const activityMonthly: Array<{ month: string; completed: number; pending: number; total: number }> =
+    [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const label = d.toLocaleString("en-IN", { month: "short" });
@@ -426,8 +620,26 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
     });
   }
 
+  const cities = [
+    ...new Set(
+      [
+        ...accounts.map((a) => a.city).filter(Boolean),
+        ...leads.map((l) => l.city).filter(Boolean),
+      ].map((c) => String(c)),
+    ),
+  ].sort();
+
   return success(r, {
     range,
+    from: from.toISOString(),
+    to: to.toISOString(),
+    filters: {
+      assigneeId: filterAssignee || null,
+      sourceId: filterSource || null,
+      ticketStatus: filterTicketStatus || null,
+      leadStatus: filterLeadStatus || null,
+      city: filterCity || null,
+    },
     generatedAt: now.toISOString(),
     salesTargets: {
       revenueTarget,
@@ -438,19 +650,26 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
       totalLeads: leads.length,
       leadsInRange: leadsInRange.length,
       leadGrowth,
-      qualifiedLeads: leads.filter((l) => l.status === "QUALIFIED").length,
-      convertedLeads: leads.filter((l) => l.status === "CONVERTED").length,
-      conversionRate: leads.length
-        ? Math.round((leads.filter((l) => l.status === "CONVERTED").length / leads.length) * 1000) / 10
-        : 0,
+      qualifiedLeads: leads.filter((l) => l.status === "QUALIFIED" || l.status === "DEMO").length,
+      convertedLeads: enquiriesConverted,
+      conversionRate: leads.length ? Math.round((enquiriesConverted / leads.length) * 1000) / 10 : 0,
+      enquiriesPending,
+      enquiriesDemo,
+      enquiriesConverted,
+      enquiriesLost,
       openDeals: openDeals.length,
       dealsInRange: dealsInRange.length,
       dealGrowth,
       wonDeals: wonDeals.length,
-      wonRevenue,
-      openPipeline,
+      wonRevenue: serviceCollected,
+      openPipeline: 0,
       invoiceRevenue,
       invoiceCount: invoices.length,
+      invoiceRevenueInRange: invoices
+        .filter((i) => i.invoiceDate >= from && i.invoiceDate <= to)
+        .reduce((s, i) => s + Number(i.grandTotal), 0),
+      serviceCollected,
+      serviceCollectedInRange,
       products,
       tickets: tickets.length,
       ticketsInRange: ticketsInRange.length,
@@ -460,11 +679,15 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
       resolvedInRange: resolvedInRange.length,
       slaBreached: breachedTickets.length,
       unassignedTickets,
+      awaitingAssignment,
+      awaitingApproval,
       avgResolutionHours,
       balanceOutstanding,
       machinesDueSoon,
       machinesStampingDue,
       stockUnits,
+      demoOut,
+      inStock,
       accounts: accounts.length,
       contacts: contactCount,
       activities: activities.length,
@@ -473,8 +696,14 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
       avgCallMinutes,
       callCount: activities.filter((a) => a.type === "CALL").length,
     },
+    enquiryByStatus,
+    stockByStatus,
+    attentionTickets,
     leadsByStatus: Object.entries(leadsByStatus).map(([name, value]) => ({ name, value })),
     leadsBySource,
+    leadsByOwner,
+    leadMonthly,
+    performers,
     ticketsByStatus,
     ticketsByPriority,
     ticketsByCategory,
@@ -507,5 +736,6 @@ analyticsRouter.get("/summary", async (q: Request, r: Response) => {
     stages: stages.map((s) => ({ id: s.id, name: s.name, code: s.code, colorHex: s.colorHex })),
     sources: sources.map((s) => ({ id: s.id, name: s.name })),
     users: users.map((u) => ({ id: u.id, name: u.name })),
+    cities,
   });
 });

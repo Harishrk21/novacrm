@@ -15,14 +15,44 @@ import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
+import { AiAssistCard } from '@/components/ai/AiAssistCard'
+import { WhatsAppSendConfirm, type WhatsAppConfirmPayload } from '@/components/whatsapp/WhatsAppSendConfirm'
+import {
+  HMS_FAMILY_OPTIONS,
+  familyByCode,
+  industryOptions,
+  productCatalogMeta,
+} from '@/lib/hmsCatalog'
 
 type LineDraft = {
   key: string
+  familyCode: string
+  industryCode: string
   productId: string
+  stockUnitId: string
+  serialNo: string
   description: string
   quantity: string
   unitPrice: string
   taxPercent: string
+}
+
+type ProductOption = {
+  id: string
+  name: string
+  sku: string
+  salePrice: number
+  taxPercent: number
+  attributes?: Record<string, unknown> | null
+}
+
+type StockUnitOption = {
+  id: string
+  productId: string
+  serialNo: string
+  status: string
+  stampingDate?: string | null
+  warehouse?: { name?: string } | null
 }
 
 type InvoiceDetail = Record<string, unknown> & {
@@ -32,7 +62,11 @@ type InvoiceDetail = Record<string, unknown> & {
 function newLine(): LineDraft {
   return {
     key: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    familyCode: '',
+    industryCode: '',
     productId: '',
+    stockUnitId: '',
+    serialNo: '',
     description: '',
     quantity: '1',
     unitPrice: '',
@@ -151,8 +185,8 @@ function openPrintableInvoice(opts: {
     <div class="hero">
       <div class="hero-top">
         <div>
-          <div class="brand">${escapeHtml(opts.sellerName || 'NovaCRM')}</div>
-          <div class="tag">Tax Invoice</div>
+          <div class="brand">${escapeHtml(opts.sellerName || 'HMS Enterprises')}</div>
+          <div class="tag">Proforma Invoice</div>
         </div>
         <div class="inv-meta">
           <div class="inv-no">${escapeHtml(opts.invoiceNumber)}</div>
@@ -179,7 +213,7 @@ function openPrintableInvoice(opts: {
         </div>
       </div>
       <div class="facts">
-        <div class="fact"><span>Invoice date</span><strong>${escapeHtml(opts.invoiceDate || '—')}</strong></div>
+        <div class="fact"><span>Proforma date</span><strong>${escapeHtml(opts.invoiceDate || '—')}</strong></div>
         <div class="fact"><span>Due date</span><strong>${escapeHtml(opts.dueDate || '—')}</strong></div>
         <div class="fact"><span>Payment terms</span><strong>${escapeHtml(opts.paymentTerms || '—')}</strong></div>
         <div class="fact"><span>PO / Ref</span><strong>${escapeHtml(opts.poNumber || '—')}</strong></div>
@@ -200,7 +234,7 @@ function openPrintableInvoice(opts: {
       </div>
       ${opts.notes ? `<div class="notes"><strong>Notes</strong><br/>${escapeHtml(opts.notes)}</div>` : ''}
       <div class="footer">
-        <div>Thank you for your business.<br/>This is a computer-generated invoice from NovaCRM.</div>
+        <div>This is a <strong>proforma invoice</strong> for estimate / advance purposes only.<br/>Final GST tax invoice is issued from Tally by HMS Enterprises.</div>
         <div class="sign">Authorized signatory<br/><strong style="color:#0f172a">${escapeHtml(opts.sellerName || '')}</strong></div>
       </div>
     </div>
@@ -259,8 +293,8 @@ function invoiceStatusColor(status: string): 'gray' | 'blue' | 'amber' | 'green'
 export function InvoicesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const t = DEFAULT_TIPS['erp.invoices'] ?? {
-    title: 'Invoicing',
-    body: 'Add multiple products per invoice, preview totals, then download a printable PDF-ready document. Creating an invoice deducts stock for tracked products. Mark as Sent when you share it; Mark as Paid when payment clears.',
+    title: 'Proforma invoices',
+    body: 'CRM proforma only — final GST bills live in Tally. Pick customer → product → serial; create marks serial sold.',
     tipType: 'TIP' as const,
   }
   const addToast = useUIStore((s) => s.addToast)
@@ -269,11 +303,10 @@ export function InvoicesPage() {
     Array<{ id: string; name: string; city?: string; state?: string; phone?: string; email?: string; gstin?: string }>
   >([])
   const [contacts, setContacts] = useState<Array<{ id: string; name: string; accountId?: string }>>([])
-  const [products, setProducts] = useState<
-    Array<{ id: string; name: string; sku: string; salePrice: number; taxPercent: number }>
-  >([])
+  const [products, setProducts] = useState<ProductOption[]>([])
+  const [stockUnits, setStockUnits] = useState<StockUnitOption[]>([])
   const [seller, setSeller] = useState({
-    name: 'Precision Scales India',
+    name: 'HMS Enterprises',
     email: '',
     phone: '',
     address: '',
@@ -282,9 +315,17 @@ export function InvoicesPage() {
   const [statusFilter, setStatusFilter] = useState('')
   const [statusBusy, setStatusBusy] = useState(false)
   const [tab, setTab] = useState<'list' | 'create' | 'upload'>('list')
+  const [invoiceKind, setInvoiceKind] = useState<'SALES' | 'SERVICE'>('SALES')
+  const [serviceTicketId, setServiceTicketId] = useState('')
+  const [serviceTickets, setServiceTickets] = useState<Record<string, unknown>[]>([])
+  const [loadingTickets, setLoadingTickets] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [detail, setDetail] = useState<InvoiceDetail | null>(null)
   const [saving, setSaving] = useState(false)
+  const [waPending, setWaPending] = useState<{
+    payload: WhatsAppConfirmPayload
+    execute: (sendWhatsApp: boolean) => Promise<void>
+  } | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [uploadForm, setUploadForm] = useState({
     contactId: '',
@@ -314,11 +355,20 @@ export function InvoicesPage() {
   const [lines, setLines] = useState<LineDraft[]>([newLine()])
 
   async function ensureAccountForContact(contact: ContactPick): Promise<string> {
-    if (contact.accountId) return contact.accountId
+    if (contact.accountId) {
+      try {
+        await api.getAccount(contact.accountId)
+        return contact.accountId
+      } catch {
+        // Soft-deleted account: keep id — invoice create restores it server-side
+        return contact.accountId
+      }
+    }
     const acc = await api.createAccount({
       name: contact.name,
       phone: contact.phone || contact.mobile || null,
       email: contact.email || null,
+      accountType: 'CUSTOMER',
       customFields: { autoFromContact: contact.id },
     })
     const accountId = String(acc.id)
@@ -330,6 +380,8 @@ export function InvoicesPage() {
     setPickedContact(c)
     if (!c) {
       setForm((f) => ({ ...f, contactId: '', accountId: '' }))
+      setServiceTicketId('')
+      setServiceTickets([])
       return
     }
     try {
@@ -346,10 +398,121 @@ export function InvoicesPage() {
       if (!contacts.some((x) => x.id === c.id)) {
         setContacts((prev) => [...prev, { id: c.id, name: c.name, accountId }])
       }
+      if (invoiceKind === 'SERVICE') {
+        await loadServiceTicketsForContact(c.id)
+      }
     } catch (err) {
       addToast({
         type: 'error',
         message: err instanceof ApiClientError ? err.message : 'Could not link customer account',
+      })
+    }
+  }
+
+  function ticketLabel(t: Record<string, unknown>) {
+    const no = `SVC-${String(t.ticketNo).padStart(5, '0')}`
+    const st = String(t.status ?? '')
+    const paid = String(t.paymentStatus ?? '')
+    const inv = t.serviceInvoiceId ? ' · invoiced' : ''
+    return `${no} · ${String(t.subject ?? '').slice(0, 40)} · ${st}${paid === 'PAID' ? ' · PAID' : ''}${inv}`
+  }
+
+  function linesFromServiceTicket(t: Record<string, unknown>): LineDraft[] {
+    const ticketNo = `SVC-${String(t.ticketNo).padStart(5, '0')}`
+    const paymentTotal = Math.max(num(t.paymentTotal), num(t.advanceAmount), 0)
+    const odAmount = num(t.odAmount)
+    const serviceAmount = Math.max(0, paymentTotal - odAmount)
+    const out: LineDraft[] = []
+    if (serviceAmount > 0 || odAmount <= 0) {
+      const line = newLine()
+      line.description = `Service — ${String(t.subject ?? 'Job')} (${ticketNo})`
+      line.quantity = '1'
+      line.unitPrice = String(serviceAmount > 0 ? serviceAmount : paymentTotal || 0)
+      line.taxPercent = '0'
+      out.push(line)
+    }
+    if (odAmount > 0) {
+      const line = newLine()
+      line.description = 'OD / outstation charges'
+      line.quantity = '1'
+      line.unitPrice = String(odAmount)
+      line.taxPercent = '0'
+      out.push(line)
+    }
+    return out.length ? out : [newLine()]
+  }
+
+  async function loadServiceTicketsForContact(contactId: string) {
+    if (!contactId) {
+      setServiceTickets([])
+      return
+    }
+    setLoadingTickets(true)
+    try {
+      const res = await api.tickets({ contactId, limit: 200 })
+      const rows = (res.items ?? []).filter((t) =>
+        ['RESOLVED', 'CLOSED'].includes(String(t.status)),
+      )
+      setServiceTickets(rows)
+    } catch {
+      setServiceTickets([])
+    } finally {
+      setLoadingTickets(false)
+    }
+  }
+
+  async function applyServiceTicket(ticketId: string) {
+    setServiceTicketId(ticketId)
+    if (!ticketId) return
+    try {
+      const t = await api.getTicket(ticketId)
+      if (t.serviceInvoiceId) {
+        addToast({
+          type: 'warning',
+          message: `This ticket already has invoice linked — creating another will still attach; prefer opening the existing one.`,
+        })
+      }
+      const contactId = t.contactId ? String(t.contactId) : ''
+      if (contactId && contactId !== form.contactId) {
+        try {
+          const row = await api.getContact(contactId)
+          const pick: ContactPick = {
+            id: String(row.id),
+            name: String(row.name),
+            customerCode: row.customerCode ? String(row.customerCode) : null,
+            phone: row.phone ? String(row.phone) : null,
+            mobile: row.mobile ? String(row.mobile) : null,
+            accountId: row.accountId ? String(row.accountId) : null,
+            email: row.email ? String(row.email) : null,
+          }
+          await onPickInvoiceContact(pick)
+        } catch (contactErr) {
+          addToast({
+            type: 'error',
+            message:
+              contactErr instanceof ApiClientError && contactErr.status === 404
+                ? 'Customer for this ticket was deleted or is missing — pick or recreate them on the invoice.'
+                : contactErr instanceof ApiClientError
+                  ? contactErr.message
+                  : 'Could not load customer for this ticket',
+          })
+        }
+      }
+      setLines(linesFromServiceTicket(t))
+      setForm((f) => ({
+        ...f,
+        notes:
+          f.notes ||
+          `Service job ${`SVC-${String(t.ticketNo).padStart(5, '0')}`} — ${String(t.subject ?? '')}`,
+        paymentTerms: f.paymentTerms || (String(t.paymentStatus) === 'PAID' ? 'Paid' : 'Due on receipt'),
+      }))
+      if (!serviceTickets.some((x) => String(x.id) === ticketId)) {
+        setServiceTickets((prev) => [t, ...prev])
+      }
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not load service ticket',
       })
     }
   }
@@ -373,11 +536,13 @@ export function InvoicesPage() {
 
   const load = useCallback(async () => {
     try {
-      const [inv, lookups, accountsRes, tenant] = await Promise.all([
+      const [inv, lookups, accountsRes, tenant, unitsInStock, unitsDemo] = await Promise.all([
         api.invoices({ limit: 50, status: statusFilter || undefined }),
         api.lookups(),
         api.accounts({ limit: 100 }),
         api.myTenant(),
+        api.stockUnits({ status: 'IN_STOCK', limit: 500 }),
+        api.stockUnits({ status: 'DEMO', limit: 500 }),
       ])
       setItems(inv.items ?? [])
       setAccounts(
@@ -399,11 +564,23 @@ export function InvoicesPage() {
           sku: p.sku,
           salePrice: num(p.salePrice),
           taxPercent: num(p.taxPercent),
+          attributes: (p.attributes as Record<string, unknown> | null | undefined) ?? null,
         })),
       )
+      const mapUnit = (u: Record<string, unknown>): StockUnitOption => ({
+        id: String(u.id),
+        productId: String(u.productId),
+        serialNo: String(u.serialNo),
+        status: String(u.status),
+        stampingDate: (u.stampingDate as string | null) ?? null,
+        warehouse: (u.warehouse as { name?: string } | null) ?? null,
+      })
+      const inStock = ((unitsInStock as Array<Record<string, unknown>>) ?? []).map(mapUnit)
+      const demo = ((unitsDemo as Array<Record<string, unknown>>) ?? []).map(mapUnit)
+      setStockUnits([...inStock, ...demo])
       const tRow = tenant as Record<string, unknown>
       setSeller({
-        name: String(tRow.name ?? 'Precision Scales India'),
+        name: String(tRow.name ?? 'HMS Enterprises'),
         email: tRow.email ? String(tRow.email) : '',
         phone: tRow.phone ? String(tRow.phone) : '',
         address: [tRow.addressLine1, tRow.city, tRow.state, tRow.postalCode, tRow.country]
@@ -440,19 +617,19 @@ export function InvoicesPage() {
         type: 'success',
         message:
           status === 'PAID'
-            ? 'Invoice marked as paid'
+            ? 'Proforma marked as paid (CRM tracking — final bill in Tally)'
             : status === 'SENT'
-              ? 'Invoice marked as sent'
+              ? 'Proforma marked as sent'
               : status === 'PARTIAL'
                 ? 'Partial payment recorded'
-                : `Invoice set to ${status}`,
+                : `Proforma set to ${status}`,
       })
       setDetail(updated)
       await load()
     } catch (err) {
       addToast({
         type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Could not update invoice status',
+        message: err instanceof ApiClientError ? err.message : 'Could not update proforma status',
       })
     } finally {
       setStatusBusy(false)
@@ -471,7 +648,9 @@ export function InvoicesPage() {
     const unitPrice = searchParams.get('unitPrice') || ''
     const taxPercent = searchParams.get('taxPercent') || ''
     const open = searchParams.get('open')
-    if (!open && !accountId && !contactId && !productId) return
+    const type = searchParams.get('type') || ''
+    const ticketId = searchParams.get('ticketId') || ''
+    if (!open && !accountId && !contactId && !productId && !ticketId) return
 
     if (open === 'upload') {
       setTab('upload')
@@ -493,13 +672,18 @@ export function InvoicesPage() {
       return
     }
 
-    const shouldOpen = open === '1'
+    const shouldOpen = open === '1' || open === 'create'
+    if (type === 'service' || ticketId) {
+      setInvoiceKind('SERVICE')
+    }
     setForm((f) => ({
       ...f,
       accountId: accountId || f.accountId,
       contactId: contactId || f.contactId,
     }))
-    if (contactId) {
+    if (ticketId) {
+      void applyServiceTicket(ticketId)
+    } else if (contactId) {
       void api.getContact(contactId).then((row) => {
         const pick: ContactPick = {
           id: String(row.id),
@@ -513,22 +697,34 @@ export function InvoicesPage() {
         void onPickInvoiceContact(pick)
       }).catch(() => undefined)
     }
-    if (productId && products.length) {
+    if (type !== 'service' && !ticketId && productId && products.length) {
       const p = products.find((x) => x.id === productId)
+      const meta = productCatalogMeta(p?.attributes)
+      const matchUnit =
+        serialNo && stockUnits.length
+          ? stockUnits.find((u) => u.productId === productId && u.serialNo === serialNo)
+          : undefined
       const line = newLine()
+      line.familyCode = meta.familyCode
+      line.industryCode = meta.industryCode
       line.productId = productId
-      line.description = serialNo
-        ? `${p?.sku ?? ''} — ${p?.name ?? 'Product'} · S/N ${serialNo}`.trim()
+      line.stockUnitId = matchUnit?.id ?? ''
+      line.serialNo = matchUnit?.serialNo ?? serialNo
+      line.description = line.serialNo
+        ? `${p?.sku ?? ''} — ${p?.name ?? 'Product'} · S/N ${line.serialNo}`.trim()
         : p
           ? `${p.sku} — ${p.name}`
           : ''
       line.unitPrice = unitPrice || (p ? String(p.salePrice) : '')
       line.taxPercent = taxPercent || (p ? String(p.taxPercent) : '18')
+      line.quantity = '1'
       setLines([line])
     }
-    if (shouldOpen || accountId || contactId || productId) setTab('create')
+    if (shouldOpen || accountId || contactId || productId || ticketId) setTab('create')
     setSearchParams({}, { replace: true })
-  }, [searchParams, setSearchParams, products])
+    // intentionally only on URL change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, setSearchParams, products, stockUnits])
 
   const accountName = useMemo(
     () => Object.fromEntries(accounts.map((a) => [a.id, a.name])),
@@ -538,6 +734,41 @@ export function InvoicesPage() {
     () => Object.fromEntries(contacts.map((c) => [c.id, c.name])),
     [contacts],
   )
+
+  const usedSerialIds = useMemo(
+    () => new Set(lines.map((l) => l.stockUnitId).filter(Boolean)),
+    [lines],
+  )
+
+  function serialOptionsForLine(line: LineDraft) {
+    return stockUnits
+      .filter((u) => u.productId === line.productId)
+      .filter((u) => u.id === line.stockUnitId || !usedSerialIds.has(u.id))
+      .map((u) => ({
+        value: u.id,
+        label: `${u.serialNo}${u.status === 'DEMO' ? ' · demo' : ''}${
+          u.warehouse?.name ? ` · ${u.warehouse.name}` : ''
+        }${u.stampingDate ? ` · stamped ${formatDate(String(u.stampingDate))}` : ''}`,
+      }))
+  }
+
+  function productsForLine(line: LineDraft) {
+    const fam = familyByCode(line.familyCode)
+    if (!line.familyCode) return []
+    return products.filter((p) => {
+      const meta = productCatalogMeta(p.attributes)
+      if (meta.familyCode !== line.familyCode) return false
+      if (fam?.hasIndustry) {
+        if (!line.industryCode) return false
+        return meta.industryCode === line.industryCode
+      }
+      return true
+    })
+  }
+
+  function lineNeedsIndustry(line: LineDraft) {
+    return Boolean(familyByCode(line.familyCode)?.hasIndustry)
+  }
 
   const totals = useMemo(() => {
     let subtotal = 0
@@ -560,13 +791,66 @@ export function InvoicesPage() {
     setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)))
   }
 
+  function pickFamily(key: string, familyCode: string) {
+    updateLine(key, {
+      familyCode,
+      industryCode: '',
+      productId: '',
+      stockUnitId: '',
+      serialNo: '',
+      description: '',
+      quantity: '1',
+      unitPrice: '',
+      taxPercent: '18',
+    })
+  }
+
+  function pickIndustry(key: string, industryCode: string) {
+    updateLine(key, {
+      industryCode,
+      productId: '',
+      stockUnitId: '',
+      serialNo: '',
+      description: '',
+      quantity: '1',
+      unitPrice: '',
+      taxPercent: '18',
+    })
+  }
+
   function pickProduct(key: string, productId: string) {
     const p = products.find((x) => x.id === productId)
+    const meta = productCatalogMeta(p?.attributes)
     updateLine(key, {
+      familyCode: meta.familyCode || lines.find((l) => l.key === key)?.familyCode || '',
+      industryCode: meta.industryCode || lines.find((l) => l.key === key)?.industryCode || '',
       productId,
+      stockUnitId: '',
+      serialNo: '',
       description: p ? `${p.sku} — ${p.name}` : '',
+      quantity: '1',
       unitPrice: p ? String(p.salePrice) : '',
       taxPercent: p ? String(p.taxPercent) : '18',
+    })
+  }
+
+  function pickSerial(key: string, stockUnitId: string) {
+    const line = lines.find((l) => l.key === key)
+    const p = products.find((x) => x.id === line?.productId)
+    const unit = stockUnits.find((u) => u.id === stockUnitId)
+    if (!unit) {
+      updateLine(key, { stockUnitId: '', serialNo: '', description: p ? `${p.sku} — ${p.name}` : '' })
+      return
+    }
+    updateLine(key, {
+      stockUnitId: unit.id,
+      serialNo: unit.serialNo,
+      quantity: '1',
+      description: p
+        ? `${p.sku} — ${p.name} · S/N ${unit.serialNo}`
+        : `S/N ${unit.serialNo}`,
+      unitPrice: p ? String(p.salePrice) : line?.unitPrice ?? '',
+      taxPercent: p ? String(p.taxPercent) : line?.taxPercent ?? '18',
     })
   }
 
@@ -574,15 +858,29 @@ export function InvoicesPage() {
     const next: Record<string, string> = {}
     if (!form.accountId) next.accountId = 'Select a customer (search by name or phone)'
     if (!form.invoiceDate) next.invoiceDate = 'Invoice date is required'
-    if (!lines.length) next.lines = 'Add at least one product line'
-    lines.forEach((line, idx) => {
-      if (!line.description.trim()) next[`line-${idx}-desc`] = `Line ${idx + 1}: description required`
-      if (!(Number(line.quantity) > 0)) next[`line-${idx}-qty`] = `Line ${idx + 1}: quantity must be > 0`
-      if (Number(line.unitPrice) < 0 || line.unitPrice === '')
-        next[`line-${idx}-price`] = `Line ${idx + 1}: unit price required`
-      const tax = Number(line.taxPercent)
-      if (Number.isNaN(tax) || tax < 0 || tax > 100) next[`line-${idx}-tax`] = `Line ${idx + 1}: tax 0–100`
-    })
+    if (!lines.length) next.lines = 'Add at least one line'
+    if (invoiceKind === 'SERVICE') {
+      if (!serviceTicketId) next.serviceTicketId = 'Select the service ticket to bill'
+      lines.forEach((line, idx) => {
+        if (!line.description.trim()) next[`line-${idx}-desc`] = `Line ${idx + 1}: description required`
+        if (!(Number(line.quantity) > 0)) next[`line-${idx}-qty`] = `Line ${idx + 1}: quantity must be > 0`
+        if (Number(line.unitPrice) < 0 || line.unitPrice === '')
+          next[`line-${idx}-price`] = `Line ${idx + 1}: unit price required`
+      })
+    } else {
+      lines.forEach((line, idx) => {
+        if (!line.familyCode) next[`line-${idx}-family`] = `Line ${idx + 1}: select a product family`
+        if (lineNeedsIndustry(line) && !line.industryCode)
+          next[`line-${idx}-industry`] = `Line ${idx + 1}: select an industry`
+        if (!line.productId) next[`line-${idx}-product`] = `Line ${idx + 1}: select a machine`
+        if (!line.stockUnitId) next[`line-${idx}-serial`] = `Line ${idx + 1}: select stock (serial)`
+        if (!(Number(line.quantity) > 0)) next[`line-${idx}-qty`] = `Line ${idx + 1}: quantity must be > 0`
+        if (Number(line.unitPrice) < 0 || line.unitPrice === '')
+          next[`line-${idx}-price`] = `Line ${idx + 1}: unit price required`
+        const tax = Number(line.taxPercent)
+        if (Number.isNaN(tax) || tax < 0 || tax > 100) next[`line-${idx}-tax`] = `Line ${idx + 1}: tax 0–100`
+      })
+    }
     setErrors(next)
     return next
   }
@@ -675,33 +973,64 @@ export function InvoicesPage() {
       addToast({ type: 'error', message: Object.values(next)[0] })
       return
     }
+    if (invoiceKind === 'SALES' && form.contactId) {
+      setWaPending({
+        payload: {
+          title: 'Create proforma & WhatsApp customer?',
+          lines: ['Template proforma_ready_customer → customer'],
+          note: 'Uses customer name, proforma number, product line, amount, billing contact.',
+        },
+        execute: (send) => doCreateInvoice(send),
+      })
+      return
+    }
+    await doCreateInvoice(false)
+  }
+
+  async function doCreateInvoice(sendWhatsApp: boolean) {
     setSaving(true)
     try {
+      const ticketMeta =
+        invoiceKind === 'SERVICE' && serviceTicketId
+          ? serviceTickets.find((t) => String(t.id) === serviceTicketId)
+          : null
       const customFields = {
         place_of_supply: form.placeOfSupply || null,
         payment_terms: form.paymentTerms || null,
         po_number: form.poNumber || null,
         billing_address: form.billingAddress || null,
+        ...(invoiceKind === 'SERVICE'
+          ? {
+              source: 'SERVICE_JOB',
+              ticketId: serviceTicketId,
+              ticketNo: ticketMeta?.ticketNo ?? null,
+            }
+          : { source: 'SALES_PROFORMA' }),
       }
       const created = (await api.createInvoice({
         accountId: form.accountId,
         contactId: form.contactId || null,
+        serviceTicketId: invoiceKind === 'SERVICE' ? serviceTicketId : null,
         invoiceDate: form.invoiceDate,
         dueDate: form.dueDate || null,
         currency: form.currency || 'INR',
         notes: form.notes || null,
         discountTotal: Number(form.discountTotal) || 0,
         customFields,
+        sendWhatsApp,
         lines: lines.map((l) => ({
-          productId: l.productId || null,
-          description: l.description.trim(),
-          quantity: Number(l.quantity),
+          productId: invoiceKind === 'SERVICE' ? null : l.productId || null,
+          stockUnitId: invoiceKind === 'SERVICE' ? null : l.stockUnitId || null,
+          description: l.description.trim() || `${l.serialNo}`,
+          quantity: Number(l.quantity) || 1,
           unitPrice: Number(l.unitPrice),
           taxPercent: Number(l.taxPercent) || 0,
         })),
       })) as InvoiceDetail
       setTab('list')
       setLines([newLine()])
+      setServiceTicketId('')
+      setInvoiceKind('SALES')
       setForm((f) => ({
         ...f,
         accountId: '',
@@ -712,16 +1041,23 @@ export function InvoicesPage() {
         poNumber: '',
         billingAddress: '',
       }))
+      setPickedContact(null)
       setErrors({})
       addToast({
         type: 'success',
-        message: 'Invoice created — stock deducted for tracked products',
+        message:
+          invoiceKind === 'SERVICE'
+            ? 'Service invoice created and linked to the ticket'
+            : 'Proforma created — serial marked sold & stock updated',
       })
       await load()
       setDetail(created)
       setPreviewOpen(true)
     } catch (err) {
-      addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Invoice failed' })
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Invoice create failed',
+      })
     } finally {
       setSaving(false)
     }
@@ -816,9 +1152,9 @@ export function InvoicesPage() {
   return (
     <div>
       <PageHeader
-        title="Invoices"
+        title="Proforma invoices"
         count={items.length}
-        breadcrumbs={[{ label: 'ERP' }, { label: 'Invoices' }]}
+        breadcrumbs={[{ label: 'ERP' }, { label: 'Proforma invoices' }]}
       />
       <FeatureTip title={t.title} body={t.body} tipType={t.tipType} />
 
@@ -835,7 +1171,7 @@ export function InvoicesPage() {
         tabs={[
           { id: 'list', label: 'All invoices', count: items.length },
           { id: 'create', label: 'New invoice' },
-          { id: 'upload', label: 'Upload invoice' },
+          { id: 'upload', label: 'Upload copy' },
         ]}
       />
 
@@ -857,8 +1193,8 @@ export function InvoicesPage() {
               ]}
             />
             <p className="text-sm text-text-secondary">
-              New invoices start as <strong>DRAFT</strong>. Open one → <strong>Mark sent</strong> when shared,{' '}
-              <strong>Mark paid</strong> / Record payment when money arrives.
+              CRM issues <strong>proforma</strong> only — final GST bills stay in <strong>Tally</strong>. Status here is
+              for warehouse/billing tracking (draft → sent → paid after Tally collection).
             </p>
           </Card>
 
@@ -866,9 +1202,9 @@ export function InvoicesPage() {
             <FormPanel
               open
               accent="sky"
-              eyebrow="Invoice"
+              eyebrow="Proforma"
               title={String(detail.invoiceNumber)}
-              subtitle="Full invoice with line items — mark sent, record payment, or download."
+              subtitle="Proforma with line items — mark sent, track payment status, or download. Final tax invoice is from Tally."
               onClose={() => setPreviewOpen(false)}
               footer={
                 <>
@@ -984,9 +1320,9 @@ export function InvoicesPage() {
           <Card padding={false}>
             {items.length === 0 ? (
               <EmptyState
-                title="No invoices"
-                subtitle="Create an invoice for a customer with one or more products."
-                actionLabel="New invoice"
+                title="No proformas yet"
+                subtitle="Create a proforma when a sale is ready. Final GST invoices stay in Tally."
+                actionLabel="New proforma"
                 onAction={() => setTab('create')}
               />
             ) : (
@@ -994,7 +1330,7 @@ export function InvoicesPage() {
                 <table className="w-full min-w-[1000px] text-left text-sm">
                   <thead className="bg-muted text-xs text-text-secondary">
                     <tr>
-                      {['Invoice #', 'Customer', 'Date', 'Due', 'Status', 'Subtotal', 'Tax', 'Total', 'Balance', ''].map(
+                      {['Proforma #', 'Customer', 'Date', 'Due', 'Status', 'Subtotal', 'Tax', 'Total', 'Balance', ''].map(
                         (h) => (
                           <th key={h || 'actions'} className="px-4 py-3 font-medium">
                             {h}
@@ -1103,19 +1439,47 @@ export function InvoicesPage() {
           open
           accent="sky"
           eyebrow="Billing"
-          title="Upload external invoice"
-          subtitle="Store a client’s own invoice (PDF/image) against their account — not generated by NovaCRM."
+          title="Upload external copy"
+          subtitle="Store a paper/PDF copy against the customer (e.g. Tally printout) — optional archive, not a CRM proforma."
           onClose={() => setTab('list')}
           footer={
             <>
               <FormPanelCancel onClick={() => setTab('list')} />
               <Button disabled={uploading} onClick={() => void uploadExternalInvoice()}>
-                {uploading ? 'Uploading…' : 'Save uploaded invoice'}
+                {uploading ? 'Uploading…' : 'Save uploaded copy'}
               </Button>
             </>
           }
         >
           <div className="grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <AiAssistCard
+                title="OCR assist"
+                subtitle="Paste text from a paper/PDF challan or invoice. Review every field before save."
+                actions={[
+                  {
+                    id: 'ocr_fields',
+                    label: 'Extract fields from notes',
+                    run: () =>
+                      api.aiWarehouseAssist({
+                        action: 'ocr_fields',
+                        ocrText: uploadForm.notes || uploadForm.invoiceNumber || ' ',
+                        contactId: uploadForm.contactId || undefined,
+                      }),
+                  },
+                ]}
+                onApply={(_id, result) => {
+                  const s = (result.suggested as Record<string, string> | undefined) ?? {}
+                  setUploadForm((f) => ({
+                    ...f,
+                    invoiceNumber: s.documentNumber || f.invoiceNumber,
+                    invoiceDate: s.documentDate || f.invoiceDate,
+                    amount: s.amount || f.amount,
+                    notes: s.notes || f.notes,
+                  }))
+                }}
+              />
+            </div>
             <div className="sm:col-span-2">
               <ContactPicker
                 label="Customer / shop *"
@@ -1129,13 +1493,13 @@ export function InvoicesPage() {
               </p>
             </div>
             <Input
-              label="Their invoice number"
+              label="Document number"
               value={uploadForm.invoiceNumber}
               onChange={(e) => setUploadForm({ ...uploadForm, invoiceNumber: e.target.value })}
-              placeholder="Optional — as printed on paper"
+              placeholder="Optional — as printed"
             />
             <Input
-              label="Invoice date"
+              label="Document date"
               type="date"
               value={uploadForm.invoiceDate}
               onChange={(e) => setUploadForm({ ...uploadForm, invoiceDate: e.target.value })}
@@ -1174,8 +1538,12 @@ export function InvoicesPage() {
           open
           accent="sky"
           eyebrow="Billing"
-          title="New invoice"
-          subtitle="Select a customer, add multiple products, then preview or save."
+          title={invoiceKind === 'SERVICE' ? 'New service invoice' : 'New sales proforma'}
+          subtitle={
+            invoiceKind === 'SERVICE'
+              ? 'Pick customer → select closed/resolved service ticket → lines autofill from ticket amounts. Final GST still goes in Tally.'
+              : 'Select a customer and products. This is a CRM proforma — final GST invoice is raised in Tally.'
+          }
           onClose={() => setTab('list')}
           footer={
             <>
@@ -1184,19 +1552,73 @@ export function InvoicesPage() {
               </Button>
               <FormPanelCancel onClick={() => setTab('list')} />
               <Button onClick={() => void createInvoice()} disabled={saving}>
-                {saving ? 'Creating…' : 'Create invoice'}
+                {saving
+                  ? 'Creating…'
+                  : invoiceKind === 'SERVICE'
+                    ? 'Create service invoice'
+                    : 'Create proforma'}
               </Button>
             </>
           }
         >
+          <div className="mb-4">
+            <AiAssistCard
+              title="Billing AI"
+              subtitle="Draft only — review before create. Final GST bill stays in Tally."
+              actions={[
+                {
+                  id: 'proforma_draft',
+                  label: 'Draft notes',
+                  run: () =>
+                    api.aiWarehouseAssist({
+                      action: 'proforma_draft',
+                      contactId: form.contactId || undefined,
+                      productId: lines[0]?.productId || undefined,
+                      serialNo: lines[0]?.serialNo || undefined,
+                    }),
+                },
+              ]}
+              onApply={(_id, result) => {
+                if (typeof result.notes === 'string') {
+                  setForm((f) => ({ ...f, notes: String(result.notes) }))
+                }
+                if (typeof result.lineDescription === 'string' && lines[0]) {
+                  const key = lines[0].key
+                  setLines((prev) =>
+                    prev.map((l) =>
+                      l.key === key ? { ...l, description: String(result.lineDescription) } : l,
+                    ),
+                  )
+                }
+              }}
+            />
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
+            <Select
+              label="Invoice type *"
+              value={invoiceKind}
+              onChange={(e) => {
+                const kind = e.target.value as 'SALES' | 'SERVICE'
+                setInvoiceKind(kind)
+                setServiceTicketId('')
+                setLines([newLine()])
+                if (kind === 'SERVICE' && form.contactId) {
+                  void loadServiceTicketsForContact(form.contactId)
+                }
+              }}
+              options={[
+                { value: 'SALES', label: 'Sales — new machine / product proforma' },
+                { value: 'SERVICE', label: 'Service — from service ticket' },
+              ]}
+              className="sm:col-span-2"
+            />
             <div className="sm:col-span-2">
               <ContactPicker
                 label="Customer / shop *"
                 valueId={form.contactId}
                 selected={pickedContact}
                 onSelect={(c) => void onPickInvoiceContact(c)}
-                returnTo="/erp/invoices?open=1"
+                returnTo="/erp/invoices?open=create"
                 error={errors.accountId || errors.contactId}
               />
               {form.accountId ? (
@@ -1205,8 +1627,38 @@ export function InvoicesPage() {
                 </p>
               ) : null}
             </div>
+            {invoiceKind === 'SERVICE' ? (
+              <div className="sm:col-span-2">
+                <Select
+                  label="Service ticket *"
+                  value={serviceTicketId}
+                  onChange={(e) => void applyServiceTicket(e.target.value)}
+                  options={[
+                    {
+                      value: '',
+                      label: loadingTickets
+                        ? 'Loading tickets…'
+                        : form.contactId
+                          ? 'Select ticket (RESOLVED / CLOSED)'
+                          : 'Pick a customer first',
+                    },
+                    ...serviceTickets.map((t) => ({
+                      value: String(t.id),
+                      label: ticketLabel(t),
+                    })),
+                  ]}
+                />
+                {errors.serviceTicketId ? (
+                  <p className="mt-1 text-xs text-accent-red">{errors.serviceTicketId}</p>
+                ) : null}
+                <p className="mt-1 text-xs text-text-secondary">
+                  Each ticket has its own id (SVC-xxxxx). Selecting one autofills amounts (total payment / advance / balance) and description from
+                  that job.
+                </p>
+              </div>
+            ) : null}
             <Input
-              label="Invoice date *"
+              label={invoiceKind === 'SERVICE' ? 'Invoice date *' : 'Proforma date *'}
               type="date"
               value={form.invoiceDate}
               error={errors.invoiceDate}
@@ -1264,73 +1716,199 @@ export function InvoicesPage() {
 
             <div className="sm:col-span-2 space-y-3 rounded-lg border border-sky-100 bg-sky-50/30 p-3">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold">Product lines</h3>
+                <div>
+                  <h3 className="text-sm font-semibold">
+                    {invoiceKind === 'SERVICE' ? 'Service charge lines' : 'Product lines'}
+                  </h3>
+                  <p className="text-xs text-text-secondary">
+                    {invoiceKind === 'SERVICE'
+                      ? 'Autofilled from the selected ticket (service + OD). You can adjust amounts before create.'
+                      : 'Product family → industry (if weighing) → machine → stock serial. Rate & GST fill from catalog.'}
+                  </p>
+                </div>
                 <Button type="button" variant="outline" size="sm" onClick={() => setLines((prev) => [...prev, newLine()])}>
-                  <Plus size={14} /> Add product
+                  <Plus size={14} /> {invoiceKind === 'SERVICE' ? 'Add line' : 'Add product'}
                 </Button>
               </div>
-              {lines.map((line, idx) => (
-                <div key={line.key} className="grid gap-2 rounded-md bg-card p-3 sm:grid-cols-12">
-                  <div className="sm:col-span-4">
-                    <Select
-                      label={`Product ${idx + 1}`}
-                      value={line.productId}
-                      onChange={(e) => pickProduct(line.key, e.target.value)}
-                      options={[
-                        { value: '', label: 'Custom / no product' },
-                        ...products.map((p) => ({ value: p.id, label: `${p.sku} — ${p.name}` })),
-                      ]}
-                    />
+              {lines.map((line, idx) => {
+                const serialOpts = serialOptionsForLine(line)
+                const machineOpts = productsForLine(line)
+                const needsIndustry = lineNeedsIndustry(line)
+                if (invoiceKind === 'SERVICE') {
+                  return (
+                    <div key={line.key} className="grid gap-2 rounded-md bg-card p-3 sm:grid-cols-12">
+                      <div className="sm:col-span-6">
+                        <Input
+                          label={`Description ${idx + 1} *`}
+                          value={line.description}
+                          onChange={(e) => updateLine(line.key, { description: e.target.value })}
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <Input
+                          label="Qty"
+                          type="number"
+                          value={line.quantity}
+                          error={errors[`line-${idx}-qty`]}
+                          onChange={(e) => updateLine(line.key, { quantity: e.target.value })}
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <Input
+                          label="Amount ₹"
+                          type="number"
+                          value={line.unitPrice}
+                          error={errors[`line-${idx}-price`]}
+                          onChange={(e) => updateLine(line.key, { unitPrice: e.target.value })}
+                        />
+                      </div>
+                      <div className="sm:col-span-1">
+                        <Input
+                          label="Tax %"
+                          type="number"
+                          value={line.taxPercent}
+                          onChange={(e) => updateLine(line.key, { taxPercent: e.target.value })}
+                        />
+                      </div>
+                      <div className="flex items-end sm:col-span-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          disabled={lines.length <= 1}
+                          onClick={() => setLines((prev) => prev.filter((l) => l.key !== line.key))}
+                        >
+                          <Trash2 size={16} />
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                }
+                return (
+                <div key={line.key} className="space-y-2 rounded-md bg-card p-3">
+                  <div className="grid gap-2 sm:grid-cols-12">
+                    <div className="sm:col-span-3">
+                      <Select
+                        label={`1. Product ${idx + 1} *`}
+                        value={line.familyCode}
+                        onChange={(e) => pickFamily(line.key, e.target.value)}
+                        options={[
+                          { value: '', label: 'Select product family…' },
+                          ...HMS_FAMILY_OPTIONS,
+                        ]}
+                      />
+                      {errors[`line-${idx}-family`] ? (
+                        <p className="mt-1 text-xs text-accent-red">{errors[`line-${idx}-family`]}</p>
+                      ) : null}
+                    </div>
+                    {needsIndustry ? (
+                      <div className="sm:col-span-3">
+                        <Select
+                          label="2. Industry *"
+                          value={line.industryCode}
+                          onChange={(e) => pickIndustry(line.key, e.target.value)}
+                          options={[
+                            { value: '', label: 'Select industry…' },
+                            ...industryOptions(line.familyCode),
+                          ]}
+                        />
+                        {errors[`line-${idx}-industry`] ? (
+                          <p className="mt-1 text-xs text-accent-red">{errors[`line-${idx}-industry`]}</p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    <div className={needsIndustry ? 'sm:col-span-3' : 'sm:col-span-4'}>
+                      <Select
+                        label={`${needsIndustry ? '3' : '2'}. Machine *`}
+                        value={line.productId}
+                        onChange={(e) => pickProduct(line.key, e.target.value)}
+                        options={[
+                          {
+                            value: '',
+                            label: !line.familyCode
+                              ? 'Select product first…'
+                              : needsIndustry && !line.industryCode
+                                ? 'Select industry first…'
+                                : machineOpts.length
+                                  ? 'Select machine…'
+                                  : 'No machines in catalog for this filter',
+                          },
+                          ...machineOpts.map((p) => ({ value: p.id, label: `${p.sku} — ${p.name}` })),
+                        ]}
+                      />
+                      {errors[`line-${idx}-product`] ? (
+                        <p className="mt-1 text-xs text-accent-red">{errors[`line-${idx}-product`]}</p>
+                      ) : null}
+                    </div>
+                    <div className={needsIndustry ? 'sm:col-span-3' : 'sm:col-span-5'}>
+                      <Select
+                        label={`${needsIndustry ? '4' : '3'}. Stock (serial) *`}
+                        value={line.stockUnitId}
+                        onChange={(e) => pickSerial(line.key, e.target.value)}
+                        options={[
+                          {
+                            value: '',
+                            label: !line.productId
+                              ? 'Select machine first…'
+                              : serialOpts.length
+                                ? 'Select stock serial…'
+                                : 'No available serials in stock',
+                          },
+                          ...serialOpts,
+                        ]}
+                      />
+                      {errors[`line-${idx}-serial`] ? (
+                        <p className="mt-1 text-xs text-accent-red">{errors[`line-${idx}-serial`]}</p>
+                      ) : null}
+                    </div>
                   </div>
-                  <div className="sm:col-span-3">
-                    <Input
-                      label="Description *"
-                      value={line.description}
-                      error={errors[`line-${idx}-desc`]}
-                      onChange={(e) => updateLine(line.key, { description: e.target.value })}
-                    />
-                  </div>
-                  <div className="sm:col-span-1">
-                    <Input
-                      label="Qty"
-                      type="number"
-                      value={line.quantity}
-                      error={errors[`line-${idx}-qty`]}
-                      onChange={(e) => updateLine(line.key, { quantity: e.target.value })}
-                    />
-                  </div>
-                  <div className="sm:col-span-2">
-                    <Input
-                      label="Rate"
-                      type="number"
-                      value={line.unitPrice}
-                      error={errors[`line-${idx}-price`]}
-                      onChange={(e) => updateLine(line.key, { unitPrice: e.target.value })}
-                    />
-                  </div>
-                  <div className="sm:col-span-1">
-                    <Input
-                      label="Tax %"
-                      type="number"
-                      value={line.taxPercent}
-                      error={errors[`line-${idx}-tax`]}
-                      onChange={(e) => updateLine(line.key, { taxPercent: e.target.value })}
-                    />
-                  </div>
-                  <div className="flex items-end justify-between gap-2 sm:col-span-1">
-                    <div className="pb-2 text-xs font-medium">{formatCurrency(lineAmount(line).total)}</div>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      disabled={lines.length === 1}
-                      onClick={() => setLines((prev) => prev.filter((l) => l.key !== line.key))}
-                    >
-                      <Trash2 size={14} />
-                    </Button>
+                  <div className="grid gap-2 sm:grid-cols-12">
+                    <div className="sm:col-span-2">
+                      <Input
+                        label="Qty"
+                        type="number"
+                        value={line.quantity}
+                        error={errors[`line-${idx}-qty`]}
+                        onChange={(e) => updateLine(line.key, { quantity: e.target.value })}
+                        disabled={Boolean(line.stockUnitId)}
+                      />
+                    </div>
+                    <div className="sm:col-span-3">
+                      <Input
+                        label="Rate ₹"
+                        type="number"
+                        value={line.unitPrice}
+                        error={errors[`line-${idx}-price`]}
+                        onChange={(e) => updateLine(line.key, { unitPrice: e.target.value })}
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <Input
+                        label="GST %"
+                        type="number"
+                        value={line.taxPercent}
+                        error={errors[`line-${idx}-tax`]}
+                        onChange={(e) => updateLine(line.key, { taxPercent: e.target.value })}
+                      />
+                    </div>
+                    <div className="flex items-end justify-between gap-2 sm:col-span-5">
+                      <div className="pb-2 text-xs font-medium tabular-nums">
+                        Line {formatCurrency(lineAmount(line).total)}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={lines.length === 1}
+                        onClick={() => setLines((prev) => prev.filter((l) => l.key !== line.key))}
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    </div>
                   </div>
                 </div>
-              ))}
+                )
+              })}
               <div className="flex flex-wrap justify-end gap-6 border-t border-sky-100 pt-3 text-sm">
                 <div>
                   Subtotal: <strong>{formatCurrency(totals.subtotal)}</strong>
@@ -1358,6 +1936,23 @@ export function InvoicesPage() {
           </div>
         </FormPanel>
       )}
+
+      <WhatsAppSendConfirm
+        open={Boolean(waPending)}
+        payload={waPending?.payload ?? null}
+        busy={saving}
+        onCancel={() => setWaPending(null)}
+        onConfirmSend={() => {
+          const run = waPending?.execute
+          setWaPending(null)
+          if (run) void run(true)
+        }}
+        onConfirmSkip={() => {
+          const run = waPending?.execute
+          setWaPending(null)
+          if (run) void run(false)
+        }}
+      />
     </div>
   )
 }

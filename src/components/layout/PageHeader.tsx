@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 
 interface PageHeaderProps {
-  title: string
+  title: ReactNode
   count?: number
   breadcrumbs?: { label: string; to?: string }[]
   actions?: ReactNode
@@ -33,7 +33,7 @@ export function PageHeader({ title, count, breadcrumbs, actions, children }: Pag
         <div className="flex items-center gap-2">
           <h1 className="text-xl font-bold text-text-primary">{title}</h1>
           {count !== undefined && (
-            <span className="rounded-[4px] bg-slate-100 px-2 py-0.5 text-sm font-medium text-text-secondary">
+            <span className="rounded-[4px] bg-muted px-2 py-0.5 text-sm font-medium text-text-secondary">
               {count}
             </span>
           )}

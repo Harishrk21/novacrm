@@ -12,7 +12,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('NovaCRM UI crash:', error, info)
+    console.error('HMS Enterprises UI crash:', error, info)
   }
 
   render() {

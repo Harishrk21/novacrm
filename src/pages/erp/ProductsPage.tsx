@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { ChevronDown, Package, SlidersHorizontal, Stamp, X } from 'lucide-react'
+import { Package, SlidersHorizontal, X } from 'lucide-react'
 import { ProductImage } from '@/components/ProductImage'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import {
   BulkActionBar,
@@ -17,41 +16,29 @@ import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
-import { ConfirmModal } from '@/components/ui/Modal'
+import { ConfirmModal, Modal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { Switch } from '@/components/ui/Switch'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
-import { cn } from '@/lib/utils'
 import {
-  defaultRequiresStamping,
-  formatWarrantyMonths,
-  productAttrs,
-  truncateProductName,
-  WARRANTY_MONTH_OPTIONS,
-  warrantyMonthsFromAttrs,
-} from '@/lib/productCatalog'
+  buildHmsAttributes,
+  familyByCode,
+  HMS_FAMILY_OPTIONS,
+  industryOptions,
+  machineOptions,
+  productCatalogMeta,
+} from '@/lib/hmsCatalog'
+import { productAttrs, truncateProductName, WARRANTY_MONTH_OPTIONS } from '@/lib/productCatalog'
 import { formatCurrency } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
-/** Catalog product kinds — generic product info (serial / stamping come later in Inventory). */
-export const CATALOG_PRODUCT_OPTIONS = [
-  { value: 'WEIGHING', label: 'Weighing machine' },
-  { value: 'BILLING', label: 'Billing Machine' },
-  { value: 'CCM', label: 'Currency Counting Machine' },
-  { value: 'BIOMETRIC', label: 'Biometric machine' },
-  { value: 'PAPER_SHREDDER', label: 'Paper Shredder' },
-  { value: 'PAPER_ROLL', label: 'Paper Role for Billing printer' },
-  { value: 'CCTV', label: 'CCTV' },
-] as const
-
-type CatalogKind = (typeof CATALOG_PRODUCT_OPTIONS)[number]['value']
-
 type ProductForm = {
-  catalogKind: CatalogKind | ''
-  model: string
-  brand: string
+  familyCode: string
+  industryCode: string
+  machineSku: string
+  customMachineName: string
   warrantyMonths: string
   requiresStamping: boolean
   mrp: string
@@ -67,9 +54,10 @@ type ProductForm = {
 }
 
 const emptyForm = (): ProductForm => ({
-  catalogKind: '',
-  model: '',
-  brand: '',
+  familyCode: '',
+  industryCode: '',
+  machineSku: '',
+  customMachineName: '',
   warrantyMonths: '',
   requiresStamping: false,
   mrp: '',
@@ -84,44 +72,33 @@ const emptyForm = (): ProductForm => ({
   uploading: false,
 })
 
-function kindLabel(kind: string) {
-  return CATALOG_PRODUCT_OPTIONS.find((o) => o.value === kind)?.label ?? kind
-}
-
-function buildSku(kind: CatalogKind, model: string) {
-  const code = kind.replaceAll('_', '').slice(0, 6)
-  const slug = model
+function skuFromName(familyCode: string, industryCode: string, name: string) {
+  const fam = familyCode.replaceAll('_', '').slice(0, 6)
+  const ind = industryCode ? industryCode.replaceAll('_', '').slice(0, 4) : 'GEN'
+  const slug = name
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
-    .slice(0, 24)
+    .slice(0, 28)
   const suffix = Date.now().toString(36).slice(-4).toUpperCase()
-  return `${code}-${slug || 'MODEL'}-${suffix}`
-}
-
-function buildName(kind: CatalogKind, brand: string, model: string) {
-  const label = kindLabel(kind)
-  const parts = [brand.trim(), model.trim()].filter(Boolean)
-  const name = parts.length ? `${label} · ${parts.join(' ')}` : label
-  return truncateProductName(name)
+  return `HMS-${fam}-${ind}-${slug || 'MODEL'}-${suffix}`
 }
 
 function productToForm(p: Record<string, unknown>): ProductForm {
   const a = productAttrs(p)
-  const kind = String(a.catalogKind ?? '') as CatalogKind | ''
-  const valid = CATALOG_PRODUCT_OPTIONS.some((o) => o.value === kind)
+  const meta = productCatalogMeta(a)
+  const family = familyByCode(meta.familyCode) ? meta.familyCode : ''
   return {
-    catalogKind: valid ? kind : '',
-    model: String(a.model ?? ''),
-    brand: String(a.brand ?? ''),
-    warrantyMonths: warrantyMonthsFromAttrs(a),
+    familyCode: family,
+    industryCode: meta.industryCode || '',
+    machineSku: 'CUSTOM',
+    customMachineName: String(p.name ?? a.model ?? ''),
+    warrantyMonths: a.warrantyMonths != null ? String(a.warrantyMonths) : '',
     requiresStamping:
       typeof a.requiresStamping === 'boolean'
-        ? a.requiresStamping
-        : valid
-          ? defaultRequiresStamping(kind)
-          : false,
+        ? Boolean(a.requiresStamping)
+        : meta.catalogKind === 'WEIGHING',
     mrp: p.mrp != null ? String(num(p.mrp)) : '',
     salePrice: p.salePrice != null ? String(num(p.salePrice)) : '',
     purchasePrice: p.purchasePrice != null ? String(num(p.purchasePrice)) : '',
@@ -135,33 +112,18 @@ function productToForm(p: Record<string, unknown>): ProductForm {
   }
 }
 
-function buildAttributes(form: ProductForm) {
-  const kind = form.catalogKind as CatalogKind
-  const attributes: Record<string, unknown> = {
-    catalogKind: kind,
-    brand: form.brand.trim() || null,
-    model: form.model.trim(),
-    warrantyMonths: form.warrantyMonths ? Number(form.warrantyMonths) : null,
-    warranty: form.warrantyMonths ? `${form.warrantyMonths} months` : null,
-    requiresStamping: form.requiresStamping,
-  }
-  if (kind === 'WEIGHING') {
-    attributes.capacity = form.capacity.trim() || null
-    attributes.accuracy = form.accuracy.trim() || null
-    attributes.platform = form.platform.trim() || null
-  }
-  return attributes
-}
-
 export function ProductsPage() {
   const tip = DEFAULT_TIPS['erp.products'] ?? {
-    title: 'Products catalog',
-    body: 'Add catalog products first. Serial numbers and stamping dates are added later in Inventory for each physical unit.',
+    title: 'HMS product catalog',
+    body: 'Pick product family → industry (weighing only) → machine. Serial numbers are added later in Inventory.',
     tipType: 'TIP' as const,
   }
   const addToast = useUIStore((s) => s.addToast)
   const [searchParams] = useSearchParams()
   const [items, setItems] = useState<Record<string, unknown>[]>([])
+  const [categories, setCategories] = useState<
+    Array<{ id: string; name: string; code?: string | null; parentId?: string | null }>
+  >([])
   const [tab, setTab] = useState<'list' | 'create'>('list')
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState<ProductForm>(emptyForm)
@@ -172,14 +134,21 @@ export function ProductsPage() {
   const [editForm, setEditForm] = useState<ProductForm>(emptyForm)
 
   const [filterQ, setFilterQ] = useState('')
-  const [filterKind, setFilterKind] = useState('')
-  const [filterBrand, setFilterBrand] = useState('')
-  const [moreFilters, setMoreFilters] = useState(false)
+  const [filterFamily, setFilterFamily] = useState('')
+  const [filterIndustry, setFilterIndustry] = useState('')
 
   const load = useCallback(async () => {
     try {
-      const products = await api.products({ limit: 200 })
+      const [products, lookups] = await Promise.all([api.products({ limit: 500 }), api.lookups()])
       setItems(products.items ?? [])
+      setCategories(
+        (lookups.categories ?? []).map((c) => ({
+          id: String(c.id),
+          name: String(c.name),
+          code: c.code != null ? String(c.code) : null,
+          parentId: (c as { parentId?: string | null }).parentId ?? null,
+        })),
+      )
     } catch (err) {
       addToast({
         type: 'error',
@@ -196,44 +165,85 @@ export function ProductsPage() {
     if (searchParams.get('tab') === 'create') setTab('create')
   }, [searchParams])
 
-  const brands = useMemo(() => {
-    const set = new Set<string>()
-    for (const p of items) {
-      const brand = String(productAttrs(p).brand ?? '').trim()
-      if (brand) set.add(brand)
-    }
-    return [...set].sort((a, b) => a.localeCompare(b))
-  }, [items])
-
   const filtered = useMemo(() => {
     const q = filterQ.trim().toLowerCase()
     return items.filter((p) => {
       const a = productAttrs(p)
-      const kind = String(a.catalogKind ?? '')
-      const brand = String(a.brand ?? '')
-      if (filterKind && kind !== filterKind) return false
-      if (filterBrand && brand.toLowerCase() !== filterBrand.toLowerCase()) return false
+      const meta = productCatalogMeta(a)
+      if (filterFamily) {
+        if (meta.familyCode) {
+          if (meta.familyCode !== filterFamily) return false
+        } else if (filterFamily === 'WEIGHING_SCALES' && meta.catalogKind !== 'WEIGHING') {
+          return false
+        } else if (filterFamily !== 'WEIGHING_SCALES' && meta.catalogKind !== filterFamily) {
+          // fall through for unmatched legacy
+        }
+      }
+      if (filterIndustry && meta.industryCode !== filterIndustry) return false
       if (!q) return true
-      const hay = `${p.name ?? ''} ${p.sku ?? ''} ${a.model ?? ''} ${brand} ${kindLabel(kind)}`.toLowerCase()
+      const hay =
+        `${p.name ?? ''} ${p.sku ?? ''} ${meta.familyName} ${meta.industryName} ${meta.model}`.toLowerCase()
       return hay.includes(q)
     })
-  }, [items, filterQ, filterKind, filterBrand])
+  }, [items, filterQ, filterFamily, filterIndustry])
 
   const ids = useMemo(() => filtered.map((p) => String(p.id)), [filtered])
   const selection = useRowSelection(ids)
-  const filtersActive = Boolean(filterQ || filterKind || filterBrand)
+  const filtersActive = Boolean(filterQ || filterFamily || filterIndustry)
+
+  const createFamily = familyByCode(form.familyCode)
+  const createNeedsIndustry = Boolean(createFamily?.hasIndustry)
+  const editFamily = familyByCode(editForm.familyCode)
+  const editNeedsIndustry = Boolean(editFamily?.hasIndustry)
 
   function clearFilters() {
     setFilterQ('')
-    setFilterKind('')
-    setFilterBrand('')
+    setFilterFamily('')
+    setFilterIndustry('')
   }
 
-  function openEdit(p: Record<string, unknown>) {
-    setViewProduct(null)
-    setEditProduct(p)
-    setEditForm(productToForm(p))
-    setTab('list')
+  function categoryIdFor(familyCode: string, industryCode?: string) {
+    const code = industryCode ? `${familyCode}__${industryCode}` : familyCode
+    return (
+      categories.find((c) => c.code === code)?.id ??
+      categories.find((c) => c.code === familyCode)?.id ??
+      null
+    )
+  }
+
+  function resolveMachine(formState: ProductForm) {
+    const fam = familyByCode(formState.familyCode)
+    if (!fam) return null
+    const industry = fam.industries?.find((i) => i.code === formState.industryCode)
+    const fromCatalog =
+      formState.machineSku && formState.machineSku !== 'CUSTOM'
+        ? machineOptions(formState.familyCode, formState.industryCode).find(
+            (o) => o.value === formState.machineSku,
+          )?.machine
+        : null
+    const name = fromCatalog?.name ?? formState.customMachineName.trim()
+    if (!name) return null
+    const catalogKind =
+      fromCatalog?.catalogKind ??
+      (fam.code === 'WEIGHING_SCALES'
+        ? 'WEIGHING'
+        : fam.code === 'BILLING_MACHINE'
+          ? 'BILLING'
+          : fam.code === 'TOUCH_POS'
+            ? 'TOUCH_POS'
+            : fam.code === 'BILLING_SOFTWARE'
+              ? 'BILLING_SOFTWARE'
+              : 'CCM')
+    return {
+      name,
+      sku: fromCatalog?.sku ?? skuFromName(formState.familyCode, formState.industryCode, name),
+      catalogKind,
+      requiresStamping: formState.requiresStamping,
+      trackInventory: fromCatalog?.trackInventory ?? fam.code !== 'BILLING_SOFTWARE',
+      productType: fromCatalog?.productType ?? (fam.code === 'BILLING_SOFTWARE' ? 'SERVICE' : 'GOODS'),
+      familyName: fam.name,
+      industryName: industry?.name ?? null,
+    }
   }
 
   async function runDelete(deleteIds: string[]) {
@@ -259,10 +269,7 @@ export function ProductsPage() {
     }
   }
 
-  async function uploadImage(
-    target: 'create' | 'edit',
-    file?: File | null,
-  ) {
+  async function uploadImage(target: 'create' | 'edit', file?: File | null) {
     if (!file) return
     const set = target === 'create' ? setForm : setEditForm
     set((f) => ({ ...f, uploading: true }))
@@ -280,30 +287,51 @@ export function ProductsPage() {
   }
 
   async function saveProduct() {
-    if (!form.catalogKind) {
-      addToast({ type: 'error', message: 'Select a product type' })
+    if (!form.familyCode) {
+      addToast({ type: 'error', message: 'Select a product family' })
       return
     }
-    if (!form.model.trim()) {
-      addToast({ type: 'error', message: 'Enter model number' })
+    if (createNeedsIndustry && !form.industryCode) {
+      addToast({ type: 'error', message: 'Select an industry' })
+      return
+    }
+    const machine = resolveMachine(form)
+    if (!machine) {
+      addToast({ type: 'error', message: 'Select a machine or enter a custom machine name' })
       return
     }
     setSaving(true)
     try {
-      const kind = form.catalogKind
+      const attrs = {
+        ...buildHmsAttributes({
+          familyCode: form.familyCode,
+          familyName: machine.familyName,
+          industryCode: form.industryCode || null,
+          industryName: machine.industryName,
+          machineName: machine.name,
+          catalogKind: machine.catalogKind,
+          requiresStamping: form.requiresStamping,
+        }),
+        warrantyMonths: form.warrantyMonths ? Number(form.warrantyMonths) : null,
+        warranty: form.warrantyMonths ? `${form.warrantyMonths} months` : null,
+        capacity: form.capacity.trim() || null,
+        accuracy: form.accuracy.trim() || null,
+        platform: form.platform.trim() || null,
+      }
       await api.createProduct({
-        sku: buildSku(kind, form.model),
-        name: buildName(kind, form.brand, form.model),
+        sku: machine.sku,
+        name: truncateProductName(machine.name),
         description: form.description.trim() || null,
-        productType: 'GOODS',
-        unit: 'pcs',
+        productType: machine.productType,
+        unit: 'NOS',
+        categoryId: categoryIdFor(form.familyCode, form.industryCode),
         salePrice: Number(form.salePrice) || 0,
         purchasePrice: Number(form.purchasePrice) || 0,
         mrp: form.mrp ? Number(form.mrp) : null,
-        taxPercent: Number(form.taxPercent) || 0,
-        trackInventory: true,
+        taxPercent: Number(form.taxPercent) || 18,
+        trackInventory: machine.trackInventory,
         imageUrl: form.imageUrl || null,
-        attributes: buildAttributes(form),
+        attributes: attrs,
       })
       addToast({ type: 'success', message: 'Product saved' })
       setForm(emptyForm())
@@ -321,474 +349,491 @@ export function ProductsPage() {
 
   async function saveEdit() {
     if (!editProduct) return
-    if (!editForm.catalogKind) {
-      addToast({ type: 'error', message: 'Select a product type' })
+    if (!editForm.familyCode) {
+      addToast({ type: 'error', message: 'Select a product family' })
       return
     }
-    if (!editForm.model.trim()) {
-      addToast({ type: 'error', message: 'Enter model number' })
+    if (editNeedsIndustry && !editForm.industryCode) {
+      addToast({ type: 'error', message: 'Select an industry' })
+      return
+    }
+    const machine = resolveMachine(editForm)
+    if (!machine) {
+      addToast({ type: 'error', message: 'Enter machine name' })
       return
     }
     setSaving(true)
     try {
-      const kind = editForm.catalogKind
-      const updated = await api.updateProduct(String(editProduct.id), {
-        name: buildName(kind, editForm.brand, editForm.model),
+      const attrs = {
+        ...buildHmsAttributes({
+          familyCode: editForm.familyCode,
+          familyName: machine.familyName,
+          industryCode: editForm.industryCode || null,
+          industryName: machine.industryName,
+          machineName: machine.name,
+          catalogKind: machine.catalogKind,
+          requiresStamping: editForm.requiresStamping,
+        }),
+        warrantyMonths: editForm.warrantyMonths ? Number(editForm.warrantyMonths) : null,
+        warranty: editForm.warrantyMonths ? `${editForm.warrantyMonths} months` : null,
+        capacity: editForm.capacity.trim() || null,
+        accuracy: editForm.accuracy.trim() || null,
+        platform: editForm.platform.trim() || null,
+      }
+      await api.updateProduct(String(editProduct.id), {
+        name: truncateProductName(machine.name),
         description: editForm.description.trim() || null,
+        categoryId: categoryIdFor(editForm.familyCode, editForm.industryCode),
         salePrice: Number(editForm.salePrice) || 0,
         purchasePrice: Number(editForm.purchasePrice) || 0,
         mrp: editForm.mrp ? Number(editForm.mrp) : null,
-        taxPercent: Number(editForm.taxPercent) || 0,
+        taxPercent: Number(editForm.taxPercent) || 18,
         imageUrl: editForm.imageUrl || null,
-        attributes: buildAttributes(editForm),
+        attributes: attrs,
       })
       addToast({ type: 'success', message: 'Product updated' })
       setEditProduct(null)
-      setItems((prev) =>
-        prev.map((p) => (String(p.id) === String(editProduct.id) ? { ...p, ...updated } : p)),
-      )
       await load()
     } catch (err) {
       addToast({
         type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Could not update product',
+        message: err instanceof ApiClientError ? err.message : 'Could not update',
       })
     } finally {
       setSaving(false)
     }
   }
 
-  function catalogFields(
+  function renderCascadeFields(
     state: ProductForm,
-    set: (next: ProductForm) => void,
+    setState: React.Dispatch<React.SetStateAction<ProductForm>>,
     uploadTarget: 'create' | 'edit',
   ) {
-    const weighing = state.catalogKind === 'WEIGHING'
+    const fam = familyByCode(state.familyCode)
+    const needsIndustry = Boolean(fam?.hasIndustry)
+    const machines = machineOptions(state.familyCode, state.industryCode)
+    const isWeighing = fam?.code === 'WEIGHING_SCALES'
+
     return (
       <div className="space-y-4">
-        <Select
-          label="Select product *"
-          value={state.catalogKind}
-          onChange={(e) => {
-            const catalogKind = e.target.value as CatalogKind | ''
-            set({
-              ...state,
-              catalogKind,
-              capacity: '',
-              accuracy: '',
-              platform: '',
-              requiresStamping: catalogKind ? defaultRequiresStamping(catalogKind) : false,
-            })
-          }}
-          options={[
-            { value: '', label: 'Choose product type…' },
-            ...CATALOG_PRODUCT_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
-          ]}
-        />
-
-        {!state.catalogKind ? (
-          <p className="rounded-[8px] border border-dashed border-border bg-muted/20 px-3 py-2.5 text-sm text-text-secondary">
-            Select a product type above to enter model, warranty, pricing, and{' '}
-            <span className="font-medium text-text-primary">govt. stamping</span> settings.
-          </p>
-        ) : null}
-
-        {state.catalogKind ? (
-          <>
-            <div
-              className={cn(
-                'flex flex-wrap items-center justify-between gap-4 rounded-[10px] border-2 px-4 py-4 shadow-sm',
-                state.requiresStamping
-                  ? 'border-accent-blue bg-accent-blue/10'
-                  : 'border-border bg-muted/40',
-              )}
-            >
-              <div className="flex min-w-0 flex-1 items-start gap-3">
-                <span
-                  className={cn(
-                    'mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg',
-                    state.requiresStamping ? 'bg-accent-blue text-white' : 'bg-muted text-text-secondary',
-                  )}
-                >
-                  <Stamp size={18} />
-                </span>
-                <div className="min-w-0">
-                  <div className="text-sm font-bold text-text-primary">Govt. stamping required</div>
-                  <p className="mt-1 text-xs leading-relaxed text-text-secondary">
-                    Controls whether stamping date fields appear in Inventory, Customers, Service tickets, and
-                    Stamping register. Weighing scales → usually ON. CCTV / paper roll → OFF.
-                  </p>
-                </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-3 rounded-lg border border-border bg-card px-3 py-2">
-                <span className="text-sm font-semibold text-text-primary">
-                  {state.requiresStamping ? 'Yes' : 'No'}
-                </span>
-                <Switch
-                  checked={state.requiresStamping}
-                  onChange={(checked) => set({ ...state, requiresStamping: checked })}
-                  label="Govt. stamping required"
-                />
-              </div>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-3">
-              <Input
-                label="Model number *"
-                placeholder="e.g. TT-30 / DS-700"
-                value={state.model}
-                onChange={(e) => set({ ...state, model: e.target.value })}
-              />
-              <Input
-                label="Brand"
-                placeholder="e.g. Precision / ESSAE"
-                value={state.brand}
-                onChange={(e) => set({ ...state, brand: e.target.value })}
-              />
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
+            1. Select product
+          </h3>
+          <Select
+            label="Product family *"
+            className="sm:col-span-2 lg:col-span-3"
+            value={state.familyCode}
+            onChange={(e) => {
+              const code = e.target.value
+              const nextFam = familyByCode(code)
+              setState((f) => ({
+                ...f,
+                familyCode: code,
+                industryCode: '',
+                machineSku: '',
+                customMachineName: '',
+                requiresStamping: nextFam?.code === 'WEIGHING_SCALES',
+              }))
+            }}
+            options={[{ value: '', label: 'Select product…' }, ...HMS_FAMILY_OPTIONS]}
+          />
+          {needsIndustry ? (
+            <Select
+              label="Industry *"
+              className="sm:col-span-2 lg:col-span-3"
+              value={state.industryCode}
+              onChange={(e) =>
+                setState((f) => ({
+                  ...f,
+                  industryCode: e.target.value,
+                  machineSku: '',
+                  customMachineName: '',
+                }))
+              }
+              options={[{ value: '', label: 'Select industry…' }, ...industryOptions(state.familyCode)]}
+            />
+          ) : null}
+          {state.familyCode && (!needsIndustry || state.industryCode) ? (
+            <>
               <Select
-                label="Warranty"
-                value={state.warrantyMonths}
-                onChange={(e) => set({ ...state, warrantyMonths: e.target.value })}
+                label="Machine *"
+                className="sm:col-span-2 lg:col-span-3"
+                value={state.machineSku}
+                onChange={(e) => {
+                  const sku = e.target.value
+                  const hit = machines.find((m) => m.value === sku)
+                  setState((f) => ({
+                    ...f,
+                    machineSku: sku,
+                    customMachineName: sku === 'CUSTOM' ? f.customMachineName : hit?.label ?? '',
+                    requiresStamping: hit?.machine.requiresStamping ?? f.requiresStamping,
+                  }))
+                }}
                 options={[
-                  { value: '', label: 'Select warranty…' },
-                  ...WARRANTY_MONTH_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+                  { value: '', label: 'Select machine…' },
+                  ...machines.map((m) => ({ value: m.value, label: m.label })),
+                  { value: 'CUSTOM', label: '+ Add custom machine…' },
                 ]}
               />
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <Input
-                label="MRP ₹"
-                type="number"
-                value={state.mrp}
-                onChange={(e) => set({ ...state, mrp: e.target.value })}
-              />
-              <Input
-                label="Sale price ₹"
-                type="number"
-                value={state.salePrice}
-                onChange={(e) => set({ ...state, salePrice: e.target.value })}
-              />
-              <Input
-                label="Purchase price ₹"
-                type="number"
-                value={state.purchasePrice}
-                onChange={(e) => set({ ...state, purchasePrice: e.target.value })}
-              />
-              <Input
-                label="Tax %"
-                type="number"
-                value={state.taxPercent}
-                onChange={(e) => set({ ...state, taxPercent: e.target.value })}
-              />
-            </div>
-
-            {weighing ? (
-              <div className="grid gap-3 sm:grid-cols-3">
+              {state.machineSku === 'CUSTOM' ? (
                 <Input
-                  label="Capacity"
-                  placeholder="e.g. 30 kg / 300 kg"
-                  value={state.capacity}
-                  onChange={(e) => set({ ...state, capacity: e.target.value })}
+                  label="Custom machine name *"
+                  className="sm:col-span-2 lg:col-span-3"
+                  value={state.customMachineName}
+                  onChange={(e) =>
+                    setState((f) => ({ ...f, customMachineName: e.target.value, machineSku: 'CUSTOM' }))
+                  }
+                  placeholder="Enter machine name"
                 />
-                <Input
-                  label="Accuracy"
-                  placeholder="e.g. 2 g / 50 g"
-                  value={state.accuracy}
-                  onChange={(e) => set({ ...state, accuracy: e.target.value })}
-                />
-                <Input
-                  label="Platform"
-                  placeholder="e.g. 600×600 mm"
-                  value={state.platform}
-                  onChange={(e) => set({ ...state, platform: e.target.value })}
-                />
-              </div>
-            ) : null}
+              ) : null}
+            </>
+          ) : null}
+        </section>
 
-            <label className="block text-sm">
-              <span className="mb-1 block font-medium text-text-secondary">Description</span>
-              <textarea
-                className="min-h-24 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
-                placeholder="Optional notes about this catalog product…"
-                value={state.description}
-                onChange={(e) => set({ ...state, description: e.target.value })}
+        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
+            2. Pricing & details
+          </h3>
+          <Select
+            label="Warranty"
+            value={state.warrantyMonths}
+            onChange={(e) => setState((f) => ({ ...f, warrantyMonths: e.target.value }))}
+            options={[
+              { value: '', label: '—' },
+              ...WARRANTY_MONTH_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+            ]}
+          />
+          <Input
+            label="Sale price ₹"
+            type="number"
+            value={state.salePrice}
+            onChange={(e) => setState((f) => ({ ...f, salePrice: e.target.value }))}
+          />
+          <Input
+            label="Purchase price ₹"
+            type="number"
+            value={state.purchasePrice}
+            onChange={(e) => setState((f) => ({ ...f, purchasePrice: e.target.value }))}
+          />
+          <Input
+            label="MRP ₹"
+            type="number"
+            value={state.mrp}
+            onChange={(e) => setState((f) => ({ ...f, mrp: e.target.value }))}
+          />
+          <Input
+            label="GST %"
+            type="number"
+            value={state.taxPercent}
+            onChange={(e) => setState((f) => ({ ...f, taxPercent: e.target.value }))}
+          />
+          <div className="flex items-end pb-1">
+            <label className="flex items-center gap-2 text-sm">
+              <Switch
+                checked={state.requiresStamping}
+                onChange={(v) => setState((f) => ({ ...f, requiresStamping: v }))}
               />
+              Requires stamping
             </label>
-
-            <div className="flex flex-wrap items-start gap-4">
-              <ProductImage
-                src={state.imageUrl}
-                className="h-20 w-20 shrink-0 rounded-lg object-cover ring-1 ring-border"
-                fallbackClassName="h-20 w-20 shrink-0 rounded-lg ring-1 ring-border"
-                iconSize={22}
+          </div>
+          {isWeighing ? (
+            <>
+              <Input
+                label="Capacity"
+                value={state.capacity}
+                onChange={(e) => setState((f) => ({ ...f, capacity: e.target.value }))}
+                placeholder="e.g. 30 kg"
               />
-              <div className="min-w-0 flex-1 space-y-2">
-                <div className="text-sm font-medium text-text-secondary">Product image</div>
-                <label className="inline-flex cursor-pointer items-center gap-2 rounded-[6px] border border-border bg-card px-3 py-2 text-sm font-medium text-accent-blue hover:bg-surface">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => void uploadImage(uploadTarget, e.target.files?.[0])}
-                  />
+              <Input
+                label="Accuracy"
+                value={state.accuracy}
+                onChange={(e) => setState((f) => ({ ...f, accuracy: e.target.value }))}
+                placeholder="e.g. 2 g"
+              />
+              <Input
+                label="Platform size"
+                value={state.platform}
+                onChange={(e) => setState((f) => ({ ...f, platform: e.target.value }))}
+              />
+            </>
+          ) : null}
+          <label className="block text-sm sm:col-span-2 lg:col-span-3">
+            <span className="mb-1 block font-medium text-text-secondary">Notes</span>
+            <textarea
+              className="min-h-20 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
+              value={state.description}
+              onChange={(e) => setState((f) => ({ ...f, description: e.target.value }))}
+            />
+          </label>
+          <div className="sm:col-span-2 lg:col-span-3">
+            <div className="mb-1 text-sm font-medium text-text-secondary">Product image</div>
+            <div className="flex flex-wrap items-center gap-3">
+              <ProductImage
+                src={state.imageUrl || null}
+                alt="Preview"
+                className="h-16 w-16 rounded-lg object-cover ring-1 ring-border"
+                fallbackClassName="h-16 w-16 rounded-lg ring-1 ring-border"
+                iconSize={18}
+              />
+              <label className="inline-flex cursor-pointer">
+                <span className="rounded-[8px] border border-border bg-card px-3 py-2 text-sm hover:bg-surface">
                   {state.uploading ? 'Uploading…' : 'Upload image'}
-                </label>
-                {state.imageUrl ? (
-                  <button
-                    type="button"
-                    className="block text-xs text-text-secondary hover:text-accent-red"
-                    onClick={() => set({ ...state, imageUrl: '' })}
-                  >
-                    Remove image
-                  </button>
-                ) : null}
-              </div>
+                </span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => void uploadImage(uploadTarget, e.target.files?.[0])}
+                />
+              </label>
             </div>
-          </>
-        ) : (
-          <p className="text-sm text-text-secondary">Select a product type above to continue.</p>
-        )}
+          </div>
+        </section>
       </div>
     )
   }
 
-  const filterBar = (
-    <div className="mb-3 space-y-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="min-w-[180px] flex-1 basis-[220px]">
-          <Input
-            className="h-9"
-            placeholder="Search name, model, brand, SKU…"
-            value={filterQ}
-            onChange={(e) => setFilterQ(e.target.value)}
-          />
-        </div>
-        <div className="w-[180px] shrink-0">
-          <Select
-            className="h-9"
-            value={filterKind}
-            onChange={(e) => setFilterKind(e.target.value)}
-            options={[
-              { value: '', label: 'All types' },
-              ...CATALOG_PRODUCT_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
-            ]}
-          />
-        </div>
-        <Button
-          variant={moreFilters || filterBrand ? 'primary' : 'outline'}
-          size="sm"
-          className="h-9 shrink-0"
-          onClick={() => setMoreFilters((v) => !v)}
-        >
-          <SlidersHorizontal size={14} />
-          More
-          {filterBrand ? (
-            <span className="rounded bg-white/20 px-1.5 text-[10px]">on</span>
-          ) : (
-            <ChevronDown size={14} className={moreFilters ? 'rotate-180' : ''} />
-          )}
-        </Button>
-        {filtersActive ? (
-          <Button variant="ghost" size="sm" className="h-9 shrink-0" onClick={clearFilters}>
-            <X size={14} /> Clear
-          </Button>
-        ) : null}
-      </div>
-      {moreFilters ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/30 px-2 py-1.5">
-          <div className="w-[180px]">
-            <Select
-              className="h-9"
-              value={filterBrand}
-              onChange={(e) => setFilterBrand(e.target.value)}
-              options={[
-                { value: '', label: 'All brands' },
-                ...brands.map((b) => ({ value: b, label: b })),
-              ]}
-            />
-          </div>
-        </div>
-      ) : null}
-    </div>
-  )
+  const groupedCount = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const p of items) {
+      const meta = productCatalogMeta(productAttrs(p))
+      const key = meta.familyName || meta.catalogKind || 'Other'
+      map.set(key, (map.get(key) ?? 0) + 1)
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  }, [items])
 
   return (
-    <div>
+    <div className="space-y-4">
       <PageHeader
         title="Products"
-        count={items.length}
         breadcrumbs={[{ label: 'ERP' }, { label: 'Products' }]}
+        actions={
+          <Button onClick={() => setTab('create')}>
+            <Package size={16} /> Add product
+          </Button>
+        }
       />
-      {tab !== 'list' ? <FeatureTip title={tip.title} body={tip.body} tipType={tip.tipType} /> : null}
+      <FeatureTip tip={tip} />
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        {groupedCount.map(([name, count]) => (
+          <Card key={name} className="p-3">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">{name}</div>
+            <div className="mt-1 text-2xl font-semibold tabular-nums">{count}</div>
+          </Card>
+        ))}
+      </div>
 
       <PageTabs
-        accent="theme"
-        active={tab}
-        onChange={(id) => {
-          setViewProduct(null)
-          setEditProduct(null)
-          setTab(id as 'list' | 'create')
-          if (id === 'create') setForm(emptyForm())
-        }}
         tabs={[
-          { id: 'list', label: 'All products', count: filtered.length },
+          { id: 'list', label: `Catalog ${filtered.length}` },
           { id: 'create', label: 'Add product' },
         ]}
+        active={tab}
+        onChange={(id) => {
+          setTab(id as 'list' | 'create')
+          setViewProduct(null)
+          setEditProduct(null)
+        }}
       />
 
       {tab === 'list' ? (
-        <>
-          {filterBar}
-          <Card padding={false}>
-            {filtered.length === 0 ? (
-              <EmptyState
-                icon={<Package size={22} />}
-                title={items.length === 0 ? 'No products' : 'No products match filters'}
-                subtitle={
-                  items.length === 0
-                    ? 'Add catalog products first. Serial numbers are added later in Inventory.'
-                    : 'Try clearing filters or searching a different name / type.'
-                }
-                actionLabel="Add product"
-                onAction={() => setTab('create')}
+        <Card padding={false}>
+          <div className="flex flex-wrap gap-3 border-b border-border p-4">
+            <Input
+              placeholder="Search name, SKU, industry…"
+              value={filterQ}
+              onChange={(e) => setFilterQ(e.target.value)}
+              className="min-w-[200px] flex-1"
+            />
+            <Select
+              value={filterFamily}
+              onChange={(e) => {
+                setFilterFamily(e.target.value)
+                setFilterIndustry('')
+              }}
+              className="w-48"
+              options={[{ value: '', label: 'All products' }, ...HMS_FAMILY_OPTIONS]}
+            />
+            {filterFamily === 'WEIGHING_SCALES' ? (
+              <Select
+                value={filterIndustry}
+                onChange={(e) => setFilterIndustry(e.target.value)}
+                className="w-56"
+                options={[
+                  { value: '', label: 'All industries' },
+                  ...industryOptions('WEIGHING_SCALES'),
+                ]}
               />
+            ) : null}
+            {filtersActive ? (
+              <Button variant="ghost" onClick={clearFilters}>
+                <X size={14} /> Clear
+              </Button>
             ) : (
-              <div className="p-4 pt-3">
-                {selection.someSelected ? (
-                  <BulkActionBar
-                    count={selection.selectedCount}
-                    noun="product"
-                    busy={busyDelete}
-                    onClear={selection.clear}
-                    onDelete={() => setConfirm({ ids: selection.selectedIds })}
-                  />
-                ) : null}
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[720px] text-left text-sm">
-                    <thead className="bg-muted text-xs text-text-secondary">
-                      <tr>
-                        <th className="w-10 px-4 py-3">
-                          <SelectCheckbox
-                            checked={selection.allSelected}
-                            indeterminate={selection.someSelected && !selection.allSelected}
-                            onChange={selection.toggleAll}
-                            aria-label="Select all"
-                          />
-                        </th>
-                        {['Product name', 'Sale', 'Purchase', 'Tax %', 'Actions'].map((h) => (
-                          <th key={h} className="px-4 py-3 font-medium">
-                            {h}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filtered.map((p) => {
-                        const id = String(p.id)
-                        const a = productAttrs(p)
-                        const kind = a.catalogKind ? kindLabel(String(a.catalogKind)) : ''
-                        return (
-                          <tr key={id} className="border-t border-border hover:bg-surface">
-                            <td className="px-4 py-3">
-                              <SelectCheckbox
-                                checked={selection.isSelected(id)}
-                                onChange={() => selection.toggle(id)}
-                                aria-label={`Select ${String(p.name)}`}
-                              />
-                            </td>
-                            <td className="px-4 py-3">
-                              <div className="flex items-center gap-3">
-                                <ProductImage
-                                  src={p.imageUrl as string | null}
-                                  className="h-9 w-9 rounded object-cover ring-1 ring-border"
-                                  fallbackClassName="h-9 w-9 rounded ring-1 ring-border"
-                                />
-                                <div className="min-w-0">
-                                  <div className="truncate font-medium text-text-primary">
-                                    {String(p.name)}
-                                  </div>
-                                  <div className="truncate text-xs text-text-secondary">
-                                    {[kind, a.model ? String(a.model) : null, a.brand ? String(a.brand) : null]
-                                      .filter(Boolean)
-                                      .join(' · ')}
-                                  </div>
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-4 py-3 font-semibold">{formatCurrency(num(p.salePrice))}</td>
-                            <td className="px-4 py-3">{formatCurrency(num(p.purchasePrice))}</td>
-                            <td className="px-4 py-3">{num(p.taxPercent)}%</td>
-                            <td className="px-4 py-3">
-                              <div className="flex items-center gap-0.5">
-                                <ViewIconButton onClick={() => setViewProduct(p)} />
-                                <EditIconButton onClick={() => openEdit(p)} />
-                                <DeleteIconButton
-                                  disabled={busyDelete}
-                                  onClick={() => setConfirm({ ids: [id] })}
-                                />
-                              </div>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              <Button variant="outline" className="pointer-events-none opacity-60">
+                <SlidersHorizontal size={14} /> Filters
+              </Button>
             )}
-          </Card>
-        </>
+          </div>
+
+          {selection.someSelected ? (
+            <div className="px-4 pt-3">
+              <BulkActionBar
+                count={selection.selectedCount}
+                noun="product"
+                busy={busyDelete}
+                onClear={selection.clear}
+                onDelete={() => setConfirm({ ids: selection.selectedIds })}
+              />
+            </div>
+          ) : null}
+
+          {filtered.length === 0 ? (
+            <EmptyState
+              title="No products"
+              subtitle="Add HMS catalog products, or clear filters."
+              actionLabel="Add product"
+              onAction={() => setTab('create')}
+            />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[980px] text-left text-sm">
+                <thead className="bg-surface text-xs text-text-secondary">
+                  <tr className="border-b border-border">
+                    <th className="w-10 px-3 py-2">
+                      <SelectCheckbox
+                        checked={selection.allSelected}
+                        indeterminate={selection.someSelected && !selection.allSelected}
+                        onChange={selection.toggleAll}
+                      />
+                    </th>
+                    <th className="px-3 py-2">Machine</th>
+                    <th className="px-3 py-2">Product</th>
+                    <th className="px-3 py-2">Industry</th>
+                    <th className="px-3 py-2">SKU</th>
+                    <th className="px-3 py-2">Sale ₹</th>
+                    <th className="px-3 py-2">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((p) => {
+                    const id = String(p.id)
+                    const meta = productCatalogMeta(productAttrs(p))
+                    const a = productAttrs(p)
+                    return (
+                      <tr
+                        key={id}
+                        className="cursor-pointer border-b border-border hover:bg-surface/60"
+                        onClick={() => {
+                          setEditProduct(null)
+                          setViewProduct(p)
+                        }}
+                      >
+                        <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                          <SelectCheckbox
+                            checked={selection.isSelected(id)}
+                            onChange={() => selection.toggle(id)}
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-2">
+                            <ProductImage
+                              src={p.imageUrl ? String(p.imageUrl) : null}
+                              alt={String(p.name)}
+                            />
+                            <div>
+                              <div className="font-medium text-text-primary">{String(p.name)}</div>
+                              {a.capacity ? (
+                                <div className="text-xs text-text-secondary">{String(a.capacity)}</div>
+                              ) : null}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-text-secondary">
+                          {meta.familyName || meta.catalogKind || '—'}
+                        </td>
+                        <td className="px-3 py-2 text-text-secondary">{meta.industryName || '—'}</td>
+                        <td className="px-3 py-2 font-mono text-xs">{String(p.sku)}</td>
+                        <td className="px-3 py-2">{formatCurrency(num(p.salePrice))}</td>
+                        <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center gap-0.5">
+                            <ViewIconButton
+                              onClick={() => {
+                                setEditProduct(null)
+                                setViewProduct(p)
+                              }}
+                            />
+                            <EditIconButton
+                              onClick={() => {
+                                setViewProduct(null)
+                                setEditProduct(p)
+                                setEditForm(productToForm(p))
+                              }}
+                            />
+                            <DeleteIconButton
+                              disabled={busyDelete}
+                              onClick={() => setConfirm({ ids: [id] })}
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
       ) : (
         <FormPanel
           open
           accent="theme"
-          eyebrow="Catalog"
+          eyebrow="CATALOG"
           title="Add product"
-          subtitle="Choose product type, set stamping (yes/no), warranty, and pricing. Serial numbers are added later in Inventory."
+          subtitle="Weighing: Product → Industry → Machine. Others: Product → Machine."
           onClose={() => setTab('list')}
           footer={
             <>
               <FormPanelCancel onClick={() => setTab('list')} />
-              <Button onClick={() => void saveProduct()} disabled={saving || !form.catalogKind}>
+              <Button disabled={saving} onClick={() => void saveProduct()}>
                 {saving ? 'Saving…' : 'Save product'}
               </Button>
             </>
           }
         >
-          <div className="mb-4 rounded-[8px] border border-sky-200 bg-sky-50/80 px-3 py-2.5 text-sm text-text-secondary">
-            <span className="font-semibold text-text-primary">Note:</span> You are adding a{' '}
-            <span className="font-medium text-text-primary">catalog product</span> (model / brand / price).
-            Later in <span className="font-medium text-text-primary">Inventory</span>, each unit gets its own{' '}
-            <span className="font-medium text-text-primary">serial number</span>
-            {form.requiresStamping ? (
-              <>
-                {' '}
-                and <span className="font-medium text-text-primary">stamping date</span>
-              </>
-            ) : (
-              <> (stamping not required for this product type)</>
-            )}
-            .
-          </div>
-          {catalogFields(form, setForm, 'create')}
+          {renderCascadeFields(form, setForm, 'create')}
         </FormPanel>
       )}
 
       {viewProduct ? (
-        <FormPanel
+        <Modal
           open
           accent="theme"
-          eyebrow="Product"
+          size="lg"
           title={String(viewProduct.name)}
-          subtitle={String(viewProduct.sku ?? '')}
+          subtitle={String(viewProduct.sku)}
           onClose={() => setViewProduct(null)}
           footer={
             <>
-              <FormPanelCancel onClick={() => setViewProduct(null)} />
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setConfirm({ ids: [String(viewProduct.id)] })
+                }}
+              >
+                Delete
+              </Button>
+              <Button variant="outline" onClick={() => setViewProduct(null)}>
+                Close
+              </Button>
               <Button
                 onClick={() => {
-                  openEdit(viewProduct)
+                  setEditForm(productToForm(viewProduct))
+                  setEditProduct(viewProduct)
+                  setViewProduct(null)
                 }}
               >
                 Edit
@@ -797,81 +842,90 @@ export function ProductsPage() {
           }
         >
           {(() => {
+            const meta = productCatalogMeta(productAttrs(viewProduct))
             const a = productAttrs(viewProduct)
-            const kind = a.catalogKind ? kindLabel(String(a.catalogKind)) : '—'
             const rows: Array<[string, string]> = [
-              ['Type', kind],
-              ['Model', String(a.model ?? '—')],
-              ['Brand', String(a.brand ?? '—')],
-              ['Warranty', formatWarrantyMonths(a.warrantyMonths ?? a.warranty)],
-              ['Govt. stamping', a.requiresStamping === false ? 'Not required' : 'Required'],
-              ['MRP', viewProduct.mrp != null ? formatCurrency(num(viewProduct.mrp)) : '—'],
+              ['Product family', meta.familyName || '—'],
+              ['Industry', meta.industryName || '—'],
+              ['Machine', String(viewProduct.name)],
+              ['SKU', String(viewProduct.sku)],
               ['Sale price', formatCurrency(num(viewProduct.salePrice))],
               ['Purchase price', formatCurrency(num(viewProduct.purchasePrice))],
-              ['Tax', `${num(viewProduct.taxPercent)}%`],
+              ['MRP', viewProduct.mrp != null ? formatCurrency(num(viewProduct.mrp)) : '—'],
+              ['Tax %', String(viewProduct.taxPercent ?? '—')],
+              ['Unit', String(viewProduct.unit ?? 'NOS')],
+              ['Type', String(viewProduct.productType ?? 'GOODS')],
+              ['Stamping', a.requiresStamping ? 'Required' : 'Not required'],
+              ['Warranty', a.warrantyMonths ? `${String(a.warrantyMonths)} months` : '—'],
+              ['Capacity', a.capacity ? String(a.capacity) : '—'],
+              ['Accuracy', a.accuracy ? String(a.accuracy) : '—'],
+              ['Platform', a.platform ? String(a.platform) : '—'],
+              ['Brand', a.brand ? String(a.brand) : '—'],
+              ['Active', viewProduct.isActive === false ? 'No' : 'Yes'],
+              [
+                'Description',
+                viewProduct.description ? String(viewProduct.description) : '—',
+              ],
             ]
-            if (String(a.catalogKind) === 'WEIGHING') {
-              rows.push(
-                ['Capacity', String(a.capacity ?? '—')],
-                ['Accuracy', String(a.accuracy ?? '—')],
-                ['Platform', String(a.platform ?? '—')],
-              )
-            }
             return (
               <div className="space-y-4">
                 <div className="flex items-start gap-4">
                   <ProductImage
-                    src={viewProduct.imageUrl as string | null}
+                    src={viewProduct.imageUrl ? String(viewProduct.imageUrl) : null}
+                    alt={String(viewProduct.name)}
                     className="h-20 w-20 rounded-lg object-cover ring-1 ring-border"
                     fallbackClassName="h-20 w-20 rounded-lg ring-1 ring-border"
-                    iconSize={22}
                   />
-                  <div>
-                    <Badge color="blue">{kind}</Badge>
-                    <div className="mt-2 font-mono text-xs text-text-secondary">
-                      SKU {String(viewProduct.sku ?? '—')}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-lg font-semibold text-text-primary">
+                      {String(viewProduct.name)}
+                    </div>
+                    <div className="mt-1 text-sm text-text-secondary">
+                      {[meta.familyName, meta.industryName].filter(Boolean).join(' · ') || '—'}
+                    </div>
+                    <div className="mt-1 font-mono text-xs text-text-secondary">
+                      {String(viewProduct.sku)}
                     </div>
                   </div>
                 </div>
-                <dl className="grid gap-2 text-sm sm:grid-cols-2">
-                  {rows.map(([k, v]) => (
-                    <div key={k} className="rounded-lg border border-border px-3 py-2">
-                      <dt className="text-xs text-text-secondary">{k}</dt>
-                      <dd className="mt-0.5 font-medium">{v}</dd>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {rows.map(([label, value]) => (
+                    <div
+                      key={label}
+                      className={label === 'Description' ? 'sm:col-span-2' : undefined}
+                    >
+                      <div className="text-xs text-text-secondary">{label}</div>
+                      <div className="mt-0.5 font-medium text-text-primary">{value}</div>
                     </div>
                   ))}
-                </dl>
-                {viewProduct.description ? (
-                  <div className="rounded-lg border border-border px-3 py-2 text-sm">
-                    <div className="text-xs text-text-secondary">Description</div>
-                    <p className="mt-1 whitespace-pre-wrap">{String(viewProduct.description)}</p>
-                  </div>
-                ) : null}
+                </div>
               </div>
             )
           })()}
-        </FormPanel>
+        </Modal>
       ) : null}
 
       {editProduct ? (
-        <FormPanel
+        <Modal
           open
           accent="theme"
-          eyebrow="Edit product"
-          title={String(editProduct.name)}
-          subtitle="Update catalog fields. Serial stock stays in Inventory."
+          size="xl"
+          title="Edit product"
+          subtitle={String(editProduct.sku)}
           onClose={() => setEditProduct(null)}
           footer={
             <>
-              <FormPanelCancel onClick={() => setEditProduct(null)} />
-              <Button onClick={() => void saveEdit()} disabled={saving || !editForm.catalogKind}>
+              <Button variant="outline" onClick={() => setEditProduct(null)}>
+                Cancel
+              </Button>
+              <Button disabled={saving} onClick={() => void saveEdit()}>
                 {saving ? 'Saving…' : 'Save changes'}
               </Button>
             </>
           }
         >
-          {catalogFields(editForm, setEditForm, 'edit')}
-        </FormPanel>
+          {renderCascadeFields(editForm, setEditForm, 'edit')}
+        </Modal>
       ) : null}
 
       <ConfirmModal
@@ -881,12 +935,23 @@ export function ProductsPage() {
           if (confirm) void runDelete(confirm.ids)
         }}
         title={confirm?.ids.length === 1 ? 'Delete product?' : `Delete ${confirm?.ids.length ?? 0} products?`}
-        body={
-          confirm?.ids.length === 1
-            ? 'This product will be permanently removed.'
-            : 'Selected products will be permanently removed.'
-        }
+        body="This removes the catalog item. Serial stock linked to it may still exist in inventory history."
       />
     </div>
   )
 }
+
+/** Kept for ProductCreatePage / Contacts imports that reference catalog kinds */
+export const CATALOG_PRODUCT_OPTIONS = [
+  { value: 'WEIGHING', label: 'Weighing machine' },
+  { value: 'BILLING', label: 'Billing Machine' },
+  { value: 'CCM', label: 'Currency Counting Machine' },
+  { value: 'BIOMETRIC', label: 'Biometric machine' },
+  { value: 'PAPER_SHREDDER', label: 'Paper Shredder' },
+  { value: 'PAPER_ROLL', label: 'Paper Role for Billing printer' },
+  { value: 'CCTV', label: 'CCTV' },
+  { value: 'TOUCH_POS', label: 'Touch POS' },
+  { value: 'BILLING_SOFTWARE', label: 'Billing Software' },
+] as const
+
+export default ProductsPage

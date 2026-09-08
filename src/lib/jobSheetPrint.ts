@@ -54,7 +54,7 @@ export type JobSheetPrintOpts = {
 }
 
 export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
-  const ticketLabel = `TKT-${String(opts.ticketNo).padStart(5, '0')}`
+  const ticketLabel = `SVC-${String(opts.ticketNo).padStart(5, '0')}`
   const paidBadge =
     opts.paymentStatus === 'PAID'
       ? '<span class="pill paid">Paid in full</span>'
@@ -130,8 +130,14 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
     <div class="hero">
       <div class="hero-top">
         <div>
-          <div class="brand">${escapeHtml(opts.companyName || 'NovaCRM')}</div>
-          <div class="tag">${opts.paymentStatus === 'PAID' ? 'Payment receipt' : 'Service job sheet'}</div>
+          <div class="brand">${escapeHtml(opts.companyName || 'HMS Enterprises')}</div>
+          <div class="tag">${
+            opts.status === 'CLOSED'
+              ? 'Bill summary'
+              : opts.paymentStatus === 'PAID'
+                ? 'Payment receipt'
+                : 'Service job sheet'
+          }</div>
         </div>
         <div class="meta">
           <div class="job-no">${escapeHtml(ticketLabel)}</div>
@@ -169,7 +175,6 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
       <table>
         <thead><tr><th>Item</th><th class="money">Amount</th></tr></thead>
         <tbody>
-          <tr><td>OD / outstation</td><td class="money">${money(opts.odAmount)}</td></tr>
           <tr><td>Job payment total</td><td class="money">${money(opts.paymentTotal)}</td></tr>
           <tr><td>Advance received</td><td class="money">${money(opts.advanceAmount)}</td></tr>
           <tr><td><strong>Balance</strong></td><td class="money"><strong>${money(opts.balanceDue)}</strong></td></tr>
@@ -197,7 +202,7 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
         </div>
         <div class="sign">Customer acknowledgement<br/><strong style="color:var(--ink)">${escapeHtml(opts.customerName || '')}</strong></div>
       </div>
-      <p style="margin-top:18px;color:var(--muted);font-size:11px">Generated from NovaCRM · ${escapeHtml(opts.companyName || '')}${opts.companyPhone ? ` · ${escapeHtml(opts.companyPhone)}` : ''}${opts.companyEmail ? ` · ${escapeHtml(opts.companyEmail)}` : ''}</p>
+      <p style="margin-top:18px;color:var(--muted);font-size:11px">Generated from HMS Enterprises · ${escapeHtml(opts.companyName || '')}${opts.companyPhone ? ` · ${escapeHtml(opts.companyPhone)}` : ''}${opts.companyEmail ? ` · ${escapeHtml(opts.companyEmail)}` : ''}</p>
     </div>
   </div>
 </body></html>`

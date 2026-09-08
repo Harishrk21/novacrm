@@ -10,6 +10,13 @@ function parseDate(v: string | null | undefined) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function mapMachineType(kind: unknown): "WEIGHING" | "BILLING" | "OTHER" {
+  const k = String(kind ?? "").toUpperCase();
+  if (k.includes("BILL") || k.includes("POS")) return "BILLING";
+  if (k.includes("WEIGH") || k === "GOODS" || !k) return "WEIGHING";
+  return "OTHER";
+}
+
 export async function levels(t: string, q: Record<string, unknown>) {
   const where: Prisma.StockLevelWhereInput = {
     tenantId: t,
@@ -697,8 +704,99 @@ export async function issueDemoUnit(t: string, user: string, leadId: string, sto
       ? (unit.customFields as Record<string, unknown>)
       : {};
   const issuedAt = new Date().toISOString();
+  const dcDate = issuedAt.slice(0, 10);
+
+  const tenant = await prisma.tenant.findFirst({
+    where: { id: t, deletedAt: null },
+    select: {
+      name: true,
+      phone: true,
+      email: true,
+      gstin: true,
+      addressLine1: true,
+      addressLine2: true,
+      city: true,
+      state: true,
+      postalCode: true,
+    },
+  });
+  const sellerAddress = [
+    tenant?.addressLine1,
+    tenant?.addressLine2,
+    [tenant?.city, tenant?.state].filter(Boolean).join(", "),
+    tenant?.postalCode,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  const catalogFamily =
+    product?.attributes && typeof product.attributes === "object"
+      ? String(
+          (product.attributes as Record<string, unknown>).catalogFamilyName ??
+            (product.attributes as Record<string, unknown>).catalogFamily ??
+            "",
+        )
+      : "";
+  const catalogIndustry =
+    product?.attributes && typeof product.attributes === "object"
+      ? String(
+          (product.attributes as Record<string, unknown>).catalogIndustryName ??
+            (product.attributes as Record<string, unknown>).catalogIndustry ??
+            "",
+        )
+      : "";
 
   await prisma.$transaction(async (tx) => {
+    let seq = await tx.numberSequence.findUnique({
+      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "DEMO_DC" } },
+    });
+    if (!seq) {
+      seq = await tx.numberSequence.create({
+        data: {
+          tenantId: t,
+          sequenceKey: "DEMO_DC",
+          prefix: "DC-",
+          nextValue: 1,
+          padding: 5,
+        },
+      });
+    }
+    await tx.numberSequence.update({
+      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "DEMO_DC" } },
+      data: { nextValue: { increment: 1 } },
+    });
+    const dcNumber = `${seq.prefix}${String(seq.nextValue).padStart(seq.padding, "0")}`;
+
+    const deliveryChallan = {
+      number: dcNumber,
+      date: dcDate,
+      issuedAt,
+      purpose: "DEMO" as const,
+      customerName: lead.name,
+      company: lead.company ?? null,
+      phone: lead.phone ?? null,
+      city: lead.city ?? null,
+      state: lead.state ?? null,
+      addressLine: null as string | null,
+      productName: product?.name ?? "Product",
+      productSku: product?.sku ?? null,
+      serialNo: unit.serialNo,
+      qty: 1,
+      stampingDate: unit.stampingDate ? unit.stampingDate.toISOString().slice(0, 10) : null,
+      catalogFamily: catalogFamily || null,
+      catalogIndustry: catalogIndustry || null,
+      executiveName: executiveUser?.name ?? null,
+      executiveId: executiveUser?.id ?? null,
+      leadId,
+      stockUnitId: unit.id,
+      notes: "Issued for demonstration / trial — not a sale. Return or convert via Sale tracking.",
+      sellerName: tenant?.name ?? "HMS Enterprises",
+      sellerPhone: tenant?.phone ?? null,
+      sellerEmail: tenant?.email ?? null,
+      sellerGstin: tenant?.gstin ?? null,
+      sellerAddress: sellerAddress || null,
+    };
+
     await tx.stockUnit.update({
       where: { id: unit.id },
       data: {
@@ -717,13 +815,18 @@ export async function issueDemoUnit(t: string, user: string, leadId: string, sto
           demoState: lead.state ?? null,
           demoExecutiveId: executiveUser?.id ?? null,
           demoExecutiveName: executiveUser?.name ?? null,
-          demoEnquiryDate: leadCf.enquiry_date ?? issuedAt.slice(0, 10),
+          demoEnquiryDate: leadCf.enquiry_date ?? dcDate,
           productName: product?.name ?? null,
           productSku: product?.sku ?? null,
           productSalePrice: product?.salePrice != null ? Number(product.salePrice) : null,
           productPurchasePrice: product?.purchasePrice != null ? Number(product.purchasePrice) : null,
           productType: product?.productType ?? null,
           productAttributes: product?.attributes ?? null,
+          catalogFamily: catalogFamily || null,
+          catalogIndustry: catalogIndustry || null,
+          demoDcNo: dcNumber,
+          demoDcDate: dcDate,
+          demoDeliveryChallan: deliveryChallan,
         },
       },
     });
@@ -754,7 +857,7 @@ export async function issueDemoUnit(t: string, user: string, leadId: string, sto
         warehouseId: unit.warehouseId,
         movementType: "OUT",
         quantity: 1,
-        notes: `Demo issue · ${product?.name ?? "product"} · serial ${unit.serialNo} · ${lead.name}`,
+        notes: `Demo issue · DC ${dcNumber} · ${product?.name ?? "product"} · serial ${unit.serialNo} · ${lead.name}`,
         referenceType: "STOCK_UNIT",
         referenceId: unit.id,
         performedBy: user,
@@ -776,6 +879,12 @@ export async function issueDemoUnit(t: string, user: string, leadId: string, sto
           demoWarehouseId: executiveWarehouse.id,
           demoExecutiveId: executiveUser?.id ?? null,
           demoExecutiveName: executiveUser?.name ?? null,
+          demoCatalogFamily: catalogFamily || null,
+          demoCatalogIndustry: catalogIndustry || null,
+          demoDailyUpdates: Array.isArray(leadCf.demoDailyUpdates) ? leadCf.demoDailyUpdates : [],
+          demoDcNo: dcNumber,
+          demoDcDate: dcDate,
+          demoDeliveryChallan: deliveryChallan,
         },
       },
     });
@@ -973,9 +1082,15 @@ export async function markDemoSold(t: string, user: string, leadId: string) {
             id: newId(),
             tenantId: t,
             contactId,
-            machineType: (product?.productType as any) ?? "WEIGHING",
-            name: product?.name ?? `Scale ${unit.serialNo}`,
-            model: product?.sku ?? null,
+            machineType: mapMachineType(attrs.catalogKind ?? product?.productType),
+            name: product?.name ?? String(unitCf.productName ?? `Machine ${unit.serialNo}`),
+            model: attrs.model
+              ? String(attrs.model)
+              : product?.sku
+                ? product.sku
+                : unitCf.productSku
+                  ? String(unitCf.productSku)
+                  : null,
             serialNo: unit.serialNo,
             capacity,
             accuracy,
@@ -984,10 +1099,15 @@ export async function markDemoSold(t: string, user: string, leadId: string) {
             servicePlan: "NON_AMC",
             stampingDate,
             nextDueDate,
+            notes: "Added from demo conversion",
             customFields: {
               stockUnitId: unit.id,
               productId: unit.productId,
+              productSku: product?.sku ?? unitCf.productSku ?? null,
               convertedFromLeadId: leadId,
+              catalogFamily: unitCf.catalogFamily ?? attrs.catalogFamilyName ?? null,
+              catalogIndustry: unitCf.catalogIndustry ?? attrs.catalogIndustryName ?? null,
+              demoDcNo: unitCf.demoDcNo ?? null,
             },
           },
         });

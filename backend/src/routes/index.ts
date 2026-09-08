@@ -17,10 +17,12 @@ import { assetsRouter } from '../modules/assets/assets.routes.js'
 import { purchaseOrdersRouter } from '../modules/purchaseOrders/purchaseOrders.routes.js'
 import { metaRouter } from '../modules/meta/meta.routes.js'
 import { usersRouter } from '../modules/users/users.routes.js'
+import { notificationsRouter } from '../modules/notifications/notifications.routes.js'
 import { uploadsRouter } from '../modules/uploads/uploads.routes.js'
 import { analyticsRouter } from '../modules/analytics/analytics.routes.js'
 import { activitiesRouter } from '../modules/activities/activities.routes.js'
 import { sparePartsRouter } from '../modules/spareParts/spareParts.routes.js'
+import { aiRouter } from '../modules/ai/ai.routes.js'
 
 export const apiRouter = Router()
 apiRouter.use('/auth', authRouter)
@@ -28,8 +30,10 @@ apiRouter.use('/platform', platformRouter)
 apiRouter.use('/tenants', tenantsRouter)
 apiRouter.use('/meta', metaRouter)
 apiRouter.use('/analytics', analyticsRouter)
+apiRouter.use('/ai', aiRouter)
 apiRouter.use('/activities', activitiesRouter)
 apiRouter.use('/users', usersRouter)
+apiRouter.use('/notifications', notificationsRouter)
 apiRouter.use('/uploads', uploadsRouter)
 apiRouter.use('/accounts', accountsRouter)
 apiRouter.use('/leads', leadsRouter)

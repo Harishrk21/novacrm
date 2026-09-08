@@ -11,7 +11,14 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     return res.status(err.statusCode).json({ success: false, message: err.message, details: err.details });
   }
   if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-    return res.status(409).json({ success: false, message: "A record with this value already exists" });
+    const target = Array.isArray(err.meta?.target) ? err.meta.target.join(", ") : String(err.meta?.target ?? "");
+    const hint =
+      /email/i.test(target)
+        ? "That email is already registered (including a removed employee). Use another email, or re-add with the same email to restore them."
+        : /employee_code|employeeCode/i.test(target)
+          ? "That employee code is already used. Leave code blank for auto, or pick a new one."
+          : "A record with this value already exists";
+    return res.status(409).json({ success: false, message: hint, details: target || undefined });
   }
   if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2000") {
     return res.status(422).json({

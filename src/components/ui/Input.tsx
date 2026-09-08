@@ -1,13 +1,15 @@
 import { cn } from '@/lib/utils'
-import type { InputHTMLAttributes } from 'react'
+import type { InputHTMLAttributes, ReactNode } from 'react'
 
 interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
-  label?: string
+  label?: ReactNode
   error?: string
 }
 
 export function Input({ label, error, className, id, ...props }: InputProps) {
-  const inputId = id ?? label?.toLowerCase().replace(/\s+/g, '-')
+  const inputId =
+    id ??
+    (typeof label === 'string' ? label.toLowerCase().replace(/\s+/g, '-') : undefined)
   return (
     <div className="flex flex-col gap-1">
       {label && (
@@ -19,12 +21,12 @@ export function Input({ label, error, className, id, ...props }: InputProps) {
         id={inputId}
         className={cn(
           'h-9 w-full rounded-[6px] border border-border bg-card px-3 text-base text-text-primary placeholder:text-slate-400 outline-none transition-all duration-150 focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20',
-          error && 'border-accent-red focus:border-accent-red focus:ring-accent-red/20',
+          error && 'border-red-500 focus:border-red-500 focus:ring-red-500/25',
           className,
         )}
         {...props}
       />
-      {error && <span className="text-xs text-accent-red">{error}</span>}
+      {error && <span className="text-xs font-medium text-red-600 dark:text-red-400">Missing — {error}</span>}
     </div>
   )
 }

@@ -75,9 +75,12 @@ export const useAuthStore = create<AuthState>()(
             id: data.user.id,
             name: data.user.name,
             email: data.user.email,
+            phone: data.user.phone ?? null,
+            avatarUrl: data.user.avatarUrl ?? null,
             role: data.user.role,
             tenantId: data.user.tenantId,
             tenantSlug: data.user.tenantSlug ?? tenantSlug,
+            tenantName: data.user.tenantName,
           },
           { accessToken: data.accessToken, refreshToken: data.refreshToken },
         )

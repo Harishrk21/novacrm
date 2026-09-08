@@ -2,7 +2,7 @@ import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { normalizePhone } from "../../common/utils/phone.js";
 import { pagination, pageResult } from "../../common/utils/pagination.js";
-import { notFound } from "../../common/errors.js";
+import { AppError, notFound } from "../../common/errors.js";
 import {
   allocateCustomerIdentity,
   assertContactIdentityAvailable,
@@ -314,6 +314,31 @@ export async function update(t: string, id: string, d: Record<string, unknown>) 
 }
 
 export async function remove(t: string, id: string) {
+  const existing = await prisma.contact.findFirst({
+    where: { id, tenantId: t, deletedAt: null },
+    select: { id: true, name: true },
+  });
+  if (!existing) throw notFound("Contact");
+
+  const openTickets = await prisma.ticket.findMany({
+    where: {
+      tenantId: t,
+      contactId: id,
+      deletedAt: null,
+      status: { in: ["OPEN", "IN_PROGRESS", "PENDING"] },
+    },
+    select: { ticketNo: true },
+    orderBy: { ticketNo: "asc" },
+    take: 10,
+  });
+  if (openTickets.length > 0) {
+    const codes = openTickets.map((x) => `SVC-${String(x.ticketNo).padStart(5, "0")}`).join(", ");
+    throw new AppError(
+      `Cannot delete ${existing.name}: ${openTickets.length} open service ticket(s) still linked (${codes}). Resolve, close, or reassign those jobs first.`,
+      409,
+    );
+  }
+
   const r = await prisma.contact.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data: { deletedAt: new Date() },

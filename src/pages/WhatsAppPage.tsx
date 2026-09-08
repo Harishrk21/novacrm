@@ -4,7 +4,6 @@ import {
   CheckCheck,
   ExternalLink,
   Link2,
-  MessageCircle,
   Phone,
   RefreshCw,
   Send,
@@ -19,6 +18,8 @@ import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
+import { WhatsAppCloudPanel } from '@/components/whatsapp/WhatsAppCloudPanel'
+import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import { useAskMeisterStore } from '@/store/askMeisterStore'
 import { useUIStore } from '@/store/uiStore'
 import { cn, formatPhone, timeAgo } from '@/lib/utils'
@@ -87,19 +88,25 @@ export function WhatsAppPage() {
     return (
       <div className="space-y-5">
         <PageHeader
-          title="WhatsApp"
+          title={
+            <span className="inline-flex items-center gap-2">
+              <WhatsAppIcon size={22} />
+              <span style={{ color: WA_GREEN }}>WhatsApp</span>
+            </span>
+          }
           breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'WhatsApp' }]}
         />
+        <WhatsAppCloudPanel />
         <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
           <Card className="overflow-hidden p-0">
             <div className="bg-gradient-to-br from-[#128C7E] via-[#075E54] to-[#0F172A] px-6 py-8 text-white">
               <Badge color="green" className="mb-3 bg-white/15 text-white">
-                AskMeister integration
+                Optional · AskMeister inbox
               </Badge>
-              <h2 className="text-2xl font-bold tracking-tight">Connect your AskMeister WhatsApp inbox</h2>
+              <h2 className="text-2xl font-bold tracking-tight">Also connect AskMeister (optional)</h2>
               <p className="mt-2 max-w-xl text-sm text-white/80">
-                NovaCRM syncs conversations from your AskMeister dashboard. Agents reply here — messages
-                route through AskMeister to WhatsApp Business, and every send is logged on the contact timeline.
+                Meta Cloud API (above) powers ticket alerts. AskMeister is an optional shared inbox UI —
+                leave disconnected if you only need Cloud API notifications.
               </p>
               <div className="mt-6 grid gap-3 sm:grid-cols-3">
                 {[
@@ -171,7 +178,7 @@ export function WhatsAppPage() {
             <h3 className="text-md font-semibold">What gets synced</h3>
             <ul className="mt-4 space-y-3 text-sm text-text-secondary">
               <li className="flex gap-2">
-                <MessageCircle size={16} className="mt-0.5 text-accent-green" />
+                <WhatsAppIcon size={16} className="mt-0.5" />
                 Inbound & outbound WhatsApp messages as CRM activities
               </li>
               <li className="flex gap-2">
@@ -188,7 +195,7 @@ export function WhatsAppPage() {
               </li>
             </ul>
             <div className="mt-6 rounded-[8px] border border-border bg-surface p-4 text-xs text-text-secondary">
-              Production tip: create a dedicated AskMeister API key for NovaCRM with inbox read/send
+              Production tip: create a dedicated AskMeister API key for HMS Enterprises with inbox read/send
               scopes. Webhooks can later push realtime events to <code>/api/integrations/whatsapp/webhook</code>.
             </div>
           </Card>
@@ -200,7 +207,12 @@ export function WhatsAppPage() {
   return (
     <div className="space-y-4">
       <PageHeader
-        title="WhatsApp"
+        title={
+          <span className="inline-flex items-center gap-2">
+            <WhatsAppIcon size={22} />
+            <span style={{ color: WA_GREEN }}>WhatsApp</span>
+          </span>
+        }
         count={conversations.length}
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'WhatsApp' }]}
         actions={
@@ -239,6 +251,7 @@ export function WhatsAppPage() {
       </PageHeader>
 
       <PageTip moduleKey="engagement.whatsapp" />
+      <WhatsAppCloudPanel />
 
       <Card padding={false} className="grid min-h-[620px] overflow-hidden lg:grid-cols-[300px_1fr]">
         <aside className="border-r border-border">
@@ -358,14 +371,14 @@ export function WhatsAppPage() {
                   </Button>
                 </div>
                 <p className="mt-2 text-[11px] text-text-secondary">
-                  Messages are delivered through AskMeister and logged as WhatsApp activities in NovaCRM.
+                  Messages are delivered through AskMeister and logged as WhatsApp activities in HMS Enterprises.
                 </p>
               </div>
             </>
           ) : (
             <div className="flex flex-1 items-center justify-center">
               <EmptyState
-                icon={<MessageCircle size={24} />}
+                icon={<WhatsAppIcon size={28} />}
                 title="Select a conversation"
                 subtitle="Choose a chat from your AskMeister-synced inbox."
               />

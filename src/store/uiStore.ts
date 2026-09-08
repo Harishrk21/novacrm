@@ -12,6 +12,9 @@ interface UIState {
   removeToast: (id: string) => void
   globalSearchOpen: boolean
   setGlobalSearchOpen: (v: boolean) => void
+  howItWorksOpen: boolean
+  setHowItWorksOpen: (v: boolean) => void
+  openHowItWorks: () => void
   currentUserId: string
   themeMode: ThemeMode
   palette: ColorPalette
@@ -37,6 +40,9 @@ export const useUIStore = create<UIState>()(
       removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
       globalSearchOpen: false,
       setGlobalSearchOpen: (v) => set({ globalSearchOpen: v }),
+      howItWorksOpen: false,
+      setHowItWorksOpen: (v) => set({ howItWorksOpen: v }),
+      openHowItWorks: () => set({ howItWorksOpen: true }),
       currentUserId: 'user-1',
       themeMode: 'light',
       palette: 'ocean',

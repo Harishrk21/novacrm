@@ -18,14 +18,18 @@ metaRouter.use(authenticate, requireTenant);
 metaRouter.get("/lookups", async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   await ensureStandardWarehouses(t);
-  const [sources, stages, users, warehouses, categories, accounts, contacts, products, vendors] =
+  const [sources, stages, usersRaw, roles, warehouses, categories, accounts, contacts, products, vendors] =
     await Promise.all([
       prisma.leadSource.findMany({ where: { tenantId: t, isActive: true }, orderBy: { name: "asc" } }),
       prisma.pipelineStage.findMany({ where: { tenantId: t, isActive: true }, orderBy: { sortOrder: "asc" } }),
       prisma.user.findMany({
         where: { tenantId: t, deletedAt: null, status: "ACTIVE" },
-        select: { id: true, name: true, email: true, phone: true, avatarUrl: true },
+        select: { id: true, name: true, email: true, phone: true, avatarUrl: true, roleId: true },
         orderBy: { name: "asc" },
+      }),
+      prisma.role.findMany({
+        where: { tenantId: t, deletedAt: null },
+        select: { id: true, code: true, name: true },
       }),
       prisma.warehouse.findMany({
         where: { tenantId: t, deletedAt: null, isActive: true },
@@ -33,6 +37,7 @@ metaRouter.get("/lookups", async (q: Request, r: Response) => {
       }),
       prisma.productCategory.findMany({
         where: { tenantId: t, deletedAt: null },
+        select: { id: true, name: true, code: true, parentId: true },
         orderBy: { name: "asc" },
       }),
       prisma.account.findMany({
@@ -78,6 +83,17 @@ metaRouter.get("/lookups", async (q: Request, r: Response) => {
         orderBy: { name: "asc" },
       }),
     ]);
+  const roleById = Object.fromEntries(roles.map((r) => [r.id, r]));
+  const users = usersRaw.map((u) => ({
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    phone: u.phone,
+    avatarUrl: u.avatarUrl,
+    roleId: u.roleId,
+    roleCode: roleById[u.roleId]?.code ?? null,
+    roleName: roleById[u.roleId]?.name ?? null,
+  }));
   return success(r, {
     sources,
     stages,

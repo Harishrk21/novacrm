@@ -2,32 +2,41 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eye, EyeOff, Shield, Wrench, Users } from 'lucide-react'
 import { HmsLogo } from '@/components/HmsLogo'
-import { APP_NAME, APP_TAGLINE, HMS_COLORS } from '@/lib/branding'
+import { APP_NAME, APP_TAGLINE, APP_COMPANY_LINE, HMS_COLORS } from '@/lib/branding'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { ApiClientError } from '@/lib/api'
 
+/** HMS Enterprises staff demo logins (single company — no platform / super admin). */
 const DEMO = {
-  platform: {
-    title: 'Platform Super Admin',
-    fill: { email: 'admin@novacrm.com', password: 'Admin@Nova2026' },
-    lines: ['admin@novacrm.com', 'Admin@Nova2026'],
+  admin: {
+    title: 'HMS Admin',
+    fill: { email: 'admin@hmsenterprises.in', password: 'Demo@12345' },
+    lines: ['admin@hmsenterprises.in', 'Demo@12345'],
   },
-  client: {
-    title: 'Company admin',
-    fill: { email: 'demo@precisionscales.in', password: 'Demo@12345' },
-    lines: ['demo@precisionscales.in', 'Demo@12345'],
+  desk: {
+    title: 'Service desk',
+    fill: { email: 'desk@hmsenterprises.in', password: 'Demo@12345' },
+    lines: ['desk@hmsenterprises.in', 'Demo@12345'],
   },
-  employee: {
+  engineer: {
     title: 'Service engineer',
-    fill: { email: 'karthik@precisionscales.in', password: 'Demo@12345' },
-    lines: ['karthik@precisionscales.in', 'Demo@12345'],
+    fill: { email: 'engineer@hmsenterprises.in', password: 'Demo@12345' },
+    lines: ['engineer@hmsenterprises.in', 'Demo@12345'],
   },
-}
+  warehouse: {
+    title: 'Warehouse & billing',
+    fill: { email: 'warehouse@hmsenterprises.in', password: 'Demo@12345' },
+    lines: ['warehouse@hmsenterprises.in', 'Demo@12345'],
+  },
+  sales: {
+    title: 'Sales executive',
+    fill: { email: 'sales@hmsenterprises.in', password: 'Demo@12345' },
+    lines: ['sales@hmsenterprises.in', 'Demo@12345'],
+  },
+} as const
 
-function isPlatformEmail(email: string) {
-  return email.trim().toLowerCase() === 'admin@novacrm.com'
-}
+const DEMO_BLOCKS = [DEMO.admin, DEMO.sales, DEMO.desk, DEMO.engineer, DEMO.warehouse] as const
 
 const FEATURES = [
   { icon: Users, label: 'Customers & AMC register' },
@@ -39,9 +48,8 @@ export function LoginPage() {
   const navigate = useNavigate()
   const addToast = useUIStore((s) => s.addToast)
   const tenantLogin = useAuthStore((s) => s.tenantLogin)
-  const platformLogin = useAuthStore((s) => s.platformLogin)
-  const [email, setEmail] = useState('demo@precisionscales.in')
-  const [password, setPassword] = useState('Demo@12345')
+  const [email, setEmail] = useState(DEMO.admin.fill.email)
+  const [password, setPassword] = useState(DEMO.admin.fill.password)
   const [showPassword, setShowPassword] = useState(false)
   const [remember, setRemember] = useState(true)
   const [loading, setLoading] = useState(false)
@@ -54,30 +62,22 @@ export function LoginPage() {
     e.preventDefault()
     setLoading(true)
     try {
-      if (isPlatformEmail(email)) {
-        await platformLogin(email.trim(), password)
-        localStorage.setItem(
-          'novacrm-platform-admin',
-          JSON.stringify({ email: email.trim(), name: 'Platform Admin', live: true }),
-        )
-        addToast({ type: 'success', message: 'Signed in as Platform Admin' })
-        navigate('/admin')
-      } else {
-        await tenantLogin(email.trim(), password)
-        if (remember) {
-          localStorage.setItem('novacrm-last-email', email.trim().toLowerCase())
-        }
-        const role = useAuthStore.getState().user?.role
-        if (role && role !== 'ADMIN') {
-          addToast({
-            type: 'success',
-            message: 'Signed in — open My Tasks for your assignments',
-          })
-        } else {
-          addToast({ type: 'success', message: `Signed in to ${APP_NAME}` })
-        }
-        navigate('/')
+      await tenantLogin(email.trim(), password)
+      if (remember) {
+        localStorage.setItem('hms-last-email', email.trim().toLowerCase())
       }
+      const role = useAuthStore.getState().user?.role
+      if (role === 'SERVICE_DESK') {
+        addToast({ type: 'success', message: 'Signed in — create tickets; admin assigns the engineer' })
+      } else if (role && role !== 'ADMIN') {
+        addToast({
+          type: 'success',
+          message: 'Signed in — open My tickets for your assignments',
+        })
+      } else {
+        addToast({ type: 'success', message: `Signed in to ${APP_NAME}` })
+      }
+      navigate('/')
     } catch (err) {
       addToast({
         type: 'error',
@@ -93,7 +93,6 @@ export function LoginPage() {
       className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-10 font-sans"
       style={{ backgroundColor: HMS_COLORS.black }}
     >
-      {/* Background */}
       <div className="pointer-events-none absolute inset-0">
         <div
           className="absolute -left-32 top-0 h-[420px] w-[420px] rounded-full opacity-30 blur-3xl"
@@ -112,7 +111,6 @@ export function LoginPage() {
       </div>
 
       <div className="relative z-10 grid w-full max-w-5xl overflow-hidden rounded-2xl border border-white/10 bg-[#111111] shadow-2xl lg:grid-cols-[1fr_1.05fr]">
-        {/* Brand panel */}
         <div
           className="relative hidden flex-col justify-between p-10 lg:flex"
           style={{
@@ -123,6 +121,7 @@ export function LoginPage() {
             <HmsLogo size="hero" />
             <p className="mt-6 text-lg font-semibold tracking-wide text-white">{APP_NAME}</p>
             <p className="mt-2 max-w-sm text-sm leading-relaxed text-neutral-400">{APP_TAGLINE}</p>
+            <p className="mt-3 max-w-sm text-xs leading-relaxed text-neutral-500">{APP_COMPANY_LINE}</p>
           </div>
 
           <ul className="space-y-3">
@@ -140,11 +139,10 @@ export function LoginPage() {
           </ul>
 
           <p className="text-xs text-neutral-500">
-            Saidapet, Chennai · Govt. stamping & service since 1997
+            Saidapet, Chennai · Govt. stamping &amp; service since 1997
           </p>
         </div>
 
-        {/* Sign-in panel */}
         <div className="flex flex-col justify-center border-t border-white/5 bg-[#161616] p-8 sm:p-10 lg:border-l lg:border-t-0">
           <div className="mb-8 lg:hidden">
             <HmsLogo size="lg" />
@@ -152,7 +150,9 @@ export function LoginPage() {
 
           <div className="mb-6">
             <h1 className="text-xl font-semibold text-white">Sign in</h1>
-            <p className="mt-1 text-sm text-neutral-400">Access your workspace — sales, service & stamping</p>
+            <p className="mt-1 text-sm text-neutral-400">
+              {APP_NAME} staff only — sales, service &amp; stamping
+            </p>
           </div>
 
           <form className="space-y-4" onSubmit={submit}>
@@ -163,7 +163,7 @@ export function LoginPage() {
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@company.com"
+                placeholder="you@hmsenterprises.in"
                 required
                 autoComplete="username"
               />
@@ -218,9 +218,13 @@ export function LoginPage() {
 
           <div className="mt-8 space-y-2">
             <p className="text-center text-[11px] font-medium uppercase tracking-wider text-neutral-600">
-              Demo access
+              Demo staff logins ({APP_NAME})
             </p>
-            {([DEMO.client, DEMO.employee, DEMO.platform] as const).map((block) => (
+            <p className="text-center text-[11px] text-neutral-500">
+              Click a role to fill email &amp; password. Password:{' '}
+              <span className="font-mono text-neutral-400">Demo@12345</span>
+            </p>
+            {DEMO_BLOCKS.map((block) => (
               <button
                 key={block.title}
                 type="button"

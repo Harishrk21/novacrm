@@ -17,10 +17,13 @@ const accentActive: Record<Exclude<Accent, 'theme'>, string> = {
 }
 
 const accentWrap: Record<Exclude<Accent, 'theme'>, string> = {
-  sky: 'border-sky-200/80 bg-gradient-to-r from-sky-50 via-white to-cyan-50',
-  emerald: 'border-emerald-200/80 bg-gradient-to-r from-emerald-50 via-white to-teal-50',
-  violet: 'border-violet-200/80 bg-gradient-to-r from-violet-50 via-white to-fuchsia-50',
-  amber: 'border-amber-200/80 bg-gradient-to-r from-amber-50 via-white to-orange-50',
+  sky: 'border-sky-200/80 bg-gradient-to-r from-sky-50 via-white to-cyan-50 dark:border-sky-800/60 dark:from-sky-950/50 dark:via-[var(--color-card)] dark:to-[var(--color-muted)]',
+  emerald:
+    'border-emerald-200/80 bg-gradient-to-r from-emerald-50 via-white to-teal-50 dark:border-emerald-800/60 dark:from-emerald-950/50 dark:via-[var(--color-card)] dark:to-[var(--color-muted)]',
+  violet:
+    'border-violet-200/80 bg-gradient-to-r from-violet-50 via-white to-fuchsia-50 dark:border-violet-800/60 dark:from-violet-950/50 dark:via-[var(--color-card)] dark:to-[var(--color-muted)]',
+  amber:
+    'border-amber-200/80 bg-gradient-to-r from-amber-50 via-white to-orange-50 dark:border-amber-800/60 dark:from-amber-950/50 dark:via-[var(--color-card)] dark:to-[var(--color-muted)]',
 }
 
 interface PageTabsProps {
@@ -87,7 +90,9 @@ export function PageTabs({
                 <span
                   className={cn(
                     'ml-2 rounded-full px-1.5 py-0.5 text-[11px] tabular-nums',
-                    isActive ? 'bg-white/25' : 'bg-muted text-text-secondary',
+                    isActive
+                      ? 'bg-white/25 text-white'
+                      : 'bg-muted text-text-secondary',
                   )}
                 >
                   {tab.count}

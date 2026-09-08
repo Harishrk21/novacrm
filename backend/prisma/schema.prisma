@@ -622,6 +622,17 @@ model Ticket {
   advanceAmount    Decimal        @default(0) @map("advance_amount") @db.Decimal(15, 2)
   paymentStatus    JobPaymentStatus @default(UNPAID) @map("payment_status")
   paidAt           DateTime?      @map("paid_at") @db.DateTime(3)
+  /// How the job balance was collected (cash / UPI / NEFT…)
+  paymentMethod    PaymentMethod? @map("payment_method")
+  /// UTR / cheque no / gateway reference
+  paymentReference String?        @map("payment_reference") @db.VarChar(80)
+  /// Screenshot or receipt URL for online / bank payments
+  paymentProofUrl  String?        @map("payment_proof_url") @db.VarChar(500)
+  /// Linked ERP service invoice (stable lookup — not only JSON)
+  serviceInvoiceId String?        @map("service_invoice_id") @db.Char(36)
+  /// Customer sign-off image URL
+  signatureUrl     String?        @map("signature_url") @db.VarChar(500)
+  customerSignedAt DateTime?      @map("customer_signed_at") @db.DateTime(3)
   receivedByUserId String?        @map("received_by_user_id") @db.Char(36)
   deliveredByUserId String?       @map("delivered_by_user_id") @db.Char(36)
   customFields     Json?          @map("custom_fields")
@@ -956,6 +967,7 @@ model Invoice {
   tenantId       String        @map("tenant_id") @db.Char(36)
   invoiceNumber  String        @map("invoice_number") @db.VarChar(40)
   salesOrderId   String?       @map("sales_order_id") @db.Char(36)
+  serviceTicketId String?      @map("service_ticket_id") @db.Char(36)
   accountId      String        @map("account_id") @db.Char(36)
   contactId      String?       @map("contact_id") @db.Char(36)
   status         InvoiceStatus @default(DRAFT)
@@ -976,6 +988,7 @@ model Invoice {
   @@unique([tenantId, invoiceNumber])
   @@index([tenantId, accountId, status])
   @@index([tenantId, dueDate, status])
+  @@index([tenantId, serviceTicketId])
   @@map("invoices")
 }
 

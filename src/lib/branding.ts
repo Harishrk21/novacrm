@@ -3,6 +3,10 @@ export const APP_NAME = 'HMS Enterprises'
 
 export const APP_TAGLINE = 'Weighing scales · Service · Stamping · AMC'
 
+/** Clarifies this is a single-company ops dashboard — not a multi-tenant SaaS CRM. */
+export const APP_COMPANY_LINE =
+  'Internal operations dashboard for HMS Enterprises only — not a multi-company platform.'
+
 /** HMS brand palette (from official logo). */
 export const HMS_COLORS = {
   redBright: '#E31E24',

@@ -1,20 +1,80 @@
 import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { normalizePhone } from "../../common/utils/phone.js";
+import {
+  isWhatsAppCloudConfigured,
+  sendCloudText,
+  sendCloudTemplate,
+  templateBodyParams,
+  digitsE164,
+} from "../whatsapp/cloudApi.js";
+import {
+  WA,
+  formatAddress,
+  inrAmount,
+  statusLabel,
+  templateName,
+  ticketLabel,
+  waText,
+} from "../whatsapp/templates.js";
 
 export type WhatsappNotifyResult = {
   notified: boolean;
   reason?: string;
   fallbackWaLink?: string | null;
   provider?: string;
+  messageId?: string;
+  template?: string;
 };
 
 function digitsForWa(phone: string) {
-  const d = phone.replace(/\D/g, "");
-  return d || null;
+  return digitsE164(phone);
 }
 
-/** Shared outbound WhatsApp (AskMeister if connected, else queue + wa.me fallback). */
+async function tryCloudSend(
+  phone: string,
+  body: string,
+  template?: { name: string; languageCode?: string; params: string[] },
+  opts?: { requireTemplate?: boolean },
+): Promise<{ notified: boolean; provider: string; messageId?: string; reason?: string; template?: string }> {
+  if (!isWhatsAppCloudConfigured()) {
+    return { notified: false, provider: "local", reason: "cloud_not_configured" };
+  }
+  if (template?.name) {
+    const t = await sendCloudTemplate({
+      toPhone: phone,
+      templateName: template.name,
+      languageCode: template.languageCode || "en",
+      components: templateBodyParams(template.params),
+    });
+    if (t.ok) {
+      return {
+        notified: true,
+        provider: "META_CLOUD",
+        messageId: t.messageId,
+        template: template.name,
+      };
+    }
+    // Engineer / staff alerts must use the Utility template — free text fails outside 24h
+    if (opts?.requireTemplate) {
+      return {
+        notified: false,
+        provider: "META_CLOUD",
+        reason: t.error || "template_send_failed",
+        template: template.name,
+      };
+    }
+  }
+  const text = await sendCloudText(phone, body);
+  if (text.ok) return { notified: true, provider: "META_CLOUD", messageId: text.messageId };
+  return {
+    notified: false,
+    provider: "META_CLOUD",
+    reason: text.error || "cloud_send_failed",
+  };
+}
+
+/** Shared outbound WhatsApp (Meta Cloud API → AskMeister → queue + wa.me fallback). */
 export async function sendCustomerWhatsApp(opts: {
   tenantId: string;
   contactId: string;
@@ -22,8 +82,9 @@ export async function sendCustomerWhatsApp(opts: {
   activityTitle: string;
   actorUserId?: string | null;
   meta?: Record<string, unknown>;
+  template?: { name: string; languageCode?: string; params: string[] };
 }): Promise<WhatsappNotifyResult> {
-  const { tenantId, contactId, body, activityTitle, actorUserId, meta } = opts;
+  const { tenantId, contactId, body, activityTitle, actorUserId, meta, template } = opts;
 
   const [contact, integration] = await Promise.all([
     prisma.contact.findFirst({
@@ -46,8 +107,21 @@ export async function sendCustomerWhatsApp(opts: {
 
   let notified = false;
   let provider = "local";
+  let messageId: string | undefined;
+  let failReason: string | undefined;
+  let usedTemplate: string | undefined;
 
-  if (integration?.secretsEnc) {
+  const cloud = await tryCloudSend(phone, body, template);
+  if (cloud.notified) {
+    notified = true;
+    provider = cloud.provider;
+    messageId = cloud.messageId;
+    usedTemplate = cloud.template;
+  } else if (cloud.reason) {
+    failReason = cloud.reason;
+  }
+
+  if (!notified && integration?.secretsEnc) {
     const cfg = (integration.config ?? {}) as { phoneNumberId?: string };
     const base =
       process.env.ASKMEISTER_API_BASE?.replace(/\/$/, "") || "https://api.askmeister.com";
@@ -64,6 +138,8 @@ export async function sendCustomerWhatsApp(opts: {
           to: phone,
           body,
           phoneNumberId: cfg.phoneNumberId ?? undefined,
+          template: template?.name,
+          templateParams: template?.params,
         }),
         signal: controller.signal,
       });
@@ -71,9 +147,12 @@ export async function sendCustomerWhatsApp(opts: {
       if (res.ok) {
         notified = true;
         provider = "ASKMEISTER";
+        usedTemplate = template?.name;
+      } else {
+        failReason = "askmeister_send_failed";
       }
     } catch {
-      /* fall through */
+      failReason = "askmeister_send_failed";
     }
   }
 
@@ -86,7 +165,7 @@ export async function sendCustomerWhatsApp(opts: {
       data: {
         id: newId(),
         tenantId,
-        provider: "ASKMEISTER",
+        provider: provider === "META_CLOUD" ? "META_CLOUD" : "ASKMEISTER",
         phone,
         phoneNormalized: phoneNorm,
         contactId: contact.id,
@@ -111,6 +190,7 @@ export async function sendCustomerWhatsApp(opts: {
       body,
       status: notified ? "SENT" : "QUEUED",
       sentByUserId: actorUserId ?? null,
+      externalId: messageId ?? null,
     },
   });
 
@@ -124,36 +204,260 @@ export async function sendCustomerWhatsApp(opts: {
       status: "COMPLETED",
       completedAt: new Date(),
       outcome: notified
-        ? "WhatsApp sent"
-        : integration
-          ? "WhatsApp queued — AskMeister send failed"
-          : "WhatsApp queued — AskMeister not connected",
+        ? `WhatsApp sent via ${provider}${usedTemplate ? ` · ${usedTemplate}` : ""}`
+        : integration || isWhatsAppCloudConfigured()
+          ? `WhatsApp queued — ${failReason || "send failed"}`
+          : "WhatsApp queued — Cloud API / AskMeister not connected",
       contactId: contact.id,
       assignedToId: actorUserId ?? null,
-      customFields: { ...(meta ?? {}), autoNotify: true },
+      customFields: {
+        ...(meta ?? {}),
+        autoNotify: true,
+        provider,
+        messageId: messageId ?? null,
+        template: usedTemplate ?? template?.name ?? null,
+      },
     },
   });
 
-  if (!notified && !integration) {
-    return { notified: false, reason: "askmeister_not_connected", fallbackWaLink, provider };
+  if (!notified && !integration && !isWhatsAppCloudConfigured()) {
+    return { notified: false, reason: "whatsapp_not_connected", fallbackWaLink, provider };
   }
-  if (!notified && integration) {
-    return { notified: false, reason: "askmeister_send_failed", fallbackWaLink, provider };
+  if (!notified) {
+    return {
+      notified: false,
+      reason: failReason || "send_failed",
+      fallbackWaLink,
+      provider,
+      template: template?.name,
+    };
   }
-  return { notified: true, fallbackWaLink, provider };
+  return { notified: true, fallbackWaLink, provider, messageId, template: usedTemplate };
 }
 
-export function buildTicketCompleteMessage(opts: {
+/** Notify by raw phone (leads before contact exists). */
+export async function sendPhoneWhatsApp(opts: {
+  tenantId: string;
+  phone: string;
   contactName: string;
-  ticketNo: number | string;
-  companyName: string;
-  subject?: string;
-}) {
-  const subj = opts.subject ? ` (${opts.subject})` : "";
-  return `Hi ${opts.contactName}, your service ticket TKT-${String(opts.ticketNo).padStart(5, "0")}${subj} is completed. Thank you — ${opts.companyName}.`;
+  contactId?: string | null;
+  leadId?: string | null;
+  body: string;
+  activityTitle: string;
+  actorUserId?: string | null;
+  meta?: Record<string, unknown>;
+  template?: { name: string; languageCode?: string; params: string[] };
+}): Promise<WhatsappNotifyResult> {
+  const phone = opts.phone?.trim();
+  if (!phone) return { notified: false, reason: "no_phone" };
+
+  const waDigits = digitsForWa(phone);
+  const fallbackWaLink = waDigits
+    ? `https://wa.me/${waDigits}?text=${encodeURIComponent(opts.body)}`
+    : null;
+
+  const cloud = await tryCloudSend(phone, opts.body, opts.template);
+  const phoneNorm = normalizePhone(phone) || phone.replace(/\D/g, "");
+
+  let conversation = await prisma.whatsappConversation.findFirst({
+    where: { tenantId: opts.tenantId, phoneNormalized: phoneNorm },
+  });
+  if (!conversation) {
+    conversation = await prisma.whatsappConversation.create({
+      data: {
+        id: newId(),
+        tenantId: opts.tenantId,
+        provider: "META_CLOUD",
+        phone,
+        phoneNormalized: phoneNorm,
+        contactId: opts.contactId ?? null,
+        leadId: opts.leadId ?? null,
+        contactName: opts.contactName,
+        lastMessage: opts.body,
+        unreadCount: 0,
+      },
+    });
+  } else {
+    await prisma.whatsappConversation.update({
+      where: { id: conversation.id },
+      data: {
+        lastMessage: opts.body,
+        unreadCount: 0,
+        contactId: opts.contactId ?? conversation.contactId,
+        leadId: opts.leadId ?? conversation.leadId,
+      },
+    });
+  }
+
+  await prisma.whatsappMessage.create({
+    data: {
+      id: newId(),
+      tenantId: opts.tenantId,
+      conversationId: conversation.id,
+      direction: "OUTBOUND",
+      body: opts.body,
+      status: cloud.notified ? "SENT" : "QUEUED",
+      sentByUserId: opts.actorUserId ?? null,
+      externalId: cloud.messageId ?? null,
+    },
+  });
+
+  await prisma.activity.create({
+    data: {
+      id: newId(),
+      tenantId: opts.tenantId,
+      type: "WHATSAPP",
+      title: opts.activityTitle,
+      description: opts.body,
+      status: "COMPLETED",
+      completedAt: new Date(),
+      outcome: cloud.notified
+        ? `WhatsApp sent via ${cloud.provider}${cloud.template ? ` · ${cloud.template}` : ""}`
+        : `WhatsApp queued — ${cloud.reason || "send failed"}`,
+      contactId: opts.contactId ?? null,
+      leadId: opts.leadId ?? null,
+      assignedToId: opts.actorUserId ?? null,
+      customFields: {
+        ...(opts.meta ?? {}),
+        autoNotify: true,
+        provider: cloud.provider,
+        template: cloud.template ?? opts.template?.name ?? null,
+      },
+    },
+  });
+
+  return {
+    notified: cloud.notified,
+    reason: cloud.notified ? undefined : cloud.reason,
+    fallbackWaLink,
+    provider: cloud.provider,
+    messageId: cloud.messageId,
+    template: cloud.template ?? opts.template?.name,
+  };
 }
 
-export async function notifyTicketCompleted(
+export async function sendStaffWhatsApp(opts: {
+  tenantId: string;
+  userId: string;
+  body: string;
+  activityTitle: string;
+  actorUserId?: string | null;
+  template?: { name: string; languageCode?: string; params: string[] };
+}): Promise<WhatsappNotifyResult> {
+  const user = await prisma.user.findFirst({
+    where: { id: opts.userId, tenantId: opts.tenantId, deletedAt: null },
+    select: { id: true, name: true, phone: true },
+  });
+  if (!user) return { notified: false, reason: "no_user" };
+  if (!user.phone) return { notified: false, reason: "no_phone" };
+
+  const waDigits = digitsForWa(user.phone);
+  const fallbackWaLink = waDigits
+    ? `https://wa.me/${waDigits}?text=${encodeURIComponent(opts.body)}`
+    : null;
+
+  const cloud = await tryCloudSend(user.phone, opts.body, opts.template, {
+    requireTemplate: Boolean(opts.template?.name),
+  });
+  const phoneNorm = normalizePhone(user.phone) || user.phone.replace(/\D/g, "");
+
+  let conversation = await prisma.whatsappConversation.findFirst({
+    where: { tenantId: opts.tenantId, phoneNormalized: phoneNorm },
+  });
+  if (!conversation) {
+    conversation = await prisma.whatsappConversation.create({
+      data: {
+        id: newId(),
+        tenantId: opts.tenantId,
+        provider: "META_CLOUD",
+        phone: user.phone,
+        phoneNormalized: phoneNorm,
+        contactName: user.name,
+        lastMessage: opts.body,
+        unreadCount: 0,
+      },
+    });
+  } else {
+    await prisma.whatsappConversation.update({
+      where: { id: conversation.id },
+      data: { lastMessage: opts.body, unreadCount: 0 },
+    });
+  }
+  await prisma.whatsappMessage.create({
+    data: {
+      id: newId(),
+      tenantId: opts.tenantId,
+      conversationId: conversation.id,
+      direction: "OUTBOUND",
+      body: opts.body,
+      status: cloud.notified ? "SENT" : "QUEUED",
+      sentByUserId: opts.actorUserId ?? null,
+      externalId: cloud.messageId ?? null,
+    },
+  });
+
+  return {
+    notified: cloud.notified,
+    reason: cloud.notified ? undefined : cloud.reason,
+    fallbackWaLink,
+    provider: cloud.provider,
+    messageId: cloud.messageId,
+    template: cloud.template ?? opts.template?.name,
+  };
+}
+
+async function companyName(tenantId: string) {
+  const tenant = await prisma.tenant.findFirst({
+    where: { id: tenantId, deletedAt: null },
+    select: { name: true },
+  });
+  return tenant?.name ?? "HMS";
+}
+
+function firstName(name: string) {
+  return waText(name.split(" ")[0] || name, "Customer");
+}
+
+/** Template 1 — ticket_created_customer */
+export async function notifyTicketCreatedCustomer(
+  tenantId: string,
+  ticket: {
+    id: string;
+    ticketNo: number;
+    subject: string;
+    contactId: string | null;
+  },
+  actorUserId?: string,
+): Promise<WhatsappNotifyResult> {
+  if (!ticket.contactId) return { notified: false, reason: "no_contact" };
+  const [company, contact] = await Promise.all([
+    companyName(tenantId),
+    prisma.contact.findFirst({
+      where: { id: ticket.contactId, tenantId, deletedAt: null },
+      select: { name: true },
+    }),
+  ]);
+  if (!contact) return { notified: false, reason: "no_contact" };
+  const label = ticketLabel(ticket.ticketNo);
+  const name = firstName(contact.name);
+  const issue = waText(ticket.subject);
+  const body = `Hello ${name}, your service request ${label} has been registered with ${company}. Machine / issue: ${issue}. Our team will contact you shortly. Thank you.`;
+  return sendCustomerWhatsApp({
+    tenantId,
+    contactId: ticket.contactId,
+    body,
+    activityTitle: `WhatsApp ticket created — ${label}`,
+    actorUserId,
+    meta: { ticketId: ticket.id, kind: "ticket_created" },
+    template: {
+      name: templateName("TICKET_CREATED_CUSTOMER", "WHATSAPP_TEMPLATE_TICKET_CREATED_CUSTOMER"),
+      params: [name, label, company, issue],
+    },
+  });
+}
+
+/** Template 2 — ticket_assigned_engineer */
+export async function notifyTicketAssignedEngineer(
   tenantId: string,
   ticket: {
     id: string;
@@ -164,81 +468,138 @@ export async function notifyTicketCompleted(
   },
   actorUserId?: string,
 ): Promise<WhatsappNotifyResult> {
-  if (!ticket.contactId) return { notified: false, reason: "no_contact" };
-
-  const tenant = await prisma.tenant.findFirst({
-    where: { id: tenantId, deletedAt: null },
-    select: { name: true },
+  if (!ticket.assignedToId) return { notified: false, reason: "no_assignee" };
+  const [engineer, contact] = await Promise.all([
+    prisma.user.findFirst({
+      where: { id: ticket.assignedToId, tenantId, deletedAt: null },
+      select: { name: true },
+    }),
+    ticket.contactId
+      ? prisma.contact.findFirst({
+          where: { id: ticket.contactId, tenantId, deletedAt: null },
+          select: {
+            name: true,
+            phone: true,
+            street: true,
+            doorNo: true,
+            area: true,
+            pincode: true,
+            location: true,
+            city: true,
+          },
+        })
+      : Promise.resolve(null),
+  ]);
+  const label = ticketLabel(ticket.ticketNo);
+  const engName = firstName(engineer?.name || "Engineer");
+  const custName = waText(contact?.name, "Customer");
+  const custPhone = waText(contact?.phone, "—");
+  const location = formatAddress([
+    contact?.doorNo,
+    contact?.street,
+    contact?.area,
+    contact?.location,
+    contact?.city,
+    contact?.pincode,
+  ]);
+  const issue = waText(ticket.subject);
+  const body = `Hi ${engName}, new service job ${label} assigned. Customer: ${custName}. Phone: ${custPhone}. Location: ${location}. Issue: ${issue}. Please update status in CRM after visit.`;
+  return sendStaffWhatsApp({
+    tenantId,
+    userId: ticket.assignedToId,
+    body,
+    activityTitle: `WhatsApp assign — ${label}`,
+    actorUserId,
+    template: {
+      name: templateName("TICKET_ASSIGNED_ENGINEER", "WHATSAPP_TEMPLATE_TICKET_ASSIGNED_ENGINEER"),
+      params: [engName, label, custName, custPhone, location, issue],
+    },
   });
+}
+
+/** Template 3 — ticket_status_update */
+export async function notifyTicketStatusUpdate(
+  tenantId: string,
+  ticket: {
+    id: string;
+    ticketNo: number;
+    subject: string;
+    status: string;
+    contactId: string | null;
+    assignedToId: string | null;
+  },
+  note: string,
+  actorUserId?: string,
+): Promise<WhatsappNotifyResult> {
+  if (!ticket.contactId) return { notified: false, reason: "no_contact" };
   const contact = await prisma.contact.findFirst({
     where: { id: ticket.contactId, tenantId, deletedAt: null },
     select: { name: true },
   });
   if (!contact) return { notified: false, reason: "no_contact" };
-
-  const body = buildTicketCompleteMessage({
-    contactName: contact.name.split(" ")[0] || contact.name,
-    ticketNo: ticket.ticketNo,
-    companyName: tenant?.name ?? "NovaCRM",
-    subject: ticket.subject,
-  });
-
+  const label = ticketLabel(ticket.ticketNo);
+  const name = firstName(contact.name);
+  const status = statusLabel(ticket.status);
+  const noteText = waText(note || ticket.subject, "Update from service team");
+  const body = `Hello ${name}, update on service request ${label}: status is now ${status}. Note: ${noteText}. For help, reply to this chat or call us.`;
   return sendCustomerWhatsApp({
     tenantId,
     contactId: ticket.contactId,
     body,
-    activityTitle: `Service complete — ticket TKT-${String(ticket.ticketNo).padStart(5, "0")}`,
+    activityTitle: `WhatsApp status — ${label} → ${status}`,
     actorUserId: actorUserId ?? ticket.assignedToId,
-    meta: { ticketId: ticket.id, kind: "job_complete" },
+    meta: { ticketId: ticket.id, kind: "status_update", status: ticket.status },
+    template: {
+      name: templateName("TICKET_STATUS_UPDATE", "WHATSAPP_TEMPLATE_TICKET_STATUS_UPDATE"),
+      params: [name, label, status, noteText],
+    },
   });
 }
 
-export function buildTicketPaidMessage(opts: {
-  contactName: string;
-  ticketNo: number | string;
-  companyName: string;
-  amount: number;
-  subject?: string;
-  invoiceNumber?: string | null;
-}) {
-  const subj = opts.subject ? ` (${opts.subject})` : "";
-  const amt = new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(opts.amount || 0);
-  const inv = opts.invoiceNumber ? ` Invoice ${opts.invoiceNumber}.` : "";
-  return `Hi ${opts.contactName}, payment received in full for job TKT-${String(opts.ticketNo).padStart(5, "0")}${subj} — ${amt}.${inv} Thank you — ${opts.companyName}.`;
+/** Template 4 — ticket_completed_customer */
+export async function notifyTicketCompleted(
+  tenantId: string,
+  ticket: {
+    id: string;
+    ticketNo: number;
+    subject: string;
+    contactId: string | null;
+    assignedToId: string | null;
+    paymentTotal?: number;
+    description?: string | null;
+  },
+  actorUserId?: string,
+  workSummary?: string | null,
+): Promise<WhatsappNotifyResult> {
+  if (!ticket.contactId) return { notified: false, reason: "no_contact" };
+  const contact = await prisma.contact.findFirst({
+    where: { id: ticket.contactId, tenantId, deletedAt: null },
+    select: { name: true },
+  });
+  if (!contact) return { notified: false, reason: "no_contact" };
+  const label = ticketLabel(ticket.ticketNo);
+  const name = firstName(contact.name);
+  const summary = waText(workSummary || ticket.description || ticket.subject, "Service completed");
+  const due =
+    ticket.paymentTotal != null && ticket.paymentTotal > 0
+      ? inrAmount(ticket.paymentTotal)
+      : "Nil";
+  const body = `Hello ${name}, service request ${label} is completed. Summary: ${summary}. Amount due: ${due}. Please keep this message for your records.`;
+  return sendCustomerWhatsApp({
+    tenantId,
+    contactId: ticket.contactId,
+    body,
+    activityTitle: `Service complete — ${label}`,
+    actorUserId: actorUserId ?? ticket.assignedToId,
+    meta: { ticketId: ticket.id, kind: "job_complete" },
+    template: {
+      name: templateName("TICKET_COMPLETED_CUSTOMER", "WHATSAPP_TEMPLATE_TICKET_COMPLETED_CUSTOMER"),
+      params: [name, label, summary, due],
+    },
+  });
 }
 
-export function buildPaymentDueMessage(opts: {
-  contactName: string;
-  ticketNo: number | string;
-  companyName: string;
-  balanceDue: number;
-  paymentTotal: number;
-  advanceAmount: number;
-  subject?: string;
-}) {
-  const subj = opts.subject ? ` (${opts.subject})` : "";
-  const bal = new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(opts.balanceDue || 0);
-  const total = new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(opts.paymentTotal || 0);
-  const adv = new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(opts.advanceAmount || 0);
-  return `Hi ${opts.contactName}, payment reminder for job TKT-${String(opts.ticketNo).padStart(5, "0")}${subj}: total ${total}, advance ${adv}, balance due ${bal}. Please clear at your earliest. — ${opts.companyName}.`;
-}
-
+/** Template 6 — payment_received_customer (template 5 skipped) */
 export async function notifyTicketPaidFully(
   tenantId: string,
   ticket: {
@@ -253,80 +614,219 @@ export async function notifyTicketPaidFully(
   invoiceNumber?: string | null,
 ): Promise<WhatsappNotifyResult> {
   if (!ticket.contactId) return { notified: false, reason: "no_contact" };
-
-  const tenant = await prisma.tenant.findFirst({
-    where: { id: tenantId, deletedAt: null },
-    select: { name: true },
-  });
-  const contact = await prisma.contact.findFirst({
-    where: { id: ticket.contactId, tenantId, deletedAt: null },
-    select: { name: true },
-  });
+  const [company, contact] = await Promise.all([
+    companyName(tenantId),
+    prisma.contact.findFirst({
+      where: { id: ticket.contactId, tenantId, deletedAt: null },
+      select: { name: true },
+    }),
+  ]);
   if (!contact) return { notified: false, reason: "no_contact" };
-
-  const body = buildTicketPaidMessage({
-    contactName: contact.name.split(" ")[0] || contact.name,
-    ticketNo: ticket.ticketNo,
-    companyName: tenant?.name ?? "NovaCRM",
-    amount: ticket.paymentTotal,
-    subject: ticket.subject,
-    invoiceNumber,
-  });
-
+  const label = ticketLabel(ticket.ticketNo);
+  const name = firstName(contact.name);
+  const amount = inrAmount(ticket.paymentTotal);
+  const ref = waText(invoiceNumber || label);
+  const body = `Hello ${name}, we have received payment of ${amount} for ${label}. Reference: ${ref}. Thank you for choosing ${company}.`;
   return sendCustomerWhatsApp({
     tenantId,
     contactId: ticket.contactId,
     body,
-    activityTitle: `Payment complete — ticket TKT-${String(ticket.ticketNo).padStart(5, "0")}`,
+    activityTitle: `Payment complete — ${label}`,
     actorUserId: actorUserId ?? ticket.assignedToId,
     meta: { ticketId: ticket.id, kind: "job_paid", invoiceNumber: invoiceNumber ?? null },
+    template: {
+      name: templateName("PAYMENT_RECEIVED_CUSTOMER", "WHATSAPP_TEMPLATE_PAYMENT_RECEIVED_CUSTOMER"),
+      params: [name, amount, label, ref, company],
+    },
   });
 }
 
-export async function notifyPaymentDue(
+/** @deprecated Template 5 unused — kept as no-op for old clients. */
+export async function notifyPaymentDue(): Promise<WhatsappNotifyResult> {
+  return { notified: false, reason: "payment_due_template_disabled" };
+}
+
+/** Template 7 — sale_enquiry_received */
+export async function notifySaleEnquiryReceived(
   tenantId: string,
-  ticket: {
+  lead: {
     id: string;
-    ticketNo: number;
-    subject: string;
-    contactId: string | null;
-    assignedToId: string | null;
-    paymentTotal: number;
-    advanceAmount: number;
+    name: string;
+    phone?: string | null;
+    company?: string | null;
+    description?: string | null;
+    customFields?: unknown;
   },
   actorUserId?: string,
 ): Promise<WhatsappNotifyResult> {
-  if (!ticket.contactId) return { notified: false, reason: "no_contact" };
+  if (!lead.phone) return { notified: false, reason: "no_phone" };
+  const company = await companyName(tenantId);
+  const cf =
+    lead.customFields && typeof lead.customFields === "object" && !Array.isArray(lead.customFields)
+      ? (lead.customFields as Record<string, unknown>)
+      : {};
+  const product = waText(
+    cf.interested_product_name ||
+      cf.demoProductName ||
+      cf.productInterest ||
+      lead.description ||
+      "your product enquiry",
+  );
+  const ref = waText(cf.enquiryRef || `LE-${lead.id.slice(0, 8).toUpperCase()}`);
+  const name = firstName(lead.name);
+  const body = `Hello ${name}, we received your enquiry for ${product}. Reference: ${ref}. Our sales executive will contact you shortly. Thank you — ${company}.`;
+  return sendPhoneWhatsApp({
+    tenantId,
+    phone: lead.phone,
+    contactName: lead.name,
+    leadId: lead.id,
+    body,
+    activityTitle: `WhatsApp sale enquiry — ${ref}`,
+    actorUserId,
+    meta: { leadId: lead.id, kind: "sale_enquiry" },
+    template: {
+      name: templateName("SALE_ENQUIRY_RECEIVED", "WHATSAPP_TEMPLATE_SALE_ENQUIRY_RECEIVED"),
+      params: [name, product, ref, company],
+    },
+  });
+}
 
-  const tenant = await prisma.tenant.findFirst({
-    where: { id: tenantId, deletedAt: null },
-    select: { name: true },
+/** Template 8 — demo_dc_customer */
+export async function notifyDemoDcCustomer(
+  tenantId: string,
+  opts: {
+    leadId: string;
+    contactName: string;
+    phone?: string | null;
+    contactId?: string | null;
+    productName: string;
+    serialNo: string;
+    dcNumber: string;
+    executiveName: string;
+  },
+  actorUserId?: string,
+): Promise<WhatsappNotifyResult> {
+  if (!opts.phone) return { notified: false, reason: "no_phone" };
+  const name = firstName(opts.contactName);
+  const product = waText(opts.productName, "Demo unit");
+  const serial = waText(opts.serialNo, "—");
+  const dc = waText(opts.dcNumber, "—");
+  const exec = waText(opts.executiveName, "our sales team");
+  const body = `Hello ${name}, demo unit ${product} (serial ${serial}) is issued under challan ${dc}. Our executive ${exec} will follow up on the demo. Thank you.`;
+  return sendPhoneWhatsApp({
+    tenantId,
+    phone: opts.phone,
+    contactName: opts.contactName,
+    contactId: opts.contactId,
+    leadId: opts.leadId,
+    body,
+    activityTitle: `WhatsApp demo DC — ${dc}`,
+    actorUserId,
+    meta: { leadId: opts.leadId, kind: "demo_dc", dcNumber: dc },
+    template: {
+      name: templateName("DEMO_DC_CUSTOMER", "WHATSAPP_TEMPLATE_DEMO_DC_CUSTOMER"),
+      params: [name, product, serial, dc, exec],
+    },
   });
-  const contact = await prisma.contact.findFirst({
-    where: { id: ticket.contactId, tenantId, deletedAt: null },
-    select: { name: true },
-  });
+}
+
+/** Template 9 — proforma_ready_customer */
+export async function notifyProformaReady(
+  tenantId: string,
+  opts: {
+    contactId: string;
+    invoiceNumber: string;
+    productDescription: string;
+    amount: number;
+    billingContact?: string | null;
+  },
+  actorUserId?: string,
+): Promise<WhatsappNotifyResult> {
+  const [company, contact] = await Promise.all([
+    companyName(tenantId),
+    prisma.contact.findFirst({
+      where: { id: opts.contactId, tenantId, deletedAt: null },
+      select: { name: true },
+    }),
+  ]);
   if (!contact) return { notified: false, reason: "no_contact" };
-
-  const balanceDue = Math.max(0, ticket.paymentTotal - ticket.advanceAmount);
-  const body = buildPaymentDueMessage({
-    contactName: contact.name.split(" ")[0] || contact.name,
-    ticketNo: ticket.ticketNo,
-    companyName: tenant?.name ?? "NovaCRM",
-    balanceDue,
-    paymentTotal: ticket.paymentTotal,
-    advanceAmount: ticket.advanceAmount,
-    subject: ticket.subject,
-  });
-
+  const name = firstName(contact.name);
+  const inv = waText(opts.invoiceNumber);
+  const product = waText(opts.productDescription, "your order");
+  const amount = inrAmount(opts.amount);
+  const billing = waText(opts.billingContact || `${company} billing desk`);
+  const body = `Hello ${name}, your proforma ${inv} for ${product} is ready. Amount: ${amount}. Please contact ${billing} for next steps. Final tax invoice will be issued as per company process.`;
   return sendCustomerWhatsApp({
     tenantId,
-    contactId: ticket.contactId,
+    contactId: opts.contactId,
     body,
-    activityTitle: `Payment due — ticket TKT-${String(ticket.ticketNo).padStart(5, "0")}`,
-    actorUserId: actorUserId ?? ticket.assignedToId,
-    meta: { ticketId: ticket.id, kind: "payment_due" },
+    activityTitle: `WhatsApp proforma — ${inv}`,
+    actorUserId,
+    meta: { kind: "proforma_ready", invoiceNumber: inv },
+    template: {
+      name: templateName("PROFORMA_READY_CUSTOMER", "WHATSAPP_TEMPLATE_PROFORMA_READY_CUSTOMER"),
+      params: [name, inv, product, amount, billing],
+    },
   });
+}
+
+/** Template 10 — sale_order_confirmed */
+export async function notifySaleOrderConfirmed(
+  tenantId: string,
+  opts: {
+    contactId?: string | null;
+    phone?: string | null;
+    contactName: string;
+    leadId?: string | null;
+    product: string;
+    reference: string;
+  },
+  actorUserId?: string,
+): Promise<WhatsappNotifyResult> {
+  const company = await companyName(tenantId);
+  const name = firstName(opts.contactName);
+  const product = waText(opts.product, "your order");
+  const ref = waText(opts.reference);
+  const body = `Hello ${name}, your order for ${product} is confirmed. Reference: ${ref}. Our team will share proforma / delivery details next. Thank you — ${company}.`;
+  if (opts.contactId) {
+    return sendCustomerWhatsApp({
+      tenantId,
+      contactId: opts.contactId,
+      body,
+      activityTitle: `WhatsApp order confirmed — ${ref}`,
+      actorUserId,
+      meta: { leadId: opts.leadId, kind: "sale_confirmed" },
+      template: {
+        name: templateName("SALE_ORDER_CONFIRMED", "WHATSAPP_TEMPLATE_SALE_ORDER_CONFIRMED"),
+        params: [name, product, ref, company],
+      },
+    });
+  }
+  if (!opts.phone) return { notified: false, reason: "no_phone" };
+  return sendPhoneWhatsApp({
+    tenantId,
+    phone: opts.phone,
+    contactName: opts.contactName,
+    leadId: opts.leadId,
+    body,
+    activityTitle: `WhatsApp order confirmed — ${ref}`,
+    actorUserId,
+    meta: { leadId: opts.leadId, kind: "sale_confirmed" },
+    template: {
+      name: templateName("SALE_ORDER_CONFIRMED", "WHATSAPP_TEMPLATE_SALE_ORDER_CONFIRMED"),
+      params: [name, product, ref, company],
+    },
+  });
+}
+
+export function buildTicketCompleteMessage(opts: {
+  contactName: string;
+  ticketNo: number | string;
+  companyName: string;
+  subject?: string;
+}) {
+  const subj = opts.subject ? ` (${opts.subject})` : "";
+  return `Hi ${opts.contactName}, your service ticket ${ticketLabel(opts.ticketNo)}${subj} is completed. Thank you — ${opts.companyName}.`;
 }
 
 const OPEN_STATUSES = ["OPEN", "IN_PROGRESS", "PENDING"] as const;

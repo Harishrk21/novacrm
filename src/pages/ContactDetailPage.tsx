@@ -38,10 +38,13 @@ import { Badge, ticketStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
+import { formatServiceId } from '@/lib/serviceId'
 import { Input } from '@/components/ui/Input'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { SparePartsPanel } from '@/components/contacts/SparePartsPanel'
+import { AiAssistCard } from '@/components/ai/AiAssistCard'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS, isThirdPartyOrigin } from '@/lib/assetOrigin'
@@ -445,6 +448,31 @@ export function ContactDetailPage() {
         </Button>
       </div>
 
+      <div className="mb-5">
+        <AiAssistCard
+          title="Customer AI"
+          subtitle="360 summary · machines due · visit questions. Verify dates on the profile."
+          actions={[
+            {
+              id: 'summarize',
+              label: 'Summarize 360',
+              run: () => api.aiCustomerAssist({ contactId: String(contact.id), action: 'summarize' }),
+            },
+            {
+              id: 'machines_due',
+              label: 'Machines due / stamping',
+              run: () => api.aiCustomerAssist({ contactId: String(contact.id), action: 'machines_due' }),
+            },
+            {
+              id: 'visit_questions',
+              label: 'What to ask next visit',
+              run: () =>
+                api.aiCustomerAssist({ contactId: String(contact.id), action: 'visit_questions' }),
+            },
+          ]}
+        />
+      </div>
+
       <FormPanel
         open={editOpen}
         accent="theme"
@@ -501,7 +529,13 @@ export function ContactDetailPage() {
           <Input label="Mobile number 2" value={form.mobile2} onChange={(e) => setForm({ ...form, mobile2: e.target.value })} />
           <Input label="Mobile number 3" value={form.mobile3} onChange={(e) => setForm({ ...form, mobile3: e.target.value })} />
           <Input
-            label="WhatsApp number"
+            id="contact-whatsapp"
+            label={
+              <span className="inline-flex items-center gap-1.5">
+                <WhatsAppIcon size={14} />
+                <span style={{ color: WA_GREEN }}>WhatsApp number</span>
+              </span>
+            }
             value={form.whatsapp}
             onChange={(e) => setForm({ ...form, whatsapp: e.target.value })}
           />
@@ -702,7 +736,7 @@ export function ContactDetailPage() {
             label: 'Products',
             count: ((contact.assets as Array<unknown>) ?? []).length,
           },
-          { id: 'SpareParts', label: 'Spare parts' },
+          { id: 'SpareParts', label: 'Parts history' },
           { id: 'Tickets', label: 'Tickets', count: tickets.length },
           { id: 'Notes', label: 'Notes', count: notes.length },
         ]}
@@ -933,7 +967,14 @@ export function ContactDetailPage() {
       )}
 
       {tab === 'SpareParts' && (
-        <SparePartsPanel contactId={String(contact.id)} contactName={String(contact.name)} />
+        <div className="space-y-3">
+          <Card className="border-sky-200/80 bg-sky-50/40 p-4 text-sm text-text-secondary dark:border-sky-900/40 dark:bg-sky-950/20">
+            <strong className="text-text-primary">Parts history</strong> — log of parts replaced / installed on
+            this customer&apos;s machines during service (not warehouse stock). Same panel is also on each
+            ticket for job-linked entries.
+          </Card>
+          <SparePartsPanel contactId={String(contact.id)} contactName={String(contact.name)} />
+        </div>
       )}
 
       {tab === 'Tickets' && (
@@ -963,7 +1004,7 @@ export function ContactDetailPage() {
             <table className="w-full text-left text-sm">
               <thead className="bg-muted text-xs text-text-secondary">
                 <tr>
-                  {['#', 'Subject', 'Priority', 'Status', ''].map((h) => (
+                  {['Service ID', 'Subject', 'Priority', 'Status', ''].map((h) => (
                     <th key={h || 'a'} className="px-4 py-3 font-medium">
                       {h}
                     </th>
@@ -974,8 +1015,8 @@ export function ContactDetailPage() {
                 {tickets.map((t) => (
                   <tr key={String(t.id)} className="border-t border-border">
                     <td className="px-4 py-3">
-                      <Link className="text-accent-blue hover:underline" to={`/tickets/${t.id}`}>
-                        #{String(t.ticketNo)}
+                      <Link className="font-mono text-accent-blue hover:underline" to={`/tickets/${t.id}`}>
+                        {formatServiceId(t.ticketNo)}
                       </Link>
                     </td>
                     <td className="px-4 py-3">{String(t.subject)}</td>
@@ -1285,7 +1326,15 @@ function ContactAnalytics({
             ['Created', contact.createdAt ? formatDate(String(contact.createdAt)) : '—'],
           ].map(([label, value]) => (
             <div key={String(label)}>
-              <dt className="text-xs text-text-secondary">{String(label)}</dt>
+              <dt className="text-xs text-text-secondary">
+                {label === 'WhatsApp' ? (
+                  <span className="inline-flex items-center gap-1" style={{ color: WA_GREEN }}>
+                    <WhatsAppIcon size={12} /> WhatsApp
+                  </span>
+                ) : (
+                  String(label)
+                )}
+              </dt>
               <dd className="text-sm font-medium text-text-primary">{String(value ?? '—')}</dd>
             </div>
           ))}

@@ -11,13 +11,23 @@ import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { pagination, pageResult } from "../../common/utils/pagination.js";
 import { AppError, notFound } from "../../common/errors.js";
-import { isScopedEmployeeRole } from "../../common/utils/scope.js";
-import { notifyTicketCompleted, notifyTicketPaidFully, notifyPaymentDue, refreshSlaBreached } from "./ticketNotify.service.js";
+import { isScopedEmployeeRole, canAssignTicketsRole, canApproveTicketsRole, canCreateTicketsRole, isServiceDeskRole } from "../../common/utils/scope.js";
+import { notifyTicketCompleted, notifyTicketPaidFully, notifyPaymentDue, notifyTicketCreatedCustomer, notifyTicketAssignedEngineer, notifyTicketStatusUpdate, refreshSlaBreached } from "./ticketNotify.service.js";
+import {
+  assertCanClosePayment,
+  assertCanInvoice,
+  assertPaymentCollection,
+  assertStatusTransition,
+  isFreeJob,
+  ticketCf,
+} from "./ticketLifecycle.js";
+import { createNotifications, notifyAdmins } from "../notifications/notify.service.js";
 import { create as createInvoice } from "../invoices/invoices.service.js";
 import { updateStatus as updateInvoiceStatus } from "../invoices/invoices.service.js";
 
 const money = z.coerce.number().nonnegative().optional();
 const dateStr = z.string().nullable().optional();
+const paymentMethodEnum = z.enum(["CASH", "UPI", "NEFT", "RTGS", "CHEQUE", "CARD", "OTHER"]);
 
 const body = z.object({
   subject: z.string().min(1).max(255),
@@ -35,17 +45,38 @@ const body = z.object({
   paymentTotal: money,
   advanceAmount: money,
   paymentStatus: z.enum(["UNPAID", "PARTIAL", "PAID"]).optional(),
+  paymentMethod: paymentMethodEnum.nullable().optional(),
+  paymentReference: z.string().max(80).nullable().optional(),
+  paymentProofUrl: z.string().max(500).nullable().optional(),
+  signatureUrl: z.string().max(500).nullable().optional(),
   receivedByUserId: z.string().min(1).max(36).nullable().optional(),
   deliveredByUserId: z.string().min(1).max(36).nullable().optional(),
   category: z.string().nullable().optional(),
   channel: z.string().nullable().optional(),
   slaHours: z.coerce.number().int().positive().optional(),
   customFields: z.record(z.unknown()).optional(),
+  /** When true, send WhatsApp templates for this action (UI confirms first). */
+  sendWhatsApp: z.boolean().optional(),
+  /** Short note for status-update template {{4}} */
+  whatsappNote: z.string().max(200).optional(),
 });
 const params = z.object({ id: z.string().min(1).max(36) });
 const createSchema = z.object({ body, query: z.any(), params: z.any() });
 const updateSchema = z.object({ body: body.partial(), query: z.any(), params });
 const idSchema = z.object({ body: z.any(), query: z.any(), params });
+const markPaidSchema = z.object({
+  body: z.object({
+    paymentMethod: paymentMethodEnum,
+    paymentReference: z.string().max(80).nullable().optional(),
+    paymentProofUrl: z.string().max(500).nullable().optional(),
+    sendWhatsApp: z.boolean().optional(),
+    /** Prefer draft values from UI so mark-paid works without a separate Save. */
+    paymentTotal: money.optional(),
+    advanceAmount: money.optional(),
+  }),
+  query: z.any(),
+  params,
+});
 const messageSchema = z.object({
   body: z.object({ content: z.string().min(1), isInternal: z.boolean().optional() }),
   query: z.any(),
@@ -65,11 +96,13 @@ function num(v: unknown) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function derivePaymentStatus(paymentTotal: number, advanceAmount: number): "UNPAID" | "PARTIAL" | "PAID" {
-  if (paymentTotal <= 0 && advanceAmount <= 0) return "UNPAID";
-  if (paymentTotal > 0 && advanceAmount >= paymentTotal) return "PAID";
-  if (advanceAmount > 0) return "PARTIAL";
-  return "UNPAID";
+/**
+ * Amounts alone never mark a job PAID — that requires admin Mark paid (method/proof)
+ * or free-job close. Advance > 0 → PARTIAL even when advance covers total.
+ */
+function derivePaymentStatus(paymentTotal: number, advanceAmount: number): "UNPAID" | "PARTIAL" {
+  if (advanceAmount <= 0) return "UNPAID";
+  return "PARTIAL";
 }
 
 function serializeTicket<T extends Record<string, unknown>>(ticket: T) {
@@ -77,6 +110,9 @@ function serializeTicket<T extends Record<string, unknown>>(ticket: T) {
   const advanceAmount = num(ticket.advanceAmount);
   const odAmount = num(ticket.odAmount);
   const paidAt = ticket.paidAt ? new Date(String(ticket.paidAt)).toISOString() : null;
+  const customerSignedAt = ticket.customerSignedAt
+    ? new Date(String(ticket.customerSignedAt)).toISOString()
+    : null;
   return {
     ...ticket,
     odAmount,
@@ -85,6 +121,12 @@ function serializeTicket<T extends Record<string, unknown>>(ticket: T) {
     balanceDue: Math.max(0, paymentTotal - advanceAmount),
     paymentStatus: ticket.paymentStatus ?? derivePaymentStatus(paymentTotal, advanceAmount),
     paidAt,
+    paymentMethod: ticket.paymentMethod ?? null,
+    paymentReference: ticket.paymentReference ?? null,
+    paymentProofUrl: ticket.paymentProofUrl ?? null,
+    serviceInvoiceId: ticket.serviceInvoiceId ?? null,
+    signatureUrl: ticket.signatureUrl ?? null,
+    customerSignedAt,
     stampingDate: ticket.stampingDate
       ? new Date(String(ticket.stampingDate)).toISOString().slice(0, 10)
       : null,
@@ -94,20 +136,63 @@ function serializeTicket<T extends Record<string, unknown>>(ticket: T) {
   };
 }
 
-async function nextTicketNo(t: string) {
-  let seq = await prisma.numberSequence.findUnique({
-    where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "TICKET" } },
-  });
-  if (!seq) {
-    seq = await prisma.numberSequence.create({
-      data: { tenantId: t, sequenceKey: "TICKET", prefix: "TKT-", nextValue: 1, padding: 5 },
+async function nextPaymentNo(t: string) {
+  return prisma.$transaction(async (tx) => {
+    let seq = await tx.numberSequence.findUnique({
+      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "PAYMENT" } },
     });
-  }
-  await prisma.numberSequence.update({
-    where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "TICKET" } },
-    data: { nextValue: { increment: 1 } },
+    if (!seq) {
+      await tx.numberSequence.create({
+        data: {
+          tenantId: t,
+          sequenceKey: "PAYMENT",
+          prefix: "PAY-",
+          nextValue: 2,
+          padding: 5,
+        },
+      });
+      return "PAY-00001";
+    }
+    const n = seq.nextValue;
+    await tx.numberSequence.update({
+      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "PAYMENT" } },
+      data: { nextValue: n + 1 },
+    });
+    return `PAY-${String(n).padStart(seq.padding || 5, "0")}`;
   });
-  return seq.nextValue;
+}
+
+async function nextTicketNo(t: string) {
+  return prisma.$transaction(async (tx) => {
+    const maxRow = await tx.ticket.aggregate({
+      where: { tenantId: t },
+      _max: { ticketNo: true },
+    });
+    const minNext = (maxRow._max.ticketNo ?? 0) + 1;
+
+    let seq = await tx.numberSequence.findUnique({
+      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "TICKET" } },
+    });
+    if (!seq) {
+      await tx.numberSequence.create({
+        data: {
+          tenantId: t,
+          sequenceKey: "TICKET",
+          prefix: "TKT-",
+          nextValue: minNext + 1,
+          padding: 5,
+        },
+      });
+      return minNext;
+    }
+
+    const ticketNo = Math.max(seq.nextValue, minNext);
+    await tx.numberSequence.update({
+      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "TICKET" } },
+      data: { nextValue: ticketNo + 1 },
+    });
+    return ticketNo;
+  });
 }
 
 async function syncAssetDates(
@@ -136,6 +221,13 @@ async function ensureAccountForTicket(
       where: { id: ticket.accountId, tenantId: t, deletedAt: null },
     });
     if (acc) return acc.id;
+    const soft = await prisma.account.findFirst({
+      where: { id: ticket.accountId, tenantId: t, deletedAt: { not: null } },
+    });
+    if (soft) {
+      await prisma.account.update({ where: { id: soft.id }, data: { deletedAt: null } });
+      return soft.id;
+    }
   }
   if (ticket.contactId) {
     const contact = await prisma.contact.findFirst({
@@ -147,6 +239,13 @@ async function ensureAccountForTicket(
         where: { id: contact.accountId, tenantId: t, deletedAt: null },
       });
       if (acc) return acc.id;
+      const soft = await prisma.account.findFirst({
+        where: { id: contact.accountId, tenantId: t, deletedAt: { not: null } },
+      });
+      if (soft) {
+        await prisma.account.update({ where: { id: soft.id }, data: { deletedAt: null } });
+        return soft.id;
+      }
     }
     const accountId = newId();
     await prisma.account.create({
@@ -165,9 +264,6 @@ async function ensureAccountForTicket(
       where: { id: contact.id, tenantId: t },
       data: { accountId },
     });
-    if (!ticket.accountId) {
-      // best-effort link on ticket handled by caller if needed
-    }
     return accountId;
   }
   throw new AppError("Link a customer or account before creating an invoice", 400);
@@ -187,27 +283,55 @@ async function ensureServiceInvoice(
     odAmount: unknown;
     advanceAmount: unknown;
     paymentStatus: string;
+    serviceInvoiceId?: string | null;
   },
   markPaid: boolean,
 ): Promise<Record<string, unknown>> {
-  const recent = await prisma.invoice.findMany({
-    where: {
-      tenantId: t,
-      deletedAt: null,
-      ...(ticket.contactId ? { contactId: ticket.contactId } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    take: 40,
-  });
-  const existing = recent.find((inv) => {
-    const cf = inv.customFields as Record<string, unknown> | null;
-    return cf && String(cf.ticketId ?? "") === ticket.id;
-  });
+  let existing =
+    ticket.serviceInvoiceId
+      ? await prisma.invoice.findFirst({
+          where: { id: ticket.serviceInvoiceId, tenantId: t, deletedAt: null },
+        })
+      : null;
+  if (!existing) {
+    existing = await prisma.invoice.findFirst({
+      where: { tenantId: t, deletedAt: null, serviceTicketId: ticket.id },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+  if (!existing) {
+    const recent = await prisma.invoice.findMany({
+      where: {
+        tenantId: t,
+        deletedAt: null,
+        ...(ticket.contactId ? { contactId: ticket.contactId } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: 40,
+    });
+    existing =
+      recent.find((inv) => {
+        const cf = inv.customFields as Record<string, unknown> | null;
+        return cf && String(cf.ticketId ?? "") === ticket.id;
+      }) ?? null;
+  }
   if (existing) {
     if (markPaid && existing.status !== "PAID") {
       await updateInvoiceStatus(t, existing.id, { status: "PAID" });
     } else if (!markPaid && existing.status === "DRAFT") {
       await updateInvoiceStatus(t, existing.id, { status: "SENT" });
+    }
+    if (!existing.serviceTicketId) {
+      await prisma.invoice.updateMany({
+        where: { id: existing.id, tenantId: t },
+        data: { serviceTicketId: ticket.id },
+      });
+    }
+    if (ticket.serviceInvoiceId !== existing.id) {
+      await prisma.ticket.updateMany({
+        where: { id: ticket.id, tenantId: t },
+        data: { serviceInvoiceId: existing.id },
+      });
     }
     const full = await prisma.invoice.findFirst({ where: { id: existing.id } });
     const lines = await prisma.invoiceLine.findMany({
@@ -241,7 +365,7 @@ async function ensureServiceInvoice(
   if (serviceAmount > 0 || odAmount <= 0) {
     lines.push({
       productId: ticket.productId || null,
-      description: `Service — ${ticket.subject} (TKT-${String(ticket.ticketNo).padStart(5, "0")})`,
+      description: `Service — ${ticket.subject} (SVC-${String(ticket.ticketNo).padStart(5, "0")})`,
       quantity: 1,
       unitPrice: serviceAmount > 0 ? serviceAmount : paymentTotal || 0,
       taxPercent: 0,
@@ -265,17 +389,23 @@ async function ensureServiceInvoice(
   const invoice = await createInvoice(t, userId, {
     accountId,
     contactId: ticket.contactId,
+    serviceTicketId: ticket.id,
     invoiceDate: new Date(),
     dueDate: new Date(),
     currency: "INR",
     discountTotal: 0,
-    notes: `Service job TKT-${String(ticket.ticketNo).padStart(5, "0")}`,
+    notes: `Service job SVC-${String(ticket.ticketNo).padStart(5, "0")}`,
     customFields: {
       ticketId: ticket.id,
       ticketNo: ticket.ticketNo,
       source: "SERVICE_JOB",
     },
     lines: safeLines,
+  });
+
+  await prisma.ticket.updateMany({
+    where: { id: ticket.id, tenantId: t },
+    data: { serviceInvoiceId: String(invoice.id) },
   });
 
   if (markPaid) {
@@ -503,7 +633,22 @@ ticketsRouter.get("/", async (q: Request, r: Response) => {
 
 ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
+  const role = q.auth?.role;
+  if (!canCreateTicketsRole(role)) {
+    throw new AppError("Your role cannot create service tickets", 403);
+  }
   const d = q.body as z.infer<typeof body>;
+  const sendWhatsApp = d.sendWhatsApp === true;
+  const whatsappNote = d.whatsappNote;
+  delete (d as { sendWhatsApp?: boolean }).sendWhatsApp;
+  delete (d as { whatsappNote?: string }).whatsappNote;
+  // Service desk always creates OPEN tickets with no assignee
+  if (isServiceDeskRole(role)) {
+    d.assignedToId = null;
+    d.receivedByUserId = null;
+    d.deliveredByUserId = null;
+    d.status = "OPEN";
+  }
   if (d.contactId && !(await prisma.contact.findFirst({ where: { id: d.contactId, tenantId: t, deletedAt: null } })))
     throw notFound("Contact");
   if (d.accountId && !(await prisma.account.findFirst({ where: { id: d.accountId, tenantId: t, deletedAt: null } })))
@@ -529,6 +674,7 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
     ...(d.channel ? { channel: d.channel } : {}),
     baseServiceCharge: paymentTotal,
     sparePartsTotal: 0,
+    created_by: q.auth!.userId,
   };
 
   const subject =
@@ -540,6 +686,13 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
   const paymentStatus =
     d.paymentStatus ?? derivePaymentStatus(paymentTotal, advanceAmount);
 
+  const assignedToId = isServiceDeskRole(role) ? null : (d.assignedToId ?? d.receivedByUserId ?? null);
+  const initialStatus = isServiceDeskRole(role)
+    ? "OPEN"
+    : assignedToId
+      ? "IN_PROGRESS"
+      : (d.status ?? "OPEN");
+
   const row = await prisma.ticket.create({
     data: {
       id: newId(),
@@ -548,10 +701,10 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
       subject,
       description: d.description || "Service job",
       priority: d.priority ?? "MEDIUM",
-      status: d.status ?? "OPEN",
+      status: initialStatus,
       contactId: d.contactId ?? null,
       accountId: d.accountId ?? null,
-      assignedToId: d.assignedToId ?? d.receivedByUserId ?? null,
+      assignedToId,
       productId: d.productId ?? null,
       assetId: d.assetId ?? null,
       stampingDate,
@@ -561,8 +714,8 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
       advanceAmount,
       paymentStatus,
       paidAt: paymentStatus === "PAID" ? new Date() : null,
-      receivedByUserId: d.receivedByUserId ?? d.assignedToId ?? null,
-      deliveredByUserId: d.deliveredByUserId ?? null,
+      receivedByUserId: isServiceDeskRole(role) ? null : (d.receivedByUserId ?? d.assignedToId ?? null),
+      deliveredByUserId: isServiceDeskRole(role) ? null : (d.deliveredByUserId ?? null),
       slaDueAt,
       customFields,
     },
@@ -576,7 +729,7 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
         id: newId(),
         tenantId: t,
         type: "TASK",
-        title: `Service job #${row.ticketNo} — ${row.subject}`,
+        title: `Service SVC-${String(row.ticketNo).padStart(5, "0")} — ${row.subject}`,
         description: "Assigned to you — open My Tickets to start work.",
         status: "PENDING",
         scheduledAt: row.slaDueAt ?? new Date(),
@@ -589,9 +742,75 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
         },
       },
     });
+    await createNotifications(
+      [
+        {
+          tenantId: t,
+          userId: row.assignedToId,
+          title: "Ticket assigned to you",
+          message: `SVC-${String(row.ticketNo).padStart(5, "0")} ${row.subject}`,
+          type: "TICKET_ASSIGNED",
+          entityType: "ticket",
+          entityId: row.id,
+        },
+      ],
+      q,
+    );
+    try {
+      if (sendWhatsApp) {
+        await notifyTicketAssignedEngineer(
+          t,
+          {
+            id: row.id,
+            ticketNo: row.ticketNo,
+            subject: row.subject,
+            contactId: row.contactId,
+            assignedToId: row.assignedToId,
+          },
+          q.auth!.userId,
+        );
+      }
+    } catch (err) {
+      console.error("ticket create whatsapp engineer failed", err);
+    }
+  } else {
+    await notifyAdmins(
+      t,
+      {
+        title: "New ticket awaiting assignment",
+        message: `SVC-${String(row.ticketNo).padStart(5, "0")} ${row.subject} — assign a service engineer`,
+        type: "TICKET_CREATED",
+        entityType: "ticket",
+        entityId: row.id,
+      },
+      q,
+    );
   }
 
-  return success(r, serializeTicket(row as unknown as Record<string, unknown>), "Service job created", 201);
+  let whatsappCustomer: Awaited<ReturnType<typeof notifyTicketCreatedCustomer>> | null = null;
+  if (sendWhatsApp && row.contactId) {
+    try {
+      whatsappCustomer = await notifyTicketCreatedCustomer(
+        t,
+        {
+          id: row.id,
+          ticketNo: row.ticketNo,
+          subject: row.subject,
+          contactId: row.contactId,
+        },
+        q.auth!.userId,
+      );
+    } catch (err) {
+      console.error("ticket create whatsapp customer failed", err);
+    }
+  }
+
+  return success(
+    r,
+    { ...serializeTicket(row as unknown as Record<string, unknown>), whatsapp: whatsappCustomer },
+    "Service job created",
+    201,
+  );
 });
 
 ticketsRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) => {
@@ -698,9 +917,49 @@ ticketsRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) =>
 ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
+  const role = q.auth?.role;
   const d = q.body as Record<string, unknown>;
+  const sendWhatsApp = d.sendWhatsApp === true;
+  const whatsappNote = typeof d.whatsappNote === "string" ? d.whatsappNote : "";
+  delete d.sendWhatsApp;
+  delete d.whatsappNote;
+  let engineerWhatsapp: Awaited<ReturnType<typeof notifyTicketAssignedEngineer>> | null = null;
   const existing = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
   if (!existing) throw notFound("Ticket");
+
+  // Role gates
+  if ("assignedToId" in d || "receivedByUserId" in d) {
+    if (!canAssignTicketsRole(role)) {
+      throw new AppError("Only admin can assign tickets", 403);
+    }
+  }
+  if (d.status === "CLOSED" && !canApproveTicketsRole(role)) {
+    throw new AppError("Only admin can approve and close completed service", 403);
+  }
+  if (isScopedEmployeeRole(role)) {
+    // Engineer may update payment amounts (advance / total / OD) but cannot reassign,
+    // mark PAID, or close the ticket.
+    delete d.assignedToId;
+    delete d.receivedByUserId;
+    delete d.deliveredByUserId;
+    delete d.paymentStatus;
+    delete d.paymentMethod;
+    delete d.paymentReference;
+    delete d.paymentProofUrl;
+    if (d.status && !["IN_PROGRESS", "PENDING", "RESOLVED"].includes(String(d.status))) {
+      throw new AppError("Engineers can set In progress, Waiting, or Mark complete only", 403);
+    }
+  }
+  if (isServiceDeskRole(role)) {
+    delete d.assignedToId;
+    delete d.receivedByUserId;
+    delete d.deliveredByUserId;
+    delete d.paymentStatus;
+    delete d.paymentMethod;
+    if (d.status === "CLOSED" || d.status === "RESOLVED") {
+      throw new AppError("Service desk cannot complete or close tickets", 403);
+    }
+  }
 
   // Whitelist only Ticket columns — never spread raw body into Prisma (avoids silent/ partial failures)
   const data: Record<string, unknown> = {};
@@ -718,6 +977,10 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
     "paymentTotal",
     "advanceAmount",
     "paymentStatus",
+    "paymentMethod",
+    "paymentReference",
+    "paymentProofUrl",
+    "signatureUrl",
     "receivedByUserId",
     "deliveredByUserId",
   ] as const;
@@ -726,19 +989,81 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
   }
 
   const prevStatus = existing.status;
-  const nextStatus = typeof d.status === "string" ? d.status : prevStatus;
+  let nextStatus = typeof d.status === "string" ? d.status : prevStatus;
+
+  // Admin assign → move to IN_PROGRESS when assigning from OPEN
+  if (
+    canAssignTicketsRole(role) &&
+    "assignedToId" in d &&
+    d.assignedToId &&
+    !("status" in d) &&
+    existing.status === "OPEN"
+  ) {
+    data.status = "IN_PROGRESS";
+    nextStatus = "IN_PROGRESS";
+  }
+
+  const nextAssignee =
+    "assignedToId" in d
+      ? (d.assignedToId as string | null)
+      : "receivedByUserId" in d
+        ? ((d.receivedByUserId as string | null) ?? existing.assignedToId)
+        : existing.assignedToId;
+
+  if ("status" in d || data.status) {
+    assertStatusTransition(prevStatus, String(nextStatus), {
+      assignedToId: nextAssignee,
+      isAdmin: canApproveTicketsRole(role),
+    });
+  }
+
+  if (nextStatus === "CLOSED") {
+    const payTotal = "paymentTotal" in d ? num(d.paymentTotal) : num(existing.paymentTotal);
+    const adv = "advanceAmount" in d ? num(d.advanceAmount) : num(existing.advanceAmount);
+    const payStatus =
+      "paymentStatus" in d && typeof d.paymentStatus === "string"
+        ? d.paymentStatus
+        : String(existing.paymentStatus);
+    assertCanClosePayment({
+      paymentStatus: payStatus,
+      paymentTotal: payTotal,
+      advanceAmount: adv,
+    });
+    if (isFreeJob(payTotal, adv) && payStatus !== "PAID") {
+      data.paymentStatus = "PAID";
+      data.paidAt = new Date();
+    }
+  }
 
   if (d.status === "RESOLVED") data.resolvedAt = new Date();
-  if (d.status === "CLOSED") data.closedAt = new Date();
+  if (d.status === "CLOSED" || data.status === "CLOSED") data.closedAt = new Date();
+  if ("signatureUrl" in d && d.signatureUrl) {
+    data.customerSignedAt = new Date();
+  }
   if ("stampingDate" in d) data.stampingDate = parseDate(d.stampingDate);
   if ("nextDueDate" in d) data.nextDueDate = parseDate(d.nextDueDate);
-  if ("category" in d || "channel" in d) {
-    data.customFields = {
-      ...((existing.customFields as object) ?? {}),
-      ...((d.customFields as object) ?? {}),
+
+  const existingCf = ticketCf(existing.customFields);
+  if ("category" in d || "channel" in d || "customFields" in d || "paymentTotal" in d) {
+    const mergedCf: Record<string, unknown> = {
+      ...existingCf,
+      ...((d.customFields as Record<string, unknown> | undefined) ?? {}),
       ...("category" in d ? { category: d.category ?? null } : {}),
       ...("channel" in d ? { channel: d.channel ?? null } : {}),
     };
+    if ("paymentTotal" in d) {
+      const spareTotal = Number(mergedCf.sparePartsTotal) || 0;
+      mergedCf.baseServiceCharge = Math.max(0, num(d.paymentTotal) - spareTotal);
+      mergedCf.sparePartsTotal = spareTotal;
+    }
+    // Day notes: ensure ISO `at` for timeline
+    if (Array.isArray(mergedCf.dayNotes)) {
+      mergedCf.dayNotes = (mergedCf.dayNotes as Array<Record<string, unknown>>).map((n) => ({
+        ...n,
+        at: n.at ?? n.createdAt ?? (n.date ? `${String(n.date)}T12:00:00.000Z` : new Date().toISOString()),
+      }));
+    }
+    data.customFields = mergedCf;
   }
 
   const nextPaymentTotal = "paymentTotal" in d ? num(d.paymentTotal) : num(existing.paymentTotal);
@@ -746,15 +1071,30 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
   if ("paymentStatus" in d && typeof d.paymentStatus === "string") {
     data.paymentStatus = d.paymentStatus;
     if (d.paymentStatus === "PAID") {
+      assertPaymentCollection({
+        paymentMethod:
+          ("paymentMethod" in d ? (d.paymentMethod as string | null) : existing.paymentMethod) ?? null,
+        paymentReference:
+          ("paymentReference" in d
+            ? (d.paymentReference as string | null)
+            : existing.paymentReference) ?? null,
+        paymentProofUrl:
+          ("paymentProofUrl" in d
+            ? (d.paymentProofUrl as string | null)
+            : existing.paymentProofUrl) ?? null,
+        paymentTotal: nextPaymentTotal,
+      });
       data.paidAt = new Date();
       if (nextPaymentTotal > nextAdvance) data.advanceAmount = nextPaymentTotal;
     } else if (existing.paymentStatus === "PAID") {
       data.paidAt = null;
     }
   } else if ("paymentTotal" in d || "advanceAmount" in d) {
-    const derived = derivePaymentStatus(nextPaymentTotal, nextAdvance);
-    data.paymentStatus = derived;
-    data.paidAt = derived === "PAID" ? existing.paidAt ?? new Date() : null;
+    // Never escalate to PAID from typing amounts — use POST /mark-paid
+    if (existing.paymentStatus !== "PAID") {
+      data.paymentStatus = derivePaymentStatus(nextPaymentTotal, nextAdvance);
+      data.paidAt = null;
+    }
   }
 
   if (
@@ -794,7 +1134,7 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
           id: newId(),
           tenantId: t,
           type: "TASK",
-          title: `Service job #${ticket.ticketNo} — ${ticket.subject}`.slice(0, 191),
+          title: `Service SVC-${String(ticket.ticketNo).padStart(5, "0")} — ${ticket.subject}`.slice(0, 191),
           description: "Assigned to you — open My Tickets to start work.",
           status: "PENDING",
           scheduledAt: ticket.slaDueAt ?? new Date(),
@@ -810,50 +1150,208 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
     } catch (err) {
       console.error("ticket assign follow-up failed", err);
     }
+    const notifRows = [
+      {
+        tenantId: t,
+        userId: ticket.assignedToId,
+        title: prevAssignee ? "Ticket reassigned to you" : "Ticket assigned to you",
+        message: `SVC-${String(ticket.ticketNo).padStart(5, "0")} ${ticket.subject}`,
+        type: prevAssignee ? "TICKET_REASSIGNED" : "TICKET_ASSIGNED",
+        entityType: "ticket",
+        entityId: ticket.id,
+      },
+    ];
+    if (prevAssignee && prevAssignee !== ticket.assignedToId) {
+      notifRows.push({
+        tenantId: t,
+        userId: prevAssignee,
+        title: "Ticket reassigned away",
+        message: `SVC-${String(ticket.ticketNo).padStart(5, "0")} was reassigned to another engineer`,
+        type: "TICKET_REASSIGNED",
+        entityType: "ticket",
+        entityId: ticket.id,
+      });
+    }
+    await createNotifications(notifRows, q);
+    try {
+      if (sendWhatsApp) {
+        engineerWhatsapp = await notifyTicketAssignedEngineer(
+          t,
+          {
+            id: ticket.id,
+            ticketNo: ticket.ticketNo,
+            subject: ticket.subject,
+            contactId: ticket.contactId,
+            assignedToId: ticket.assignedToId,
+          },
+          q.auth!.userId,
+        );
+      }
+    } catch (err) {
+      console.error("ticket assign whatsapp engineer failed", err);
+    }
+  }
+
+  // Engineer / status progress → admins
+  if (
+    "customFields" in d &&
+    prevStatus !== "RESOLVED" &&
+    prevStatus !== "CLOSED" &&
+    ticket.status !== "RESOLVED" &&
+    ticket.status !== "CLOSED"
+  ) {
+    await notifyAdmins(
+      t,
+      {
+        title: "Ticket progress updated",
+        message: `SVC-${String(ticket.ticketNo).padStart(5, "0")} — engineer updated work notes`,
+        type: "TICKET_PROGRESS",
+        entityType: "ticket",
+        entityId: ticket.id,
+      },
+      q,
+    );
+  }
+
+  if (ticket.status === "RESOLVED" && prevStatus !== "RESOLVED" && prevStatus !== "CLOSED") {
+    await notifyAdmins(
+      t,
+      {
+        title: "Pending approval",
+        message: `SVC-${String(ticket.ticketNo).padStart(5, "0")} ${ticket.subject} — engineer marked complete`,
+        type: "TICKET_PENDING_APPROVAL",
+        entityType: "ticket",
+        entityId: ticket.id,
+      },
+      q,
+    );
+  }
+
+  if (ticket.status === "CLOSED" && prevStatus !== "CLOSED") {
+    const closeNotifs = [];
+    if (ticket.assignedToId) {
+      closeNotifs.push({
+        tenantId: t,
+        userId: ticket.assignedToId,
+        title: "Ticket approved & closed",
+        message: `SVC-${String(ticket.ticketNo).padStart(5, "0")} — admin approved completion`,
+        type: "TICKET_CLOSED",
+        entityType: "ticket",
+        entityId: ticket.id,
+      });
+    }
+    const cf = (ticket.customFields as Record<string, unknown> | null) ?? {};
+    const createdBy = typeof cf.created_by === "string" ? cf.created_by : null;
+    if (createdBy && createdBy !== ticket.assignedToId) {
+      closeNotifs.push({
+        tenantId: t,
+        userId: createdBy,
+        title: "Ticket closed",
+        message: `SVC-${String(ticket.ticketNo).padStart(5, "0")} — service completed and approved`,
+        type: "TICKET_CLOSED",
+        entityType: "ticket",
+        entityId: ticket.id,
+      });
+    }
+    if (closeNotifs.length) await createNotifications(closeNotifs, q);
   }
 
   const stamp = "stampingDate" in d ? parseDate(d.stampingDate) : ticket.stampingDate;
   const due = "nextDueDate" in d ? parseDate(d.nextDueDate) : ticket.nextDueDate;
-  const becameDone =
-    (nextStatus === "RESOLVED" || nextStatus === "CLOSED") &&
-    prevStatus !== "RESOLVED" &&
-    prevStatus !== "CLOSED";
-  if (becameDone || "stampingDate" in d || "nextDueDate" in d) {
+  const becameResolved =
+    ticket.status === "RESOLVED" && prevStatus !== "RESOLVED" && prevStatus !== "CLOSED";
+  const becameClosed = ticket.status === "CLOSED" && prevStatus !== "CLOSED";
+  if (becameResolved || becameClosed || "stampingDate" in d || "nextDueDate" in d) {
     await syncAssetDates(t, ticket.assetId, stamp, due);
   }
 
+  // Customer WhatsApp — only when UI confirmed sendWhatsApp
   let whatsapp: Awaited<ReturnType<typeof notifyTicketCompleted>> | null = null;
-  if (becameDone) {
-    whatsapp = await notifyTicketCompleted(
-      t,
-      {
-        id: ticket.id,
-        ticketNo: ticket.ticketNo,
-        subject: ticket.subject,
-        contactId: ticket.contactId,
-        assignedToId: ticket.assignedToId,
-      },
-      q.auth!.userId,
-    );
+  if (sendWhatsApp) {
+    if (becameClosed) {
+      whatsapp = await notifyTicketCompleted(
+        t,
+        {
+          id: ticket.id,
+          ticketNo: ticket.ticketNo,
+          subject: ticket.subject,
+          contactId: ticket.contactId,
+          assignedToId: ticket.assignedToId,
+          paymentTotal: num(ticket.paymentTotal),
+          description: ticket.description,
+        },
+        q.auth!.userId,
+        whatsappNote || ticket.subject,
+      );
+    } else if ("status" in d && prevStatus !== ticket.status && ticket.status !== "CLOSED") {
+      whatsapp = await notifyTicketStatusUpdate(
+        t,
+        {
+          id: ticket.id,
+          ticketNo: ticket.ticketNo,
+          subject: ticket.subject,
+          status: ticket.status,
+          contactId: ticket.contactId,
+          assignedToId: ticket.assignedToId,
+        },
+        whatsappNote || `Status updated to ${ticket.status}`,
+        q.auth!.userId,
+      );
+    }
   }
 
-  return success(r, { ...serializeTicket(ticket as unknown as Record<string, unknown>), whatsapp });
+  return success(r, {
+    ...serializeTicket(ticket as unknown as Record<string, unknown>),
+    whatsapp,
+    engineerWhatsapp,
+  });
 });
 
-ticketsRouter.post("/:id/mark-paid", validate(idSchema), async (q: Request, r: Response) => {
+ticketsRouter.post("/:id/mark-paid", validate(markPaidSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
+  if (!canApproveTicketsRole(q.auth?.role)) {
+    throw new AppError("Only admin can mark tickets paid in full", 403);
+  }
   const existing = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
   if (!existing) throw notFound("Ticket");
 
-  const paymentTotal = Math.max(num(existing.paymentTotal), num(existing.advanceAmount));
+  const bodyPay = q.body as {
+    paymentMethod: "CASH" | "UPI" | "NEFT" | "RTGS" | "CHEQUE" | "CARD" | "OTHER";
+    paymentReference?: string | null;
+    paymentProofUrl?: string | null;
+    sendWhatsApp?: boolean;
+    paymentTotal?: number;
+    advanceAmount?: number;
+  };
+  const sendWhatsApp = bodyPay.sendWhatsApp === true;
+  const paymentTotal = Math.max(
+    bodyPay.paymentTotal != null ? num(bodyPay.paymentTotal) : num(existing.paymentTotal),
+    bodyPay.advanceAmount != null ? num(bodyPay.advanceAmount) : num(existing.advanceAmount),
+    0,
+  );
+  const advanceAmount =
+    bodyPay.advanceAmount != null
+      ? Math.min(num(bodyPay.advanceAmount), paymentTotal)
+      : Math.min(num(existing.advanceAmount), paymentTotal);
+  assertPaymentCollection({
+    paymentMethod: bodyPay.paymentMethod,
+    paymentReference: bodyPay.paymentReference,
+    paymentProofUrl: bodyPay.paymentProofUrl,
+    paymentTotal,
+  });
+
   await prisma.ticket.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data: {
       paymentStatus: "PAID",
       paymentTotal,
-      advanceAmount: paymentTotal,
+      advanceAmount: paymentTotal, // fully paid — advance equals total
+      odAmount: 0,
       paidAt: new Date(),
+      paymentMethod: bodyPay.paymentMethod,
+      paymentReference: bodyPay.paymentReference?.trim() || null,
+      paymentProofUrl: bodyPay.paymentProofUrl?.trim() || null,
     },
   });
   const ticket = await prisma.ticket.findFirst({ where: { id, tenantId: t } });
@@ -862,24 +1360,54 @@ ticketsRouter.post("/:id/mark-paid", validate(idSchema), async (q: Request, r: R
   let invoice: Record<string, unknown> | null = null;
   let invoiceError: string | null = null;
   try {
-    invoice = await ensureServiceInvoice(t, q.auth!.userId!, ticket, true);
+    if (ticket.status === "RESOLVED" || ticket.status === "CLOSED") {
+      invoice = await ensureServiceInvoice(t, q.auth!.userId!, ticket, true);
+    }
   } catch (err) {
     invoiceError = err instanceof Error ? err.message : "Could not create invoice";
   }
 
-  const whatsapp = await notifyTicketPaidFully(
-    t,
-    {
-      id: ticket.id,
-      ticketNo: ticket.ticketNo,
-      subject: ticket.subject,
-      contactId: ticket.contactId,
-      assignedToId: ticket.assignedToId,
-      paymentTotal: num(ticket.paymentTotal),
-    },
-    q.auth!.userId,
-    invoice?.invoiceNumber ? String(invoice.invoiceNumber) : null,
-  );
+  try {
+    const paymentNumber = await nextPaymentNo(t);
+    await prisma.payment.create({
+      data: {
+        id: newId(),
+        tenantId: t,
+        paymentNumber,
+        invoiceId: invoice?.id ? String(invoice.id) : ticket.serviceInvoiceId,
+        accountId: ticket.accountId,
+        direction: "INBOUND",
+        method: bodyPay.paymentMethod,
+        amount: paymentTotal,
+        currency: "INR",
+        paidAt: new Date(),
+        referenceNo: bodyPay.paymentReference?.trim() || null,
+        notes: `Service SVC-${String(ticket.ticketNo).padStart(5, "0")}${
+          bodyPay.paymentProofUrl ? ` · proof: ${bodyPay.paymentProofUrl}` : ""
+        }`.slice(0, 255),
+        createdById: q.auth!.userId!,
+      },
+    });
+  } catch (err) {
+    console.error("service payment ledger write failed", err);
+  }
+
+  const whatsapp =
+    sendWhatsApp
+      ? await notifyTicketPaidFully(
+          t,
+          {
+            id: ticket.id,
+            ticketNo: ticket.ticketNo,
+            subject: ticket.subject,
+            contactId: ticket.contactId,
+            assignedToId: ticket.assignedToId,
+            paymentTotal: num(ticket.paymentTotal),
+          },
+          q.auth!.userId,
+          invoice?.invoiceNumber ? String(invoice.invoiceNumber) : null,
+        )
+      : null;
 
   return success(
     r,
@@ -887,7 +1415,11 @@ ticketsRouter.post("/:id/mark-paid", validate(idSchema), async (q: Request, r: R
       ...serializeTicket(ticket as unknown as Record<string, unknown>),
       whatsapp,
       invoice,
-      invoiceError,
+      invoiceError:
+        invoiceError ||
+        (ticket.status !== "RESOLVED" && ticket.status !== "CLOSED"
+          ? "Marked paid — create invoice after job is marked complete"
+          : null),
     },
     "Marked paid in full",
   );
@@ -896,36 +1428,38 @@ ticketsRouter.post("/:id/mark-paid", validate(idSchema), async (q: Request, r: R
 ticketsRouter.post("/:id/payment-due", validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
+  if (!canApproveTicketsRole(q.auth?.role)) {
+    throw new AppError("Only admin can send payment-due notices", 403);
+  }
   const ticket = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
   if (!ticket) throw notFound("Ticket");
-  if (ticket.paymentStatus === "PAID") {
-    throw new AppError("This job is already paid in full", 400);
-  }
-  const whatsapp = await notifyPaymentDue(
-    t,
-    {
-      id: ticket.id,
-      ticketNo: ticket.ticketNo,
-      subject: ticket.subject,
-      contactId: ticket.contactId,
-      assignedToId: ticket.assignedToId,
-      paymentTotal: num(ticket.paymentTotal),
-      advanceAmount: num(ticket.advanceAmount),
-    },
-    q.auth!.userId,
+  // Template 5 (payment_due_customer) intentionally not used
+  const whatsapp = await notifyPaymentDue();
+  return success(
+    r,
+    { ...serializeTicket(ticket as unknown as Record<string, unknown>), whatsapp },
+    "Payment-due WhatsApp template is disabled",
   );
-  return success(r, { ...serializeTicket(ticket as unknown as Record<string, unknown>), whatsapp }, "Payment due sent");
 });
 
 ticketsRouter.post("/:id/invoice", validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
+  if (!canApproveTicketsRole(q.auth?.role)) {
+    throw new AppError("Only admin can create and send invoices", 403);
+  }
+  const sendWhatsApp = (q.body as { sendWhatsApp?: boolean })?.sendWhatsApp === true;
   const ticket = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
   if (!ticket) throw notFound("Ticket");
+  assertCanInvoice({
+    status: ticket.status,
+    paymentTotal: num(ticket.paymentTotal),
+    advanceAmount: num(ticket.advanceAmount),
+  });
   const paid = ticket.paymentStatus === "PAID";
   const invoice = await ensureServiceInvoice(t, q.auth!.userId!, ticket, paid);
   let whatsapp: Awaited<ReturnType<typeof notifyTicketPaidFully>> | null = null;
-  if (paid) {
+  if (sendWhatsApp && paid) {
     whatsapp = await notifyTicketPaidFully(
       t,
       {
@@ -939,25 +1473,11 @@ ticketsRouter.post("/:id/invoice", validate(idSchema), async (q: Request, r: Res
       q.auth!.userId,
       invoice.invoiceNumber != null ? String(invoice.invoiceNumber) : null,
     );
-  } else {
-    whatsapp = await notifyPaymentDue(
-      t,
-      {
-        id: ticket.id,
-        ticketNo: ticket.ticketNo,
-        subject: ticket.subject,
-        contactId: ticket.contactId,
-        assignedToId: ticket.assignedToId,
-        paymentTotal: num(ticket.paymentTotal),
-        advanceAmount: num(ticket.advanceAmount),
-      },
-      q.auth!.userId,
-    );
   }
   return success(
     r,
     { ...serializeTicket(ticket as unknown as Record<string, unknown>), invoice, whatsapp },
-    paid ? "Invoice created & payment receipt sent" : "Invoice created & payment due sent",
+    paid ? "Invoice created" : "Invoice created (payment still due — payment-due WhatsApp disabled)",
   );
 });
 
@@ -985,6 +1505,9 @@ ticketsRouter.post("/:id/messages", validate(messageSchema), async (q: Request, 
 ticketsRouter.delete("/:id", validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
+  if (!canApproveTicketsRole(q.auth?.role)) {
+    throw new AppError("Only admin can delete service tickets", 403);
+  }
   const updated = await prisma.ticket.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data: { deletedAt: new Date() },

@@ -1,11 +1,12 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { RequireTenantAuth } from '@/components/auth/RequireTenantAuth'
-import { RequireCompanyAdmin } from '@/components/auth/RequireCompanyAdmin'
+import { RequireCompanyAdmin, RequireErpAccess, RequireBillingAccess } from '@/components/auth/RequireCompanyAdmin'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { HowNovaCrmWorksPage } from '@/pages/HowNovaCrmWorksPage'
 import { MyTasksPage } from '@/pages/MyTasksPage'
 import { LeadsPage } from '@/pages/LeadsPage'
+import { LeadDetailPage } from '@/pages/LeadDetailPage'
 import { ContactsPage } from '@/pages/ContactsPage'
 import { ContactDetailPage } from '@/pages/ContactDetailPage'
 import { AccountsPage } from '@/pages/AccountsPage'
@@ -19,10 +20,10 @@ import { AmcPage } from '@/pages/AmcPage'
 import { StampingPage } from '@/pages/StampingPage'
 import { ReportsPage } from '@/pages/ReportsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { NotificationsPage } from '@/pages/NotificationsPage'
 import { UsersPage } from '@/pages/UsersPage'
 import { EmailsPage } from '@/pages/EmailsPage'
 import { WhatsAppPage } from '@/pages/WhatsAppPage'
-import { AdminApp } from '@/pages/admin/AdminApp'
 import { LoginPage } from '@/pages/LoginPage'
 import { LeadsRedirect } from '@/components/routing/LeadsRedirect'
 import {
@@ -38,7 +39,8 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/admin/*" element={<AdminApp />} />
+        {/* Single-company HMS dashboard — no platform / super-admin console */}
+        <Route path="/admin/*" element={<Navigate to="/login" replace />} />
         <Route
           element={
             <RequireTenantAuth>
@@ -50,6 +52,7 @@ export default function App() {
           <Route path="help" element={<HowNovaCrmWorksPage />} />
           <Route path="my-tasks" element={<MyTasksPage />} />
           <Route path="sale-tracking" element={<LeadsPage />} />
+          <Route path="sale-tracking/:id" element={<LeadDetailPage />} />
           <Route path="leads" element={<LeadsRedirect />} />
           <Route path="contacts" element={<ContactsPage />} />
           <Route path="contacts/:id" element={<ContactDetailPage />} />
@@ -67,38 +70,39 @@ export default function App() {
           />
           <Route path="tickets" element={<TicketsPage />} />
           <Route path="tickets/:id" element={<TicketDetailPage />} />
+          <Route path="notifications" element={<NotificationsPage />} />
           <Route path="amc" element={<AmcPage />} />
           <Route path="stamping" element={<StampingPage />} />
           <Route
             path="erp/products"
             element={
-              <RequireCompanyAdmin>
+              <RequireErpAccess>
                 <ProductsPage />
-              </RequireCompanyAdmin>
+              </RequireErpAccess>
             }
           />
           <Route
             path="erp/products/new"
             element={
-              <RequireCompanyAdmin>
+              <RequireErpAccess>
                 <Navigate to="/erp/products?tab=create" replace />
-              </RequireCompanyAdmin>
+              </RequireErpAccess>
             }
           />
           <Route
             path="erp/products/:id"
             element={
-              <RequireCompanyAdmin>
+              <RequireErpAccess>
                 <ProductDetailPage />
-              </RequireCompanyAdmin>
+              </RequireErpAccess>
             }
           />
           <Route
             path="erp/inventory"
             element={
-              <RequireCompanyAdmin>
+              <RequireErpAccess>
                 <InventoryPage />
-              </RequireCompanyAdmin>
+              </RequireErpAccess>
             }
           />
           <Route
@@ -112,9 +116,9 @@ export default function App() {
           <Route
             path="erp/invoices"
             element={
-              <RequireCompanyAdmin>
+              <RequireBillingAccess>
                 <InvoicesPage />
-              </RequireCompanyAdmin>
+              </RequireBillingAccess>
             }
           />
           <Route

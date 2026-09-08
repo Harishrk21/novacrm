@@ -38,6 +38,7 @@ export const leadStatusColor: Record<string, keyof typeof colorMap> = {
   UNQUALIFIED: 'gray',
   LOST: 'red',
   CONVERTED: 'purple',
+  DEMO: 'amber',
 }
 
 export const leadSourceColor: Record<string, keyof typeof colorMap> = {

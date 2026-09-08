@@ -16,7 +16,7 @@ import { useUIStore } from '@/store/uiStore'
  * 5. Compose from CRM sends via the connected mailbox (SMTP/Graph/Gmail API).
  * 6. Opens/clicks (optional) use tracking pixels / link wrappers for engagement stats.
  *
- * NovaCRM currently shows the connect UX only — mailbox OAuth + sync is the next build.
+ * HMS Enterprises currently shows the connect UX only — mailbox OAuth + sync is the next build.
  */
 export function EmailsPage() {
   const addToast = useUIStore((s) => s.addToast)

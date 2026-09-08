@@ -14,7 +14,6 @@ import {
   ViewIconButton,
 } from '@/components/ui/BulkSelect'
 import { Card } from '@/components/ui/Card'
-import { Drawer } from '@/components/ui/Drawer'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
@@ -29,7 +28,15 @@ import { formatDate, formatPhone, formatCurrency } from '@/lib/utils'
 import { productRequiresStamping } from '@/lib/productCatalog'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
-import { isCompanyAdmin } from '@/lib/roles'
+import { WhatsAppSendConfirm, type WhatsAppConfirmPayload } from '@/components/whatsapp/WhatsAppSendConfirm'
+import { isCompanyAdmin, isSalesExecutive, filterSalesExecutives, type LookupUser } from '@/lib/roles'
+import {
+  HMS_FAMILY_OPTIONS,
+  industryOptions,
+  productCatalogMeta,
+} from '@/lib/hmsCatalog'
+import { productAttrs } from '@/lib/productCatalog'
+import { formatEnquiryId } from '@/lib/serviceId'
 
 /** Internal API statuses with labels matching sales desk language */
 const STATUS_OPTIONS = [
@@ -74,6 +81,8 @@ const emptyForm = {
   description: '',
   productInterest: '',
   productId: '',
+  familyCode: '',
+  industryCode: '',
   demoSerialId: '',
   budget: '',
   enquiryDate: new Date().toISOString().slice(0, 10),
@@ -87,7 +96,7 @@ export function LeadsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const addToast = useUIStore((s) => s.addToast)
   const authUser = useAuthStore((s) => s.user)
-  const isAgent = authUser?.role === 'AGENT'
+  const isSales = isSalesExecutive(authUser?.role)
   const isAdmin = isCompanyAdmin(authUser?.role)
   const tip = DEFAULT_TIPS['crm.leads'] ?? {
     title: 'Sale tracking',
@@ -97,7 +106,7 @@ export function LeadsPage() {
 
   const [items, setItems] = useState<Record<string, unknown>[]>([])
   const [sources, setSources] = useState<Array<{ id: string; name: string }>>([])
-  const [users, setUsers] = useState<Array<{ id: string; name: string }>>([])
+  const [users, setUsers] = useState<LookupUser[]>([])
   const [stages, setStages] = useState<Array<{ id: string; name: string }>>([])
   const [products, setProducts] = useState<
     Array<{ id: string; name: string; sku: string; salePrice?: number; taxPercent?: number; attributes?: Record<string, unknown> | null }>
@@ -113,6 +122,10 @@ export function LeadsPage() {
     dealId: string
   } | null>(null)
   const [convertBusy, setConvertBusy] = useState(false)
+  const [waPending, setWaPending] = useState<{
+    payload: WhatsAppConfirmPayload
+    execute: (sendWhatsApp: boolean) => Promise<void>
+  } | null>(null)
   const [pickedContact, setPickedContact] = useState<ContactPick | null>(null)
   const [search, setSearch] = useState('')
   const initialStatus = searchParams.get('status') ?? ''
@@ -120,10 +133,16 @@ export function LeadsPage() {
     ALL_STATUS_VALUES.includes(initialStatus as (typeof ALL_STATUS_VALUES)[number]) ? initialStatus : '',
   )
   const [ownerFilter, setOwnerFilter] = useState('')
-  const [pageTab, setPageTab] = useState<'list' | 'create'>(() =>
+  const [pageTab, setPageTab] = useState<'list' | 'create' | 'demo-updates'>(() =>
     searchParams.get('open') === '1' ? 'create' : 'list',
   )
-  const [form, setForm] = useState(emptyForm)
+  const [form, setForm] = useState(() => ({
+    ...emptyForm,
+    assignedToId: '',
+  }))
+  const [dailyNote, setDailyNote] = useState('')
+  const [dailyDate, setDailyDate] = useState(new Date().toISOString().slice(0, 10))
+  const [dailySaving, setDailySaving] = useState(false)
   const [selected, setSelected] = useState<Record<string, unknown> | null>(null)
   const [convertOpen, setConvertOpen] = useState(false)
   const [convertStageId, setConvertStageId] = useState('')
@@ -149,6 +168,8 @@ export function LeadsPage() {
   >([])
   const [demoUnitId, setDemoUnitId] = useState('')
   const [demoProductFilter, setDemoProductFilter] = useState('')
+  const [demoFamilyCode, setDemoFamilyCode] = useState('')
+  const [demoIndustryCode, setDemoIndustryCode] = useState('')
   const [demoSaving, setDemoSaving] = useState(false)
   const [demoReturning, setDemoReturning] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -157,6 +178,11 @@ export function LeadsPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
   const [busyDelete, setBusyDelete] = useState(false)
+
+  useEffect(() => {
+    setDailyNote('')
+    setDailyDate(new Date().toISOString().slice(0, 10))
+  }, [selected?.id])
 
   const ids = useMemo(() => items.map((i) => String(i.id)), [items])
   const selection = useRowSelection(ids)
@@ -170,7 +196,7 @@ export function LeadsPage() {
           limit: 500,
           search: search || undefined,
           status: status || undefined,
-          ...(isAgent && authUser?.id
+          ...(isSales && authUser?.id
             ? { assignedToId: authUser.id }
             : ownerFilter && ownerFilter !== 'unassigned'
               ? { assignedToId: ownerFilter }
@@ -180,10 +206,17 @@ export function LeadsPage() {
         api.products({ limit: 500 }),
       ])
       let rows = leads.items ?? []
-      if (!isAgent && ownerFilter === 'unassigned') {
+      if (!isSales && ownerFilter === 'unassigned') {
         rows = rows.filter((l) => !l.assignedToId)
       }
-      setItems(rows)
+      setItems(
+        [...rows].sort((a, b) => {
+          // createdAt desc client — newest enquiries on top
+          const ta = new Date(String(a.createdAt ?? 0)).getTime()
+          const tb = new Date(String(b.createdAt ?? 0)).getTime()
+          return tb - ta
+        }),
+      )
       setSources(lookups.sources)
       setUsers(lookups.users)
       setStages(lookups.stages)
@@ -217,7 +250,7 @@ export function LeadsPage() {
     } finally {
       setLoading(false)
     }
-  }, [addToast, authUser?.id, convertStageId, isAgent, ownerFilter, search, status])
+  }, [addToast, authUser?.id, convertStageId, isSales, ownerFilter, search, status])
 
   useEffect(() => {
     void load()
@@ -235,18 +268,130 @@ export function LeadsPage() {
     [sources],
   )
   const userName = useMemo(() => Object.fromEntries(users.map((u) => [u.id, u.name])), [users])
+  const salesExecs = useMemo(() => filterSalesExecutives(users), [users])
+  /** Admins see everyone; sales execs only themselves (locked owner). */
+  const salesOptions = useMemo(() => {
+    const list =
+      isSales && authUser?.id
+        ? salesExecs.filter((u) => u.id === authUser.id)
+        : salesExecs
+    const opts = list.map((u) => ({
+      value: u.id,
+      label: u.phone ? `${u.name} · ${u.phone}` : u.name,
+    }))
+    // If lookups lag, still show the logged-in executive by name.
+    if (isSales && authUser?.id && !opts.some((o) => o.value === authUser.id)) {
+      opts.push({
+        value: authUser.id,
+        label: authUser.name || 'You (sales executive)',
+      })
+    }
+    return opts
+  }, [salesExecs, isSales, authUser?.id, authUser?.name])
+
+  function openCreateEnquiry() {
+    setPageTab('create')
+    setForm({
+      ...emptyForm,
+      assignedToId: isSales && authUser?.id ? authUser.id : '',
+    })
+    setPickedContact(null)
+    setErrors({})
+    setCreateDemoUnits([])
+  }
   const productName = useMemo(
     () => Object.fromEntries(products.map((p) => [p.id, p.name])),
     [products],
   )
+  const productsForDemo = useMemo(() => {
+    return products.filter((p) => {
+      const meta = productCatalogMeta(productAttrs(p))
+      if (form.familyCode) {
+        if (meta.familyCode) {
+          if (meta.familyCode !== form.familyCode) return false
+        } else if (form.familyCode === 'WEIGHING_SCALES' && meta.catalogKind !== 'WEIGHING') {
+          return false
+        }
+      }
+      if (form.industryCode && meta.industryCode !== form.industryCode) return false
+      return true
+    })
+  }, [products, form.familyCode, form.industryCode])
+
+  const demoUpdateFeed = useMemo(() => {
+    const rows: Array<{
+      leadId: string
+      leadName: string
+      company?: string
+      serial?: string
+      product?: string
+      dcNo?: string
+      executive?: string
+      update: Record<string, unknown>
+    }> = []
+    for (const lead of items) {
+      if (String(lead.status) !== 'DEMO') continue
+      const cf = (lead.customFields as Record<string, unknown> | null) ?? {}
+      const updates = Array.isArray(cf.demoDailyUpdates)
+        ? (cf.demoDailyUpdates as Array<Record<string, unknown>>)
+        : []
+      for (const u of updates) {
+        rows.push({
+          leadId: String(lead.id),
+          leadName: String(lead.name ?? ''),
+          company: lead.company ? String(lead.company) : undefined,
+          serial: cf.demoSerialNo ? String(cf.demoSerialNo) : undefined,
+          product: cf.demoProductName ? String(cf.demoProductName) : undefined,
+          dcNo: cf.demoDcNo ? String(cf.demoDcNo) : undefined,
+          executive: cf.demoExecutiveName
+            ? String(cf.demoExecutiveName)
+            : userName[String(lead.assignedToId ?? '')],
+          update: u,
+        })
+      }
+    }
+    return rows.sort(
+      (a, b) =>
+        new Date(String(b.update.at ?? b.update.updateDate ?? 0)).getTime() -
+        new Date(String(a.update.at ?? a.update.updateDate ?? 0)).getTime(),
+    )
+  }, [items, userName])
+
+  async function saveDailyUpdate() {
+    if (!selected || !dailyNote.trim()) {
+      addToast({ type: 'error', message: 'Write today’s demo update' })
+      return
+    }
+    setDailySaving(true)
+    try {
+      const updated = await api.addLeadDemoUpdate(String(selected.id), {
+        note: dailyNote.trim(),
+        updateDate: dailyDate,
+      })
+      setSelected(updated)
+      setItems((prev) =>
+        prev.map((l) => (String(l.id) === String(selected.id) ? { ...l, ...updated } : l)),
+      )
+      setDailyNote('')
+      addToast({ type: 'success', message: 'Daily demo update saved — visible to admin' })
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not save update',
+      })
+    } finally {
+      setDailySaving(false)
+    }
+  }
+
   const productOptions = useMemo(
     () =>
-      products.map((p) => ({
+      (form.status === 'DEMO' ? productsForDemo : products).map((p) => ({
         value: p.id,
         label: p.name,
         sublabel: p.sku,
       })),
-    [products],
+    [products, productsForDemo, form.status],
   )
 
   const selectedDemoUnit = useMemo(
@@ -255,9 +400,41 @@ export function LeadsPage() {
   )
 
   const filteredDemoUnits = useMemo(() => {
-    if (!demoProductFilter) return demoUnits
-    return demoUnits.filter((u) => u.productId === demoProductFilter)
-  }, [demoUnits, demoProductFilter])
+    return demoUnits.filter((u) => {
+      if (demoProductFilter && u.productId !== demoProductFilter) return false
+      if (!demoFamilyCode && !demoIndustryCode) return true
+      const meta = productCatalogMeta(productAttrs(u.product))
+      if (demoFamilyCode) {
+        if (meta.familyCode) {
+          if (meta.familyCode !== demoFamilyCode) return false
+        } else if (demoFamilyCode === 'WEIGHING_SCALES' && meta.catalogKind !== 'WEIGHING') {
+          return false
+        }
+      }
+      if (demoIndustryCode && meta.industryCode !== demoIndustryCode) return false
+      return true
+    })
+  }, [demoUnits, demoProductFilter, demoFamilyCode, demoIndustryCode])
+
+  const demoPickerProductOptions = useMemo(() => {
+    const matching = demoUnits.filter((u) => {
+      if (!demoFamilyCode && !demoIndustryCode) return true
+      const meta = productCatalogMeta(productAttrs(u.product))
+      if (demoFamilyCode) {
+        if (meta.familyCode) {
+          if (meta.familyCode !== demoFamilyCode) return false
+        } else if (demoFamilyCode === 'WEIGHING_SCALES' && meta.catalogKind !== 'WEIGHING') {
+          return false
+        }
+      }
+      if (demoIndustryCode && meta.industryCode !== demoIndustryCode) return false
+      return true
+    })
+    const ids = new Set(matching.map((u) => u.productId).filter(Boolean) as string[])
+    return products
+      .filter((p) => ids.has(p.id))
+      .map((p) => ({ value: p.id, label: p.name, sublabel: p.sku }))
+  }, [demoUnits, products, demoFamilyCode, demoIndustryCode])
 
   const statusCounts = useMemo(() => {
     const counts = { NEW: 0, DEMO: 0, CONVERTED: 0, LOST: 0 }
@@ -313,7 +490,10 @@ export function LeadsPage() {
 
   function closeCreateForm() {
     setPageTab('list')
-    setForm(emptyForm)
+    setForm({
+      ...emptyForm,
+      assignedToId: isSales && authUser?.id ? authUser.id : '',
+    })
     setPickedContact(null)
     setErrors({})
     setCreateDemoUnits([])
@@ -325,26 +505,63 @@ export function LeadsPage() {
   useEffect(() => {
     const shouldOpen = searchParams.get('open') === '1'
     const contactId = searchParams.get('contactId')
-    if (shouldOpen) setPageTab('create')
-    if (contactId) {
+    if (shouldOpen) {
+      setPageTab('create')
+      setForm((f) => ({
+        ...f,
+        assignedToId: isSales && authUser?.id ? authUser.id : f.assignedToId,
+        ...(contactId ? { contactId, customerType: 'EXISTING' as const } : {}),
+      }))
+    } else if (contactId) {
       setForm((f) => ({ ...f, contactId, customerType: 'EXISTING' }))
-      if (shouldOpen) setPageTab('create')
     }
-  }, [searchParams, setSearchParams])
+  }, [searchParams, setSearchParams, isSales, authUser?.id])
+
+  // Keep sales executive locked to self whenever the create form is open.
+  useEffect(() => {
+    if (pageTab !== 'create' || !isSales || !authUser?.id) return
+    setForm((f) => (f.assignedToId === authUser.id ? f : { ...f, assignedToId: authUser.id }))
+  }, [pageTab, isSales, authUser?.id])
 
   async function createLead(e: FormEvent) {
     e.preventDefault()
     const nextErrors = validateLeadForm(form)
     if (form.status === 'DEMO') {
-      if (!form.productId) nextErrors.productId = 'Select the demo product'
+      if (!form.familyCode) nextErrors.familyCode = 'Select product family'
+      if (form.familyCode === 'WEIGHING_SCALES' && !form.industryCode) {
+        nextErrors.industryCode = 'Select industry'
+      }
+      if (!form.productId) nextErrors.productId = 'Select the demo product / machine'
       if (!form.demoSerialId) nextErrors.demoSerialId = 'Select the serial number going out on demo'
-      if (!form.assignedToId) nextErrors.assignedToId = 'Assign an executive for the demo unit'
+      if (!form.assignedToId && !isSales) nextErrors.assignedToId = 'Assign an executive for the demo unit'
     }
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length) {
-      addToast({ type: 'error', message: firstError(nextErrors) })
+      addToast({ type: 'error', message: `Missing — ${firstError(nextErrors)}` })
+      const firstKey = Object.keys(nextErrors)[0]
+      const el =
+        document.querySelector(`[name="${firstKey}"]`) ||
+        document.getElementById(`lead-field-${firstKey}`) ||
+        document.getElementById('add-lead')
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
+    setWaPending({
+      payload: {
+        title: 'Save enquiry & WhatsApp customer?',
+        lines: [
+          'Template sale_enquiry_received → customer phone',
+          ...(form.status === 'DEMO' && form.demoSerialId
+            ? ['Template demo_dc_customer → customer (DC + serial)']
+            : []),
+        ],
+        note: 'Needs customer mobile with country code. Product / DC fields come from this form.',
+      },
+      execute: (send) => doCreateLead(send),
+    })
+  }
+
+  async function doCreateLead(sendWhatsApp: boolean) {
     setSaving(true)
     try {
       const customFields: Record<string, unknown> = {}
@@ -374,7 +591,7 @@ export function LeadsPage() {
         sourceId: form.sourceId || null,
         status: form.status === 'DEMO' ? 'NEW' : form.status,
         score: Number(form.score) || 0,
-        assignedToId: form.assignedToId || null,
+        assignedToId: isSales && authUser?.id ? authUser.id : form.assignedToId || null,
         description: form.description.trim() || null,
         tags: form.tags
           ? form.tags
@@ -383,20 +600,26 @@ export function LeadsPage() {
               .filter(Boolean)
           : [],
         customFields,
+        ...(form.status === 'DEMO' && form.demoSerialId
+          ? { demoStockUnitId: form.demoSerialId }
+          : {}),
+        sendWhatsApp,
       })
 
-      if (form.status === 'DEMO' && form.demoSerialId) {
-        await api.issueLeadDemo(String(created.id), form.demoSerialId)
-        addToast({
-          type: 'success',
-          message: 'Demo issued — serial moved to Executive warehouse & listed in Demo inventory',
-        })
-      } else {
-        addToast({ type: 'success', message: 'Sale enquiry saved — follow-up task assigned to executive' })
-      }
+      const leadId = String(created.id ?? '')
+      if (!leadId) throw new Error('Enquiry saved but id missing — refresh and open from list')
+
+      addToast({
+        type: 'success',
+        message:
+          form.status === 'DEMO' && form.demoSerialId
+            ? 'Demo enquiry saved — delivery challan created & serial in Demo inventory'
+            : 'Sale enquiry saved (prospect only — not in customer list until convert)',
+      })
 
       closeCreateForm()
       await load()
+      navigate(`/sale-tracking/${leadId}`)
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Create failed' })
     } finally {
@@ -427,6 +650,18 @@ export function LeadsPage() {
 
   async function convert() {
     if (!selected) return
+    setWaPending({
+      payload: {
+        title: 'Convert sale & WhatsApp customer?',
+        lines: ['Template sale_order_confirmed → customer'],
+        note: 'Uses customer name, product interest / demo product, and enquiry reference.',
+      },
+      execute: (send) => doConvert(send),
+    })
+  }
+
+  async function doConvert(sendWhatsApp: boolean) {
+    if (!selected) return
     setConvertBusy(true)
     try {
       const cf = (selected.customFields as Record<string, unknown> | null) ?? {}
@@ -435,6 +670,7 @@ export function LeadsPage() {
         dealName: `${selected.company || selected.name} — Sale`,
         amount: num(cf.budget),
         createAccount: true,
+        sendWhatsApp,
       })
       const dealId = String((result as { deal?: { id?: string } }).deal?.id ?? '')
       const contactId = String(
@@ -519,6 +755,10 @@ export function LeadsPage() {
         }
       })
       setDemoUnits(mapped)
+      const interested = mapped.find((u) => u.productId === interestedProductId)
+      const meta = interested ? productCatalogMeta(productAttrs(interested.product)) : null
+      setDemoFamilyCode(meta?.familyCode ?? '')
+      setDemoIndustryCode(meta?.industryCode ?? '')
       setDemoProductFilter(interestedProductId)
       setDemoUnitId('')
       setDemoOpen(true)
@@ -685,7 +925,7 @@ export function LeadsPage() {
         ]}
         actions={
           pageTab === 'list' ? (
-            <Button onClick={() => setPageTab('create')} className="w-full sm:w-auto">
+            <Button onClick={() => openCreateEnquiry()} className="w-full sm:w-auto">
               <Plus size={16} /> New sale enquiry
             </Button>
           ) : undefined
@@ -693,22 +933,82 @@ export function LeadsPage() {
       />
 
       <PageTabs
-        accent="sky"
+        accent="theme"
         active={pageTab}
         onChange={(id) => {
-          if (id === 'list') closeCreateForm()
-          else {
-            setPageTab('create')
-            setForm(emptyForm)
+          if (id === 'list' || id === 'demo-updates') {
+            setPageTab(id as 'list' | 'demo-updates')
+            setForm({
+              ...emptyForm,
+              assignedToId: isSales && authUser?.id ? authUser.id : '',
+            })
             setPickedContact(null)
             setErrors({})
+            return
           }
+          openCreateEnquiry()
         }}
         tabs={[
-          { id: 'list', label: 'All enquiries', count: items.length },
+          { id: 'list', label: isSales ? 'My enquiries' : 'All enquiries', count: items.length },
+          ...(isAdmin
+            ? [{ id: 'demo-updates', label: 'Demo daily updates', count: demoUpdateFeed.length }]
+            : []),
           { id: 'create', label: 'New sale enquiry' },
         ]}
       />
+
+      {pageTab === 'demo-updates' && isAdmin ? (
+        <Card padding={false} className="mb-4">
+          <div className="border-b border-border px-4 py-3">
+            <h2 className="font-semibold text-text-primary">Demo progress from sales executives</h2>
+            <p className="mt-0.5 text-sm text-text-secondary">
+              Every daily update posted on an active demo appears here for admin review.
+            </p>
+          </div>
+          {demoUpdateFeed.length === 0 ? (
+            <EmptyState
+              title="No demo updates yet"
+              subtitle="When executives post daily notes on demo enquiries, they show up in this board."
+            />
+          ) : (
+            <ul className="divide-y divide-border">
+              {demoUpdateFeed.map((row) => (
+                <li key={`${row.leadId}-${String(row.update.id ?? row.update.at)}`}>
+                  <button
+                    type="button"
+                    className="flex w-full flex-col gap-1 px-4 py-3 text-left hover:bg-muted/40 sm:flex-row sm:items-start sm:justify-between"
+                    onClick={() => navigate(`/sale-tracking/${row.leadId}`)}
+                  >
+                    <div className="min-w-0">
+                      <div className="font-medium text-text-primary">
+                        {row.leadName}
+                        {row.company ? ` · ${row.company}` : ''}
+                      </div>
+                      <div className="text-sm text-text-secondary">
+                        {[
+                          row.update.dayNumber != null ? `Day ${row.update.dayNumber}` : null,
+                          row.product,
+                          row.serial ? `S/No ${row.serial}` : null,
+                          row.dcNo,
+                          row.executive,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                      <p className="mt-1 text-sm text-text-primary">{String(row.update.note ?? '')}</p>
+                    </div>
+                    <div className="shrink-0 text-xs text-text-secondary">
+                      {String(row.update.updateDate ?? '').slice(0, 10) ||
+                        formatDate(String(row.update.at ?? ''))}
+                      <div className="mt-0.5">{String(row.update.authorName ?? row.executive ?? '')}</div>
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      ) : null}
 
       {pageTab === 'create' ? (
         <>
@@ -718,7 +1018,7 @@ export function LeadsPage() {
             accent="sky"
             eyebrow="Sale tracking"
             title="New sale enquiry"
-            subtitle="Customer, product & executive — Demo status issues a serial from stock immediately."
+            subtitle="Prospect details stay on the enquiry until Convert sale — then they become a permanent customer. Demo status issues a serial from stock immediately."
             onClose={closeCreateForm}
             footer={
               <>
@@ -732,12 +1032,17 @@ export function LeadsPage() {
         <form id="add-lead" onSubmit={createLead} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <ContactPicker
             className="sm:col-span-2 lg:col-span-3"
-            label="Customer — search by name, CUS-ID or phone"
+            label="Existing customer (optional)"
             valueId={form.contactId}
             selected={pickedContact}
             onSelect={onPickContact}
             returnTo="/sale-tracking?open=1"
+            prospectMode
           />
+          <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
+            New prospects: leave search empty and fill name / phone below. They are <strong>not</strong> added to
+            Customers until you convert the sale.
+          </p>
           <Input label="Full name *" placeholder="e.g. Meena Krishnan" value={form.name} error={errors.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <Input label="Company / shop" placeholder="e.g. Harbour Traders" value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} />
           <Input label="Email" type="email" placeholder="name@company.in" value={form.email} error={errors.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
@@ -756,11 +1061,29 @@ export function LeadsPage() {
           <Input label="Product notes" placeholder="Variant / capacity if not in catalog" value={form.productInterest} onChange={(e) => setForm({ ...form, productInterest: e.target.value })} />
           <Input label="Quoted price ₹" type="number" placeholder="185000" value={form.budget} error={errors.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
           <Select
-            label="Executive"
+            label="Sales executive"
             value={form.assignedToId}
             onChange={(e) => setForm({ ...form, assignedToId: e.target.value })}
-            options={[{ value: '', label: 'Unassigned' }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
+            options={
+              isSales
+                ? salesOptions
+                : [
+                    {
+                      value: '',
+                      label: salesOptions.length
+                        ? 'Select executive…'
+                        : 'No sales executives — add in Users & Roles',
+                    },
+                    ...salesOptions,
+                  ]
+            }
+            disabled={isSales}
           />
+          {isSales ? (
+            <p className="-mt-2 text-xs text-text-secondary sm:col-span-2 lg:col-span-3">
+              This enquiry is assigned to you — you cannot assign it to another executive.
+            </p>
+          ) : null}
           <Select
             label="Status"
             value={form.status}
@@ -769,6 +1092,8 @@ export function LeadsPage() {
                 ...form,
                 status: e.target.value,
                 demoSerialId: e.target.value === 'DEMO' ? form.demoSerialId : '',
+                familyCode: e.target.value === 'DEMO' ? form.familyCode : '',
+                industryCode: e.target.value === 'DEMO' ? form.industryCode : '',
               })
             }
             options={STATUS_OPTIONS.filter((s) => s.value !== 'CONVERTED').map((s) => ({
@@ -777,31 +1102,83 @@ export function LeadsPage() {
             }))}
           />
           {form.status === 'DEMO' ? (
-            <div className="sm:col-span-2 lg:col-span-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4">
-              <h4 className="text-sm font-semibold text-amber-950">Demo unit — pick from inventory</h4>
-              <p className="mt-1 text-xs text-amber-900/80">
-                Serial moves to <strong>Executive</strong> warehouse, stock count drops, and appears in Demo inventory with executive name & enquiry date.
+            <div className="sm:col-span-2 lg:col-span-3 rounded-xl border border-amber-200 bg-amber-50/50 p-4 dark:border-amber-800/50 dark:bg-amber-950/30">
+              <h4 className="text-sm font-semibold text-text-primary">Demo unit — from inventory</h4>
+              <p className="mt-1 text-xs text-text-secondary">
+                Select product family → industry (weighing) → machine → serial. Stock drops and the unit appears in{' '}
+                <strong>Inventory → Demo inventory</strong> with customer &amp; executive details.
               </p>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <Select
+                  label="1. Product family *"
+                  value={form.familyCode}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      familyCode: e.target.value,
+                      industryCode: '',
+                      productId: '',
+                      demoSerialId: '',
+                      productInterest: '',
+                    })
+                  }
+                  options={[{ value: '', label: 'Select product…' }, ...HMS_FAMILY_OPTIONS]}
+                  error={errors.familyCode}
+                />
+                {form.familyCode === 'WEIGHING_SCALES' ? (
+                  <Select
+                    label="2. Industry *"
+                    value={form.industryCode}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        industryCode: e.target.value,
+                        productId: '',
+                        demoSerialId: '',
+                        productInterest: '',
+                      })
+                    }
+                    options={[
+                      { value: '', label: 'Select industry…' },
+                      ...industryOptions('WEIGHING_SCALES'),
+                    ]}
+                    error={errors.industryCode}
+                  />
+                ) : null}
                 <SearchableSelect
-                  label="Product *"
+                  label={form.familyCode === 'WEIGHING_SCALES' ? '3. Machine *' : '2. Machine *'}
                   value={form.productId}
                   options={productOptions}
                   onChange={(productId) => {
                     const name = productName[productId] ?? ''
-                    setForm({ ...form, productId, productInterest: name || form.productInterest, demoSerialId: '' })
+                    setForm({
+                      ...form,
+                      productId,
+                      productInterest: name || form.productInterest,
+                      demoSerialId: '',
+                    })
                   }}
-                  placeholder="Select catalog product…"
+                  placeholder={
+                    !form.familyCode
+                      ? 'Select product family first…'
+                      : form.familyCode === 'WEIGHING_SCALES' && !form.industryCode
+                        ? 'Select industry first…'
+                        : 'Select machine…'
+                  }
                   error={errors.productId}
                 />
                 <Select
-                  label="Serial number *"
+                  label={form.familyCode === 'WEIGHING_SCALES' ? '4. Serial number *' : '3. Serial number *'}
                   value={form.demoSerialId}
                   onChange={(e) => setForm({ ...form, demoSerialId: e.target.value })}
                   options={[
                     {
                       value: '',
-                      label: createDemoUnits.length ? 'Select in-stock serial' : 'No stock — add in Inventory first',
+                      label: createDemoUnits.length
+                        ? 'Select in-stock serial'
+                        : form.productId
+                          ? 'No stock — add serial in Inventory first'
+                          : 'Select machine first',
                     },
                     ...createDemoUnits.map((u) => ({
                       value: u.id,
@@ -838,187 +1215,308 @@ export function LeadsPage() {
         </form>
           </FormPanel>
         </>
-      ) : (
+      ) : pageTab === 'list' ? (
         <>
+          {/* Hero + billing map */}
+          <div className="st-enter mb-4 overflow-hidden rounded-[16px] border border-sky-200/80 bg-gradient-to-br from-[#0B1F3A] via-[#123456] to-[#1e4a7a] text-white shadow-[var(--shadow-card)] dark:border-sky-900/40">
+            <div className="relative px-5 py-5 sm:px-6 sm:py-6">
+              <div
+                className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-sky-400/10"
+                aria-hidden
+              />
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="max-w-2xl">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-sky-200/90">
+                    Sales pipeline
+                  </div>
+                  <h2 className="mt-1 text-xl font-bold tracking-tight sm:text-2xl">
+                    Enquiry → Demo → Convert → Proforma
+                  </h2>
+                  <p className="mt-1.5 text-sm leading-relaxed text-sky-100/85">
+                    Sales executives own the lead and demo. When converted / ready to buy,{' '}
+                    <strong className="text-white">admin + warehouse</strong> raise a CRM{' '}
+                    <strong className="text-white">proforma</strong>. Final GST tax invoice &amp; collection stay in{' '}
+                    <strong className="text-white">Tally</strong> — sales never invoices.
+                  </p>
+                </div>
+                <Button
+                  className="st-enter-scale shrink-0 bg-white text-slate-900 hover:bg-sky-50"
+                  onClick={() => openCreateEnquiry()}
+                >
+                  <Plus size={16} /> New sale enquiry
+                </Button>
+              </div>
+              <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                {[
+                  { n: '1', t: 'Sales creates lead', d: 'Quoted price on enquiry' },
+                  { n: '2', t: 'Demo + DC', d: 'Serial out · daily updates' },
+                  { n: '3', t: 'Convert / ready', d: 'Notifies billing team' },
+                  { n: '4', t: 'Proforma → Tally', d: 'Warehouse/admin · GST in Tally' },
+                ].map((s, i) => (
+                  <div
+                    key={s.n}
+                    className={`st-enter-scale rounded-[10px] border border-white/15 bg-white/10 px-3 py-2.5 backdrop-blur-sm st-delay-${i + 1}`}
+                  >
+                    <div className="text-[10px] font-bold text-sky-200">STEP {s.n}</div>
+                    <div className="text-sm font-semibold">{s.t}</div>
+                    <div className="text-[11px] text-sky-100/75">{s.d}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* KPI strip — clickable filters */}
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             {[
-              { label: 'Pending', value: statusCounts.NEW, icon: Users, tint: 'bg-blue-50 text-accent-blue' },
-              { label: 'On demo', value: statusCounts.DEMO, icon: Package, tint: 'bg-amber-50 text-accent-amber' },
-              { label: 'Converted', value: statusCounts.CONVERTED, icon: ShieldCheck, tint: 'bg-emerald-50 text-accent-green' },
-              { label: 'Not interested', value: statusCounts.LOST, icon: UserX, tint: 'bg-slate-100 text-text-secondary' },
-            ].map((s) => (
-              <Card key={s.label} className="flex items-center gap-3 py-3">
-                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${s.tint}`}>
-                  <s.icon size={18} />
-                </div>
-                <div>
-                  <div className="text-2xl font-bold tabular-nums">{s.value}</div>
-                  <div className="text-xs text-text-secondary">{s.label}</div>
-                </div>
-              </Card>
-            ))}
+              {
+                label: 'Pending',
+                value: statusCounts.NEW,
+                icon: Users,
+                tint: 'from-blue-500/15 to-blue-500/5 border-blue-200/80 text-accent-blue',
+                iconBg: 'bg-blue-600 text-white',
+                filter: 'NEW',
+              },
+              {
+                label: 'On demo',
+                value: statusCounts.DEMO,
+                icon: Package,
+                tint: 'from-amber-500/15 to-amber-500/5 border-amber-200/80 text-accent-amber',
+                iconBg: 'bg-amber-500 text-white',
+                filter: 'DEMO',
+              },
+              {
+                label: 'Converted',
+                value: statusCounts.CONVERTED,
+                icon: ShieldCheck,
+                tint: 'from-emerald-500/15 to-emerald-500/5 border-emerald-200/80 text-accent-green',
+                iconBg: 'bg-emerald-600 text-white',
+                filter: 'CONVERTED',
+              },
+              {
+                label: 'Not interested',
+                value: statusCounts.LOST,
+                icon: UserX,
+                tint: 'from-slate-500/10 to-slate-500/5 border-slate-200/80 text-text-secondary',
+                iconBg: 'bg-slate-600 text-white',
+                filter: 'LOST',
+              },
+            ].map((s, i) => {
+              const active = status === s.filter
+              return (
+                <button
+                  key={s.label}
+                  type="button"
+                  onClick={() => setStatus(active ? '' : s.filter)}
+                  className={`st-kpi st-enter st-delay-${i + 1} rounded-[14px] border bg-gradient-to-br p-4 text-left shadow-[var(--shadow-card)] ${s.tint} ${
+                    active ? 'ring-2 ring-accent-blue/50' : ''
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className={`flex h-10 w-10 items-center justify-center rounded-[10px] ${s.iconBg}`}>
+                      <s.icon size={18} />
+                    </div>
+                    <TrendingUp size={14} className="opacity-40" />
+                  </div>
+                  <div className="mt-3 text-3xl font-bold tabular-nums tracking-tight text-text-primary">
+                    {s.value}
+                  </div>
+                  <div className="mt-0.5 text-xs font-medium text-text-secondary">{s.label}</div>
+                </button>
+              )
+            })}
           </div>
 
-      <Card className="mb-4 flex flex-col gap-3 p-4 sm:flex-row sm:flex-wrap">
-        <div className="relative min-w-0 flex-1 sm:min-w-[220px]">
-          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" size={16} />
-          <Input className="pl-9" placeholder="Search leads…" value={search} onChange={(e) => setSearch(e.target.value)} />
-        </div>
-        <Select
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-          options={[
-            { value: '', label: 'All statuses' },
-            ...STATUS_OPTIONS.map((s) => ({ value: s.value, label: s.label })),
-          ]}
-          className="w-full sm:w-44"
-        />
-        {!isAgent && (
-          <Select
-            value={ownerFilter}
-            onChange={(e) => setOwnerFilter(e.target.value)}
-            className="w-full sm:w-44"
-            options={[
-              { value: '', label: 'All owners' },
-              { value: 'unassigned', label: 'Unassigned' },
-              ...users.map((u) => ({ value: u.id, label: u.name })),
-            ]}
-          />
-        )}
-      </Card>
-
-      <Card padding={false}>
-        {loading ? (
-          <p className="p-6 text-sm text-text-secondary">Loading leads from database…</p>
-        ) : loadError && items.length === 0 ? (
-          <EmptyState
-            title="Could not load leads"
-            subtitle={loadError}
-            actionLabel="Retry"
-            onAction={() => void load()}
-          />
-        ) : items.length === 0 ? (
-          <EmptyState title="No leads" subtitle="Add your first enquiry with full buyer details." actionLabel="Add lead" onAction={() => setPageTab('create')} />
-        ) : (
-          <div className="overflow-x-auto p-4 pt-3">
-            {isAdmin && selection.someSelected ? (
-              <BulkActionBar
-                count={selection.selectedCount}
-                noun="lead"
-                busy={busyDelete}
-                onClear={selection.clear}
-                onDelete={() => setConfirm({ ids: selection.selectedIds })}
+          <Card className="st-enter st-delay-3 mb-4 flex flex-col gap-3 p-4 sm:flex-row sm:flex-wrap">
+            <div className="relative min-w-0 flex-1 sm:min-w-[220px]">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary"
+                size={16}
               />
-            ) : null}
-            <table className="w-full min-w-[720px] text-left text-sm">
-              <thead className="bg-muted text-xs text-text-secondary">
-                <tr>
-                  <th className="w-10 px-4 py-3">
-                    <SelectCheckbox
-                      checked={selection.allSelected}
-                      indeterminate={selection.someSelected && !selection.allSelected}
-                      onChange={selection.toggleAll}
-                      aria-label="Select all"
-                    />
-                  </th>
-                  {['Customer', 'Product', 'Price', 'Executive', 'Date', 'Status', 'Demo serial', 'Actions'].map(
-                    (h) => (
-                      <th key={h} className="px-4 py-3 font-medium">
-                        {h}
-                      </th>
-                    ),
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((lead) => {
-                  const id = String(lead.id)
-                  const cf = (lead.customFields as Record<string, unknown> | null) ?? {}
-                  const productLabel =
-                    String(cf.interested_product_name ?? cf.product_interest ?? '—')
-                  const enquiryDate = cf.enquiry_date
-                    ? formatDate(String(cf.enquiry_date))
-                    : lead.createdAt
-                      ? formatDate(String(lead.createdAt))
-                      : '—'
-                  return (
-                    <tr
-                      key={id}
-                      className="cursor-pointer border-t border-border hover:bg-surface"
-                      onClick={() => setSelected(lead)}
-                    >
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+              <Input
+                className="pl-9"
+                placeholder="Search leads…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <Select
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+              options={[
+                { value: '', label: 'All statuses' },
+                ...STATUS_OPTIONS.map((s) => ({ value: s.value, label: s.label })),
+              ]}
+              className="w-full sm:w-44"
+            />
+            {!isSales && (
+              <Select
+                value={ownerFilter}
+                onChange={(e) => setOwnerFilter(e.target.value)}
+                className="w-full sm:w-44"
+                options={[
+                  { value: '', label: 'All owners' },
+                  { value: 'unassigned', label: 'Unassigned' },
+                  ...salesOptions,
+                ]}
+              />
+            )}
+          </Card>
+
+          <Card padding={false} className="st-enter st-delay-4 overflow-hidden">
+            {loading ? (
+              <p className="p-6 text-sm text-text-secondary">Loading leads from database…</p>
+            ) : loadError && items.length === 0 ? (
+              <EmptyState
+                title="Could not load leads"
+                subtitle={loadError}
+                actionLabel="Retry"
+                onAction={() => void load()}
+              />
+            ) : items.length === 0 ? (
+              <EmptyState
+                title="No leads"
+                subtitle="Add your first enquiry with full buyer details."
+                actionLabel="Add lead"
+                onAction={() => openCreateEnquiry()}
+              />
+            ) : (
+              <div className="overflow-x-auto p-4 pt-3">
+                {isAdmin && selection.someSelected ? (
+                  <BulkActionBar
+                    count={selection.selectedCount}
+                    noun="lead"
+                    busy={busyDelete}
+                    onClear={selection.clear}
+                    onDelete={() => setConfirm({ ids: selection.selectedIds })}
+                  />
+                ) : null}
+                <table className="w-full min-w-[720px] text-left text-sm">
+                  <thead className="bg-muted text-xs text-text-secondary">
+                    <tr>
+                      <th className="w-10 px-4 py-3">
                         <SelectCheckbox
-                          checked={selection.isSelected(id)}
-                          onChange={() => selection.toggle(id)}
-                          aria-label={`Select ${String(lead.name)}`}
+                          checked={selection.allSelected}
+                          indeterminate={selection.someSelected && !selection.allSelected}
+                          onChange={selection.toggleAll}
+                          aria-label="Select all"
                         />
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="flex items-center gap-2 font-medium">
-                          <Avatar name={String(lead.name)} size="sm" />
-                          <span>
-                            {String(lead.name)}
-                            {lead.company ? (
-                              <span className="block text-xs font-normal text-text-secondary">
-                                {String(lead.company)}
-                              </span>
-                            ) : null}
-                          </span>
-                        </span>
-                        <div className="mt-0.5 text-xs text-text-secondary">
-                          {formatPhone(String(lead.phone || '')) || '—'}
-                        </div>
-                      </td>
-                      <td className="max-w-[160px] px-4 py-3">{productLabel}</td>
-                      <td className="px-4 py-3">
-                        {cf.budget != null ? `₹${Number(cf.budget).toLocaleString('en-IN')}` : '—'}
-                      </td>
-                      <td className="px-4 py-3">
-                        {lead.assignedToId ? (
-                          <span className="flex items-center gap-2">
-                            <Avatar name={userName[String(lead.assignedToId)] ?? '?'} size="sm" />
-                            <span>{userName[String(lead.assignedToId)] ?? '—'}</span>
-                          </span>
-                        ) : (
-                          <span className="text-text-secondary">Unassigned</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-text-secondary">{enquiryDate}</td>
-                      <td className="px-4 py-3">
-                        <Badge color={statusBadgeColor(String(lead.status))}>
-                          {statusLabel(String(lead.status))}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-3 font-mono text-xs">
-                        {cf.demoSerialNo ? String(cf.demoSerialNo) : '—'}
-                      </td>
-                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-0.5">
-                          <ViewIconButton onClick={() => setSelected(lead)} />
-                          <DeleteIconButton
-                            disabled={busyDelete}
-                            onClick={() => setConfirm({ ids: [id] })}
-                          />
-                        </div>
-                      </td>
+                      </th>
+                      {['Enquiry ID', 'Customer', 'Product', 'Price', 'Executive', 'Date', 'Status', 'Demo / DC', 'Actions'].map(
+                        (h) => (
+                          <th key={h} className="px-4 py-3 font-medium">
+                            {h}
+                          </th>
+                        ),
+                      )}
                     </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+                  </thead>
+                  <tbody>
+                    {items.map((lead, rowIdx) => {
+                      const id = String(lead.id)
+                      const cf = (lead.customFields as Record<string, unknown> | null) ?? {}
+                      const productLabel = String(
+                        cf.interested_product_name ?? cf.product_interest ?? '—',
+                      )
+                      const enquiryDate = cf.enquiry_date
+                        ? formatDate(String(cf.enquiry_date))
+                        : lead.createdAt
+                          ? formatDate(String(lead.createdAt))
+                          : '—'
+                      const enquiryId = formatEnquiryId(lead)
+                      return (
+                        <tr
+                          key={id}
+                          className="st-row st-enter cursor-pointer border-t border-border"
+                          style={{ animationDelay: `${Math.min(rowIdx, 12) * 35}ms` }}
+                          onClick={() => navigate(`/sale-tracking/${id}`)}
+                        >
+                          <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                            <SelectCheckbox
+                              checked={selection.isSelected(id)}
+                              onChange={() => selection.toggle(id)}
+                              aria-label={`Select ${String(lead.name)}`}
+                            />
+                          </td>
+                          <td className="px-4 py-3 font-mono text-sm font-semibold text-accent-blue">
+                            {enquiryId}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="flex items-center gap-2 font-medium">
+                              <Avatar name={String(lead.name)} size="sm" />
+                              <span>
+                                {String(lead.name)}
+                                {lead.company ? (
+                                  <span className="block text-xs font-normal text-text-secondary">
+                                    {String(lead.company)}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </span>
+                            <div className="mt-0.5 text-xs text-text-secondary">
+                              {formatPhone(String(lead.phone || '')) || '—'}
+                            </div>
+                          </td>
+                          <td className="max-w-[160px] px-4 py-3">{productLabel}</td>
+                          <td className="px-4 py-3">
+                            {cf.budget != null ? `₹${Number(cf.budget).toLocaleString('en-IN')}` : '—'}
+                          </td>
+                          <td className="px-4 py-3">
+                            {lead.assignedToId ? (
+                              <span className="flex items-center gap-2">
+                                <Avatar name={userName[String(lead.assignedToId)] ?? '?'} size="sm" />
+                                <span>{userName[String(lead.assignedToId)] ?? '—'}</span>
+                              </span>
+                            ) : (
+                              <span className="text-text-secondary">Unassigned</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-text-secondary">{enquiryDate}</td>
+                          <td className="px-4 py-3">
+                            <Badge color={statusBadgeColor(String(lead.status))}>
+                              {statusLabel(String(lead.status))}
+                            </Badge>
+                          </td>
+                          <td className="px-4 py-3 font-mono text-xs">
+                            {cf.demoSerialNo || cf.demoDcNo ? (
+                              <div>
+                                {cf.demoSerialNo ? <div>{String(cf.demoSerialNo)}</div> : null}
+                                {cf.demoDcNo ? (
+                                  <div className="text-amber-800 dark:text-amber-200">
+                                    {String(cf.demoDcNo)}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                          <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center gap-0.5">
+                              <ViewIconButton onClick={() => navigate(`/sale-tracking/${id}`)} />
+                              <DeleteIconButton
+                                disabled={busyDelete}
+                                onClick={() => setConfirm({ ids: [id] })}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
         </>
-      )}
+      ) : null}
 
       <FormPanel
         open={convertOpen}
-        accent="sky"
+        accent="theme"
         eyebrow="Leads"
         title="Convert sale"
-        subtitle="Creates customer + deal. Demo serial is marked sold. You can raise the tax invoice next."
+        subtitle="Creates customer + deal. Demo serial is marked sold. Admin/warehouse raise CRM proforma next — final GST invoice stays in Tally."
         onClose={() => setConvertOpen(false)}
         footer={
           <>
@@ -1042,447 +1540,10 @@ export function LeadsPage() {
         </div>
       </FormPanel>
 
-      <Drawer
-        open={Boolean(selected) && !convertOpen}
-        onClose={() => setSelected(null)}
-        width={580}
-        title={
-          selected ? (
-            <div className="flex items-center gap-3">
-              <Avatar name={String(selected.name)} size="md" />
-              <div className="min-w-0">
-                <div className="truncate text-lg font-semibold text-text-primary">{String(selected.name)}</div>
-                <div className="flex flex-wrap items-center gap-2 mt-0.5">
-                  <Badge color="blue">{statusLabel(String(selected.status))}</Badge>
-                  {selected.company ? (
-                    <span className="text-sm text-text-secondary">{String(selected.company)}</span>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-          ) : (
-            'Sale enquiry'
-          )
-        }
-      >
-        {selected && (() => {
-          const cf = (selected.customFields as Record<string, unknown> | null) ?? {}
-          const contactId = cf.contact_id ? String(cf.contact_id) : ''
-          const enquiryDate = cf.enquiry_date
-            ? formatDate(String(cf.enquiry_date))
-            : selected.createdAt
-              ? formatDate(String(selected.createdAt))
-              : '—'
-          const productName = String(cf.interested_product_name ?? cf.product_interest ?? '—')
-          const price =
-            cf.budget != null ? `₹${Number(cf.budget).toLocaleString('en-IN')}` : '—'
-          return (
-          <div className="space-y-4 px-5 pb-6">
-            {/* Executive & status */}
-            <section className="rounded-xl border border-accent-blue/25 bg-gradient-to-br from-sky-50/80 to-white p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Executive</div>
-                  <div className="mt-1 flex items-center gap-2">
-                    <Avatar name={userName[String(selected.assignedToId)] ?? 'Unassigned'} size="sm" />
-                    <span className="font-semibold">{userName[String(selected.assignedToId)] ?? 'Unassigned'}</span>
-                  </div>
-                </div>
-                <div className="text-right text-sm">
-                  <div className="text-xs text-text-secondary">Enquiry date</div>
-                  <div className="font-semibold">{enquiryDate}</div>
-                </div>
-              </div>
-              {!isAgent && (
-                <Select
-                  className="mt-3"
-                  label="Reassign executive"
-                  value={String(selected.assignedToId ?? '')}
-                  onChange={(e) => void reassignLead(e.target.value)}
-                  options={[
-                    { value: '', label: 'Unassigned' },
-                    ...users.map((u) => ({ value: u.id, label: u.name })),
-                  ]}
-                />
-              )}
-              <Select
-                className="mt-3"
-                label="Status"
-                value={String(selected.status ?? 'NEW')}
-                onChange={(e) => void updateLeadStatus(e.target.value)}
-                options={[
-                  ...STATUS_OPTIONS.filter((s) => s.value !== 'CONVERTED').map((s) => ({
-                    value: s.value,
-                    label: s.label,
-                  })),
-                  ...(LEGACY_STATUSES.includes(String(selected.status) as (typeof LEGACY_STATUSES)[number])
-                    ? [{ value: String(selected.status), label: String(selected.status) }]
-                    : []),
-                ]}
-              />
-            </section>
+      {/* Lead detail opens at /sale-tracking/:id */}
 
-            {/* Customer */}
-            <section className="rounded-xl border border-border p-4">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Customer details</h3>
-              <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
-                <div>
-                  <dt className="text-text-secondary">Name</dt>
-                  <dd className="font-medium">{String(selected.name)}</dd>
-                </div>
-                <div>
-                  <dt className="text-text-secondary">Company / shop</dt>
-                  <dd className="font-medium">{String(selected.company || '—')}</dd>
-                </div>
-                <div>
-                  <dt className="text-text-secondary">Phone</dt>
-                  <dd>{formatPhone(String(selected.phone || '')) || '—'}</dd>
-                </div>
-                <div>
-                  <dt className="text-text-secondary">Email</dt>
-                  <dd className="break-all">{String(selected.email || '—')}</dd>
-                </div>
-                <div>
-                  <dt className="text-text-secondary">Location</dt>
-                  <dd>{[selected.city, selected.state, selected.country].filter(Boolean).join(', ') || '—'}</dd>
-                </div>
-                <div>
-                  <dt className="text-text-secondary">Customer type</dt>
-                  <dd>{String(cf.customer_type ?? 'New customer')}</dd>
-                </div>
-                {contactId ? (
-                  <div className="sm:col-span-2">
-                    <Link to={`/contacts/${contactId}`} className="text-sm font-semibold text-accent-blue hover:underline">
-                      Open linked customer profile →
-                    </Link>
-                  </div>
-                ) : null}
-              </dl>
-            </section>
 
-            {/* Sale enquiry */}
-            <section className="rounded-xl border border-border bg-muted/20 p-4">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Sale enquiry</h3>
-              <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
-                <div className="sm:col-span-2">
-                  <dt className="text-text-secondary">Interested product</dt>
-                  <dd className="text-base font-semibold text-text-primary">{productName}</dd>
-                  {cf.product_interest && cf.interested_product_name ? (
-                    <dd className="mt-0.5 text-xs text-text-secondary">{String(cf.product_interest)}</dd>
-                  ) : null}
-                </div>
-                <div>
-                  <dt className="text-text-secondary">Quoted price</dt>
-                  <dd className="text-lg font-bold text-accent-blue">{price}</dd>
-                </div>
-                <div>
-                  <dt className="text-text-secondary">Buy timeline</dt>
-                  <dd>{String(cf.timeline ?? '—')}</dd>
-                </div>
-                <div>
-                  <dt className="text-text-secondary">Source</dt>
-                  <dd>{sourceName[String(selected.sourceId)] ?? '—'}</dd>
-                </div>
-                <div>
-                  <dt className="text-text-secondary">Score</dt>
-                  <dd>{num(selected.score)}</dd>
-                </div>
-              </dl>
-            </section>
 
-            {/* Demo block */}
-            {(String(selected.status) === 'DEMO' || cf.demoSerialNo) ? (
-              <section className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-900">Demo unit</h3>
-                <dl className="mt-2 grid gap-2 text-sm">
-                  <div className="flex justify-between gap-4">
-                    <dt className="text-amber-800">Serial</dt>
-                    <dd className="font-mono font-bold">{String(cf.demoSerialNo ?? '—')}</dd>
-                  </div>
-                  <div className="flex justify-between gap-4">
-                    <dt className="text-amber-800">Product</dt>
-                    <dd className="font-medium">{String(cf.demoProductName ?? '—')}</dd>
-                  </div>
-                  {cf.demoIssuedAt ? (
-                    <div className="flex justify-between gap-4">
-                      <dt className="text-amber-800">Issued</dt>
-                      <dd>{formatDate(String(cf.demoIssuedAt))}</dd>
-                    </div>
-                  ) : null}
-                  {cf.demoExecutiveName ? (
-                    <div className="flex justify-between gap-4">
-                      <dt className="text-amber-800">Executive</dt>
-                      <dd className="font-medium">{String(cf.demoExecutiveName)}</dd>
-                    </div>
-                  ) : null}
-                </dl>
-                <div className="mt-3 flex flex-wrap gap-3 text-sm">
-                  <Link to="/erp/inventory?tab=demo" className="font-semibold text-accent-blue hover:underline">
-                    Demo inventory
-                  </Link>
-                  {String(selected.status) === 'DEMO' && cf.demoStockUnitId ? (
-                    <button
-                      type="button"
-                      className="font-semibold text-accent-blue hover:underline disabled:opacity-50"
-                      disabled={demoReturning}
-                      onClick={() => void returnDemoFromLead()}
-                    >
-                      {demoReturning ? 'Returning…' : 'Return to stock'}
-                    </button>
-                  ) : null}
-                </div>
-              </section>
-            ) : null}
-            {String(selected.status) !== 'DEMO' &&
-            String(selected.status) !== 'CONVERTED' &&
-            String(selected.status) !== 'LOST' ? (
-              <Button variant="outline" className="w-full" onClick={() => void openDemoPicker()}>
-                Issue demo unit (pick serial)
-              </Button>
-            ) : null}
-
-            {/* Comments */}
-            {selected.description ? (
-              <section className="rounded-xl border border-border p-4">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-text-secondary">Comments</h3>
-                <p className="mt-2 text-sm leading-relaxed whitespace-pre-wrap">{String(selected.description)}</p>
-              </section>
-            ) : null}
-
-            {/* Actions */}
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => navigate(`/activities?leadId=${String(selected.id)}&open=1`)}>
-                Log activity
-              </Button>
-              {selected.phone ? (
-                <Button variant="outline" className="flex-1" onClick={() => navigate('/whatsapp')}>
-                  WhatsApp
-                </Button>
-              ) : null}
-            </div>
-
-            {selected.convertedContactId || selected.convertedAccountId || selected.convertedDealId ? (
-              <section className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">
-                <h3 className="text-xs font-semibold uppercase text-accent-green">Converted</h3>
-                <div className="mt-2 flex flex-col gap-2 text-sm font-medium">
-                  {selected.convertedContactId ? (
-                    <button type="button" className="text-accent-blue hover:underline" onClick={() => navigate(`/contacts/${String(selected.convertedContactId)}`)}>
-                      Open contact →
-                    </button>
-                  ) : null}
-                  {selected.convertedAccountId ? (
-                    <button type="button" className="text-accent-blue hover:underline" onClick={() => navigate(`/accounts/${String(selected.convertedAccountId)}`)}>
-                      Open account →
-                    </button>
-                  ) : null}
-                  {selected.convertedDealId ? (
-                    <button type="button" className="text-accent-blue hover:underline" onClick={() => navigate(`/deals/${String(selected.convertedDealId)}`)}>
-                      Open deal →
-                    </button>
-                  ) : null}
-                </div>
-              </section>
-            ) : null}
-
-            {selected.status !== 'CONVERTED' && selected.status !== 'LOST' ? (
-              <Button className="w-full" onClick={() => void beginConvert()}>
-                <TrendingUp size={16} className="mr-1.5" />
-                Convert sale → customer + invoice
-              </Button>
-            ) : null}
-
-            <p className="text-center text-xs text-text-secondary">
-              Created {selected.createdAt ? formatDate(String(selected.createdAt)) : '—'}
-              {selected.website ? ` · ${String(selected.website)}` : ''}
-            </p>
-          </div>
-          )
-        })()}
-      </Drawer>
-
-      <Modal
-        open={demoOpen}
-        onClose={() => setDemoOpen(false)}
-        title="Issue demo product"
-        subtitle="Select the exact serial going to the customer site. Stock count drops immediately; return from Demo inventory when the unit comes back."
-        accent="amber"
-        size="lg"
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setDemoOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={() => void confirmDemoIssue()} disabled={demoSaving || !demoUnitId}>
-              {demoSaving ? 'Issuing…' : 'Issue demo & reduce stock'}
-            </Button>
-          </>
-        }
-      >
-        {demoUnits.length === 0 ? (
-          <p className="text-sm text-text-secondary">
-            No in-stock serials. Add stock under Inventory first.
-          </p>
-        ) : (
-          <div className="space-y-4">
-            <SearchableSelect
-              label="Filter by product (optional)"
-              value={demoProductFilter}
-              options={[
-                { value: '', label: 'All products in stock' },
-                ...productOptions.filter((p) =>
-                  demoUnits.some((u) => u.productId === p.value),
-                ),
-              ]}
-              onChange={(v) => {
-                setDemoProductFilter(v)
-                setDemoUnitId('')
-              }}
-              placeholder="All products…"
-            />
-            <Select
-              label="Serial number *"
-              value={demoUnitId}
-              onChange={(e) => setDemoUnitId(e.target.value)}
-              options={[
-                { value: '', label: 'Select serial' },
-                ...filteredDemoUnits.map((u) => ({
-                  value: u.id,
-                  label: `${u.serialNo} · ${u.product?.name ?? 'Product'}${
-                    u.warehouse?.name ? ` · ${u.warehouse.name}` : ''
-                  }${u.stampingDate ? ` · stamp ${formatDate(u.stampingDate)}` : ''}`,
-                })),
-              ]}
-            />
-            {selectedDemoUnit ? (
-              <div className="rounded-lg border border-border bg-muted/40 p-4 text-sm">
-                <div className="font-semibold text-text-primary">Product details</div>
-                <dl className="mt-2 grid gap-2 sm:grid-cols-2">
-                  <div>
-                    <dt className="text-xs text-text-secondary">Product</dt>
-                    <dd className="font-medium">{selectedDemoUnit.product?.name ?? '—'}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-text-secondary">SKU</dt>
-                    <dd className="font-mono">{selectedDemoUnit.product?.sku ?? '—'}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-text-secondary">Serial</dt>
-                    <dd className="font-mono font-semibold">{selectedDemoUnit.serialNo}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-text-secondary">Warehouse</dt>
-                    <dd>{selectedDemoUnit.warehouse?.name ?? '—'}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-text-secondary">Stamping date</dt>
-                    <dd>
-                      {selectedDemoUnit.stampingDate
-                        ? formatDate(selectedDemoUnit.stampingDate)
-                        : '—'}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="text-xs text-text-secondary">Sale price</dt>
-                    <dd>
-                      {selectedDemoUnit.product?.salePrice != null
-                        ? formatCurrency(selectedDemoUnit.product.salePrice)
-                        : '—'}
-                    </dd>
-                  </div>
-                </dl>
-                <p className="mt-3 text-xs text-amber-800">
-                  Issuing removes 1 unit from available stock and tracks this serial under Demo inventory until
-                  sold or returned.
-                </p>
-              </div>
-            ) : null}
-          </div>
-        )}
-      </Modal>
-
-      <Modal
-        open={stampingGateOpen}
-        onClose={() => setStampingGateOpen(false)}
-        title="Stamping required before sale"
-        subtitle="This product needs govt. stamping on the demo serial before you can convert the sale."
-        accent="amber"
-        footer={
-          <>
-            <Button variant="outline" onClick={() => setStampingGateOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                setStampingGateOpen(false)
-                navigate(`/stamping?unitId=${encodeURIComponent(pendingStampUnitId)}`)
-              }}
-            >
-              Go to stamping register
-            </Button>
-          </>
-        }
-      >
-        <p className="text-sm text-text-secondary">
-          Record stamping on the warehouse serial, then return here and click <strong>Convert sale</strong> again.
-        </p>
-      </Modal>
-
-      <Modal
-        open={invoicePromptOpen}
-        onClose={() => {
-          setInvoicePromptOpen(false)
-          if (invoicePromptCtx?.dealId) navigate(`/deals/${invoicePromptCtx.dealId}`)
-        }}
-        title="Create tax invoice?"
-        subtitle="Product, price & GST can be pre-filled from the demo unit."
-        accent="emerald"
-        footer={
-          <>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setInvoicePromptOpen(false)
-                if (invoicePromptCtx?.dealId) navigate(`/deals/${invoicePromptCtx.dealId}`)
-                setInvoicePromptCtx(null)
-              }}
-            >
-              Skip for now
-            </Button>
-            <Button
-              onClick={() => {
-                if (!invoicePromptCtx) return
-                const p = products.find((x) => x.id === invoicePromptCtx.productId)
-                const params = new URLSearchParams({
-                  open: '1',
-                  contactId: invoicePromptCtx.contactId,
-                  productId: invoicePromptCtx.productId,
-                  serialNo: invoicePromptCtx.serialNo,
-                })
-                if (p?.salePrice != null) params.set('unitPrice', String(p.salePrice))
-                if (p?.taxPercent != null) params.set('taxPercent', String(p.taxPercent))
-                setInvoicePromptOpen(false)
-                setInvoicePromptCtx(null)
-                navigate(`/erp/invoices?${params.toString()}`)
-              }}
-            >
-              Open invoice form
-            </Button>
-          </>
-        }
-      >
-        {invoicePromptCtx ? (
-          <dl className="grid gap-2 text-sm">
-            <div className="flex justify-between gap-4">
-              <dt className="text-text-secondary">Serial</dt>
-              <dd className="font-mono font-semibold">{invoicePromptCtx.serialNo || '—'}</dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-text-secondary">Product</dt>
-              <dd>{productName[invoicePromptCtx.productId] ?? '—'}</dd>
-            </div>
-          </dl>
-        ) : null}
-      </Modal>
 
       <ConfirmModal
         open={Boolean(confirm)}
@@ -1496,6 +1557,23 @@ export function LeadsPage() {
             ? 'This lead will be permanently removed.'
             : 'Selected leads will be permanently removed.'
         }
+      />
+
+      <WhatsAppSendConfirm
+        open={Boolean(waPending)}
+        payload={waPending?.payload ?? null}
+        busy={saving || convertBusy}
+        onCancel={() => setWaPending(null)}
+        onConfirmSend={() => {
+          const run = waPending?.execute
+          setWaPending(null)
+          if (run) void run(true)
+        }}
+        onConfirmSkip={() => {
+          const run = waPending?.execute
+          setWaPending(null)
+          if (run) void run(false)
+        }}
       />
     </div>
   )

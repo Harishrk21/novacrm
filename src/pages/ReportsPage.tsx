@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Award, Download, RefreshCw, TrendingUp } from 'lucide-react'
+import {
+  Award,
+  Download,
+  FileJson,
+  FileSpreadsheet,
+  FileText,
+  Printer,
+  RefreshCw,
+} from 'lucide-react'
 import {
   Bar,
   BarChart,
@@ -15,13 +23,23 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { AskDashboardPanel } from '@/components/ai/AskDashboardPanel'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
 import { Badge, ticketPriorityColor, ticketStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
+import { Input } from '@/components/ui/Input'
+import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, isTenantSession, num } from '@/lib/api'
+import {
+  downloadCsv,
+  downloadJson,
+  downloadXlsx,
+  printReportHtml,
+  tableHtml,
+} from '@/lib/reportExport'
 import { formatCurrency } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
@@ -46,13 +64,55 @@ const labelize = (value: string) =>
   value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
 
 type Analytics = Awaited<ReturnType<typeof api.analytics>>
+type Tab = 'overview' | 'leads' | 'service' | 'team' | 'stock'
+
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'leads', label: 'Leads' },
+  { id: 'service', label: 'Service' },
+  { id: 'team', label: 'Team & performers' },
+  { id: 'stock', label: 'Stock & billing' },
+]
+
+function Kpi({
+  label,
+  value,
+  hint,
+}: {
+  label: string
+  value: string | number
+  hint?: string
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-3">
+      <div className="text-xs text-text-secondary">{label}</div>
+      <div className="mt-1 text-xl font-semibold tabular-nums">{value}</div>
+      {hint ? <div className="mt-0.5 text-[11px] text-text-muted">{hint}</div> : null}
+    </div>
+  )
+}
+
+function EmptyChart({ label = 'No data for current filters' }: { label?: string }) {
+  return (
+    <div className="flex h-[220px] items-center justify-center text-sm text-text-secondary">{label}</div>
+  )
+}
 
 export function ReportsPage() {
   const addToast = useUIStore((s) => s.addToast)
+  const [tab, setTab] = useState<Tab>('overview')
   const [range, setRange] = useState('month')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [assigneeId, setAssigneeId] = useState('')
+  const [sourceId, setSourceId] = useState('')
+  const [ticketStatus, setTicketStatus] = useState('')
+  const [leadStatus, setLeadStatus] = useState('')
+  const [city, setCity] = useState('')
   const [data, setData] = useState<Analytics | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [exportOpen, setExportOpen] = useState(false)
 
   const load = useCallback(async () => {
     if (!isTenantSession()) {
@@ -64,490 +124,663 @@ export function ReportsPage() {
     setLoading(true)
     setError('')
     try {
-      setData(await api.analytics(range))
+      setData(
+        await api.analytics({
+          range: from || to ? 'custom' : range,
+          from: from || undefined,
+          to: to || undefined,
+          assigneeId: assigneeId || undefined,
+          sourceId: sourceId || undefined,
+          ticketStatus: ticketStatus || undefined,
+          leadStatus: leadStatus || undefined,
+          city: city || undefined,
+        }),
+      )
     } catch (err) {
       setError(err instanceof ApiClientError ? err.message : 'Failed to load reports')
       setData(null)
     } finally {
       setLoading(false)
     }
-  }, [range])
+  }, [range, from, to, assigneeId, sourceId, ticketStatus, leadStatus, city])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  function exportCsv() {
-    if (!data) return
-    const rows = [
-      ['Metric', 'Value'],
-      ['Total leads', String(data.kpis.totalLeads)],
-      ['Qualified leads', String(data.kpis.qualifiedLeads)],
-      ['Conversion rate %', String(data.kpis.conversionRate)],
-      ['Won revenue', String(data.kpis.wonRevenue)],
-      ['Open pipeline', String(data.kpis.openPipeline)],
-      ['Invoice revenue', String(data.kpis.invoiceRevenue)],
-      ['Total tickets', String(data.kpis.tickets ?? 0)],
-      ['Open tickets', String(data.kpis.openTickets ?? 0)],
-      ['Resolved tickets', String(data.kpis.resolvedTickets ?? 0)],
-      ['SLA breached', String(data.kpis.slaBreached ?? 0)],
-      ['Avg resolution hours', String(data.kpis.avgResolutionHours ?? 0)],
-      ...data.ticketsByStatus.map((s) => [`Ticket status:${s.name}`, String(s.value)]),
-      ...data.ticketsByPriority.map((s) => [`Ticket priority:${s.name}`, String(s.value)]),
-      ...data.ticketsByCategory.map((s) => [`Ticket category:${s.name}`, String(s.value)]),
-      ...data.byCity.map((c) => [`City:${c.city} revenue`, String(c.revenue)]),
-      ...data.team.map((t) => [`Team:${t.name} revenue`, String(t.revenue)]),
+  const k = data?.kpis
+  const stamp = data?.generatedAt ? new Date(data.generatedAt).toLocaleString('en-IN') : ''
+
+  const exportPack = useMemo(() => {
+    if (!data || !k) return null
+    const overview = [
+      { metric: 'Open tickets', value: k.openTickets },
+      { metric: 'Awaiting assignment', value: k.awaitingAssignment },
+      { metric: 'Balance outstanding', value: k.balanceOutstanding },
+      { metric: 'Service collected', value: k.serviceCollected },
+      { metric: 'Sale enquiries', value: k.totalLeads },
+      { metric: 'Converted enquiries', value: k.enquiriesConverted },
+      { metric: 'Proforma revenue', value: k.invoiceRevenue },
+      { metric: 'In stock serials', value: k.inStock },
+      { metric: 'Demo out', value: k.demoOut },
     ]
-    const csv = rows.map((r) => r.map((c) => `"${c}"`).join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `novacrm-report-${range}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-    addToast({ type: 'success', message: 'Report CSV downloaded' })
+    return {
+      overview,
+      leadsByStatus: data.leadsByStatus,
+      leadsBySource: data.leadsBySource,
+      leadsByOwner: data.leadsByOwner ?? [],
+      ticketsByStatus: data.ticketsByStatus,
+      ticketsByAssignee: data.ticketsByAssignee,
+      performers: data.performers ?? [],
+      byCity: data.byCity,
+      monthlyRevenue: data.monthlyRevenue,
+      stockByStatus: data.stockByStatus ?? [],
+    }
+  }, [data, k])
+
+  function doExport(kind: 'csv' | 'xlsx' | 'json' | 'print') {
+    if (!exportPack || !data || !k) {
+      addToast({ type: 'error', message: 'Nothing to export yet' })
+      return
+    }
+    const base = `hms-reports-${range}-${tab}-${new Date().toISOString().slice(0, 10)}`
+    setExportOpen(false)
+    if (kind === 'json') {
+      downloadJson(`${base}.json`, data)
+      addToast({ type: 'success', message: 'JSON downloaded' })
+      return
+    }
+    if (kind === 'csv') {
+      downloadCsv(`${base}.csv`, exportPack.overview)
+      addToast({ type: 'success', message: 'CSV downloaded' })
+      return
+    }
+    if (kind === 'xlsx') {
+      downloadXlsx(`${base}.xlsx`, [
+        { name: 'Overview', rows: exportPack.overview },
+        { name: 'Leads status', rows: exportPack.leadsByStatus },
+        { name: 'Leads source', rows: exportPack.leadsBySource },
+        { name: 'Lead owners', rows: exportPack.leadsByOwner },
+        { name: 'Ticket status', rows: exportPack.ticketsByStatus },
+        { name: 'Assignees', rows: exportPack.ticketsByAssignee },
+        { name: 'Performers', rows: exportPack.performers },
+        { name: 'Cities', rows: exportPack.byCity },
+        { name: 'Billing monthly', rows: exportPack.monthlyRevenue },
+        { name: 'Stock', rows: exportPack.stockByStatus },
+      ])
+      addToast({ type: 'success', message: 'Excel downloaded' })
+      return
+    }
+    printReportHtml('HMS Enterprises — Reports', [
+      {
+        heading: 'Key metrics',
+        html: tableHtml(
+          ['Metric', 'Value'],
+          exportPack.overview.map((r) => [String(r.metric), String(r.value)]),
+        ),
+      },
+      {
+        heading: 'Top performers',
+        html: tableHtml(
+          ['Name', 'Tickets resolved', 'Leads converted', 'Service collected', 'Score'],
+          exportPack.performers.map((p) => [
+            p.name,
+            p.ticketsResolved,
+            p.leadsConverted,
+            formatCurrency(p.serviceCollected),
+            p.score,
+          ]),
+        ),
+      },
+      {
+        heading: 'Tickets by status',
+        html: tableHtml(
+          ['Status', 'Count'],
+          exportPack.ticketsByStatus.map((r) => [labelize(r.name), r.value]),
+        ),
+      },
+      {
+        heading: 'Billing by month',
+        html: tableHtml(
+          ['Month', 'Proforma', 'Service paid'],
+          exportPack.monthlyRevenue.map((r) => [
+            r.month,
+            formatCurrency(num(r.proforma)),
+            formatCurrency(num(r.servicePaid)),
+          ]),
+        ),
+      },
+    ])
   }
 
-  const kpis = data?.kpis
-  const statuses = useMemo(
-    () =>
-      (data?.leadsByStatus ?? []).map((s, i) => ({
-        ...s,
-        color: CHART_FALLBACK[i % CHART_FALLBACK.length],
-      })),
-    [data?.leadsByStatus],
-  )
-
-  const ticketStatuses = useMemo(
-    () =>
-      (data?.ticketsByStatus ?? [])
-        .filter((s) => s.value > 0)
-        .map((s) => ({
-          ...s,
-          label: labelize(s.name),
-          color: TICKET_STATUS_HEX[s.name] ?? CHART_FALLBACK[0],
-        })),
-    [data?.ticketsByStatus],
-  )
-
-  const ticketPriorities = useMemo(
-    () =>
-      (data?.ticketsByPriority ?? []).map((s) => ({
-        ...s,
-        label: labelize(s.name),
-        color: TICKET_PRIORITY_HEX[s.name] ?? CHART_FALLBACK[0],
-      })),
-    [data?.ticketsByPriority],
-  )
+  function clearFilters() {
+    setRange('month')
+    setFrom('')
+    setTo('')
+    setAssigneeId('')
+    setSourceId('')
+    setTicketStatus('')
+    setLeadStatus('')
+    setCity('')
+  }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <PageHeader
         title="Reports"
-        breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Reports' }]}
         actions={
-          <>
-            <Select
-              value={range}
-              onChange={(e) => setRange(e.target.value)}
-              options={[
-                { value: 'week', label: 'Last 7 days' },
-                { value: 'month', label: 'Last 30 days' },
-                { value: 'quarter', label: 'Last quarter' },
-                { value: 'year', label: 'Last year' },
-              ]}
-            />
-            <Button variant="outline" onClick={() => void load()}>
-              <RefreshCw size={16} /> Refresh
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
             </Button>
-            <Button variant="outline" onClick={exportCsv} disabled={!data}>
-              <Download size={16} /> Export CSV
-            </Button>
-          </>
+            <div className="relative">
+              <Button type="button" size="sm" onClick={() => setExportOpen((v) => !v)}>
+                <Download size={14} /> Download
+              </Button>
+              {exportOpen ? (
+                <div className="absolute right-0 z-20 mt-1 w-48 rounded-md border border-border bg-card p-1 shadow-lg">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                    onClick={() => doExport('csv')}
+                  >
+                    <FileText size={14} /> CSV
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                    onClick={() => doExport('xlsx')}
+                  >
+                    <FileSpreadsheet size={14} /> Excel (.xlsx)
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                    onClick={() => doExport('json')}
+                  >
+                    <FileJson size={14} /> JSON
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                    onClick={() => doExport('print')}
+                  >
+                    <Printer size={14} /> Print / PDF
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
         }
       />
+      <p className="-mt-3 mb-4 text-sm text-text-secondary">
+        Live analytics from your database — leads, service, team performers, stock & billing. Download CSV, Excel, JSON, or Print/PDF.
+      </p>
+      <PageTip moduleKey="reports" />
 
-      <PageTip moduleKey="crm.reports" />
+      <AskDashboardPanel range={from || to ? 'custom' : range} />
 
-      {loading && <Card className="p-6 text-sm text-text-secondary">Loading live reports from database…</Card>}
-      {error && !loading && <Card className="p-6 text-sm text-accent-red">{error}</Card>}
+      <Card className="space-y-3 p-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <Select
+            label="Range"
+            value={range}
+            onChange={(e) => setRange(e.target.value)}
+            options={[
+              { value: 'week', label: 'Last 7 days' },
+              { value: 'month', label: 'Last month' },
+              { value: 'quarter', label: 'Last quarter' },
+              { value: 'year', label: 'Last year' },
+            ]}
+          />
+          <Input label="From" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          <Input label="To" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          <Select
+            label="Assignee"
+            value={assigneeId}
+            onChange={(e) => setAssigneeId(e.target.value)}
+            options={[
+              { value: '', label: 'All people' },
+              ...(data?.users ?? []).map((u) => ({ value: u.id, label: u.name })),
+            ]}
+          />
+          <Select
+            label="Lead source"
+            value={sourceId}
+            onChange={(e) => setSourceId(e.target.value)}
+            options={[
+              { value: '', label: 'All sources' },
+              ...(data?.sources ?? []).map((s) => ({ value: s.id, label: s.name })),
+            ]}
+          />
+          <Select
+            label="Ticket status"
+            value={ticketStatus}
+            onChange={(e) => setTicketStatus(e.target.value)}
+            options={[
+              { value: '', label: 'All statuses' },
+              { value: 'OPEN', label: 'Open' },
+              { value: 'IN_PROGRESS', label: 'In progress' },
+              { value: 'PENDING', label: 'Pending' },
+              { value: 'RESOLVED', label: 'Resolved' },
+              { value: 'CLOSED', label: 'Closed' },
+            ]}
+          />
+          <Select
+            label="Lead status"
+            value={leadStatus}
+            onChange={(e) => setLeadStatus(e.target.value)}
+            options={[
+              { value: '', label: 'All leads' },
+              { value: 'NEW', label: 'New' },
+              { value: 'CONTACTED', label: 'Contacted' },
+              { value: 'QUALIFIED', label: 'Qualified' },
+              { value: 'DEMO', label: 'Demo' },
+              { value: 'CONVERTED', label: 'Converted' },
+              { value: 'LOST', label: 'Lost' },
+            ]}
+          />
+          <Select
+            label="City"
+            value={city}
+            onChange={(e) => setCity(e.target.value)}
+            options={[
+              { value: '', label: 'All cities' },
+              ...(data?.cities ?? []).map((c) => ({ value: c, label: c })),
+            ]}
+          />
+          <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
+            Reset filters
+          </Button>
+        </div>
+        {stamp ? <p className="text-xs text-text-muted">Live from DB · generated {stamp}</p> : null}
+      </Card>
 
-      {data && !loading && (
+      <PageTabs tabs={TABS} active={tab} onChange={(id) => setTab(id as Tab)} />
+
+      {error ? (
+        <Card className="p-6 text-sm text-accent-red">{error}</Card>
+      ) : loading && !data ? (
+        <Card className="p-6 text-sm text-text-secondary">Loading live reports…</Card>
+      ) : !data || !k ? (
+        <Card className="p-6 text-sm text-text-secondary">No analytics yet.</Card>
+      ) : (
         <>
-          <section>
-            <SectionTitle
-              title="Service ticket analytics"
-              subtitle="Live ticket status, SLA and agent workload from your database"
-            />
-            <div className="mb-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              {[
-                ['Total tickets', String(kpis?.tickets ?? 0)],
-                ['Open / in progress', String(kpis?.openTickets ?? 0)],
-                ['Resolved (all time)', String(kpis?.resolvedTickets ?? 0)],
-                ['SLA breached', String(kpis?.slaBreached ?? 0)],
-              ].map(([k, v]) => (
-                <Card key={k}>
-                  <p className="text-sm text-text-secondary">{k}</p>
-                  <p className="mt-2 text-2xl font-bold">{v}</p>
-                </Card>
-              ))}
-            </div>
-            <div className="mb-4 grid gap-4 sm:grid-cols-3">
-              {[
-                [
-                  'Created in range',
-                  `${kpis?.ticketsInRange ?? 0}${
-                    typeof kpis?.ticketGrowth === 'number'
-                      ? ` (${kpis.ticketGrowth >= 0 ? '+' : ''}${kpis.ticketGrowth}%)`
-                      : ''
-                  }`,
-                ],
-                ['Resolved in range', String(kpis?.resolvedInRange ?? 0)],
-                ['Avg resolution', `${kpis?.avgResolutionHours ?? 0} hrs`],
-              ].map(([k, v]) => (
-                <Card key={k}>
-                  <p className="text-sm text-text-secondary">{k}</p>
-                  <p className="mt-2 text-xl font-bold">{v}</p>
-                </Card>
-              ))}
-            </div>
-
-            <div className="mb-5 grid gap-5 lg:grid-cols-2">
-              <Card>
-                <h3 className="mb-4 font-semibold">Tickets by status</h3>
-                <div className="h-72">
-                  {ticketStatuses.length ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={ticketStatuses}
-                          dataKey="value"
-                          nameKey="label"
-                          innerRadius={58}
-                          outerRadius={90}
-                          paddingAngle={3}
-                        >
-                          {ticketStatuses.map((s) => (
-                            <Cell key={s.name} fill={s.color} />
-                          ))}
-                        </Pie>
-                        <Tooltip />
-                        <Legend />
-                      </PieChart>
-                    </ResponsiveContainer>
+          {tab === 'overview' ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Kpi label="Open tickets" value={k.openTickets} hint={`${k.awaitingAssignment} unassigned`} />
+                <Kpi label="Balance outstanding" value={formatCurrency(k.balanceOutstanding)} />
+                <Kpi label="Service collected" value={formatCurrency(k.serviceCollected)} hint="Paid jobs" />
+                <Kpi
+                  label="Proforma total"
+                  value={formatCurrency(k.invoiceRevenue)}
+                  hint={`${k.invoiceCount} invoices`}
+                />
+                <Kpi label="Sale enquiries" value={k.totalLeads} hint={`${k.enquiriesConverted} converted`} />
+                <Kpi label="Conversion" value={`${k.conversionRate}%`} />
+                <Kpi label="In stock" value={k.inStock} hint={`${k.demoOut} on demo`} />
+                <Kpi label="Customers" value={k.contacts} hint={`${k.accounts} accounts`} />
+              </div>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card className="p-4">
+                  <h3 className="mb-2 text-sm font-semibold">Billing mix</h3>
+                  {(data.monthlyRevenue?.length ?? 0) === 0 ? (
+                    <EmptyChart />
                   ) : (
-                    <p className="p-6 text-sm text-text-secondary">No tickets in the database yet.</p>
+                    <ResponsiveContainer width="100%" height={260}>
+                      <BarChart data={data.monthlyRevenue}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                        <YAxis tick={{ fontSize: 11 }} />
+                        <Tooltip formatter={(v) => formatCurrency(Number(v))} />
+                        <Legend />
+                        <Bar dataKey="proforma" name="Proforma" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="servicePaid" name="Service paid" fill="#10b981" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
                   )}
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {(data.ticketsByStatus ?? []).map((s) => (
-                    <Badge key={s.name} color={ticketStatusColor[s.name] ?? 'gray'}>
-                      {labelize(s.name)} · {s.value}
-                    </Badge>
-                  ))}
+                </Card>
+                <Card className="p-4">
+                  <h3 className="mb-2 text-sm font-semibold">Ticket trend</h3>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <LineChart data={data.ticketMonthly}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                      <Tooltip />
+                      <Legend />
+                      <Line type="monotone" dataKey="created" name="Created" stroke="#3b82f6" strokeWidth={2} />
+                      <Line type="monotone" dataKey="resolved" name="Resolved" stroke="#10b981" strokeWidth={2} />
+                      <Line type="monotone" dataKey="breached" name="SLA breach" stroke="#ef4444" strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </Card>
+              </div>
+              {(data.attentionTickets?.length ?? 0) > 0 ? (
+                <Card className="overflow-hidden">
+                  <div className="border-b border-border px-4 py-3 text-sm font-semibold">Needs attention</div>
+                  <div className="divide-y divide-border">
+                    {data.attentionTickets!.map((t) => (
+                      <div key={t.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 text-sm">
+                        <div>
+                          <span className="font-medium">SVC-{String(t.ticketNo).padStart(5, '0')}</span>
+                          <span className="text-text-secondary"> — {t.subject}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge color={ticketStatusColor[t.status] ?? 'gray'}>{labelize(t.status)}</Badge>
+                          <Badge color={ticketPriorityColor[t.priority] ?? 'gray'}>{labelize(t.priority)}</Badge>
+                          {t.slaBreached ? <Badge color="red">SLA</Badge> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              ) : null}
+            </div>
+          ) : null}
+
+          {tab === 'leads' ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Kpi label="Total enquiries" value={k.totalLeads} />
+                <Kpi label="Pending" value={k.enquiriesPending} />
+                <Kpi label="Demo" value={k.enquiriesDemo} />
+                <Kpi label="Converted" value={k.enquiriesConverted} hint={`${k.conversionRate}%`} />
+              </div>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card className="p-4">
+                  <h3 className="mb-2 text-sm font-semibold">By status</h3>
+                  {data.leadsByStatus.length === 0 ? (
+                    <EmptyChart />
+                  ) : (
+                    <ResponsiveContainer width="100%" height={260}>
+                      <BarChart data={data.leadsByStatus}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="name" tickFormatter={labelize} tick={{ fontSize: 10 }} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                        <Tooltip />
+                        <Bar dataKey="value" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </Card>
+                <Card className="p-4">
+                  <h3 className="mb-2 text-sm font-semibold">By source</h3>
+                  {data.leadsBySource.every((s) => s.leads === 0) ? (
+                    <EmptyChart />
+                  ) : (
+                    <ResponsiveContainer width="100%" height={260}>
+                      <BarChart data={data.leadsBySource}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                        <Tooltip />
+                        <Bar dataKey="leads" fill="#06b6d4" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </Card>
+                <Card className="p-4 lg:col-span-2">
+                  <h3 className="mb-2 text-sm font-semibold">Enquiry trend</h3>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <LineChart data={data.leadMonthly ?? []}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <Tooltip />
+                      <Legend />
+                      <Line type="monotone" dataKey="created" name="Created" stroke="#3b82f6" strokeWidth={2} />
+                      <Line type="monotone" dataKey="converted" name="Converted" stroke="#10b981" strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </Card>
+              </div>
+              <Card className="overflow-hidden">
+                <div className="border-b border-border px-4 py-3 text-sm font-semibold">Leads by owner</div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40 text-left text-xs text-text-secondary">
+                      <tr>
+                        <th className="px-4 py-2">Owner</th>
+                        <th className="px-4 py-2">Total</th>
+                        <th className="px-4 py-2">Pending</th>
+                        <th className="px-4 py-2">Demo</th>
+                        <th className="px-4 py-2">Converted</th>
+                        <th className="px-4 py-2">Conv %</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(data.leadsByOwner ?? []).map((row) => (
+                        <tr key={row.id} className="border-t border-border">
+                          <td className="px-4 py-2 font-medium">{row.name}</td>
+                          <td className="px-4 py-2 tabular-nums">{row.total}</td>
+                          <td className="px-4 py-2 tabular-nums">{row.pending}</td>
+                          <td className="px-4 py-2 tabular-nums">{row.demo}</td>
+                          <td className="px-4 py-2 tabular-nums">{row.converted}</td>
+                          <td className="px-4 py-2 tabular-nums">{row.conversionRate}%</td>
+                        </tr>
+                      ))}
+                      {(data.leadsByOwner ?? []).length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="px-4 py-6 text-center text-text-secondary">
+                            No lead owners in this filter
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
                 </div>
               </Card>
+            </div>
+          ) : null}
 
-              <Card>
-                <h3 className="mb-4 font-semibold">Tickets by priority</h3>
-                <div className="h-72">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={ticketPriorities}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="label" />
-                      <YAxis allowDecimals={false} />
+          {tab === 'service' ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Kpi label="Open" value={k.openTickets} hint={`${k.slaBreached} SLA breached`} />
+                <Kpi label="Resolved (range)" value={k.resolvedInRange} />
+                <Kpi label="Avg resolution" value={`${k.avgResolutionHours}h`} />
+                <Kpi label="Outstanding" value={formatCurrency(k.balanceOutstanding)} />
+              </div>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card className="p-4">
+                  <h3 className="mb-2 text-sm font-semibold">Status mix</h3>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <PieChart>
+                      <Pie
+                        data={data.ticketsByStatus.filter((x) => x.value > 0)}
+                        dataKey="value"
+                        nameKey="name"
+                        innerRadius={55}
+                        outerRadius={90}
+                        paddingAngle={2}
+                      >
+                        {data.ticketsByStatus.map((row) => (
+                          <Cell key={row.name} fill={TICKET_STATUS_HEX[row.name] ?? CHART_FALLBACK[0]} />
+                        ))}
+                      </Pie>
                       <Tooltip />
-                      <Bar dataKey="value" name="Tickets" radius={[4, 4, 0, 0]}>
-                        {ticketPriorities.map((s) => (
-                          <Cell key={s.name} fill={s.color} />
+                      <Legend formatter={labelize} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </Card>
+                <Card className="p-4">
+                  <h3 className="mb-2 text-sm font-semibold">Priority</h3>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={data.ticketsByPriority}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="name" tickFormatter={labelize} tick={{ fontSize: 11 }} />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <Tooltip />
+                      <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                        {data.ticketsByPriority.map((row) => (
+                          <Cell key={row.name} fill={TICKET_PRIORITY_HEX[row.name] ?? CHART_FALLBACK[1]} />
                         ))}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {(data.ticketsByPriority ?? []).map((s) => (
-                    <Badge key={s.name} color={ticketPriorityColor[s.name] ?? 'gray'}>
-                      {labelize(s.name)} · {s.value}
-                    </Badge>
-                  ))}
-                </div>
-              </Card>
-            </div>
-
-            <div className="mb-5 grid gap-5 lg:grid-cols-2">
-              <Card>
-                <h3 className="mb-4 font-semibold">Service category mix</h3>
-                <div className="h-72">
-                  {(data.ticketsByCategory ?? []).length ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={data.ticketsByCategory} layout="vertical" margin={{ left: 24 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis type="number" allowDecimals={false} />
-                        <YAxis type="category" dataKey="name" width={100} />
-                        <Tooltip />
-                        <Bar dataKey="value" name="Tickets" fill="#0ea5e9" radius={[0, 4, 4, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <p className="p-6 text-sm text-text-secondary">No category data yet.</p>
-                  )}
-                </div>
-              </Card>
-
-              <Card>
-                <h3 className="mb-4 font-semibold">Created vs resolved (7 months)</h3>
-                <div className="h-72">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={data.ticketMonthly ?? []} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="month" />
-                      <YAxis allowDecimals={false} />
-                      <Tooltip />
-                      <Legend />
-                      <Line type="monotone" dataKey="created" name="Created" stroke="#2563eb" strokeWidth={3} />
-                      <Line type="monotone" dataKey="resolved" name="Resolved" stroke="#10b981" strokeWidth={2} />
-                      <Line type="monotone" dataKey="breached" name="SLA breached" stroke="#ef4444" strokeWidth={2} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </Card>
-            </div>
-
-            <Card padding={false}>
-              <div className="p-5">
-                <SectionTitle title="Agent service workload" subtitle="Open vs resolved tickets per assignee (live)" />
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[700px] text-left text-sm">
-                  <thead className="bg-surface text-xs text-text-secondary">
-                    <tr>
-                      {['Agent', 'Total', 'Open', 'Resolved', 'SLA breached'].map((h) => (
-                        <th key={h} className="px-5 py-3 font-medium">
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(data.ticketsByAssignee ?? []).map((row) => (
-                      <tr key={row.id} className="border-t border-border">
-                        <td className="px-5 py-3 font-semibold">{row.name}</td>
-                        <td className="px-5 py-3">{row.total}</td>
-                        <td className="px-5 py-3">
-                          <Badge color="amber">{row.open}</Badge>
-                        </td>
-                        <td className="px-5 py-3">
-                          <Badge color="green">{row.resolved}</Badge>
-                        </td>
-                        <td className="px-5 py-3">
-                          <Badge color={row.breached ? 'red' : 'gray'}>{row.breached}</Badge>
-                        </td>
-                      </tr>
-                    ))}
-                    {!(data.ticketsByAssignee ?? []).length && (
-                      <tr>
-                        <td colSpan={5} className="px-5 py-8 text-center text-text-secondary">
-                          No assigned tickets yet
-                          {num(kpis?.unassignedTickets) > 0
-                            ? ` · ${kpis?.unassignedTickets} unassigned`
-                            : ''}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          </section>
-
-          <Card>
-            <SectionTitle title="Sales performance" subtitle="Won deal revenue by month (live database)" />
-            <div className="h-80">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={data.monthlyRevenue} margin={{ top: 16, right: 16, left: 8, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="month" />
-                  <YAxis tickFormatter={(v) => `₹${Number(v) / 1000}k`} />
-                  <Tooltip formatter={(value) => formatCurrency(Number(value))} />
-                  <Legend />
-                  <Line type="monotone" dataKey="current" name="This period year" stroke="#2563eb" strokeWidth={3} />
-                  <Line type="monotone" dataKey="last" name="Prior year" stroke="#94a3b8" strokeWidth={2} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </Card>
-
-          <section>
-            <SectionTitle title="Lead analytics" subtitle="Acquisition and qualification from live leads" />
-            <div className="mb-4 grid gap-4 sm:grid-cols-3">
-              {[
-                ['Total leads', String(kpis?.totalLeads ?? 0)],
-                ['Qualified', String(kpis?.qualifiedLeads ?? 0)],
-                ['Conversion rate', `${kpis?.conversionRate ?? 0}%`],
-              ].map(([k, v]) => (
-                <Card key={k}>
-                  <p className="text-sm text-text-secondary">{k}</p>
-                  <p className="mt-2 text-2xl font-bold">{v}</p>
                 </Card>
-              ))}
+              </div>
+              <Card className="overflow-hidden">
+                <div className="border-b border-border px-4 py-3 text-sm font-semibold">Workload by assignee</div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40 text-left text-xs text-text-secondary">
+                      <tr>
+                        <th className="px-4 py-2">Engineer</th>
+                        <th className="px-4 py-2">Total</th>
+                        <th className="px-4 py-2">Open</th>
+                        <th className="px-4 py-2">Resolved</th>
+                        <th className="px-4 py-2">SLA breach</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.ticketsByAssignee.map((row) => (
+                        <tr key={row.id} className="border-t border-border">
+                          <td className="px-4 py-2 font-medium">{row.name}</td>
+                          <td className="px-4 py-2 tabular-nums">{row.total}</td>
+                          <td className="px-4 py-2 tabular-nums">{row.open}</td>
+                          <td className="px-4 py-2 tabular-nums">{row.resolved}</td>
+                          <td className="px-4 py-2 tabular-nums">{row.breached}</td>
+                        </tr>
+                      ))}
+                      {data.ticketsByAssignee.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="px-4 py-6 text-center text-text-secondary">
+                            No assigned tickets in this filter
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
             </div>
-            <div className="grid gap-5 lg:grid-cols-2">
-              <Card>
-                <h3 className="mb-4 font-semibold">Leads by source</h3>
-                <div className="h-72">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={data.leadsBySource}>
+          ) : null}
+
+          {tab === 'team' ? (
+            <div className="space-y-4">
+              <Card className="overflow-hidden">
+                <div className="flex items-center gap-2 border-b border-border px-4 py-3 text-sm font-semibold">
+                  <Award size={16} className="text-amber-500" /> Top performers
+                  <span className="font-normal text-text-secondary">
+                    (resolved tickets + converted leads + service collected)
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40 text-left text-xs text-text-secondary">
+                      <tr>
+                        <th className="px-4 py-2">#</th>
+                        <th className="px-4 py-2">Name</th>
+                        <th className="px-4 py-2">Open jobs</th>
+                        <th className="px-4 py-2">Resolved</th>
+                        <th className="px-4 py-2">Leads converted</th>
+                        <th className="px-4 py-2">Service collected</th>
+                        <th className="px-4 py-2">Score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(data.performers ?? []).map((p, i) => (
+                        <tr key={p.id} className="border-t border-border">
+                          <td className="px-4 py-2 tabular-nums text-text-secondary">{i + 1}</td>
+                          <td className="px-4 py-2 font-medium">{p.name}</td>
+                          <td className="px-4 py-2 tabular-nums">{p.ticketsOpen}</td>
+                          <td className="px-4 py-2 tabular-nums">{p.ticketsResolved}</td>
+                          <td className="px-4 py-2 tabular-nums">
+                            {p.leadsConverted}
+                            <span className="text-text-muted"> / {p.leadsTotal}</span>
+                          </td>
+                          <td className="px-4 py-2 tabular-nums">{formatCurrency(p.serviceCollected)}</td>
+                          <td className="px-4 py-2 font-semibold tabular-nums">{p.score}</td>
+                        </tr>
+                      ))}
+                      {(data.performers ?? []).length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="px-4 py-6 text-center text-text-secondary">
+                            No performer activity for current filters
+                          </td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+              <Card className="p-4">
+                <h3 className="mb-2 text-sm font-semibold">City mix (live ops revenue)</h3>
+                {data.byCity.length === 0 ? (
+                  <EmptyChart />
+                ) : (
+                  <ResponsiveContainer width="100%" height={280}>
+                    <BarChart data={data.byCity.slice(0, 10)}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="name" />
-                      <YAxis allowDecimals={false} />
-                      <Tooltip />
-                      <Bar dataKey="leads" fill="#2563eb" radius={[4, 4, 0, 0]} />
+                      <XAxis dataKey="city" tick={{ fontSize: 10 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(v) => formatCurrency(Number(v))} />
+                      <Legend />
+                      <Bar dataKey="revenue" name="Revenue" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="leads" name="Leads" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="tickets" name="Tickets" fill="#f59e0b" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
-                </div>
+                )}
               </Card>
-              <Card>
-                <h3 className="mb-4 font-semibold">Status distribution</h3>
-                <div className="h-72">
-                  {statuses.length ? (
-                    <ResponsiveContainer width="100%" height="100%">
+            </div>
+          ) : null}
+
+          {tab === 'stock' ? (
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Kpi label="In stock" value={k.inStock} />
+                <Kpi label="Demo out" value={k.demoOut} />
+                <Kpi label="Proforma revenue" value={formatCurrency(k.invoiceRevenue)} />
+                <Kpi label="Service collected" value={formatCurrency(k.serviceCollected)} />
+              </div>
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card className="p-4">
+                  <h3 className="mb-2 text-sm font-semibold">Serial stock by status</h3>
+                  {(data.stockByStatus?.length ?? 0) === 0 ? (
+                    <EmptyChart />
+                  ) : (
+                    <ResponsiveContainer width="100%" height={260}>
                       <PieChart>
-                        <Pie data={statuses} dataKey="value" nameKey="name" innerRadius={58} outerRadius={90} paddingAngle={3}>
-                          {statuses.map((s) => (
-                            <Cell key={s.name} fill={s.color} />
+                        <Pie
+                          data={data.stockByStatus}
+                          dataKey="value"
+                          nameKey="name"
+                          innerRadius={55}
+                          outerRadius={90}
+                        >
+                          {(data.stockByStatus ?? []).map((row, i) => (
+                            <Cell key={row.name} fill={CHART_FALLBACK[i % CHART_FALLBACK.length]} />
                           ))}
                         </Pie>
                         <Tooltip />
                         <Legend />
                       </PieChart>
                     </ResponsiveContainer>
-                  ) : (
-                    <p className="p-6 text-sm text-text-secondary">No lead status data yet.</p>
                   )}
-                </div>
-              </Card>
+                </Card>
+                <Card className="p-4">
+                  <h3 className="mb-2 text-sm font-semibold">Billing by month</h3>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={data.monthlyRevenue}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(v) => formatCurrency(Number(v))} />
+                      <Legend />
+                      <Bar dataKey="proforma" name="Proforma" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="servicePaid" name="Service paid" fill="#10b981" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </Card>
+              </div>
             </div>
-          </section>
-
-          <Card>
-            <SectionTitle title="Pipeline funnel" subtitle="Live deal stages from your workspace pipeline" />
-            <div className="space-y-4">
-              {data.funnel.map((row) => (
-                <div key={row.stage} className="grid gap-2 sm:grid-cols-[140px_1fr_220px] sm:items-center">
-                  <span className="text-sm font-medium">{row.stage}</span>
-                  <div className="h-9 rounded-[6px] bg-surface">
-                    <div
-                      style={{ width: row.width, background: row.color || '#2563eb' }}
-                      className="flex h-full items-center rounded-[6px] px-3 text-sm font-semibold text-white"
-                    >
-                      {row.count}
-                    </div>
-                  </div>
-                  <div className="flex justify-between text-sm text-text-secondary">
-                    <span>{formatCurrency(row.value)}</span>
-                    <span>{row.conversion}% of top stage</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          <Card>
-            <SectionTitle title="City mix" subtitle="Accounts, leads and won revenue by city (live)" />
-            <div className="h-72">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={data.byCity}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="city" />
-                  <YAxis tickFormatter={(v) => `₹${Number(v) / 1000}k`} />
-                  <Tooltip formatter={(value) => formatCurrency(Number(value))} />
-                  <Legend />
-                  <Bar dataKey="revenue" name="Won revenue" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="leads" name="Leads" fill="#94a3b8" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </Card>
-
-          <Card padding={false}>
-            <div className="flex items-center justify-between p-5">
-              <SectionTitle title="Team leaderboard" subtitle="Won revenue by owner (live)" />
-              <Button variant="outline" size="sm" onClick={exportCsv}>
-                <Download size={15} /> Export
-              </Button>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[650px] text-left text-sm">
-                <thead className="bg-surface text-xs text-text-secondary">
-                  <tr>
-                    {['Rank', 'Team member', 'Won deals', 'Revenue', 'Win rate'].map((h) => (
-                      <th key={h} className="px-5 py-3 font-medium">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.team.map((member, index) => (
-                    <tr key={member.id} className="border-t border-border">
-                      <td className="px-5 py-4">
-                        {index === 0 ? (
-                          <Badge color="amber">
-                            <Award size={13} className="mr-1" /> Top performer
-                          </Badge>
-                        ) : (
-                          `#${index + 1}`
-                        )}
-                      </td>
-                      <td className="px-5 py-4 font-semibold">{member.name}</td>
-                      <td className="px-5 py-4">{member.wonDeals}</td>
-                      <td className="px-5 py-4 font-semibold">{formatCurrency(member.revenue)}</td>
-                      <td className="px-5 py-4">{member.win}%</td>
-                    </tr>
-                  ))}
-                  {!data.team.length && (
-                    <tr>
-                      <td colSpan={5} className="px-5 py-8 text-center text-text-secondary">
-                        No team data yet
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {[
-              ['Won revenue', formatCurrency(num(kpis?.wonRevenue))],
-              ['Open pipeline', formatCurrency(num(kpis?.openPipeline))],
-              ['Invoices', `${kpis?.invoiceCount ?? 0} · ${formatCurrency(num(kpis?.invoiceRevenue))}`],
-              ['Activities', String(kpis?.activities ?? 0)],
-            ].map(([k, v]) => (
-              <Card key={k}>
-                <p className="text-sm text-text-secondary">{k}</p>
-                <p className="mt-2 text-xl font-bold">{v}</p>
-              </Card>
-            ))}
-          </div>
+          ) : null}
         </>
       )}
     </div>
   )
 }
-
-function SectionTitle({ title, subtitle }: { title: string; subtitle: string }) {
-  return (
-    <div className="mb-5">
-      <h2 className="flex items-center gap-2 text-lg font-semibold text-text-primary">
-        <TrendingUp size={18} className="text-accent-blue" />
-        {title}
-      </h2>
-      <p className="mt-1 text-sm text-text-secondary">{subtitle}</p>
-    </div>
-  )
-}
-
-export default ReportsPage

@@ -9,6 +9,12 @@ import { authenticate } from '../../middleware/auth.middleware.js'
 import { requireTenant } from '../../middleware/tenant.middleware.js'
 import { cacheDelPattern } from '../../config/redis.js'
 import { AppError } from '../../common/errors.js'
+import {
+  whatsappCloudStatus,
+  verifyMetaWebhookChallenge,
+  isWhatsAppCloudConfigured,
+  sendCloudText,
+} from '../whatsapp/cloudApi.js'
 
 export const integrationsRouter = Router()
 
@@ -32,6 +38,182 @@ const webhookSchema = z.object({
     contactName: z.string().optional(),
   }),
 })
+
+integrationsRouter.get('/whatsapp/cloud/status', authenticate, requireTenant, async (req, res, next) => {
+  try {
+    const tenantId = req.auth!.tenantId!
+    const status = whatsappCloudStatus()
+    if (status.configured) {
+      await prisma.integration.upsert({
+        where: { tenantId_provider: { tenantId, provider: 'META_CLOUD' } },
+        create: {
+          id: newId(),
+          tenantId,
+          provider: 'META_CLOUD',
+          status: 'CONNECTED',
+          config: {
+            phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID ?? null,
+            businessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID ?? null,
+            apiVersion: process.env.WHATSAPP_API_VERSION ?? 'v21.0',
+          },
+          lastSyncedAt: new Date(),
+        },
+        update: {
+          status: 'CONNECTED',
+          config: {
+            phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID ?? null,
+            businessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID ?? null,
+            apiVersion: process.env.WHATSAPP_API_VERSION ?? 'v21.0',
+          },
+          lastSyncedAt: new Date(),
+        },
+      })
+    }
+    const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http')
+    const host = String(req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3001')
+    const publicBase = (process.env.PUBLIC_API_URL || '').trim().replace(/\/$/, '')
+    const webhookUrlHint = publicBase
+      ? `${publicBase}/api/integrations/whatsapp/cloud/webhook`
+      : `${proto}://${host}/api/integrations/whatsapp/cloud/webhook`
+    return success(res, {
+      ...status,
+      webhookPath: '/api/integrations/whatsapp/cloud/webhook',
+      webhookUrlHint,
+      note: 'Templates must be approved in Meta WhatsApp Manager before business-initiated sends outside 24h. For local Meta verify, expose this URL via HTTPS tunnel.',
+    })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/** Meta webhook verification (subscribe) */
+integrationsRouter.get('/whatsapp/cloud/webhook', (req, res) => {
+  const result = verifyMetaWebhookChallenge({
+    mode: String(req.query['hub.mode'] ?? ''),
+    token: String(req.query['hub.verify_token'] ?? ''),
+    challenge: String(req.query['hub.challenge'] ?? ''),
+  })
+  if (result.ok) {
+    res.status(200).send(result.challenge)
+    return
+  }
+  res.status(403).send('Forbidden')
+})
+
+/** Meta inbound / delivery events */
+integrationsRouter.post('/whatsapp/cloud/webhook', async (req, res) => {
+  // Always 200 quickly so Meta does not retry aggressively
+  res.status(200).json({ received: true })
+  try {
+    const body = req.body as {
+      entry?: Array<{
+        changes?: Array<{
+          value?: {
+            messages?: Array<{
+              from?: string
+              id?: string
+              text?: { body?: string }
+              type?: string
+            }>
+            contacts?: Array<{ profile?: { name?: string }; wa_id?: string }>
+            statuses?: Array<{ id?: string; status?: string }>
+          }
+        }>
+      }>
+    }
+    for (const entry of body.entry ?? []) {
+      for (const change of entry.changes ?? []) {
+        const value = change.value
+        if (!value?.messages?.length) continue
+        const contactName = value.contacts?.[0]?.profile?.name
+        for (const msg of value.messages) {
+          if (!msg.from || !msg.text?.body) continue
+          const phoneNorm = normalizePhone(msg.from) || msg.from.replace(/\D/g, '')
+          const integ = await prisma.integration.findFirst({
+            where: { provider: 'META_CLOUD', status: 'CONNECTED' },
+          })
+          // Fall back to first active tenant if no META_CLOUD integration row yet
+          let tenantId = integ?.tenantId
+          if (!tenantId) {
+            const tenant = await prisma.tenant.findFirst({
+              where: { deletedAt: null, status: 'ACTIVE' },
+              orderBy: { createdAt: 'asc' },
+            })
+            tenantId = tenant?.id
+          }
+          if (!tenantId) continue
+
+          const contact = await prisma.contact.findFirst({
+            where: { tenantId, phoneNormalized: { contains: phoneNorm }, deletedAt: null },
+          })
+          let conversation = await prisma.whatsappConversation.findFirst({
+            where: { tenantId, phoneNormalized: phoneNorm },
+          })
+          if (!conversation) {
+            conversation = await prisma.whatsappConversation.create({
+              data: {
+                id: newId(),
+                tenantId,
+                provider: 'META_CLOUD',
+                phone: msg.from,
+                phoneNormalized: phoneNorm,
+                contactId: contact?.id,
+                contactName: contactName ?? contact?.name ?? msg.from,
+                lastMessage: msg.text.body,
+                unreadCount: 1,
+              },
+            })
+          } else {
+            await prisma.whatsappConversation.update({
+              where: { id: conversation.id },
+              data: {
+                lastMessage: msg.text.body,
+                unreadCount: { increment: 1 },
+                contactId: contact?.id ?? conversation.contactId,
+              },
+            })
+          }
+          await prisma.whatsappMessage.create({
+            data: {
+              id: newId(),
+              tenantId,
+              conversationId: conversation.id,
+              direction: 'INBOUND',
+              body: msg.text.body,
+              status: 'DELIVERED',
+              externalId: msg.id ?? null,
+            },
+          })
+        }
+      }
+    }
+  } catch (err) {
+    console.error('meta whatsapp webhook handler', err)
+  }
+})
+
+integrationsRouter.post(
+  '/whatsapp/cloud/test',
+  authenticate,
+  requireTenant,
+  async (req, res, next) => {
+    try {
+      if (!isWhatsAppCloudConfigured()) {
+        throw new AppError('WhatsApp Cloud API is not configured in server .env', 400)
+      }
+      const to = String((req.body as { to?: string })?.to ?? '').trim()
+      if (!to) throw new AppError('Provide { "to": "91XXXXXXXXXX" }', 400)
+      const result = await sendCloudText(
+        to,
+        'HMS CRM test: WhatsApp Cloud API is connected. You can create Utility templates in Meta next.',
+      )
+      if (!result.ok) throw new AppError(result.error || 'Send failed', 502)
+      return success(res, result, 'Test message sent')
+    } catch (e) {
+      next(e)
+    }
+  },
+)
 
 integrationsRouter.post(
   '/askmeister/connect',
@@ -262,6 +444,14 @@ integrationsRouter.post(
       })
       if (!conversation) throw new AppError('Conversation not found', 404)
 
+      let externalId: string | null = null
+      let deliveryStatus: 'SENT' | 'FAILED' = 'SENT'
+      if (isWhatsAppCloudConfigured()) {
+        const cloud = await sendCloudText(conversation.phone, req.body.body)
+        if (!cloud.ok) throw new AppError(cloud.error || 'WhatsApp Cloud send failed', 502)
+        externalId = cloud.messageId ?? null
+      }
+
       const message = await prisma.whatsappMessage.create({
         data: {
           id: newId(),
@@ -269,13 +459,18 @@ integrationsRouter.post(
           conversationId: conversation.id,
           direction: 'OUTBOUND',
           body: req.body.body,
-          status: 'SENT',
+          status: deliveryStatus,
+          externalId,
           sentByUserId: req.auth!.userId,
         },
       })
       await prisma.whatsappConversation.update({
         where: { id: conversation.id },
-        data: { lastMessage: req.body.body, unreadCount: 0 },
+        data: {
+          lastMessage: req.body.body,
+          unreadCount: 0,
+          provider: isWhatsAppCloudConfigured() ? 'META_CLOUD' : conversation.provider,
+        },
       })
       await prisma.activity.create({
         data: {

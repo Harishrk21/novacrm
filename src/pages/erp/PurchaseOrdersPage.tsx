@@ -60,7 +60,7 @@ function escapeHtml(value: string) {
     .replaceAll('"', '&quot;')
 }
 
-function printPurchaseOrder(po: Record<string, unknown>, companyName = 'NovaCRM Workspace') {
+function printPurchaseOrder(po: Record<string, unknown>, companyName = 'HMS Enterprises') {
   const vendor = (po.vendor as Record<string, unknown> | null) ?? {}
   const lines = ((po.lines as Array<Record<string, unknown>>) ?? []).map((l) => ({
     description: String(l.description ?? ''),

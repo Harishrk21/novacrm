@@ -39,7 +39,7 @@ io.on("connection", (socket) => {
 });
 
 server.listen(env.PORT, () =>
-  logger.info("NovaCRM API started", { port: env.PORT, environment: env.NODE_ENV }),
+  logger.info("HMS Enterprises API started", { port: env.PORT, environment: env.NODE_ENV }),
 );
 
 /** Hourly: WhatsApp reminders ~1 week before maintenance due / AMC end. */

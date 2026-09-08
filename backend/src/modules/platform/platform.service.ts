@@ -192,11 +192,12 @@ export async function createTenant(data: CreateTenantInput, adminId: string) {
     }
 
     for (const [sequenceKey, prefix] of [
-      ["INVOICE", "INV-"],
+      ["INVOICE", "PI-"],
       ["SO", "SO-"],
       ["PO", "PO-"],
       ["TICKET", "TKT-"],
       ["CUSTOMER", "CUS-"],
+      ["DEMO_DC", "DC-"],
     ] as const) {
       await tx.numberSequence.create({
         data: {

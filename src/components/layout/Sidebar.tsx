@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom'
+import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
   BarChart3,
@@ -19,6 +19,9 @@ import {
   CheckSquare,
   Shield,
   Stamp,
+  Plus,
+  LogOut,
+  Bell,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
@@ -26,7 +29,14 @@ import { Avatar } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
 import { HmsLogo } from '@/components/HmsLogo'
 import { useAuthStore } from '@/store/authStore'
-import { isCompanyAdmin, roleLabel } from '@/lib/roles'
+import {
+  isCompanyAdmin,
+  isServiceDesk,
+  isServiceEngineer,
+  isSalesExecutive,
+  isWarehouse,
+  roleLabel,
+} from '@/lib/roles'
 import { APP_NAME } from '@/lib/branding'
 
 type NavItem = {
@@ -39,18 +49,32 @@ type NavItem = {
 }
 
 export function Sidebar() {
+  const navigate = useNavigate()
   const collapsed = useUIStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUIStore((s) => s.toggleSidebar)
+  const addToast = useUIStore((s) => s.addToast)
   const authUser = useAuthStore((s) => s.user)
+  const logout = useAuthStore((s) => s.logout)
   const displayName = authUser?.name ?? 'User'
-  const isAdmin = isCompanyAdmin(authUser?.role)
-  const displayRole = roleLabel(authUser?.role)
+  const role = authUser?.role
+  const isAdmin = isCompanyAdmin(role)
+  const displayRole = roleLabel(role)
+
+  async function handleLogout() {
+    try {
+      await logout()
+      addToast({ type: 'success', message: 'Signed out' })
+    } finally {
+      navigate('/login', { replace: true })
+    }
+  }
 
   const adminNav: { label: string; items: NavItem[] }[] = [
     {
       label: 'MAIN',
       items: [
         { to: '/', icon: LayoutDashboard, label: 'Dashboard', end: true },
+        { to: '/notifications', icon: Bell, label: 'Notifications' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
         { to: '/reports', icon: BarChart3, label: 'Reports' },
       ],
@@ -75,7 +99,7 @@ export function Sidebar() {
         { to: '/erp/products', icon: Package, label: 'Products' },
         { to: '/erp/inventory', icon: Warehouse, label: 'Inventory' },
         { to: '/erp/purchase-orders', icon: ShoppingCart, label: 'Purchase Orders' },
-        { to: '/erp/invoices', icon: FileText, label: 'Invoices' },
+        { to: '/erp/invoices', icon: FileText, label: 'Proforma invoices' },
       ],
     },
     {
@@ -88,25 +112,17 @@ export function Sidebar() {
     },
   ]
 
-  const employeeNav: { label: string; items: NavItem[] }[] = [
+  const deskNav: { label: string; items: NavItem[] }[] = [
     {
-      label: 'MY WORK',
+      label: 'SERVICE DESK',
       items: [
         { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
-        { to: '/tickets', icon: Ticket, label: 'My Tickets' },
-        { to: '/amc', icon: Shield, label: 'AMC / Non-AMC' },
-        { to: '/stamping', icon: Stamp, label: 'Stamping' },
-        { to: '/my-tasks', icon: CheckSquare, label: 'My Tasks' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
+        { to: '/tickets', icon: Ticket, label: 'Tickets' },
+        { to: '/tickets?open=1', icon: Plus, label: 'New ticket' },
+        { to: '/contacts', icon: Users, label: 'Customers' },
+        { to: '/notifications', icon: Bell, label: 'Notifications' },
       ],
-    },
-    {
-      label: 'CUSTOMERS',
-      items: [{ to: '/contacts', icon: Users, label: 'Customers' }],
-    },
-    {
-      label: 'SALES',
-      items: [{ to: '/sale-tracking', icon: UserPlus, label: 'My sales' }],
     },
     {
       label: 'ACCOUNT',
@@ -114,7 +130,101 @@ export function Sidebar() {
     },
   ]
 
-  const navSections = isAdmin ? adminNav : employeeNav
+  const engineerNav: { label: string; items: NavItem[] }[] = [
+    {
+      label: 'MY WORK',
+      items: [
+        { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
+        { to: '/help', icon: BookOpen, label: 'How it works' },
+        { to: '/tickets', icon: Ticket, label: 'My tickets' },
+        { to: '/contacts', icon: Users, label: 'Customers' },
+        { to: '/notifications', icon: Bell, label: 'Notifications' },
+      ],
+    },
+    {
+      label: 'ACCOUNT',
+      items: [{ to: '/settings', icon: Settings, label: 'My Profile' }],
+    },
+  ]
+
+  const salesNav: { label: string; items: NavItem[] }[] = [
+    {
+      label: 'SALES',
+      items: [
+        { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
+        { to: '/help', icon: BookOpen, label: 'How it works' },
+        { to: '/sale-tracking', icon: UserPlus, label: 'Sale tracking' },
+        { to: '/contacts', icon: Users, label: 'Customers' },
+        { to: '/notifications', icon: Bell, label: 'Notifications' },
+      ],
+    },
+    {
+      label: 'ACCOUNT',
+      items: [{ to: '/settings', icon: Settings, label: 'My Profile' }],
+    },
+  ]
+
+  const warehouseNav: { label: string; items: NavItem[] }[] = [
+    {
+      label: 'STOCK & BILLING',
+      items: [
+        { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
+        { to: '/help', icon: BookOpen, label: 'How it works' },
+        { to: '/erp/inventory', icon: Warehouse, label: 'Inventory' },
+        { to: '/erp/products', icon: Package, label: 'Products' },
+        { to: '/erp/invoices', icon: FileText, label: 'Proforma invoices' },
+        { to: '/contacts', icon: Users, label: 'Customers' },
+        { to: '/notifications', icon: Bell, label: 'Notifications' },
+      ],
+    },
+    {
+      label: 'ACCOUNT',
+      items: [{ to: '/settings', icon: Settings, label: 'My Profile' }],
+    },
+  ]
+
+  const fallbackNav: { label: string; items: NavItem[] }[] = [
+    {
+      label: 'MY WORK',
+      items: [
+        { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
+        { to: '/help', icon: BookOpen, label: 'How it works' },
+        { to: '/tickets', icon: Ticket, label: 'My Tickets' },
+        { to: '/my-tasks', icon: CheckSquare, label: 'My Tasks' },
+        { to: '/contacts', icon: Users, label: 'Customers' },
+        { to: '/notifications', icon: Bell, label: 'Notifications' },
+      ],
+    },
+    {
+      label: 'ACCOUNT',
+      items: [{ to: '/settings', icon: Settings, label: 'My Profile' }],
+    },
+  ]
+
+  const navSections = isAdmin
+    ? adminNav
+    : isServiceDesk(role)
+      ? deskNav
+      : isSalesExecutive(role)
+        ? salesNav
+        : isServiceEngineer(role)
+          ? engineerNav
+          : isWarehouse(role)
+            ? warehouseNav
+            : fallbackNav
+
+  const banner =
+    isServiceDesk(role)
+      ? { title: 'Service desk', body: 'Create tickets — admin assigns the engineer' }
+      : isSalesExecutive(role)
+        ? { title: 'Sales executive', body: 'Create enquiries, issue demos, post daily updates' }
+        : isServiceEngineer(role)
+          ? { title: 'Field engineer', body: 'Work assigned tickets and log day notes' }
+          : isWarehouse(role)
+            ? { title: 'Warehouse & billing', body: 'Stock, catalog, demo returns & proforma invoices (final GST bill in Tally)' }
+            : !isAdmin
+              ? { title: 'My work', body: 'Tickets and customer lookup' }
+              : null
 
   return (
     <aside
@@ -139,10 +249,10 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 overflow-y-auto py-3">
-        {!collapsed && !isAdmin ? (
+        {!collapsed && banner ? (
           <div className="mb-3 mx-2 rounded-[8px] border border-white/10 bg-white/5 px-3 py-2">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-sky-300">Service desk</div>
-            <div className="mt-0.5 text-xs text-slate-300">Tickets first — look up customers, complete service</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-sky-300">{banner.title}</div>
+            <div className="mt-0.5 text-xs text-slate-300">{banner.body}</div>
           </div>
         ) : null}
         {navSections.map((section) => (
@@ -154,7 +264,7 @@ export function Sidebar() {
             )}
             <ul className="space-y-0.5 px-2">
               {section.items.map((item) => (
-                <li key={item.to}>
+                <li key={`${item.to}-${item.label}`}>
                   <NavLink
                     to={item.to}
                     end={item.end}
@@ -196,7 +306,7 @@ export function Sidebar() {
         >
           {collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
         </button>
-        <div className={cn('flex items-center gap-3 rounded-[6px] p-2', collapsed && 'justify-center')}>
+        <div className={cn('mb-2 flex items-center gap-3 rounded-[6px] p-2', collapsed && 'justify-center')}>
           <Avatar name={displayName} src={authUser?.avatarUrl} size="sm" />
           {!collapsed && (
             <div className="min-w-0">
@@ -205,6 +315,18 @@ export function Sidebar() {
             </div>
           )}
         </div>
+        <button
+          type="button"
+          onClick={() => void handleLogout()}
+          title="Log out"
+          className={cn(
+            'flex w-full items-center gap-3 rounded-[6px] px-3 py-2 text-sm text-sidebar-text transition-colors duration-150 hover:bg-white/5 hover:text-white',
+            collapsed && 'justify-center px-2',
+          )}
+        >
+          <LogOut size={18} className="shrink-0" />
+          {!collapsed && <span>Log out</span>}
+        </button>
       </div>
     </aside>
   )

@@ -104,8 +104,8 @@ export function openPrintableInvoice(opts: InvoicePrintOpts): boolean {
     <div class="hero">
       <div class="hero-top">
         <div>
-          <div class="brand">${escapeHtml(opts.sellerName || 'NovaCRM')}</div>
-          <div class="tag">Tax Invoice</div>
+          <div class="brand">${escapeHtml(opts.sellerName || 'HMS Enterprises')}</div>
+          <div class="tag">Proforma Invoice</div>
         </div>
         <div class="inv-meta">
           <div class="inv-no">${escapeHtml(opts.invoiceNumber)}</div>
@@ -129,7 +129,7 @@ export function openPrintableInvoice(opts: InvoicePrintOpts): boolean {
         </div>
       </div>
       <div class="facts">
-        <div class="fact"><span>Invoice date</span><strong>${escapeHtml(opts.invoiceDate || '—')}</strong></div>
+        <div class="fact"><span>Proforma date</span><strong>${escapeHtml(opts.invoiceDate || '—')}</strong></div>
         <div class="fact"><span>Due date</span><strong>${escapeHtml(opts.dueDate || '—')}</strong></div>
         <div class="fact"><span>Job ref</span><strong>${escapeHtml(opts.ticketRef || '—')}</strong></div>
         <div class="fact"><span>Currency</span><strong>${escapeHtml(currency)}</strong></div>
@@ -149,6 +149,7 @@ export function openPrintableInvoice(opts: InvoicePrintOpts): boolean {
         </div>
       </div>
       ${opts.notes ? `<div class="notes"><strong>Notes</strong><br/>${escapeHtml(opts.notes)}</div>` : ''}
+      <div class="notes" style="margin-top:12px">This is a <strong>proforma invoice</strong> only. Final GST tax invoice is issued from Tally by HMS Enterprises.</div>
     </div>
   </div>
 </body></html>`

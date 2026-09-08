@@ -1,4 +1,11 @@
-export type UserRole = 'ADMIN' | 'MANAGER' | 'AGENT' | 'READ_ONLY'
+export type UserRole =
+  | 'ADMIN'
+  | 'MANAGER'
+  | 'AGENT'
+  | 'READ_ONLY'
+  | 'SERVICE_DESK'
+  | 'SERVICE_ENGINEER'
+  | 'WAREHOUSE'
 export type UserStatus = 'ACTIVE' | 'INACTIVE' | 'INVITED'
 
 export type LeadStatus = 'NEW' | 'CONTACTED' | 'QUALIFIED' | 'UNQUALIFIED' | 'LOST' | 'CONVERTED'
@@ -243,4 +250,6 @@ export interface Toast {
   id: string
   type: 'success' | 'error' | 'warning' | 'info'
   message: string
+  /** Optional heading; defaults by type when omitted */
+  title?: string
 }

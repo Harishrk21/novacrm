@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Search, UserPlus } from 'lucide-react'
+import {
+  Building2,
+  MapPin,
+  Phone,
+  Search,
+  Users,
+  UserPlus,
+  Filter,
+} from 'lucide-react'
 import { Avatar } from '@/components/ui/Avatar'
 import { Button } from '@/components/ui/Button'
 import {
@@ -18,6 +26,7 @@ import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { SparePartsPanel } from '@/components/contacts/SparePartsPanel'
+import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS } from '@/lib/assetOrigin'
@@ -27,8 +36,10 @@ import {
   productRequiresStamping,
 } from '@/lib/productCatalog'
 import { firstError, validateContactForm, type FieldErrors } from '@/lib/formValidation'
-import { formatDate, formatPhone } from '@/lib/utils'
+import { cn, formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
+import { useAuthStore } from '@/store/authStore'
+import { canAssignTickets, isServiceDesk } from '@/lib/roles'
 
 type ContactRow = {
   id: string
@@ -124,6 +135,9 @@ export function ContactsPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const addToast = useUIStore((s) => s.addToast)
+  const authRole = useAuthStore((s) => s.user?.role)
+  const isDesk = isServiceDesk(authRole)
+  const canAssign = canAssignTickets(authRole)
 
   const [items, setItems] = useState<ContactRow[]>([])
   const [accounts, setAccounts] = useState<Array<{ id: string; name: string }>>([])
@@ -151,6 +165,15 @@ export function ContactsPage() {
 
   const ids = useMemo(() => items.map((i) => String(i.id)), [items])
   const selection = useRowSelection(ids)
+
+  const overview = useMemo(() => {
+    const withPhone = items.filter((c) => Boolean(c.phone || c.mobile)).length
+    const linked = items.filter((c) => Boolean(c.accountId)).length
+    const cities = new Set(items.map((c) => (c.city || '').trim()).filter(Boolean)).size
+    return { total: items.length, withPhone, linked, cities }
+  }, [items])
+
+  const filtersActive = Boolean(accountFilter || ownerFilter || linkFilter || cityFilter || search)
 
   useEffect(() => {
     const open = searchParams.get('open') === '1'
@@ -341,7 +364,7 @@ export function ContactsPage() {
         state: form.state.trim() || null,
         country: form.country.trim() || 'IN',
         accountId: form.accountId || null,
-        ownerUserId: form.ownerUserId || null,
+        ownerUserId: canAssign ? form.ownerUserId || null : null,
         description: form.description.trim() || null,
         tags: form.tags
           ? form.tags
@@ -426,11 +449,26 @@ export function ContactsPage() {
   }
 
   return (
-    <div>
+    <div className="space-y-5 pb-8">
       <PageHeader
         title="Customers"
         count={items.length}
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Customers' }]}
+        actions={
+          tab === 'list' ? (
+            <Button
+              onClick={() => {
+                setForm(emptyForm)
+                setMachine(emptyMachine)
+                setCreateStep('customer')
+                setErrors({})
+                setTab('create')
+              }}
+            >
+              <UserPlus size={16} /> Add customer
+            </Button>
+          ) : null
+        }
       />
 
       <PageTabs
@@ -446,7 +484,7 @@ export function ContactsPage() {
           }
         }}
         tabs={[
-          { id: 'list', label: 'All customers', count: items.length },
+          { id: 'list', label: 'Directory', count: items.length },
           { id: 'spare', label: 'Spare parts' },
           { id: 'create', label: 'Add customer' },
         ]}
@@ -456,113 +494,190 @@ export function ContactsPage() {
 
       {tab === 'list' ? (
         <>
-          <Card className="mb-5">
-            <form onSubmit={handlePhoneLookup}>
-              <label htmlFor="phone-lookup" className="mb-2 block text-sm font-semibold text-text-primary">
-                Find customer by phone or Customer ID
-              </label>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <div className="relative flex-1">
+          {/* Overview strip */}
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {[
+              {
+                label: 'Total customers',
+                value: overview.total,
+                icon: Users,
+                tint: 'from-sky-500/15 to-transparent text-sky-700 dark:text-sky-300',
+              },
+              {
+                label: 'With phone',
+                value: overview.withPhone,
+                icon: Phone,
+                tint: 'from-emerald-500/15 to-transparent text-emerald-700 dark:text-emerald-300',
+              },
+              {
+                label: 'Linked accounts',
+                value: overview.linked,
+                icon: Building2,
+                tint: 'from-indigo-500/15 to-transparent text-indigo-700 dark:text-indigo-300',
+              },
+              {
+                label: 'Cities covered',
+                value: overview.cities,
+                icon: MapPin,
+                tint: 'from-amber-500/15 to-transparent text-amber-800 dark:text-amber-300',
+              },
+            ].map((stat) => {
+              const Icon = stat.icon
+              return (
+                <div
+                  key={stat.label}
+                  className={cn(
+                    'relative overflow-hidden rounded-2xl border border-border bg-card p-4 shadow-[var(--shadow-card)]',
+                    'bg-gradient-to-br',
+                    stat.tint,
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-secondary">
+                        {stat.label}
+                      </p>
+                      <p className="mt-1.5 text-2xl font-semibold tabular-nums tracking-tight text-text-primary">
+                        {loading ? '—' : stat.value}
+                      </p>
+                    </div>
+                    <div className="flex size-10 items-center justify-center rounded-xl bg-card/80 ring-1 ring-border/60">
+                      <Icon size={18} className="opacity-80" />
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Quick lookup */}
+          <Card className="overflow-hidden border-border/80 p-0 shadow-[var(--shadow-card)]">
+            <div className="border-b border-border bg-gradient-to-r from-[var(--color-panel-from)] via-card to-[var(--color-panel-to)] px-5 py-4">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-text-primary">Quick lookup</h2>
+                  <p className="mt-0.5 text-xs text-text-secondary">
+                    Jump to a customer by mobile or Customer ID (CUS-#####).
+                  </p>
+                </div>
+              </div>
+              <form onSubmit={handlePhoneLookup} className="mt-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <div className="relative flex-1">
+                    <Search
+                      className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-text-secondary"
+                      size={17}
+                    />
+                    <Input
+                      id="phone-lookup"
+                      value={phone}
+                      onChange={(e) => {
+                        setPhone(e.target.value)
+                        setPhoneResult(null)
+                        setPhoneNotFound(false)
+                      }}
+                      placeholder="+91 98xxx xxxxx or CUS-00042"
+                      className="h-11 rounded-xl border-border/80 bg-card pl-10 shadow-sm"
+                    />
+                  </div>
+                  <Button type="submit" className="h-11 rounded-xl px-5 sm:w-auto">
+                    Lookup
+                  </Button>
+                </div>
+                {phoneResult ? (
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/70 px-3.5 py-2.5">
+                    <p className="text-sm text-text-secondary">{phoneResult}</p>
+                    {phoneNotFound ? (
+                      <Button type="button" size="sm" variant="outline" onClick={addCustomerFromLookup}>
+                        <UserPlus size={14} /> Add customer
+                        {phone.trim() ? (
+                          <span className="font-normal opacity-80">— “{phone.trim()}”</span>
+                        ) : null}
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </form>
+            </div>
+
+            {/* Filters + table */}
+            <div className="border-b border-border px-5 py-3.5">
+              <div className="mb-2.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.06em] text-text-secondary">
+                <Filter size={13} /> Directory filters
+              </div>
+              <div className="flex flex-wrap gap-2.5">
+                <div className="relative min-w-[220px] flex-1">
                   <Search
                     className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary"
-                    size={18}
+                    size={15}
                   />
                   <Input
-                    id="phone-lookup"
-                    value={phone}
-                    onChange={(e) => {
-                      setPhone(e.target.value)
-                      setPhoneResult(null)
-                      setPhoneNotFound(false)
-                    }}
-                    placeholder="+91 98xxx xxxxx or CUS-00042"
-                    className="pl-10"
+                    placeholder="Search ID, name, email, phone…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    className="rounded-lg pl-9"
                   />
                 </div>
-                <Button type="submit">Lookup</Button>
-              </div>
-              {phoneResult ? (
-                <div className="mt-3 rounded-[8px] border border-border bg-muted/40 px-3 py-2.5">
-                  <p className="text-sm text-text-secondary">{phoneResult}</p>
-                  {phoneNotFound ? (
-                    <Button type="button" className="mt-2" onClick={addCustomerFromLookup}>
-                      <UserPlus size={16} /> Add customer
-                      {phone.trim() ? (
-                        <span className="font-normal opacity-80">— use “{phone.trim()}”</span>
-                      ) : null}
-                    </Button>
-                  ) : null}
-                </div>
-              ) : null}
-            </form>
-          </Card>
-
-          <Card padding={false}>
-            <div className="flex flex-wrap gap-3 border-b border-border p-4">
-              <div className="relative min-w-[200px] flex-1">
-                <Search
-                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary"
-                  size={16}
+                <Select
+                  value={accountFilter}
+                  onChange={(e) => setAccountFilter(e.target.value)}
+                  className="w-44"
+                  options={[
+                    { value: '', label: 'All accounts' },
+                    ...accounts.map((a) => ({ value: a.id, label: a.name })),
+                  ]}
+                />
+                {canAssign ? (
+                  <Select
+                    value={ownerFilter}
+                    onChange={(e) => setOwnerFilter(e.target.value)}
+                    className="w-40"
+                    options={[
+                      { value: '', label: 'All owners' },
+                      ...users.map((u) => ({ value: u.id, label: u.name })),
+                    ]}
+                  />
+                ) : null}
+                <Select
+                  value={linkFilter}
+                  onChange={(e) => setLinkFilter(e.target.value)}
+                  className="w-40"
+                  options={[
+                    { value: '', label: 'Linked / any' },
+                    { value: 'linked', label: 'Has account' },
+                    { value: 'unlinked', label: 'No account' },
+                  ]}
                 />
                 <Input
-                  placeholder="Search Customer ID, name, email, phone..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-9"
+                  placeholder="City"
+                  value={cityFilter}
+                  onChange={(e) => setCityFilter(e.target.value)}
+                  className="w-32"
                 />
+                {filtersActive ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setSearch('')
+                      setAccountFilter('')
+                      setOwnerFilter('')
+                      setLinkFilter('')
+                      setCityFilter('')
+                    }}
+                  >
+                    Clear
+                  </Button>
+                ) : null}
               </div>
-              <Select
-                value={accountFilter}
-                onChange={(e) => setAccountFilter(e.target.value)}
-                className="w-44"
-                options={[
-                  { value: '', label: 'All accounts' },
-                  ...accounts.map((a) => ({ value: a.id, label: a.name })),
-                ]}
-              />
-              <Select
-                value={ownerFilter}
-                onChange={(e) => setOwnerFilter(e.target.value)}
-                className="w-40"
-                options={[
-                  { value: '', label: 'All owners' },
-                  ...users.map((u) => ({ value: u.id, label: u.name })),
-                ]}
-              />
-              <Select
-                value={linkFilter}
-                onChange={(e) => setLinkFilter(e.target.value)}
-                className="w-40"
-                options={[
-                  { value: '', label: 'Linked / any' },
-                  { value: 'linked', label: 'Has account' },
-                  { value: 'unlinked', label: 'No account' },
-                ]}
-              />
-              <Input
-                placeholder="City"
-                value={cityFilter}
-                onChange={(e) => setCityFilter(e.target.value)}
-                className="w-32"
-              />
-              {(accountFilter || ownerFilter || linkFilter || cityFilter || search) && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setSearch('')
-                    setAccountFilter('')
-                    setOwnerFilter('')
-                    setLinkFilter('')
-                    setCityFilter('')
-                  }}
-                >
-                  Clear
-                </Button>
-              )}
             </div>
+
             {loading ? (
-              <p className="p-6 text-sm text-text-secondary">Loading contacts from database…</p>
+              <div className="space-y-3 p-6">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="h-14 animate-pulse rounded-xl bg-muted/70" />
+                ))}
+              </div>
             ) : loadError && items.length === 0 ? (
               <EmptyState
                 icon={<UserPlus size={26} />}
@@ -593,83 +708,117 @@ export function ContactsPage() {
                     onDelete={() => setConfirm({ ids: selection.selectedIds })}
                   />
                 ) : null}
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[960px] text-left text-sm">
-                    <thead className="bg-muted text-xs text-text-secondary">
-                      <tr>
-                        <th className="w-10 px-4 py-3">
-                          <SelectCheckbox
-                            checked={selection.allSelected}
-                            indeterminate={selection.someSelected && !selection.allSelected}
-                            onChange={selection.toggleAll}
-                            aria-label="Select all"
-                          />
-                        </th>
-                        {['Customer ID', 'Name', 'Phone', 'Area / Location', 'City', 'Added', 'Actions'].map(
-                          (h) => (
-                            <th key={h} className="px-4 py-3 font-medium">
+                <div className="overflow-hidden rounded-xl border border-border/80">
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[980px] text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-border bg-muted/50 text-[11px] uppercase tracking-[0.06em] text-text-secondary">
+                          <th className="w-10 px-4 py-3">
+                            <SelectCheckbox
+                              checked={selection.allSelected}
+                              indeterminate={selection.someSelected && !selection.allSelected}
+                              onChange={selection.toggleAll}
+                              aria-label="Select all"
+                            />
+                          </th>
+                          {[
+                            'Customer',
+                            'Contact',
+                            'Location',
+                            'Account',
+                            'Added',
+                            'Actions',
+                          ].map((h) => (
+                            <th key={h} className="px-4 py-3 font-semibold">
                               {h}
                             </th>
-                          ),
-                        )}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {items.map((c) => (
-                        <tr
-                          key={c.id}
-                          className="cursor-pointer border-t border-border hover:bg-surface"
-                          onClick={() => navigate(`/contacts/${c.id}`)}
-                        >
-                          <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                            <SelectCheckbox
-                              checked={selection.isSelected(c.id)}
-                              onChange={() => selection.toggle(c.id)}
-                              aria-label={`Select ${c.name}`}
-                            />
-                          </td>
-                          <td className="px-4 py-3 font-mono text-xs font-semibold text-accent-blue">
-                            {c.customerCode ?? '—'}
-                          </td>
-                          <td className="px-4 py-3">
-                            <Link
-                              to={`/contacts/${c.id}`}
-                              className="flex items-center gap-2 font-medium text-accent-blue hover:underline"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <Avatar name={c.name} size="sm" />
-                              {c.name}
-                            </Link>
-                          </td>
-                          <td className="px-4 py-3">{formatPhone(c.phone || c.mobile || '') || '—'}</td>
-                          <td className="px-4 py-3 text-text-secondary">
-                            {[c.area, c.location].filter(Boolean).join(' · ') || '—'}
-                          </td>
-                          <td className="px-4 py-3">
-                            {[c.city, c.state].filter(Boolean).join(', ') || '—'}
-                          </td>
-                          <td className="px-4 py-3 text-text-secondary">
-                            {c.createdAt ? formatDate(String(c.createdAt)) : '—'}
-                          </td>
-                          <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                            <div className="flex items-center gap-0.5">
-                              <ViewIconButton onClick={() => navigate(`/contacts/${c.id}`)} />
-                              <DeleteIconButton
-                                disabled={busyDelete}
-                                onClick={() => setConfirm({ ids: [c.id] })}
-                              />
-                            </div>
-                          </td>
+                          ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {items.map((c) => {
+                          const phoneDisplay = formatPhone(c.phone || c.mobile || '') || '—'
+                          const place = [c.area, c.location].filter(Boolean).join(' · ')
+                          const cityLine = [c.city, c.state].filter(Boolean).join(', ')
+                          return (
+                            <tr
+                              key={c.id}
+                              className="group cursor-pointer border-t border-border/70 transition-colors hover:bg-accent-soft/40"
+                              onClick={() => navigate(`/contacts/${c.id}`)}
+                            >
+                              <td className="px-4 py-3.5" onClick={(e) => e.stopPropagation()}>
+                                <SelectCheckbox
+                                  checked={selection.isSelected(c.id)}
+                                  onChange={() => selection.toggle(c.id)}
+                                  aria-label={`Select ${c.name}`}
+                                />
+                              </td>
+                              <td className="px-4 py-3.5">
+                                <Link
+                                  to={`/contacts/${c.id}`}
+                                  className="flex items-center gap-3"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <Avatar name={c.name} size="sm" />
+                                  <div className="min-w-0">
+                                    <div className="truncate font-semibold text-text-primary group-hover:text-accent-blue">
+                                      {c.name}
+                                    </div>
+                                    <div className="mt-0.5 font-mono text-[11px] font-medium text-accent-blue/90">
+                                      {c.customerCode ?? 'No ID'}
+                                    </div>
+                                  </div>
+                                </Link>
+                              </td>
+                              <td className="px-4 py-3.5">
+                                <div className="font-medium tabular-nums text-text-primary">{phoneDisplay}</div>
+                                {c.email ? (
+                                  <div className="mt-0.5 truncate text-xs text-text-secondary">{c.email}</div>
+                                ) : null}
+                              </td>
+                              <td className="px-4 py-3.5">
+                                <div className="text-text-primary">{place || '—'}</div>
+                                <div className="mt-0.5 text-xs text-text-secondary">{cityLine || '—'}</div>
+                              </td>
+                              <td className="px-4 py-3.5">
+                                {c.accountId ? (
+                                  <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-500/20 dark:text-emerald-300">
+                                    Linked
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center rounded-full bg-muted px-2.5 py-0.5 text-[11px] font-semibold text-text-secondary ring-1 ring-border">
+                                    No account
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3.5 text-text-secondary">
+                                {c.createdAt ? formatDate(String(c.createdAt)) : '—'}
+                              </td>
+                              <td className="px-4 py-3.5" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center gap-0.5 opacity-80 transition-opacity group-hover:opacity-100">
+                                  <ViewIconButton onClick={() => navigate(`/contacts/${c.id}`)} />
+                                  <DeleteIconButton
+                                    disabled={busyDelete}
+                                    onClick={() => setConfirm({ ids: [c.id] })}
+                                  />
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
+                <p className="mt-3 px-1 text-xs text-text-secondary">
+                  Showing {items.length} customer{items.length === 1 ? '' : 's'}
+                  {filtersActive ? ' · filters applied' : ''}
+                </p>
               </div>
             )}
           </Card>
         </>
-      ) : (
+      ) : tab === 'create' ? (
         <FormPanel
           open
           accent="theme"
@@ -794,7 +943,13 @@ export function ContactsPage() {
                   onChange={(e) => setForm({ ...form, mobile3: e.target.value })}
                 />
                 <Input
-                  label="WhatsApp number"
+                  id="whatsapp-number"
+                  label={
+                    <span className="inline-flex items-center gap-1.5">
+                      <WhatsAppIcon size={14} />
+                      <span style={{ color: WA_GREEN }}>WhatsApp number</span>
+                    </span>
+                  }
                   value={form.whatsapp}
                   onChange={(e) => setForm({ ...form, whatsapp: e.target.value })}
                   placeholder="Defaults to mobile 1 if empty"
@@ -813,6 +968,7 @@ export function ContactsPage() {
                   placeholder="Maps link or lat,long"
                   className="sm:col-span-2 lg:col-span-3"
                 />
+                {canAssign && !isDesk ? (
                 <Select
                   label="Lead — name of the executive"
                   value={form.ownerUserId}
@@ -822,6 +978,7 @@ export function ContactsPage() {
                     ...users.map((u) => ({ value: u.id, label: u.name })),
                   ]}
                 />
+                ) : null}
                 <label className="block text-sm sm:col-span-2 lg:col-span-3">
                   <span className="mb-1 block font-medium text-text-secondary">Notes</span>
                   <textarea
@@ -963,7 +1120,7 @@ export function ContactsPage() {
             </form>
           )}
         </FormPanel>
-      )}
+      ) : null}
 
       <ConfirmModal
         open={Boolean(confirm)}

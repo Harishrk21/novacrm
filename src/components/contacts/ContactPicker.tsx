@@ -24,6 +24,11 @@ type Props = {
   className?: string
   /** Where to return after creating a customer from “not found” */
   returnTo?: string
+  /**
+   * Sale enquiries: optional link to an existing customer only.
+   * Do not create customers from here — prospects stay on the lead until convert.
+   */
+  prospectMode?: boolean
 }
 
 function labelFor(c: ContactPick) {
@@ -40,6 +45,7 @@ export function ContactPicker({
   error,
   className,
   returnTo = '/tickets?open=1',
+  prospectMode = false,
 }: Props) {
   const navigate = useNavigate()
   const inputId = useId()
@@ -224,25 +230,38 @@ export function ContactPicker({
               {hits.length === 0 ? (
                 <li className="px-3 py-2 text-sm text-text-secondary">No customer matches “{query.trim()}”</li>
               ) : null}
-              <li className="border-t border-border">
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-semibold text-accent-blue hover:bg-accent-blue/5"
-                  onClick={goAddCustomer}
-                >
-                  <UserPlus size={16} />
-                  Add new customer
-                  {query.trim() ? (
-                    <span className="font-normal text-text-secondary">— use “{query.trim()}”</span>
-                  ) : null}
-                </button>
-              </li>
+              {!prospectMode ? (
+                <li className="border-t border-border">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-semibold text-accent-blue hover:bg-accent-blue/5"
+                    onClick={goAddCustomer}
+                  >
+                    <UserPlus size={16} />
+                    Add new customer
+                    {query.trim() ? (
+                      <span className="font-normal text-text-secondary">— use “{query.trim()}”</span>
+                    ) : null}
+                  </button>
+                </li>
+              ) : (
+                <li className="border-t border-border px-3 py-2.5 text-xs text-text-secondary">
+                  New prospects are not added to Customers yet — enter their details on the enquiry form.
+                  They become a permanent customer only after Convert sale.
+                </li>
+              )}
             </>
           )}
         </ul>
       ) : null}
       <p className="text-xs text-text-secondary">
-        Type at least 2 characters. If not found, choose <strong>Add new customer</strong>.
+        {prospectMode
+          ? 'Optional: link an existing customer. Otherwise fill name & phone below — enquiry only until convert.'
+          : (
+            <>
+              Type at least 2 characters. If not found, choose <strong>Add new customer</strong>.
+            </>
+          )}
       </p>
     </div>
   )

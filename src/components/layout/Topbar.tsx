@@ -22,6 +22,7 @@ import { api, isTenantSession } from '@/lib/api'
 import { timeAgo, formatCurrency, formatPhone, cn } from '@/lib/utils'
 import { PALETTES, type ColorPalette } from '@/lib/theme'
 import { APP_NAME } from '@/lib/branding'
+import { formatServiceId } from '@/lib/serviceId'
 
 type SearchHit = { id: string; primary: string; secondary?: string; type: string }
 
@@ -34,16 +35,18 @@ export function Topbar() {
   const toggleThemeMode = useUIStore((s) => s.toggleThemeMode)
   const setPalette = useUIStore((s) => s.setPalette)
   const addToast = useUIStore((s) => s.addToast)
+  const openHowItWorks = useUIStore((s) => s.openHowItWorks)
   const authUser = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
   const displayName = authUser?.name ?? 'User'
   const workspace = authUser?.tenantName ?? authUser?.tenantSlug ?? APP_NAME
   const userId = authUser?.id ?? ''
 
-  const notifs = useNotificationsStore((s) => s.items)
+  const unreadCountStore = useNotificationsStore((s) => s.unreadCount)
   const loadNotifs = useNotificationsStore((s) => s.load)
   const markRead = useNotificationsStore((s) => s.markRead)
   const markAllRead = useNotificationsStore((s) => s.markAllRead)
+  const notifs = useNotificationsStore((s) => s.items)
 
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
@@ -59,7 +62,7 @@ export function Topbar() {
   const avatarRef = useRef<HTMLDivElement>(null)
   const paletteRef = useRef<HTMLDivElement>(null)
 
-  const unreadCount = notifs.filter((n) => !n.isRead).length
+  const unreadCount = unreadCountStore || notifs.filter((n) => !n.isRead).length
 
   useEffect(() => {
     if (!userId || !isTenantSession()) return
@@ -67,6 +70,20 @@ export function Topbar() {
     const id = window.setInterval(() => void loadNotifs(userId, authUser?.role), 45000)
     return () => window.clearInterval(id)
   }, [userId, authUser?.role, loadNotifs])
+
+  useEffect(() => {
+    if (!userId || !isTenantSession()) return
+    let cleanup: (() => void) | undefined
+    void import('@/store/notificationsStore').then(({ connectNotificationsSocket }) => {
+      cleanup = connectNotificationsSocket((p) => {
+        addToast({
+          type: 'success',
+          message: String(p.title ?? 'New notification'),
+        })
+      })
+    })
+    return () => cleanup?.()
+  }, [userId, addToast])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -120,7 +137,7 @@ export function Topbar() {
             ...tickets.map((t) => ({
               id: String(t.id),
               type: 'ticket',
-              primary: `#${String(t.ticketNo ?? '')} ${String(t.subject ?? '')}`,
+              primary: `${formatServiceId(t.ticketNo)} ${String(t.subject ?? '')}`,
               secondary: String(t.status ?? ''),
             })),
             ...deals.map((d) => ({
@@ -347,7 +364,7 @@ export function Topbar() {
               <div className="max-h-80 overflow-y-auto">
                 {notifs.length === 0 ? (
                   <div className="p-6 text-center text-sm text-text-secondary">
-                    No notifications. Assigned leads, open tasks, and tickets appear here.
+                    No notifications yet. Ticket updates for your role appear here.
                   </div>
                 ) : (
                   notifs.slice(0, 12).map((n) => (
@@ -358,7 +375,7 @@ export function Topbar() {
                         !n.isRead && 'border-l-2 border-l-accent-blue bg-accent-blue/5',
                       )}
                       onClick={() => {
-                        if (userId) markRead(n.id, userId)
+                        if (userId) void markRead(n.id, userId)
                         setNotifOpen(false)
                         if (n.href) navigate(n.href)
                       }}
@@ -372,18 +389,28 @@ export function Topbar() {
                   ))
                 )}
               </div>
+              <div className="border-t border-border px-4 py-2">
+                <Link
+                  to="/notifications"
+                  className="block text-center text-xs font-medium text-accent-blue hover:underline"
+                  onClick={() => setNotifOpen(false)}
+                >
+                  View all notifications
+                </Link>
+              </div>
             </div>
           )}
         </div>
 
-        <Link
-          to="/help"
+        <button
+          type="button"
+          onClick={() => openHowItWorks()}
           className="rounded-[6px] p-2 text-text-secondary hover:bg-muted transition-colors duration-150"
-          title="How NovaCRM works"
-          aria-label="How NovaCRM works"
+          title="How HMS Enterprises works"
+          aria-label="How HMS Enterprises works"
         >
           <HelpCircle size={18} />
-        </Link>
+        </button>
 
         <div ref={avatarRef} className="relative ml-1">
           <button
@@ -418,13 +445,16 @@ export function Topbar() {
               >
                 <Settings size={14} /> Settings
               </Link>
-              <Link
-                to="/help"
-                className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-surface"
-                onClick={() => setAvatarOpen(false)}
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 px-3 py-2 text-sm hover:bg-surface"
+                onClick={() => {
+                  setAvatarOpen(false)
+                  openHowItWorks()
+                }}
               >
                 <HelpCircle size={14} /> How it works
-              </Link>
+              </button>
               <div className="my-1 border-t border-border" />
               <button
                 type="button"

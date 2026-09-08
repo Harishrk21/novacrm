@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { ToastContainer } from '@/components/ui/Toast'
+import { HowItWorksDrawer } from '@/components/help/HowItWorksDrawer'
 import { APP_NAME } from '@/lib/branding'
 
 export function AppLayout() {
@@ -19,6 +20,7 @@ export function AppLayout() {
           <Outlet />
         </main>
       </div>
+      <HowItWorksDrawer />
       <ToastContainer />
     </div>
   )

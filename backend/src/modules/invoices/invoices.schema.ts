@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const line = z.object({
   productId: z.string().min(1).max(36).nullable().optional(),
+  stockUnitId: z.string().min(1).max(36).nullable().optional(),
   description: z.string().min(1),
   quantity: z.coerce.number().positive(),
   unitPrice: z.coerce.number().nonnegative(),
@@ -13,6 +14,7 @@ export const createSchema = z.object({
     accountId: z.string().min(1).max(36),
     contactId: z.string().min(1).max(36).nullable().optional(),
     salesOrderId: z.string().min(1).max(36).nullable().optional(),
+    serviceTicketId: z.string().min(1).max(36).nullable().optional(),
     invoiceDate: z.coerce.date(),
     dueDate: z.coerce.date().nullable().optional(),
     currency: z.string().length(3).optional(),
@@ -20,6 +22,7 @@ export const createSchema = z.object({
     notes: z.string().nullable().optional(),
     customFields: z.record(z.unknown()).optional(),
     lines: z.array(line).min(1),
+    sendWhatsApp: z.boolean().optional(),
   }),
   query: z.any(),
   params: z.any(),

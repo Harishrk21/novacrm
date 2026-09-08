@@ -31,6 +31,8 @@ import { useCrmStore } from '@/store/crmStore'
 import { useAuthStore } from '@/store/authStore'
 import { PALETTES, type ColorPalette } from '@/lib/theme'
 import { isCompanyAdmin } from '@/lib/roles'
+import { WhatsAppCloudPanel } from '@/components/whatsapp/WhatsAppCloudPanel'
+import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 
 const adminTabs = [
   'Appearance',
@@ -226,7 +228,7 @@ function Appearance() {
   )
 }
 
-function Heading({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
+function Heading({ title, subtitle, action }: { title: ReactNode; subtitle: ReactNode; action?: ReactNode }) {
   return (
     <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
       <div>
@@ -1108,7 +1110,7 @@ export function UsersSettings() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('Demo@12345')
   const [phone, setPhone] = useState('')
-  const [roleCode, setRoleCode] = useState('AGENT')
+  const [roleCode, setRoleCode] = useState('SERVICE_ENGINEER')
 
   async function load() {
     setLoading(true)
@@ -1150,7 +1152,7 @@ export function UsersSettings() {
       setEmail('')
       setPhone('')
       setPassword('Demo@12345')
-      setRoleCode('AGENT')
+      setRoleCode('SERVICE_ENGINEER')
       await load()
     } catch (err) {
       addToast({
@@ -1200,9 +1202,11 @@ export function UsersSettings() {
               value={roleCode}
               onChange={(e) => setRoleCode(e.target.value)}
               options={[
-                { value: 'AGENT', label: 'Sales Agent' },
+                { value: 'ADMIN', label: 'Admin' },
+                { value: 'SERVICE_DESK', label: 'Service desk' },
+                { value: 'SERVICE_ENGINEER', label: 'Service engineer' },
+                { value: 'WAREHOUSE', label: 'Warehouse & billing' },
                 { value: 'MANAGER', label: 'Manager' },
-                { value: 'ADMIN', label: 'Company Admin' },
                 { value: 'READ_ONLY', label: 'Read only' },
               ]}
             />
@@ -1440,6 +1444,7 @@ function Integrations() {
   const addToast = useUIStore((s) => s.addToast)
   const askConnected = useAskMeisterStore((s) => s.connected)
   const askName = useAskMeisterStore((s) => s.workspaceName)
+  const [cloudConfigured, setCloudConfigured] = useState(false)
   const [flags, setFlags] = useState<Record<string, boolean>>({
     exotel: true,
     twilio: false,
@@ -1453,11 +1458,15 @@ function Integrations() {
     let cancelled = false
     ;(async () => {
       try {
-        const t = await api.myTenant()
+        const [t, cloud] = await Promise.all([
+          api.myTenant(),
+          api.whatsappCloudStatus().catch(() => null),
+        ])
         if (cancelled) return
         const settings = (t.settings ?? {}) as Record<string, unknown>
         const integ = (settings.integrations ?? {}) as Record<string, boolean>
         setFlags((prev) => ({ ...prev, ...integ }))
+        if (cloud) setCloudConfigured(cloud.configured)
       } catch {
         /* keep defaults */
       } finally {
@@ -1486,11 +1495,22 @@ function Integrations() {
 
   const cards = [
     {
+      name: 'Meta WhatsApp Cloud API',
+      description: 'Official Cloud API — ticket alerts & outbound from server credentials',
+      state: cloudConfigured ? 'on' : 'off',
+      href: '/whatsapp',
+      badge: cloudConfigured ? 'Env connected' : undefined,
+      ctaOn: 'Open WhatsApp setup',
+      ctaOff: 'Open WhatsApp setup',
+    },
+    {
       name: 'AskMeister WhatsApp',
-      description: 'Official WhatsApp inbox for NovaCRM — connect your AskMeister dashboard',
+      description: 'Optional shared inbox UI — connect your AskMeister dashboard',
       state: askConnected ? 'on' : 'off',
       href: '/whatsapp',
       badge: askConnected ? askName || 'Connected' : undefined,
+      ctaOn: 'Open WhatsApp inbox',
+      ctaOff: 'Connect AskMeister',
     },
     { name: 'Exotel', description: 'Cloud telephony and call tracking for India', key: 'exotel' },
     { name: 'Twilio', description: 'Voice and messaging platform', key: 'twilio' },
@@ -1502,12 +1522,30 @@ function Integrations() {
 
   return (
     <div>
-      <Heading title="Integrations" subtitle="WhatsApp, telephony, email, and books" />
+      <Heading
+        title={
+          <span className="inline-flex items-center gap-2">
+            Integrations
+          </span>
+        }
+        subtitle={
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            <WhatsAppIcon size={14} />
+            <span style={{ color: WA_GREEN }}>WhatsApp</span>, telephony, email, and books
+          </span>
+        }
+      />
       <p className="mb-4 rounded-[8px] border border-border bg-surface px-3 py-2 text-sm text-text-secondary">
-        <strong>WhatsApp</strong> is managed here (not in the sidebar). Connect AskMeister, then open the
-        inbox. When a service job is marked <strong>Resolved</strong> or <strong>Closed</strong>, NovaCRM
-        can notify the customer automatically if connected.
+        <span className="inline-flex items-center gap-1.5 font-semibold" style={{ color: WA_GREEN }}>
+          <WhatsAppIcon size={14} /> WhatsApp
+        </span>{' '}
+        uses Meta Cloud API credentials on the server (Settings → Integrations or WhatsApp page). Create Utility
+        templates in Meta; ticket lifecycle can notify customers when templates are approved. AskMeister remains
+        optional for a synced inbox UI.
       </p>
+      <div className="mb-5">
+        <WhatsAppCloudPanel compact />
+      </div>
       {!loaded ? (
         <p className="text-sm text-text-secondary">Loading…</p>
       ) : (
@@ -1522,12 +1560,35 @@ function Integrations() {
             return (
               <Card key={item.name}>
                 <div className="flex items-start gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-[8px] bg-accent-blue/10 text-accent-blue">
-                    <Webhook size={20} />
+                  <div
+                    className={
+                      item.name.includes('WhatsApp')
+                        ? 'flex h-10 w-10 items-center justify-center rounded-[8px]'
+                        : 'flex h-10 w-10 items-center justify-center rounded-[8px] bg-accent-blue/10 text-accent-blue'
+                    }
+                    style={item.name.includes('WhatsApp') ? { backgroundColor: `${WA_GREEN}18` } : undefined}
+                  >
+                    {item.name.includes('WhatsApp') ? <WhatsAppIcon size={22} /> : <Webhook size={20} />}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="font-semibold">{item.name}</h3>
+                      <h3 className="font-semibold">
+                        {item.name.includes('WhatsApp') ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            {item.name.replace('WhatsApp', '').trim() ? (
+                              <>
+                                {item.name.split('WhatsApp')[0]}
+                                <span style={{ color: WA_GREEN }}>WhatsApp</span>
+                                {item.name.split('WhatsApp')[1]}
+                              </>
+                            ) : (
+                              <span style={{ color: WA_GREEN }}>WhatsApp</span>
+                            )}
+                          </span>
+                        ) : (
+                          item.name
+                        )}
+                      </h3>
                       {state === 'soon' && <Badge color="amber">Coming Soon</Badge>}
                       {state === 'on' && (
                         <Badge color="green">
@@ -1542,8 +1603,10 @@ function Integrations() {
                   ('href' in item && item.href ? (
                     <div className="mt-4 flex flex-col gap-2">
                       <Link to={item.href}>
-                        <Button className="w-full" variant={state === 'on' ? 'primary' : 'primary'}>
-                          {state === 'on' ? 'Open WhatsApp inbox' : 'Connect AskMeister'}
+                        <Button className="w-full" variant="primary">
+                          {state === 'on'
+                            ? ('ctaOn' in item && item.ctaOn) || 'Open'
+                            : ('ctaOff' in item && item.ctaOff) || 'Connect'}
                         </Button>
                       </Link>
                       {state === 'on' ? (

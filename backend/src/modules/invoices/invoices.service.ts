@@ -41,11 +41,81 @@ export async function get(t: string, id: string) {
   };
 }
 
+/** Resolve a live account id — restore soft-deleted rows or heal from contact. */
+async function resolveAccountForInvoice(
+  t: string,
+  accountId: string | null | undefined,
+  contactId: string | null | undefined,
+): Promise<string> {
+  if (accountId) {
+    const live = await prisma.account.findFirst({
+      where: { id: accountId, tenantId: t, deletedAt: null },
+    });
+    if (live) return live.id;
+
+    const soft = await prisma.account.findFirst({
+      where: { id: accountId, tenantId: t, deletedAt: { not: null } },
+    });
+    if (soft) {
+      await prisma.account.update({
+        where: { id: soft.id },
+        data: { deletedAt: null },
+      });
+      return soft.id;
+    }
+  }
+
+  if (contactId) {
+    const contact = await prisma.contact.findFirst({
+      where: { id: contactId, tenantId: t, deletedAt: null },
+    });
+    if (!contact) throw notFound("Contact");
+
+    if (contact.accountId) {
+      const linkedLive = await prisma.account.findFirst({
+        where: { id: contact.accountId, tenantId: t, deletedAt: null },
+      });
+      if (linkedLive) return linkedLive.id;
+
+      const linkedSoft = await prisma.account.findFirst({
+        where: { id: contact.accountId, tenantId: t, deletedAt: { not: null } },
+      });
+      if (linkedSoft) {
+        await prisma.account.update({
+          where: { id: linkedSoft.id },
+          data: { deletedAt: null },
+        });
+        return linkedSoft.id;
+      }
+    }
+
+    const newAccountId = newId();
+    await prisma.account.create({
+      data: {
+        id: newAccountId,
+        tenantId: t,
+        name: contact.name,
+        phone: contact.phone,
+        email: contact.email,
+        city: contact.city,
+        state: contact.state,
+        accountType: "CUSTOMER",
+        customFields: { autoFromContact: contact.id },
+      },
+    });
+    await prisma.contact.updateMany({
+      where: { id: contact.id, tenantId: t },
+      data: { accountId: newAccountId },
+    });
+    return newAccountId;
+  }
+
+  throw notFound("Account");
+}
+
 export async function create(t: string, user: string, d: any) {
-  const account = await prisma.account.findFirst({
-    where: { id: d.accountId, tenantId: t, deletedAt: null },
-  });
-  if (!account) throw notFound("Account");
+  const accountId = await resolveAccountForInvoice(t, d.accountId, d.contactId);
+  d.accountId = accountId;
   if (
     d.contactId &&
     !(await prisma.contact.findFirst({
@@ -110,7 +180,7 @@ export async function create(t: string, user: string, d: any) {
     }
   }
 
-  return prisma.$transaction(async (tx) => {
+  const created = await prisma.$transaction(async (tx) => {
     let seq = await tx.numberSequence.findUnique({
       where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "INVOICE" } },
     });
@@ -161,6 +231,7 @@ export async function create(t: string, user: string, d: any) {
         accountId: d.accountId,
         contactId: d.contactId,
         salesOrderId: d.salesOrderId,
+        serviceTicketId: d.serviceTicketId ?? null,
         invoiceDate: d.invoiceDate,
         dueDate: d.dueDate,
         currency: d.currency ?? "INR",
@@ -241,6 +312,49 @@ export async function create(t: string, user: string, d: any) {
       lines: await tx.invoiceLine.findMany({ where: { tenantId: t, invoiceId } }),
     };
   });
+
+  if (d.serviceTicketId) {
+    const svc = await prisma.ticket.findFirst({
+      where: { id: String(d.serviceTicketId), tenantId: t, deletedAt: null },
+    });
+    if (!svc) throw notFound("Service ticket");
+    const { assertCanInvoice } = await import("../tickets/ticketLifecycle.js");
+    assertCanInvoice({
+      status: svc.status,
+      paymentTotal: Number(svc.paymentTotal),
+      advanceAmount: Number(svc.advanceAmount),
+    });
+    await prisma.ticket.updateMany({
+      where: { id: String(d.serviceTicketId), tenantId: t, deletedAt: null },
+      data: { serviceInvoiceId: String(created.id) },
+    });
+  }
+
+  let whatsapp: unknown = null;
+  if (d.sendWhatsApp === true && d.contactId) {
+    try {
+      const { notifyProformaReady } = await import("../tickets/ticketNotify.service.js");
+      const firstLine = (d.lines as Array<{ description?: string }>)?.[0];
+      const productDescription =
+        firstLine?.description ||
+        (created.lines as Array<{ description?: string }> | undefined)?.[0]?.description ||
+        "your order";
+      whatsapp = await notifyProformaReady(
+        t,
+        {
+          contactId: String(d.contactId),
+          invoiceNumber: String(created.invoiceNumber),
+          productDescription: String(productDescription),
+          amount: Number(created.grandTotal),
+        },
+        user,
+      );
+    } catch (err) {
+      console.error("proforma whatsapp failed", err);
+    }
+  }
+
+  return { ...created, whatsapp };
 }
 
 export async function updateStatus(

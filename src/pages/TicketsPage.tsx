@@ -24,7 +24,7 @@ import { assetRequiresStamping } from '@/lib/productCatalog'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { isCompanyAdmin, isScopedEmployee, isServiceDesk, canAssignTickets, canCreateTickets, filterServiceEngineers, type LookupUser } from '@/lib/roles'
 import { WhatsAppSendConfirm, type WhatsAppConfirmPayload } from '@/components/whatsapp/WhatsAppSendConfirm'
-import { WhatsAppIcon, WhatsAppWord, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
+import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import { formatServiceId } from '@/lib/serviceId'
 import { MissingBanner, focusFirstMissing, sectionErrorClass } from '@/components/ui/MissingField'
 import { useUIStore } from '@/store/uiStore'
@@ -221,20 +221,24 @@ export function TicketsPage() {
         .engineerWhatsapp
       if (sendWhatsApp) {
         if (engWa?.notified) {
+          const fallbackNote =
+            typeof engWa.reason === 'string' && engWa.reason.includes('sent_as_text')
+              ? ' (text fallback — approve ticket_assigned_engineer in Meta for reliable alerts)'
+              : ''
           addToast({
             type: 'success',
-            message: `Assigned ${eng?.name ?? 'engineer'} · WhatsApp sent to their mobile`,
+            message: `Assigned ${eng?.name ?? 'engineer'} · WhatsApp sent to engineer${fallbackNote}`,
           })
         } else {
           addToast({
             type: 'warning',
             message: `Assigned, but engineer WhatsApp failed${
               engWa?.reason ? `: ${engWa.reason}` : eng?.phone ? '' : ' (no mobile on user)'
-            }. Check Users & Roles phone + template ticket_assigned_engineer.`,
+            }. Approve Utility template ticket_assigned_engineer in Meta, and confirm the engineer’s phone under Users & Roles.`,
           })
         }
       } else {
-        addToast({ type: 'success', message: 'Engineer assigned (WhatsApp skipped)' })
+        addToast({ type: 'success', message: 'Engineer assigned (notification skipped)' })
       }
       setAssignModal(null)
       setAssignUserId('')
@@ -1156,12 +1160,7 @@ export function TicketsPage() {
         accent="theme"
         size="sm"
         title={assignModal?.ticketNo ? `Assign ${assignModal.ticketNo}` : 'Assign engineer'}
-        subtitle={
-          <span className="inline-flex flex-wrap items-center gap-1.5">
-            Confirms <WhatsAppWord size={14} /> to the engineer (template ticket_assigned_engineer) using
-            their mobile in Users & Roles.
-          </span>
-        }
+        subtitle="Select a service engineer. Notify sends WhatsApp to the engineer (and updates the customer that work is in progress). Uses the mobile number on Users & Roles."
         icon={<WhatsAppIcon size={24} />}
         footer={
           <>
@@ -1179,9 +1178,7 @@ export function TicketsPage() {
               disabled={assignBusy || !assignUserId}
               onClick={() => void quickAssign(false)}
             >
-              <span className="inline-flex items-center gap-1.5">
-                Assign without <WhatsAppWord size={14} />
-              </span>
+              Assign only
             </Button>
             <Button
               disabled={assignBusy || !assignUserId}
@@ -1190,7 +1187,7 @@ export function TicketsPage() {
               style={{ backgroundColor: WA_GREEN }}
             >
               <WhatsAppIcon size={16} color="#fff" />
-              {assignBusy ? 'Assigning…' : 'Assign & WhatsApp engineer'}
+              {assignBusy ? 'Assigning…' : 'Assign & notify'}
             </Button>
           </>
         }

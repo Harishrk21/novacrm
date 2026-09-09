@@ -707,9 +707,10 @@ export const api = {
 
   listUsers: () =>
     apiFetch<{
-      maxUsers: number
+      maxUsers: number | null
       used: number
-      remaining: number
+      remaining: number | null
+      unlimited?: boolean
       items: Array<{
         id: string
         name: string
@@ -767,6 +768,10 @@ export const api = {
     apiFetch<{ id: string; isRead: boolean }>(`/notifications/${id}/read`, { method: 'PATCH' }),
   markAllNotificationsRead: () =>
     apiFetch<{ updated: number }>('/notifications/read-all', { method: 'POST' }),
+  deleteNotification: (id: string) =>
+    apiFetch<{ id: string; deleted: boolean }>(`/notifications/${id}`, { method: 'DELETE' }),
+  clearAllNotifications: () =>
+    apiFetch<{ deleted: number }>('/notifications/clear-all', { method: 'POST' }),
 
   whatsappCloudStatus: () =>
     apiFetch<{

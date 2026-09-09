@@ -72,14 +72,22 @@ integrationsRouter.get('/whatsapp/cloud/status', authenticate, requireTenant, as
     const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http')
     const host = String(req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3001')
     const publicBase = (process.env.PUBLIC_API_URL || '').trim().replace(/\/$/, '')
+    const isProd = process.env.NODE_ENV === 'production'
     const webhookUrlHint = publicBase
       ? `${publicBase}/api/integrations/whatsapp/cloud/webhook`
       : `${proto}://${host}/api/integrations/whatsapp/cloud/webhook`
+    const note = isProd
+      ? publicBase
+        ? 'Production: paste this HTTPS callback in Meta WhatsApp → Configuration → Webhook, verify token must match WHATSAPP_VERIFY_TOKEN, subscribe to messages. Do not use ngrok/nginx tunnel URLs in live Meta config.'
+        : 'Production: set PUBLIC_API_URL=https://YOUR-API.onrender.com on Render so this panel shows the correct live webhook URL for Meta.'
+      : 'Local: Meta cannot call localhost — expose HTTPS via ngrok/nginx and set PUBLIC_API_URL to that tunnel, or paste the tunnel URL into Meta. For live, use your Render API host instead.'
     return success(res, {
       ...status,
+      environment: isProd ? 'production' : 'development',
+      publicApiUrl: publicBase || null,
       webhookPath: '/api/integrations/whatsapp/cloud/webhook',
       webhookUrlHint,
-      note: 'Templates must be approved in Meta WhatsApp Manager before business-initiated sends outside 24h. For local Meta verify, expose this URL via HTTPS tunnel.',
+      note,
     })
   } catch (e) {
     next(e)

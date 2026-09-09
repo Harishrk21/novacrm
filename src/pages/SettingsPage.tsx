@@ -1102,7 +1102,11 @@ export function UsersSettings() {
       avatarUrl?: string | null
     }>
   >([])
-  const [meta, setMeta] = useState({ maxUsers: 0, used: 0, remaining: 0 })
+  const [meta, setMeta] = useState({
+    maxUsers: null as number | null,
+    used: 0,
+    remaining: null as number | null,
+  })
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -1137,13 +1141,20 @@ export function UsersSettings() {
       addToast({ type: 'error', message: 'Name, email, and password (8+) are required' })
       return
     }
+    if (phone.replace(/\D/g, '').length < 10) {
+      addToast({
+        type: 'error',
+        message: 'WhatsApp / mobile number is required (include country code, e.g. 91…)',
+      })
+      return
+    }
     setSaving(true)
     try {
       await api.createUser({
         name: name.trim(),
         email: email.trim().toLowerCase(),
         password,
-        phone: phone.trim() || null,
+        phone: phone.trim(),
         roleCode,
       })
       addToast({ type: 'success', message: 'User created' })
@@ -1172,11 +1183,7 @@ export function UsersSettings() {
           accent="sky"
           eyebrow="Team"
           title="Invite user"
-          subtitle={
-            meta.maxUsers
-              ? `${meta.used} of ${meta.maxUsers} seats used (${meta.remaining} remaining)`
-              : 'Create access for a teammate'
-          }
+          subtitle={`Create access for a teammate (${meta.used} on the team)`}
           onClose={() => setOpen(false)}
           footer={
             <>
@@ -1190,7 +1197,12 @@ export function UsersSettings() {
           <div className="grid gap-4 sm:grid-cols-2">
             <Input label="Full name" value={name} onChange={(e) => setName(e.target.value)} />
             <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <Input label="Phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
+            <Input
+              label="WhatsApp / mobile *"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="91XXXXXXXXXX"
+            />
             <Input
               label="Temporary password"
               type="password"
@@ -1218,17 +1230,13 @@ export function UsersSettings() {
         <div className="p-5">
           <Heading
             title="Users & Roles"
-            subtitle={
-              meta.maxUsers
-                ? `${meta.used} of ${meta.maxUsers} seats used (${meta.remaining} remaining)`
-                : 'Manage access across your workspace'
-            }
+            subtitle={`Manage team access · ${meta.used} member${meta.used === 1 ? '' : 's'} (no seat limit)`}
             action={
               <div className="flex flex-wrap gap-2">
                 <Link to="/users">
                   <Button variant="outline">Full users page</Button>
                 </Link>
-                <Button onClick={() => setOpen(true)} disabled={meta.remaining === 0 && meta.maxUsers > 0}>
+                <Button onClick={() => setOpen(true)}>
                   <UserPlus size={16} />
                   Invite User
                 </Button>

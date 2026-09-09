@@ -488,6 +488,274 @@ async function main(){
   }
  }
 
- console.log(`Seeded ${tenant.name}; admin@hmsenterprises.in / Demo@12345; desk@ / engineer@ / warehouse@ / sales@hmsenterprises.in; agents ${agents.length-1}; products ${products.length}; employees linked. Demo CRM pack purged (not recreated).`);
+ console.log(`Seeded ${tenant.name}; admin@hmsenterprises.in / Demo@12345; desk@ / engineer@ / warehouse@ / sales@hmsenterprises.in; agents ${agents.length-1}; products ${products.length}; employees linked.`);
+
+ // Small safe showcase CRM pack for demos (stable emails — never wipes real customers)
+ {
+  const { allocateCustomerIdentity } = await import("../src/modules/contacts/customerIdentity.js");
+  const salesUser = await prisma.user.findFirst({
+    where: { tenantId: tenant.id, email: "sales@hmsenterprises.in", deletedAt: null },
+  });
+  const engineerUser = await prisma.user.findFirst({
+    where: { tenantId: tenant.id, email: "engineer@hmsenterprises.in", deletedAt: null },
+  });
+  const deskUser = await prisma.user.findFirst({
+    where: { tenantId: tenant.id, email: "desk@hmsenterprises.in", deletedAt: null },
+  });
+
+  type ShowcaseContact = {
+    email: string;
+    name: string;
+    phone: string;
+    city: string;
+    accountName: string;
+  };
+  const showcaseContacts: ShowcaseContact[] = [
+    {
+      email: "chellammal@hms-demo.example",
+      name: "Chellammal Traders",
+      phone: "919876501001",
+      city: "Madurai",
+      accountName: "Chellammal Traders",
+    },
+    {
+      email: "preethu@hms-demo.example",
+      name: "Preethu V",
+      phone: "919876501002",
+      city: "Coimbatore",
+      accountName: "Preethu Retail",
+    },
+    {
+      email: "anand@hms-demo.example",
+      name: "Anand Engineering",
+      phone: "919876501003",
+      city: "Tiruppur",
+      accountName: "Anand Engineering",
+    },
+  ];
+
+  const contactByEmail: Record<string, { id: string; accountId: string }> = {};
+  for (const row of showcaseContacts) {
+    let account = await prisma.account.findFirst({
+      where: { tenantId: tenant.id, name: row.accountName },
+    });
+    if (account) {
+      account = await prisma.account.update({
+        where: { id: account.id },
+        data: {
+          deletedAt: null,
+          phone: row.phone,
+          email: row.email,
+          city: row.city,
+          state: "Tamil Nadu",
+          industry: "Weighing / retail",
+        },
+      });
+    } else {
+      account = await prisma.account.create({
+        data: {
+          id: uuid(),
+          tenantId: tenant.id,
+          name: row.accountName,
+          phone: row.phone,
+          email: row.email,
+          city: row.city,
+          state: "Tamil Nadu",
+          country: "IN",
+          industry: "Weighing / retail",
+        },
+      });
+    }
+
+    let contact = await prisma.contact.findFirst({
+      where: { tenantId: tenant.id, email: row.email },
+    });
+    if (contact) {
+      contact = await prisma.contact.update({
+        where: { id: contact.id },
+        data: {
+          deletedAt: null,
+          name: row.name,
+          phone: row.phone,
+          mobile: row.phone,
+          phoneNormalized: row.phone,
+          city: row.city,
+          state: "Tamil Nadu",
+          accountId: account.id,
+          ownerUserId: deskUser?.id ?? user.id,
+        },
+      });
+    } else {
+      const identity = await allocateCustomerIdentity(tenant.id);
+      contact = await prisma.contact.create({
+        data: {
+          id: uuid(),
+          tenantId: tenant.id,
+          customerNo: identity.customerNo,
+          customerCode: identity.customerCode,
+          accountId: account.id,
+          name: row.name,
+          email: row.email,
+          phone: row.phone,
+          mobile: row.phone,
+          phoneNormalized: row.phone,
+          city: row.city,
+          state: "Tamil Nadu",
+          country: "IN",
+          ownerUserId: deskUser?.id ?? user.id,
+          description: "Showcase demo customer — safe to use in client demos.",
+          customFields: { demoPack: "hms-showcase" },
+        },
+      });
+    }
+    contactByEmail[row.email] = { id: contact.id, accountId: account.id };
+  }
+
+  const showcaseLeads = [
+    {
+      email: "enquiry.retail@hms-demo.example",
+      name: "Lakshmi Super Market",
+      phone: "919876501011",
+      company: "Lakshmi Super Market",
+      status: "NEW" as const,
+      city: "Salem",
+    },
+    {
+      email: "enquiry.factory@hms-demo.example",
+      name: "Sri Krishna Mills",
+      phone: "919876501012",
+      company: "Sri Krishna Mills",
+      status: "CONTACTED" as const,
+      city: "Erode",
+    },
+  ];
+  for (const lead of showcaseLeads) {
+    const existing = await prisma.lead.findFirst({
+      where: { tenantId: tenant.id, email: lead.email },
+    });
+    const payload = {
+      deletedAt: null as Date | null,
+      name: lead.name,
+      phone: lead.phone,
+      phoneNormalized: lead.phone,
+      company: lead.company,
+      city: lead.city,
+      state: "Tamil Nadu",
+      status: lead.status,
+      assignedToId: salesUser?.id ?? user.id,
+      createdById: salesUser?.id ?? user.id,
+      description: "Showcase sale enquiry for demos.",
+      customFields: { demoPack: "hms-showcase" },
+    };
+    if (existing) {
+      await prisma.lead.update({ where: { id: existing.id }, data: payload });
+    } else {
+      await prisma.lead.create({
+        data: {
+          id: uuid(),
+          tenantId: tenant.id,
+          email: lead.email,
+          country: "IN",
+          ...payload,
+        },
+      });
+    }
+  }
+
+  const ticketDefs = [
+    {
+      id: "a1000000-0000-4000-8000-000000000001",
+      ticketNo: 18,
+      subject: "Billing machine — display blank",
+      description: "Customer reports blank display on billing machine after power cut. Showcase OPEN ticket awaiting assignment.",
+      status: "OPEN" as const,
+      contactEmail: "chellammal@hms-demo.example",
+      assignedToId: null as string | null,
+    },
+    {
+      id: "a1000000-0000-4000-8000-000000000002",
+      ticketNo: 17,
+      subject: "Platform scale — calibration drift",
+      description: "Weighing scale drifts after warm-up. Showcase IN_PROGRESS ticket assigned to field engineer.",
+      status: "IN_PROGRESS" as const,
+      contactEmail: "preethu@hms-demo.example",
+      assignedToId: engineerUser?.id ?? null,
+    },
+    {
+      id: "a1000000-0000-4000-8000-000000000003",
+      ticketNo: 16,
+      subject: "Stamping due reminder — table top",
+      description: "Annual stamping due. Showcase CLOSED ticket for reports.",
+      status: "CLOSED" as const,
+      contactEmail: "anand@hms-demo.example",
+      assignedToId: engineerUser?.id ?? null,
+    },
+  ];
+
+  let nextFreeTicket =
+    (
+      await prisma.ticket.aggregate({
+        where: { tenantId: tenant.id },
+        _max: { ticketNo: true },
+      })
+    )._max.ticketNo ?? 15;
+
+  for (const td of ticketDefs) {
+    const c = contactByEmail[td.contactEmail];
+    if (!c) continue;
+    const existing = await prisma.ticket.findFirst({ where: { id: td.id } });
+    let ticketNo = existing?.ticketNo ?? td.ticketNo;
+    if (!existing) {
+      const clash = await prisma.ticket.findFirst({
+        where: { tenantId: tenant.id, ticketNo, deletedAt: null },
+      });
+      if (clash) {
+        nextFreeTicket += 1;
+        ticketNo = nextFreeTicket;
+      }
+      nextFreeTicket = Math.max(nextFreeTicket, ticketNo);
+    }
+
+    const base = {
+      tenantId: tenant.id,
+      ticketNo,
+      subject: td.subject,
+      description: td.description,
+      priority: "MEDIUM" as const,
+      status: td.status,
+      contactId: c.id,
+      accountId: c.accountId,
+      assignedToId: td.assignedToId,
+      receivedByUserId: td.assignedToId,
+      deletedAt: null as Date | null,
+      closedAt: td.status === "CLOSED" ? new Date() : null,
+      resolvedAt: td.status === "CLOSED" ? new Date() : null,
+      customFields: { demoPack: "hms-showcase", machine: td.subject.split("—")[0]?.trim() },
+    };
+    if (existing) {
+      await prisma.ticket.update({
+        where: { id: td.id },
+        data: { ...base, ticketNo: existing.ticketNo },
+      });
+    } else {
+      await prisma.ticket.create({ data: { id: td.id, ...base } });
+    }
+  }
+
+  // Keep SVC sequence ahead of showcase numbers
+  const maxTicket = await prisma.ticket.aggregate({
+    where: { tenantId: tenant.id },
+    _max: { ticketNo: true },
+  });
+  const nextTicket = Math.max(20, (maxTicket._max.ticketNo ?? 0) + 1);
+  await prisma.numberSequence.updateMany({
+    where: { tenantId: tenant.id, sequenceKey: "TICKET" },
+    data: { nextValue: nextTicket },
+  });
+
+  console.log(
+    `Showcase CRM pack ready: ${showcaseContacts.length} customers, ${showcaseLeads.length} sale enquiries, ${ticketDefs.length} service tickets.`,
+  );
+ }
 }
 main().catch(e=>{console.error(e);process.exitCode=1}).finally(async()=>prisma.$disconnect());

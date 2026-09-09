@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Bell, CheckCheck, Inbox } from 'lucide-react'
+import { Bell, CheckCheck, Inbox, Trash2 } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -10,6 +10,7 @@ import { PageTabs } from '@/components/ui/PageTabs'
 import { timeAgo, cn } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useNotificationsStore } from '@/store/notificationsStore'
+import { useUIStore } from '@/store/uiStore'
 import { AiAssistCard } from '@/components/ai/AiAssistCard'
 import { api } from '@/lib/api'
 
@@ -23,6 +24,7 @@ function typeColor(type: string) {
 
 export function NotificationsPage() {
   const navigate = useNavigate()
+  const addToast = useUIStore((s) => s.addToast)
   const userId = useAuthStore((s) => s.user?.id ?? '')
   const role = useAuthStore((s) => s.user?.role)
   const items = useNotificationsStore((s) => s.items)
@@ -31,6 +33,8 @@ export function NotificationsPage() {
   const load = useNotificationsStore((s) => s.load)
   const markRead = useNotificationsStore((s) => s.markRead)
   const markAllRead = useNotificationsStore((s) => s.markAllRead)
+  const clearOne = useNotificationsStore((s) => s.clearOne)
+  const clearAll = useNotificationsStore((s) => s.clearAll)
   const [tab, setTab] = useState<'all' | 'unread'>('all')
   const [typeFilter, setTypeFilter] = useState('')
 
@@ -64,19 +68,33 @@ export function NotificationsPage() {
         count={unreadCount}
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Notifications' }]}
         actions={
-          <Button
-            variant="outline"
-            disabled={unreadCount === 0}
-            onClick={() => void markAllRead(userId)}
-          >
-            <CheckCheck size={16} /> Mark all read
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              disabled={unreadCount === 0}
+              onClick={() => void markAllRead(userId)}
+            >
+              <CheckCheck size={16} /> Mark all read
+            </Button>
+            <Button
+              variant="outline"
+              disabled={items.length === 0}
+              onClick={() => {
+                void clearAll().then(() => {
+                  addToast({ type: 'success', message: 'All notifications cleared' })
+                })
+              }}
+            >
+              <Trash2 size={16} /> Clear all
+            </Button>
+          </div>
         }
       />
 
       <p className="mb-4 text-sm text-text-secondary">
         Real-time updates for your role
         {role ? ` (${role.replaceAll('_', ' ')})` : ''} — ticket assignment, progress, and approvals.
+        Use clear to remove items from this list.
       </p>
 
       {filtered[0] ? (
@@ -153,11 +171,11 @@ export function NotificationsPage() {
         ) : (
           <ul className="divide-y divide-border">
             {filtered.map((n) => (
-              <li key={n.id}>
+              <li key={n.id} className="flex items-stretch">
                 <button
                   type="button"
                   className={cn(
-                    'flex w-full items-start gap-3 px-4 py-3.5 text-left transition hover:bg-muted/40',
+                    'flex min-w-0 flex-1 items-start gap-3 px-4 py-3.5 text-left transition hover:bg-muted/40',
                     !n.isRead && 'bg-accent-soft/40',
                   )}
                   onClick={() => {
@@ -189,6 +207,17 @@ export function NotificationsPage() {
                     </Link>
                   ) : null}
                 </button>
+                <div className="flex items-center pr-3">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title="Clear notification"
+                    aria-label="Clear notification"
+                    onClick={() => void clearOne(n.id)}
+                  >
+                    <Trash2 size={16} />
+                  </Button>
+                </div>
               </li>
             ))}
           </ul>

@@ -54,9 +54,7 @@ export function WhatsAppSendConfirm({
             Cancel
           </Button>
           <Button variant="outline" disabled={busy} onClick={onConfirmSkip}>
-            <span className="inline-flex items-center gap-1.5">
-              Continue without <WhatsAppWord size={14} />
-            </span>
+            Continue without message
           </Button>
           <Button
             disabled={busy}

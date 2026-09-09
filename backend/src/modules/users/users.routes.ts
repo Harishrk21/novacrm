@@ -267,7 +267,7 @@ usersRouter.use(authenticate, requireTenant);
 
 usersRouter.get("/", async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
-  const [users, tenant, employees] = await Promise.all([
+  const [users, employees] = await Promise.all([
     prisma.user.findMany({
       where: { tenantId: t, deletedAt: null },
       orderBy: { createdAt: "asc" },
@@ -283,10 +283,6 @@ usersRouter.get("/", async (q: Request, r: Response) => {
         createdAt: true,
       },
     }),
-    prisma.tenant.findFirst({
-      where: { id: t },
-      select: { maxUsers: true, name: true, slug: true },
-    }),
     prisma.employee.findMany({
       where: { tenantId: t, deletedAt: null, userId: { not: null } },
     }),
@@ -300,9 +296,11 @@ usersRouter.get("/", async (q: Request, r: Response) => {
     employees.filter((e) => e.userId).map((e) => [e.userId!, e]),
   );
   return success(r, {
-    maxUsers: tenant?.maxUsers ?? 10,
+    /** HMS has no seat cap — keep fields for older clients; remaining is effectively unlimited. */
+    maxUsers: null,
     used: users.length,
-    remaining: Math.max(0, (tenant?.maxUsers ?? 10) - users.length),
+    remaining: null,
+    unlimited: true,
     items: users.map((u) => ({
       ...u,
       role: roleMap[u.roleId] ?? null,
@@ -365,20 +363,6 @@ usersRouter.post("/", validate(createSchema), async (q: Request, r: Response) =>
     where: { tenantId: t, email, deletedAt: { not: null } },
   });
 
-  const used = await prisma.user.count({ where: { tenantId: t, deletedAt: null } });
-  if (!removed && used >= tenant.maxUsers) {
-    throw new AppError(
-      `Employee limit reached (${tenant.maxUsers}). Ask admin to raise max users for this workspace.`,
-      403,
-    );
-  }
-  if (removed && used >= tenant.maxUsers) {
-    throw new AppError(
-      `Employee limit reached (${tenant.maxUsers}). Free a seat before restoring this login.`,
-      403,
-    );
-  }
-
   if (d.employeeCode?.trim()) {
     const codeTaken = await prisma.employee.findFirst({
       where: {
@@ -391,10 +375,10 @@ usersRouter.post("/", validate(createSchema), async (q: Request, r: Response) =>
     if (codeTaken) throw new AppError("Employee code already exists", 409);
   }
   const role = await ensureRole(t, d.roleCode);
-  const fieldRoles = new Set(["SERVICE_ENGINEER", "SALES_EXECUTIVE", "AGENT", "SERVICE_DESK"]);
-  if (fieldRoles.has(d.roleCode) && !String(d.phone ?? "").replace(/\D/g, "")) {
+  const phoneDigits = String(d.phone ?? "").replace(/\D/g, "");
+  if (phoneDigits.length < 10) {
     throw new AppError(
-      "Mobile / WhatsApp number is required for service, sales, and desk roles (used for alerts)",
+      "WhatsApp / mobile number is required (include country code, e.g. 91…)",
       400,
     );
   }
@@ -499,19 +483,11 @@ usersRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Response
     const role = await ensureRole(t, d.roleCode);
     data.roleId = role.id;
   }
-  const nextRoleCode = d.roleCode
-    ? d.roleCode
-    : (
-        await prisma.role.findFirst({
-          where: { id: existing.roleId, tenantId: t },
-          select: { code: true },
-        })
-      )?.code;
   const nextPhone = "phone" in d ? d.phone : existing.phone;
-  const fieldRoles = new Set(["SERVICE_ENGINEER", "SALES_EXECUTIVE", "AGENT", "SERVICE_DESK"]);
-  if (nextRoleCode && fieldRoles.has(nextRoleCode) && !String(nextPhone ?? "").replace(/\D/g, "")) {
+  const phoneDigits = String(nextPhone ?? "").replace(/\D/g, "");
+  if (phoneDigits.length < 10) {
     throw new AppError(
-      "Mobile / WhatsApp number is required for service, sales, and desk roles (used for alerts)",
+      "WhatsApp / mobile number is required (include country code, e.g. 91…)",
       400,
     );
   }

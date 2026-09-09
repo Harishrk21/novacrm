@@ -798,14 +798,14 @@ export function TicketDetailPage() {
     const nextPhone = (nextUser as { phone?: string | null } | undefined)?.phone
     setWaPending({
       payload: {
-        title: 'Assign engineer & WhatsApp them?',
+        title: 'Assign engineer?',
         lines: [
-          `Template ticket_assigned_engineer → ${nextName}${nextPhone ? ` (${nextPhone})` : ' — no mobile on user!'}`,
-          'Params: engineer, ticket no, customer, phone, location, issue',
+          `Notify ${nextName}${nextPhone ? ` (${nextPhone})` : ''} on WhatsApp with the job details`,
+          'Includes ticket number, customer, phone, location, and issue',
         ],
         note: nextPhone
-          ? 'Uses the engineer mobile from Users & Roles. Choose Send so they get the job alert.'
-          : 'Add this engineer’s mobile under Users & Roles first, or WhatsApp cannot send.',
+          ? 'Uses the engineer mobile from Users & Roles. Choose Send WhatsApp to alert them now.'
+          : 'Add this engineer’s mobile under Users & Roles first, or the WhatsApp alert cannot send.',
       },
       execute: async (send) => {
         const updated = await api.updateTicket(id!, {
@@ -827,11 +827,17 @@ export function TicketDetailPage() {
           .engineerWhatsapp
         if (send) {
           if (engWa?.notified) {
-            addToast({ type: 'success', message: 'WhatsApp sent to engineer' })
+            addToast({
+              type: 'success',
+              message:
+                typeof engWa.reason === 'string' && engWa.reason.includes('sent_as_text')
+                  ? 'WhatsApp sent to engineer (text fallback — approve ticket_assigned_engineer in Meta)'
+                  : 'WhatsApp sent to engineer',
+            })
           } else {
             addToast({
               type: 'warning',
-              message: `Engineer WhatsApp not sent${engWa?.reason ? `: ${engWa.reason}` : ''}`,
+              message: `Engineer WhatsApp not sent${engWa?.reason ? `: ${engWa.reason}` : ''}. Approve template ticket_assigned_engineer in Meta and check their phone in Users & Roles.`,
             })
           }
         }

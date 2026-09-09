@@ -22,6 +22,8 @@ type State = {
   load: (_userId?: string, _role?: string) => Promise<void>
   markRead: (id: string, _userId?: string) => Promise<void>
   markAllRead: (_userId?: string) => Promise<void>
+  clearOne: (id: string) => Promise<void>
+  clearAll: () => Promise<void>
   prependLive: (n: Partial<AppNotification> & { title: string; message: string }) => void
 }
 
@@ -99,6 +101,34 @@ export const useNotificationsStore = create<State>((set, get) => ({
     }
   },
 
+  clearOne: async (id) => {
+    const prev = get().items
+    const target = prev.find((n) => n.id === id)
+    set({
+      items: prev.filter((n) => n.id !== id),
+      unreadCount: Math.max(
+        0,
+        get().unreadCount - (target && !target.isRead ? 1 : 0),
+      ),
+    })
+    // Live socket stubs are not persisted yet
+    if (id.startsWith('live-')) return
+    try {
+      await api.deleteNotification(id)
+    } catch {
+      /* keep optimistic removal */
+    }
+  },
+
+  clearAll: async () => {
+    set({ items: [], unreadCount: 0 })
+    try {
+      await api.clearAllNotifications()
+    } catch {
+      /* keep optimistic */
+    }
+  },
+
   prependLive: (n) => {
     const id = `live-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const item: AppNotification = {
@@ -155,6 +185,9 @@ export function connectNotificationsSocket(
         entityType: p.entityType ? String(p.entityType) : null,
         entityId: p.entityId ? String(p.entityId) : null,
         createdAt: String(p.createdAt ?? new Date().toISOString()),
+      })
+      void import('@/lib/notificationSound').then(({ playNotificationBell }) => {
+        playNotificationBell()
       })
       onEvent?.(p)
       // Refresh from server shortly so IDs persist for mark-read

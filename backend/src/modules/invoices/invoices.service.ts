@@ -152,11 +152,33 @@ export async function create(t: string, user: string, d: any) {
       where: { tenantId: t, deletedAt: null, isActive: true },
     }));
 
-  // Pre-check stock for tracked products
-  for (const line of d.lines as Array<{ productId?: string; quantity: number; description?: string }>) {
+  // Pre-check stock for tracked products (serial lines validate unit availability instead)
+  for (const line of d.lines as Array<{
+    productId?: string;
+    quantity: number;
+    stockUnitId?: string | null;
+  }>) {
     if (!line.productId) continue;
     const product = productMap[line.productId];
     if (!product?.trackInventory) continue;
+
+    if (line.stockUnitId) {
+      const unit = await prisma.stockUnit.findFirst({
+        where: { id: String(line.stockUnitId), tenantId: t, deletedAt: null },
+      });
+      if (!unit) throw new AppError("Selected stock serial was not found", 404);
+      if (unit.status !== "IN_STOCK" && unit.status !== "DEMO") {
+        throw new AppError(`Serial ${unit.serialNo} is not available (${unit.status})`, 409);
+      }
+      if (unit.productId !== line.productId) {
+        throw new AppError(`Serial ${unit.serialNo} does not match the selected product`, 400);
+      }
+      if (Number(line.quantity) !== 1) {
+        throw new AppError(`Serial ${unit.serialNo} must be sold as quantity 1`, 400);
+      }
+      continue;
+    }
+
     if (!warehouse) {
       throw new AppError(`No warehouse configured to deduct stock for ${product.name}`, 400);
     }
@@ -213,6 +235,7 @@ export async function create(t: string, user: string, d: any) {
         tenantId: t,
         invoiceId: "",
         productId: x.productId,
+        stockUnitId: x.stockUnitId ? String(x.stockUnitId) : null,
         description: x.description,
         quantity: x.quantity,
         unitPrice: x.unitPrice,
@@ -223,6 +246,33 @@ export async function create(t: string, user: string, d: any) {
 
     const discount = new Prisma.Decimal(d.discountTotal ?? 0);
     const invoiceId = newId();
+    const serialBindings: Array<{ lineId: string; stockUnitId: string; serialNo: string }> = [];
+
+    // Validate serials before writing invoice (serial sale lines must be qty 1 + IN_STOCK)
+    for (const line of lines) {
+      if (!line.stockUnitId) continue;
+      const unit = await tx.stockUnit.findFirst({
+        where: { id: line.stockUnitId, tenantId: t, deletedAt: null },
+      });
+      if (!unit) throw new AppError("Selected stock serial was not found", 404);
+      if (unit.status !== "IN_STOCK" && unit.status !== "DEMO") {
+        throw new AppError(`Serial ${unit.serialNo} is not available (${unit.status})`, 409);
+      }
+      if (line.productId && unit.productId !== line.productId) {
+        throw new AppError(`Serial ${unit.serialNo} does not match the selected product`, 400);
+      }
+      if (Number(line.quantity) !== 1) {
+        throw new AppError(`Serial ${unit.serialNo} must be sold as quantity 1`, 400);
+      }
+      if (!line.productId) line.productId = unit.productId;
+    }
+
+    const prevCustom =
+      d.customFields && typeof d.customFields === "object" && !Array.isArray(d.customFields)
+        ? (d.customFields as Record<string, unknown>)
+        : {};
+    const invoiceCustomFields = prevCustom as Prisma.InputJsonValue;
+
     const invoice = await tx.invoice.create({
       data: {
         id: invoiceId,
@@ -240,21 +290,111 @@ export async function create(t: string, user: string, d: any) {
         discountTotal: discount,
         grandTotal: subtotal.add(taxTotal).sub(discount),
         notes: d.notes,
-        customFields: d.customFields,
+        customFields: invoiceCustomFields,
         createdById: user,
       },
     });
 
     await tx.invoiceLine.createMany({
-      data: lines.map((x: any) => ({ ...x, invoiceId })),
+      data: lines.map((x: any) => ({
+        id: x.id,
+        tenantId: x.tenantId,
+        invoiceId,
+        productId: x.productId,
+        description: x.description,
+        quantity: x.quantity,
+        unitPrice: x.unitPrice,
+        taxPercent: x.taxPercent,
+        lineTotal: x.lineTotal,
+      })),
     });
 
-    // Deduct inventory for tracked goods
+    // Deduct inventory for tracked goods + mark selected serials SOLD
     if (warehouse) {
       for (const line of lines) {
         if (!line.productId) continue;
         const product = productMap[line.productId];
         if (!product?.trackInventory) continue;
+
+        const qty = new Prisma.Decimal(line.quantity);
+
+        if (line.stockUnitId) {
+          const unit = await tx.stockUnit.findFirst({
+            where: { id: line.stockUnitId, tenantId: t, deletedAt: null },
+          });
+          if (!unit) throw new AppError("Selected stock serial was not found", 404);
+          const unitCf =
+            unit.customFields && typeof unit.customFields === "object" && !Array.isArray(unit.customFields)
+              ? (unit.customFields as Record<string, unknown>)
+              : {};
+          await tx.stockUnit.update({
+            where: { id: unit.id },
+            data: {
+              status: "SOLD",
+              leadId: null,
+              contactId: d.contactId ? String(d.contactId) : unit.contactId,
+              customFields: {
+                ...unitCf,
+                soldAt: new Date().toISOString(),
+                soldInvoiceId: invoiceId,
+                soldInvoiceNumber: invoiceNumber,
+              } as Prisma.InputJsonValue,
+            },
+          });
+          serialBindings.push({
+            lineId: line.id,
+            stockUnitId: unit.id,
+            serialNo: unit.serialNo,
+          });
+
+          // Prefer decrement on the unit's warehouse so counts stay honest
+          const unitWh = unit.warehouseId || warehouse.id;
+          const current = await tx.stockLevel.findUnique({
+            where: {
+              tenantId_productId_warehouseId: {
+                tenantId: t,
+                productId: line.productId,
+                warehouseId: unitWh,
+              },
+            },
+          });
+          const next = (current?.quantityOnHand ?? new Prisma.Decimal(0)).sub(qty);
+          if (next.isNegative()) {
+            throw new AppError(`Insufficient stock for ${product.name}`, 409);
+          }
+          await tx.stockLevel.upsert({
+            where: {
+              tenantId_productId_warehouseId: {
+                tenantId: t,
+                productId: line.productId,
+                warehouseId: unitWh,
+              },
+            },
+            create: {
+              id: newId(),
+              tenantId: t,
+              productId: line.productId,
+              warehouseId: unitWh,
+              quantityOnHand: next,
+            },
+            update: { quantityOnHand: next },
+          });
+          await tx.stockMovement.create({
+            data: {
+              id: newId(),
+              tenantId: t,
+              productId: line.productId,
+              warehouseId: unitWh,
+              movementType: "OUT",
+              quantity: qty,
+              notes: `Sale · ${invoiceNumber} · ${unit.serialNo}`,
+              referenceType: "INVOICE",
+              referenceId: invoiceId,
+              performedBy: user,
+            },
+          });
+          continue;
+        }
 
         const current = await tx.stockLevel.findUnique({
           where: {
@@ -265,7 +405,6 @@ export async function create(t: string, user: string, d: any) {
             },
           },
         });
-        const qty = new Prisma.Decimal(line.quantity);
         const next = (current?.quantityOnHand ?? new Prisma.Decimal(0)).sub(qty);
         if (next.isNegative()) {
           throw new AppError(`Insufficient stock for ${product.name}`, 409);
@@ -304,10 +443,57 @@ export async function create(t: string, user: string, d: any) {
           },
         });
       }
+    } else {
+      // Still mark serials sold even if MAIN warehouse row is missing
+      for (const line of lines) {
+        if (!line.stockUnitId) continue;
+        const unit = await tx.stockUnit.findFirst({
+          where: { id: line.stockUnitId, tenantId: t, deletedAt: null },
+        });
+        if (!unit) throw new AppError("Selected stock serial was not found", 404);
+        const unitCf =
+          unit.customFields && typeof unit.customFields === "object" && !Array.isArray(unit.customFields)
+            ? (unit.customFields as Record<string, unknown>)
+            : {};
+        await tx.stockUnit.update({
+          where: { id: unit.id },
+          data: {
+            status: "SOLD",
+            leadId: null,
+            contactId: d.contactId ? String(d.contactId) : unit.contactId,
+            customFields: {
+              ...unitCf,
+              soldAt: new Date().toISOString(),
+              soldInvoiceId: invoiceId,
+              soldInvoiceNumber: invoiceNumber,
+            } as Prisma.InputJsonValue,
+          },
+        });
+        serialBindings.push({
+          lineId: line.id,
+          stockUnitId: unit.id,
+          serialNo: unit.serialNo,
+        });
+      }
+    }
+
+    if (serialBindings.length) {
+      await tx.invoice.update({
+        where: { id: invoiceId },
+        data: {
+          customFields: {
+            ...prevCustom,
+            soldStockUnits: serialBindings,
+          } as Prisma.InputJsonValue,
+        },
+      });
     }
 
     return {
       ...invoice,
+      customFields: serialBindings.length
+        ? { ...prevCustom, soldStockUnits: serialBindings }
+        : invoice.customFields,
       balanceDue: invoice.grandTotal,
       lines: await tx.invoiceLine.findMany({ where: { tenantId: t, invoiceId } }),
     };

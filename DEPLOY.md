@@ -64,12 +64,25 @@ PLATFORM_ADMIN_EMAIL=admin@novacrm.com
 PLATFORM_ADMIN_PASSWORD=change-this-strong-password
 UPLOAD_DIR=./uploads
 REDIS_URL=none
+# Public API origin (no trailing slash) — used for Meta WhatsApp webhook Copy URL
+PUBLIC_API_URL=https://YOUR-API.onrender.com
+# Meta WhatsApp Cloud API (same values as local .env; never commit secrets)
+WHATSAPP_TOKEN=
+WHATSAPP_PHONE_NUMBER_ID=
+WHATSAPP_VERIFY_TOKEN=verify_token
+WHATSAPP_BUSINESS_ACCOUNT_ID=
+WHATSAPP_APP_ID=
+WHATSAPP_APP_SECRET=
+WHATSAPP_API_VERSION=v21.0
 ```
 
 Notes:
 - Set `CLIENT_URL` to your real Vercel URL after Step 2 (you can update it).
-- Free Render **sleeps** when idle — first request may take 30–60s.
+- Free Render **sleeps** when idle — first request may take 30–60s (Meta webhook verify can time out if the service is cold; wake it with `/health` first).
 - Redis is optional; `REDIS_URL=none` is fine.
+- After deploy, configure Meta webhook to  
+  `https://YOUR-API.onrender.com/api/integrations/whatsapp/cloud/webhook`  
+  (see `docs/WHATSAPP_CLOUD_API_TEMPLATES.md`). Do **not** leave an ngrok/nginx tunnel URL in Meta for production.
 
 4. Deploy → copy the service URL, e.g. `https://novacrm-api.onrender.com`
 5. Check health: `https://novacrm-api.onrender.com/health`
@@ -124,8 +137,8 @@ CLIENT_URL=https://nova-crm.vercel.app
 1. Open `https://YOUR-APP.vercel.app/login`
 2. Platform: `admin@novacrm.com` / your platform password → should land on `/admin`
 3. Sign out → must return to `/login` (not `/admin/login`)
-4. Client: `demo@precisionscales.in` / `Demo@12345` → company dashboard
-5. Employee: `karthik@precisionscales.in` / `Demo@12345` → Employee desk
+4. Client: `admin@hmsenterprises.in` / `Demo@12345` → company dashboard  
+5. Employee: `engineer@hmsenterprises.in` / `Demo@12345` → engineer desk (also `sales@` / `desk@` / `warehouse@`)
 
 ---
 

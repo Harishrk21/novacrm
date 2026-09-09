@@ -19,6 +19,8 @@ type CloudStatus = {
   hasAppSecret: boolean
   webhookPath: string
   webhookUrlHint?: string
+  environment?: string
+  publicApiUrl?: string | null
   note?: string
 }
 
@@ -164,8 +166,15 @@ export function WhatsAppCloudPanel({ compact }: { compact?: boolean }) {
             </div>
 
             <div className="rounded-[8px] border border-border bg-surface p-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
-                Meta webhook callback URL
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                  Meta webhook callback URL
+                </div>
+                {status.environment === 'production' ? (
+                  <Badge color="green">Live</Badge>
+                ) : (
+                  <Badge color="amber">Local / tunnel</Badge>
+                )}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2">
                 <code className="break-all text-sm text-text-primary">
@@ -195,8 +204,11 @@ export function WhatsAppCloudPanel({ compact }: { compact?: boolean }) {
                 ) : null}
               </div>
               <p className="mt-2 text-xs text-text-secondary">
-                In Meta Developer → WhatsApp → Configuration, paste the callback URL and verify token, then
-                subscribe to <code>messages</code>. Localhost needs the public HTTPS tunnel URL above.
+                Meta Developer → WhatsApp → Configuration → Webhook: paste callback URL + verify token, then
+                subscribe to <code>messages</code>.
+                {status.environment === 'production'
+                  ? ' Live must use your Render API HTTPS URL (set PUBLIC_API_URL) — not ngrok/nginx.'
+                  : ' Localhost needs ngrok/nginx HTTPS; for production switch Meta to the Render API URL.'}
               </p>
             </div>
 

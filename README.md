@@ -15,10 +15,10 @@ npm install && npx prisma generate && npm run prisma:seed && npm run dev
 
 - CRM app: http://localhost:5173  
 - Workspace login: http://localhost:5173/login  
-  - slug `precision-scales-india` · `demo@precisionscales.in` / `Demo@12345`  
-- Platform Admin: http://localhost:5173/admin  
-  - `admin@novacrm.com` / `Admin@Nova2026`  
-- AskMeister webhook: `POST /api/integrations/whatsapp/webhook`
+  - `admin@hmsenterprises.in` / `Demo@12345` (also `sales@` / `desk@` / `engineer@` / `warehouse@hmsenterprises.in`)  
+- Platform Admin console is disabled for this HMS single-tenant build  
+- AskMeister webhook: `POST /api/integrations/whatsapp/webhook`  
+- Meta Cloud webhook: `GET|POST /api/integrations/whatsapp/cloud/webhook`  
 
 ## MySQL schema (Workbench)
 

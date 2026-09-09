@@ -1,21 +1,50 @@
 # WhatsApp Cloud API — Utility templates & setup checklist
 
-## Meta webhook (connect now)
+## Meta webhook (local vs live)
 
-Paste these in **Meta Developer → your App → WhatsApp → Configuration → Webhook**:
+Meta only accepts a **public HTTPS** callback. Localhost alone will not verify.
+
+### Local development
+
+Use a tunnel (ngrok) or reverse proxy (nginx → your API). Example:
 
 | Field | Value |
 |-------|--------|
-| **Callback URL** | `https://facf-106-222-220-141.ngrok-free.app/api/integrations/whatsapp/cloud/webhook` |
-| **Verify token** | `verify_token` |
+| **Callback URL** | `https://YOUR-TUNNEL-HOST/api/integrations/whatsapp/cloud/webhook` |
+| **Verify token** | Same as `WHATSAPP_VERIFY_TOKEN` in `backend/.env` (e.g. `verify_token`) |
 | **Webhook fields** | Subscribe to `messages` |
 
-Notes:
-- This ngrok URL is for local/dev while the tunnel is running. If ngrok restarts, the host changes — update Meta or set a stable `PUBLIC_API_URL` in `backend/.env`.
-- Production: use your public HTTPS API host + same path `/api/integrations/whatsapp/cloud/webhook`.
-- Verify token must match `WHATSAPP_VERIFY_TOKEN` in `backend/.env` (currently `verify_token`).
+- If the tunnel host changes, update Meta again.
+- Optional: set `PUBLIC_API_URL=https://YOUR-TUNNEL-HOST` so Settings → WhatsApp shows the correct Copy URL.
 
-Also visible under **Settings → Integrations** / **WhatsApp** in the CRM (Copy buttons).
+### Production (live)
+
+Point Meta at your **Render API** host (not the Vercel frontend):
+
+| Field | Value |
+|-------|--------|
+| **Callback URL** | `https://YOUR-API.onrender.com/api/integrations/whatsapp/cloud/webhook` |
+| **Verify token** | Exact match of Render env `WHATSAPP_VERIFY_TOKEN` |
+| **Webhook fields** | `messages` |
+
+On **Render → Environment**, set at least:
+
+```env
+PUBLIC_API_URL=https://YOUR-API.onrender.com
+WHATSAPP_TOKEN=...
+WHATSAPP_PHONE_NUMBER_ID=...
+WHATSAPP_VERIFY_TOKEN=verify_token
+WHATSAPP_BUSINESS_ACCOUNT_ID=...
+WHATSAPP_APP_ID=...
+WHATSAPP_APP_SECRET=...
+WHATSAPP_API_VERSION=v21.0
+```
+
+Then in Meta Developer → WhatsApp → Configuration → Webhook → **Edit** → paste callback + verify token → **Verify and save** → subscribe to `messages`.
+
+Also visible under CRM **Settings → WhatsApp** / Integrations (Copy buttons use `PUBLIC_API_URL` when set).
+
+**Do not** use the old ngrok URL in production — replace it with the Render URL above.
 
 ---
 

@@ -129,8 +129,8 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
     tipType: 'TIP',
   },
   'crm.users': {
-    title: 'Team seats',
-    body: 'Add agents so you can assign leads and tasks. Each login sees only their assigned work on My Work.',
+    title: 'Team logins',
+    body: 'Add employees with role and WhatsApp number so you can assign leads, tickets, and send alerts. No seat limit — create as many logins as you need.',
     tipType: 'BEST_PRACTICE',
   },
   'crm.employee': {

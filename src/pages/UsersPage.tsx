@@ -49,9 +49,10 @@ type TeamUser = {
 }
 
 type UsersPayload = {
-  maxUsers: number
+  maxUsers: number | null
   used: number
-  remaining: number
+  remaining: number | null
+  unlimited?: boolean
   items: TeamUser[]
 }
 
@@ -226,15 +227,11 @@ export function UsersPage() {
       addToast({ type: 'error', message: 'Password must be at least 8 characters' })
       return
     }
-    const needsPhone =
-      form.roleCode === 'SERVICE_ENGINEER' ||
-      form.roleCode === 'SALES_EXECUTIVE' ||
-      form.roleCode === 'AGENT' ||
-      form.roleCode === 'SERVICE_DESK'
-    if (needsPhone && !form.phone.trim()) {
+    const phoneDigits = form.phone.replace(/\D/g, '')
+    if (phoneDigits.length < 10) {
       addToast({
         type: 'error',
-        message: 'Mobile / WhatsApp number is required for this role (used for job alerts)',
+        message: 'WhatsApp / mobile number is required (include country code, e.g. 91…)',
       })
       return
     }
@@ -242,7 +239,7 @@ export function UsersPage() {
     try {
       const body: Record<string, unknown> = {
         name: form.name.trim(),
-        phone: form.phone.trim() || null,
+        phone: form.phone.trim(),
         avatarUrl: form.avatarUrl.trim() || null,
         roleCode: form.roleCode,
         status: form.status,
@@ -277,7 +274,7 @@ export function UsersPage() {
           patchUser({
             avatarUrl: (updated.avatarUrl ?? form.avatarUrl.trim()) || null,
             name: form.name.trim(),
-            phone: form.phone.trim() || null,
+            phone: form.phone.trim(),
           })
         }
       }
@@ -380,28 +377,21 @@ export function UsersPage() {
       <Input
         id="user-phone-wa"
         label={
-          form.roleCode === 'SERVICE_ENGINEER' ||
-          form.roleCode === 'SALES_EXECUTIVE' ||
-          form.roleCode === 'AGENT' ||
-          form.roleCode === 'SERVICE_DESK' ? (
-            <span className="inline-flex items-center gap-1.5">
-              Mobile / <WhatsAppIcon size={14} />
-              <span style={{ color: WA_GREEN }}>WhatsApp</span> *
-            </span>
-          ) : (
-            'Phone'
-          )
+          <span className="inline-flex items-center gap-1.5">
+            Mobile / <WhatsAppIcon size={14} />
+            <span style={{ color: WA_GREEN }}>WhatsApp</span> *
+          </span>
         }
         value={form.phone}
         onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
         placeholder="91XXXXXXXXXX"
       />
       <p className="-mt-2 text-xs text-text-secondary sm:col-span-2">
-        Use country code (e.g. 91…). This number is used for{' '}
+        Required for every employee. Use country code (e.g. 91…). Used for{' '}
         <span className="inline-flex items-center gap-1" style={{ color: WA_GREEN }}>
           <WhatsAppIcon size={12} /> WhatsApp
         </span>{' '}
-        job / sales alerts to the employee.
+        job / sales alerts.
       </p>
       <Select
         label="Role *"
@@ -471,7 +461,7 @@ export function UsersPage() {
         count={items.length}
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Users & Roles' }]}
         actions={
-          <Button onClick={openCreate} disabled={(data?.remaining ?? 0) <= 0}>
+          <Button onClick={openCreate}>
             <UserPlus size={16} /> Add employee
           </Button>
         }
@@ -480,28 +470,22 @@ export function UsersPage() {
       <PageTip moduleKey="crm.users" />
       <Card className="mb-4 border-sky-200/80 bg-sky-50/50 p-4 text-sm text-text-secondary dark:border-sky-900/40 dark:bg-sky-950/20">
         <strong className="text-text-primary">Where employees live:</strong> create every team login here
-        (Admin → Users &amp; Roles). Set <strong>role</strong> (Service engineer / Sales executive / Desk /
-        Warehouse / Admin) and <strong>mobile</strong>. Assignee dropdowns only list the matching role;
-        WhatsApp job alerts use that mobile number.
+        (Admin → Users &amp; Roles). Set <strong>role</strong> and a required{' '}
+        <strong>WhatsApp / mobile</strong> for every person. No seat limit — add as many employees as you
+        need. Assignee dropdowns only list the matching role; WhatsApp alerts use that number.
       </Card>
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Card className="py-4">
           <div className="flex items-center gap-3">
             <div className="rounded-lg bg-accent-soft p-2 text-accent">
               <Users size={18} />
             </div>
             <div>
-              <div className="text-xs text-text-secondary">Seats used</div>
-              <div className="text-lg font-semibold text-text-primary">
-                {data ? `${data.used} / ${data.maxUsers}` : '—'}
-              </div>
+              <div className="text-xs text-text-secondary">Team members</div>
+              <div className="text-lg font-semibold text-text-primary">{data?.used ?? '—'}</div>
             </div>
           </div>
-        </Card>
-        <Card className="py-4">
-          <div className="text-xs text-text-secondary">Remaining seats</div>
-          <div className="text-lg font-semibold text-text-primary">{data?.remaining ?? '—'}</div>
         </Card>
         <Card className="py-4">
           <div className="text-xs text-text-secondary">Sales executives</div>
@@ -669,7 +653,7 @@ export function UsersPage() {
         accent="theme"
         size="xl"
         title={formMode === 'create' ? 'Add employee' : 'Edit employee'}
-        subtitle="Login + role + employee profile. Mobile is required for engineers, sales & desk (WhatsApp alerts)."
+        subtitle="Login + role + employee profile. WhatsApp / mobile is required for every employee."
         footer={
           <>
             <Button variant="outline" onClick={() => setFormOpen(false)} disabled={saving}>

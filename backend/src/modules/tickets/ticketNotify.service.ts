@@ -35,11 +35,19 @@ async function tryCloudSend(
   phone: string,
   body: string,
   template?: { name: string; languageCode?: string; params: string[] },
-  opts?: { requireTemplate?: boolean },
-): Promise<{ notified: boolean; provider: string; messageId?: string; reason?: string; template?: string }> {
+  opts?: { preferTemplate?: boolean },
+): Promise<{
+  notified: boolean;
+  provider: string;
+  messageId?: string;
+  reason?: string;
+  template?: string;
+}> {
   if (!isWhatsAppCloudConfigured()) {
     return { notified: false, provider: "local", reason: "cloud_not_configured" };
   }
+
+  let templateError: string | undefined;
   if (template?.name) {
     const t = await sendCloudTemplate({
       toPhone: phone,
@@ -55,22 +63,33 @@ async function tryCloudSend(
         template: template.name,
       };
     }
-    // Engineer / staff alerts must use the Utility template — free text fails outside 24h
-    if (opts?.requireTemplate) {
-      return {
-        notified: false,
-        provider: "META_CLOUD",
-        reason: t.error || "template_send_failed",
-        template: template.name,
-      };
-    }
+    templateError = t.error || "template_send_failed";
+    // Staff alerts used to stop here (requireTemplate) — that blocked engineers when the
+    // Utility template was missing/unapproved while customers still got free-text status updates.
   }
+
   const text = await sendCloudText(phone, body);
-  if (text.ok) return { notified: true, provider: "META_CLOUD", messageId: text.messageId };
+  if (text.ok) {
+    return {
+      notified: true,
+      provider: "META_CLOUD",
+      messageId: text.messageId,
+      // Surface that we fell back so admins know to approve the Utility template
+      reason: templateError
+        ? `sent_as_text_after_template_failed:${templateError}`
+        : undefined,
+      template: template?.name,
+    };
+  }
+
   return {
     notified: false,
     provider: "META_CLOUD",
-    reason: text.error || "cloud_send_failed",
+    reason:
+      templateError && opts?.preferTemplate
+        ? `template_failed: ${templateError}; text_failed: ${text.error || "cloud_send_failed"}`
+        : templateError || text.error || "cloud_send_failed",
+    template: template?.name,
   };
 }
 
@@ -344,22 +363,34 @@ export async function sendStaffWhatsApp(opts: {
   actorUserId?: string | null;
   template?: { name: string; languageCode?: string; params: string[] };
 }): Promise<WhatsappNotifyResult> {
-  const user = await prisma.user.findFirst({
-    where: { id: opts.userId, tenantId: opts.tenantId, deletedAt: null },
-    select: { id: true, name: true, phone: true },
-  });
+  const [user, employee] = await Promise.all([
+    prisma.user.findFirst({
+      where: { id: opts.userId, tenantId: opts.tenantId, deletedAt: null },
+      select: { id: true, name: true, phone: true },
+    }),
+    prisma.employee.findFirst({
+      where: { tenantId: opts.tenantId, userId: opts.userId, deletedAt: null },
+      select: { phone: true },
+    }),
+  ]);
   if (!user) return { notified: false, reason: "no_user" };
-  if (!user.phone) return { notified: false, reason: "no_phone" };
+  const phone = (user.phone || employee?.phone || "").trim();
+  if (!phone) {
+    return {
+      notified: false,
+      reason: "no_phone — add WhatsApp mobile under Users & Roles for this engineer",
+    };
+  }
 
-  const waDigits = digitsForWa(user.phone);
+  const waDigits = digitsForWa(phone);
   const fallbackWaLink = waDigits
     ? `https://wa.me/${waDigits}?text=${encodeURIComponent(opts.body)}`
     : null;
 
-  const cloud = await tryCloudSend(user.phone, opts.body, opts.template, {
-    requireTemplate: Boolean(opts.template?.name),
+  const cloud = await tryCloudSend(phone, opts.body, opts.template, {
+    preferTemplate: Boolean(opts.template?.name),
   });
-  const phoneNorm = normalizePhone(user.phone) || user.phone.replace(/\D/g, "");
+  const phoneNorm = normalizePhone(phone) || phone.replace(/\D/g, "");
 
   let conversation = await prisma.whatsappConversation.findFirst({
     where: { tenantId: opts.tenantId, phoneNormalized: phoneNorm },
@@ -370,7 +401,7 @@ export async function sendStaffWhatsApp(opts: {
         id: newId(),
         tenantId: opts.tenantId,
         provider: "META_CLOUD",
-        phone: user.phone,
+        phone,
         phoneNormalized: phoneNorm,
         contactName: user.name,
         lastMessage: opts.body,
@@ -396,9 +427,31 @@ export async function sendStaffWhatsApp(opts: {
     },
   });
 
+  await prisma.activity.create({
+    data: {
+      id: newId(),
+      tenantId: opts.tenantId,
+      type: "WHATSAPP",
+      title: opts.activityTitle.slice(0, 191),
+      description: opts.body.slice(0, 2000),
+      status: cloud.notified ? "COMPLETED" : "PENDING",
+      scheduledAt: new Date(),
+      assignedToId: opts.userId,
+      customFields: {
+        kind: "staff_whatsapp",
+        notified: cloud.notified,
+        reason: cloud.reason ?? null,
+        template: cloud.template ?? opts.template?.name ?? null,
+        fallbackWaLink,
+      },
+    },
+  });
+
   return {
     notified: cloud.notified,
-    reason: cloud.notified ? undefined : cloud.reason,
+    reason: cloud.notified
+      ? cloud.reason // may note template→text fallback
+      : cloud.reason || "engineer_whatsapp_failed",
     fallbackWaLink,
     provider: cloud.provider,
     messageId: cloud.messageId,

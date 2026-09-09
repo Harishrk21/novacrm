@@ -9,6 +9,7 @@ import {
   Settings,
   LogOut,
   CheckCheck,
+  Trash2,
   Moon,
   Sun,
   Palette,
@@ -46,6 +47,8 @@ export function Topbar() {
   const loadNotifs = useNotificationsStore((s) => s.load)
   const markRead = useNotificationsStore((s) => s.markRead)
   const markAllRead = useNotificationsStore((s) => s.markAllRead)
+  const clearOne = useNotificationsStore((s) => s.clearOne)
+  const clearAll = useNotificationsStore((s) => s.clearAll)
   const notifs = useNotificationsStore((s) => s.items)
 
   const [search, setSearch] = useState('')
@@ -74,6 +77,12 @@ export function Topbar() {
   useEffect(() => {
     if (!userId || !isTenantSession()) return
     let cleanup: (() => void) | undefined
+    const unlock = () => {
+      void import('@/lib/notificationSound').then(({ unlockNotificationSound }) => {
+        unlockNotificationSound()
+      })
+    }
+    document.addEventListener('pointerdown', unlock, { once: true })
     void import('@/store/notificationsStore').then(({ connectNotificationsSocket }) => {
       cleanup = connectNotificationsSocket((p) => {
         addToast({
@@ -82,7 +91,10 @@ export function Topbar() {
         })
       })
     })
-    return () => cleanup?.()
+    return () => {
+      document.removeEventListener('pointerdown', unlock)
+      cleanup?.()
+    }
   }, [userId, addToast])
 
   useEffect(() => {
@@ -352,14 +364,54 @@ export function Topbar() {
             <div className="absolute right-0 top-full z-50 mt-1 w-80 rounded-[8px] border border-border bg-card shadow-[var(--shadow-hover)]">
               <div className="flex items-center justify-between border-b border-border px-4 py-3">
                 <span className="text-md font-semibold">Notifications</span>
-                {notifs.length > 0 && (
+                <div className="flex items-center gap-2">
                   <button
-                    className="flex items-center gap-1 text-xs text-accent-blue hover:underline"
-                    onClick={() => userId && markAllRead(userId)}
+                    type="button"
+                    className="text-xs text-text-secondary hover:text-text-primary hover:underline"
+                    title="Toggle notification sound"
+                    onClick={() => {
+                      void import('@/lib/notificationSound').then(
+                        ({
+                          isNotificationSoundEnabled,
+                          setNotificationSoundEnabled,
+                          playNotificationBell,
+                        }) => {
+                          const next = !isNotificationSoundEnabled()
+                          setNotificationSoundEnabled(next)
+                          if (next) playNotificationBell()
+                          addToast({
+                            type: 'success',
+                            message: next ? 'Notification sound on' : 'Notification sound off',
+                          })
+                        },
+                      )
+                    }}
                   >
-                    <CheckCheck size={12} /> Mark all read
+                    Sound
                   </button>
-                )}
+                  {notifs.length > 0 && (
+                    <>
+                      <button
+                        className="flex items-center gap-1 text-xs text-accent-blue hover:underline"
+                        onClick={() => userId && markAllRead(userId)}
+                      >
+                        <CheckCheck size={12} /> Mark all read
+                      </button>
+                      <button
+                        type="button"
+                        className="flex items-center gap-1 text-xs text-accent-red hover:underline"
+                        title="Clear all notifications"
+                        onClick={() => {
+                          void clearAll().then(() => {
+                            addToast({ type: 'success', message: 'All notifications cleared' })
+                          })
+                        }}
+                      >
+                        <Trash2 size={12} /> Clear all
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
               <div className="max-h-80 overflow-y-auto">
                 {notifs.length === 0 ? (
@@ -368,24 +420,39 @@ export function Topbar() {
                   </div>
                 ) : (
                   notifs.slice(0, 12).map((n) => (
-                    <button
+                    <div
                       key={n.id}
                       className={cn(
-                        'flex w-full gap-3 border-b border-border px-4 py-3 text-left transition-colors duration-150 hover:bg-surface',
+                        'flex w-full items-start gap-2 border-b border-border px-3 py-3 transition-colors duration-150 hover:bg-surface',
                         !n.isRead && 'border-l-2 border-l-accent-blue bg-accent-blue/5',
                       )}
-                      onClick={() => {
-                        if (userId) void markRead(n.id, userId)
-                        setNotifOpen(false)
-                        if (n.href) navigate(n.href)
-                      }}
                     >
-                      <div className="min-w-0 flex-1">
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left"
+                        onClick={() => {
+                          if (userId) void markRead(n.id, userId)
+                          setNotifOpen(false)
+                          if (n.href) navigate(n.href)
+                        }}
+                      >
                         <div className="text-sm font-medium text-text-primary">{n.title}</div>
                         <div className="truncate text-xs text-text-secondary">{n.message}</div>
                         <div className="mt-1 text-xs text-text-secondary">{timeAgo(n.createdAt)}</div>
-                      </div>
-                    </button>
+                      </button>
+                      <button
+                        type="button"
+                        className="shrink-0 rounded-[6px] p-1.5 text-text-secondary hover:bg-muted hover:text-accent-red"
+                        title="Clear notification"
+                        aria-label="Clear notification"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void clearOne(n.id)
+                        }}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
                   ))
                 )}
               </div>

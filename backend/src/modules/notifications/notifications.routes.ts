@@ -87,3 +87,23 @@ notificationsRouter.post("/read-all", async (q: Request, r: Response) => {
   });
   return success(r, { updated: result.count });
 });
+
+notificationsRouter.delete("/:id", validate(idSchema), async (q: Request, r: Response) => {
+  const t = q.auth!.tenantId!;
+  const uid = q.auth!.userId!;
+  const id = paramId(q);
+  const deleted = await prisma.notification.deleteMany({
+    where: { id, tenantId: t, userId: uid },
+  });
+  if (!deleted.count) throw notFound("Notification");
+  return success(r, { id, deleted: true });
+});
+
+notificationsRouter.post("/clear-all", async (q: Request, r: Response) => {
+  const t = q.auth!.tenantId!;
+  const uid = q.auth!.userId!;
+  const result = await prisma.notification.deleteMany({
+    where: { tenantId: t, userId: uid },
+  });
+  return success(r, { deleted: result.count });
+});

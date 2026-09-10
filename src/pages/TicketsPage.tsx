@@ -20,6 +20,12 @@ import { Select } from '@/components/ui/Select'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS, assetOriginShort } from '@/lib/assetOrigin'
+import {
+  familyByCode,
+  HMS_FAMILY_OPTIONS,
+  industryOptions,
+  machineOptions,
+} from '@/lib/hmsCatalog'
 import { assetRequiresStamping } from '@/lib/productCatalog'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { isCompanyAdmin, isScopedEmployee, isServiceDesk, canAssignTickets, canCreateTickets, filterServiceEngineers, type LookupUser } from '@/lib/roles'
@@ -33,21 +39,15 @@ import { useAuthStore } from '@/store/authStore'
 const labelize = (value: string) =>
   value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
 
-const MACHINE_TYPES = [
-  { value: 'WEIGHING', label: 'Weighing machine' },
-  { value: 'BILLING', label: 'Billing machine' },
-  { value: 'CCM', label: 'CCM' },
-  { value: 'CCTV', label: 'CCTV' },
-  { value: 'BIOMETRIC', label: 'Biometric' },
-  { value: 'PAPER_SHREDDER', label: 'Paper shredder' },
-  { value: 'PAPER_ROLL', label: 'Paper roll' },
-  { value: 'OTHER', label: 'Other' },
-]
+const ADD_NEW_MACHINE = '__add_new__'
 
 const emptyJob = {
   contactId: '',
   assetId: '',
   newMachine: false,
+  familyCode: 'WEIGHING_SCALES',
+  industryCode: '',
+  machineSku: '',
   machineType: 'WEIGHING',
   machineName: '',
   capacity: '',
@@ -68,8 +68,6 @@ const emptyJob = {
   stampingQuarter: '',
   plateNo: '',
   verificationClass: '',
-  scheduledDate: '',
-  scheduledTime: '',
   odAmount: '',
   paymentTotal: '',
   advanceAmount: '',
@@ -149,7 +147,16 @@ export function TicketsPage() {
       }
       try {
         const res = await api.assets({ contactId, limit: 100 })
-        setAssets(res.items ?? [])
+        const items = res.items ?? []
+        setAssets(items)
+        // No machines on file → open “Add new machine” so desk can register one immediately
+        if (items.length === 0) {
+          setForm((f) =>
+            f.contactId === contactId && !f.assetId
+              ? { ...f, newMachine: true }
+              : f,
+          )
+        }
       } catch {
         setAssets([])
       }
@@ -299,6 +306,10 @@ export function TicketsPage() {
         contactId: c?.id ?? '',
         assetId: '',
         newMachine: false,
+        familyCode: 'WEIGHING_SCALES',
+        industryCode: '',
+        machineSku: '',
+        machineName: '',
       }))
       if (c?.id) void loadAssets(c.id)
       else setAssets([])
@@ -313,14 +324,40 @@ export function TicketsPage() {
   }, [form.advanceAmount, form.paymentTotal])
 
   const formRequiresStamping = useMemo(() => {
-    if (form.assetId) {
+    // Stamping category always collects VC / due dates (govt verification job)
+    if (form.category === 'Stamping') return true
+    if (form.assetId && !form.newMachine) {
       const asset = assets.find((a) => String(a.id) === form.assetId)
       if (asset) {
         return assetRequiresStamping({ machineType: String(asset.machineType ?? 'WEIGHING') })
       }
     }
     return form.machineType === 'WEIGHING'
-  }, [form.assetId, form.machineType, assets])
+  }, [form.assetId, form.newMachine, form.machineType, form.category, assets])
+
+  function addOneYear(dateStr: string) {
+    if (!dateStr) return ''
+    const d = new Date(`${dateStr.slice(0, 10)}T12:00:00`)
+    if (Number.isNaN(d.getTime())) return ''
+    d.setFullYear(d.getFullYear() + 1)
+    return d.toISOString().slice(0, 10)
+  }
+
+  const newMachineNeedsIndustry = useMemo(
+    () => Boolean(familyByCode(form.familyCode)?.hasIndustry),
+    [form.familyCode],
+  )
+
+  const catalogMachineChoices = useMemo(() => {
+    if (!form.familyCode) return []
+    if (newMachineNeedsIndustry && !form.industryCode) return []
+    return machineOptions(form.familyCode, form.industryCode || undefined)
+  }, [form.familyCode, form.industryCode, newMachineNeedsIndustry])
+
+  const selectedAsset = useMemo(
+    () => (form.assetId && !form.newMachine ? assets.find((a) => String(a.id) === form.assetId) : null),
+    [form.assetId, form.newMachine, assets],
+  )
 
   function resetCreate() {
     setForm({ ...emptyJob, receivedByUserId: authUser?.id || '' })
@@ -328,8 +365,58 @@ export function TicketsPage() {
     setAssets([])
   }
 
+  function pickMachineFromDropdown(value: string) {
+    if (value === ADD_NEW_MACHINE) {
+      setForm((f) => ({
+        ...f,
+        newMachine: true,
+        assetId: '',
+        familyCode: f.familyCode || 'WEIGHING_SCALES',
+        industryCode: '',
+        machineSku: '',
+        machineName: '',
+        machineType: 'WEIGHING',
+        capacity: '',
+        accuracy: '',
+        platformSize: '',
+        model: '',
+        serialNo: '',
+        origin: 'SOLD_BY_US',
+        servicePlan: 'NON_AMC',
+      }))
+      return
+    }
+    const a = assets.find((x) => String(x.id) === value)
+    if (a) applyAssetToForm(a)
+    else setForm((f) => ({ ...f, assetId: value, newMachine: false }))
+  }
+
+  function applyCatalogMachine(sku: string) {
+    if (sku === '__custom__') {
+      setForm((f) => ({ ...f, machineSku: '__custom__' }))
+      return
+    }
+    const hit = catalogMachineChoices.find((o) => o.value === sku)
+    if (!hit?.machine) {
+      setForm((f) => ({ ...f, machineSku: sku }))
+      return
+    }
+    setForm((f) => ({
+      ...f,
+      machineSku: sku,
+      machineName: hit.machine.name,
+      machineType: hit.machine.catalogKind || f.machineType,
+      model: hit.machine.name,
+    }))
+  }
+
   async function createJob(e: FormEvent) {
     e.preventDefault()
+    const machineOk = form.newMachine
+      ? Boolean(form.machineName.trim()) &&
+        Boolean(form.familyCode) &&
+        (!newMachineNeedsIndustry || Boolean(form.industryCode))
+      : Boolean(form.assetId)
     const ok = focusFirstMissing(
       [
         {
@@ -337,6 +424,22 @@ export function TicketsPage() {
           sectionId: 'section-ticket-customer',
           ok: Boolean(form.contactId),
           message: 'Customer is required.',
+        },
+        {
+          key: 'assetId',
+          sectionId: 'section-ticket-machine',
+          ok: machineOk,
+          message: form.newMachine
+            ? newMachineNeedsIndustry && !form.industryCode
+              ? 'Select industry, then machine details.'
+              : 'Enter machine details (product / name).'
+            : 'Select a machine for this customer, or add a new one.',
+        },
+        {
+          key: 'description',
+          sectionId: 'section-ticket-assign',
+          ok: Boolean(form.description.trim()),
+          message: 'Issue log is required — describe the customer complaint or job.',
         },
         {
           key: 'receivedByUserId',
@@ -378,6 +481,8 @@ export function TicketsPage() {
           setSaving(false)
           return
         }
+        const fam = familyByCode(form.familyCode)
+        const ind = fam?.industries?.find((i) => i.code === form.industryCode)
         const machine = await api.createAsset({
           contactId: form.contactId,
           machineType: form.machineType,
@@ -401,6 +506,12 @@ export function TicketsPage() {
             stampingQuarter: form.stampingQuarter || null,
             plateNo: form.plateNo || null,
             verificationClass: form.verificationClass || null,
+            catalogFamily: form.familyCode || null,
+            catalogFamilyName: fam?.name ?? null,
+            catalogIndustry: form.industryCode || null,
+            catalogIndustryName: ind?.name ?? null,
+            machineSku:
+              form.machineSku && form.machineSku !== '__custom__' ? form.machineSku : null,
           },
         })
         assetId = String(machine.id)
@@ -437,18 +548,12 @@ export function TicketsPage() {
         form.machineName.trim() ||
         String(assets.find((a) => String(a.id) === form.assetId)?.name ?? 'Service')
 
-      const scheduledAt =
-        form.scheduledDate && form.scheduledTime
-          ? `${form.scheduledDate}T${form.scheduledTime}`
-          : form.scheduledDate
-            ? `${form.scheduledDate}T09:00`
-            : null
-
       const assigneeId = canAssign ? form.receivedByUserId || null : null
+      const subjectPrefix = form.category === 'Stamping' ? 'Stamping' : 'Service'
 
       const created = await api.createTicket({
-        subject: `Service — ${machineLabel}`,
-        description: form.description.trim() || `Service job for ${machineLabel}`,
+        subject: `${subjectPrefix} — ${machineLabel}`,
+        description: form.description.trim(),
         priority: form.priority,
         status: canAssign && assigneeId ? 'IN_PROGRESS' : 'OPEN',
         contactId: form.contactId,
@@ -466,10 +571,7 @@ export function TicketsPage() {
         slaHours: Number(form.slaHours) || 24,
         sendWhatsApp,
         customFields: {
-          scheduledAt,
-          visitLog: scheduledAt
-            ? [{ attendedAt: scheduledAt, notes: 'Job registered', engineerId: assigneeId }]
-            : [],
+          visitLog: [],
           dayNotes: [],
           fieldPhotos: [],
           stampingLegal: {
@@ -784,8 +886,8 @@ export function TicketsPage() {
           title="New ticket"
           subtitle={
             isDesk
-              ? 'Find or add customer, select machine, log the issue. Ticket opens as OPEN — admin assigns the engineer.'
-              : 'Customer, machine, issue log, and assign an engineer.'
+              ? 'Find or add customer, select machine, log the issue. Step 1 creates an OPEN ticket — admin assigns the engineer (Step 2).'
+              : 'Customer, machine, issue log, and assign an engineer (Steps 1–2).'
           }
           onClose={() => {
             setTab('list')
@@ -833,38 +935,58 @@ export function TicketsPage() {
               </p>
             </section>
 
-            <section className="grid gap-4 rounded-[12px] border border-border bg-muted/30 p-4 sm:grid-cols-2 lg:grid-cols-3">
-              <div className="sm:col-span-2 lg:col-span-3 flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-text-primary">2. Machine details</h3>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={form.newMachine || assets.length === 0}
-                    onChange={(e) => setForm({ ...form, newMachine: e.target.checked, assetId: e.target.checked ? '' : form.assetId })}
-                  />
-                  New machine
-                </label>
-              </div>
-              {!form.newMachine && assets.length > 0 ? (
-                <Select
-                  className="sm:col-span-2 lg:col-span-3"
-                  label="Existing machine"
-                  value={form.assetId}
-                  onChange={(e) => {
-                    const a = assets.find((x) => String(x.id) === e.target.value)
-                    if (a) applyAssetToForm(a)
-                    else setForm({ ...form, assetId: e.target.value })
-                  }}
-                  options={[
-                    { value: '', label: 'Select machine' },
-                    ...assets.map((a) => ({
-                      value: String(a.id),
-                      label: `${String(a.name)}${a.serialNo ? ` · ${String(a.serialNo)}` : ''} · ${assetOriginShort(a.origin ? String(a.origin) : null)}${a.servicePlan === 'AMC' ? ' · AMC' : ''}`,
-                    })),
-                  ]}
-                />
+            <section
+              id="section-ticket-machine"
+              className={`scroll-mt-24 grid gap-4 rounded-[12px] border border-border bg-muted/30 p-4 sm:grid-cols-2 lg:grid-cols-3 ${sectionErrorClass(Boolean(fieldErrors.assetId))}`}
+            >
+              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
+                2. Select machine
+              </h3>
+              {fieldErrors.assetId ? (
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <MissingBanner message={fieldErrors.assetId} />
+                </div>
+              ) : null}
+              {!form.contactId ? (
+                <p className="sm:col-span-2 lg:col-span-3 text-sm text-text-secondary">
+                  Select a customer first — their sold and outside/repair machines will appear here.
+                </p>
               ) : (
                 <>
+                  <Select
+                    className="sm:col-span-2 lg:col-span-3"
+                    label="Machine for this customer *"
+                    value={form.newMachine ? ADD_NEW_MACHINE : form.assetId}
+                    onChange={(e) => pickMachineFromDropdown(e.target.value)}
+                    options={[
+                      {
+                        value: '',
+                        label: assets.length
+                          ? 'Select machine…'
+                          : 'No machines on file yet — add new below',
+                      },
+                      ...assets.map((a) => ({
+                        value: String(a.id),
+                        label: `${String(a.name)}${a.serialNo ? ` · ${String(a.serialNo)}` : ''} · ${assetOriginShort(a.origin ? String(a.origin) : null)}${a.servicePlan === 'AMC' ? ' · AMC' : ''}`,
+                      })),
+                      { value: ADD_NEW_MACHINE, label: '+ Add new machine' },
+                    ]}
+                  />
+                  {assets.length > 0 && !form.newMachine ? (
+                    <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
+                      Includes machines we sold and outside units previously brought for repair.
+                    </p>
+                  ) : null}
+                </>
+              )}
+
+              {form.contactId && form.newMachine ? (
+                <>
+                  <div className="sm:col-span-2 lg:col-span-3 rounded-[8px] border border-border bg-card/80 px-3 py-2 text-xs text-text-secondary">
+                    New machine for this visit — pick product family
+                    {newMachineNeedsIndustry ? ', industry (weighing only)' : ''}, then model and
+                    details. It will be saved on the customer for next time.
+                  </div>
                   <div className="sm:col-span-2 lg:col-span-3">
                     <Select
                       label="Machine origin *"
@@ -886,10 +1008,65 @@ export function TicketsPage() {
                     </p>
                   </div>
                   <Select
-                    label="Type"
-                    value={form.machineType}
-                    onChange={(e) => setForm({ ...form, machineType: e.target.value })}
-                    options={MACHINE_TYPES}
+                    label="Product *"
+                    value={form.familyCode}
+                    onChange={(e) => {
+                      const familyCode = e.target.value
+                      const fam = familyByCode(familyCode)
+                      const firstKind = fam?.hasIndustry
+                        ? 'WEIGHING'
+                        : fam?.machines?.[0]?.catalogKind || 'OTHER'
+                      setForm({
+                        ...form,
+                        familyCode,
+                        industryCode: '',
+                        machineSku: '',
+                        machineName: '',
+                        machineType: firstKind,
+                        model: '',
+                      })
+                    }}
+                    options={HMS_FAMILY_OPTIONS}
+                  />
+                  {newMachineNeedsIndustry ? (
+                    <Select
+                      label="Industry *"
+                      value={form.industryCode}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          industryCode: e.target.value,
+                          machineSku: '',
+                          machineName: '',
+                          model: '',
+                        })
+                      }
+                      options={[
+                        { value: '', label: 'Select industry…' },
+                        ...industryOptions(form.familyCode),
+                      ]}
+                    />
+                  ) : null}
+                  <Select
+                    label="Machine model *"
+                    className={newMachineNeedsIndustry ? undefined : 'lg:col-span-2'}
+                    value={form.machineSku}
+                    onChange={(e) => applyCatalogMachine(e.target.value)}
+                    disabled={newMachineNeedsIndustry && !form.industryCode}
+                    options={[
+                      {
+                        value: '',
+                        label:
+                          newMachineNeedsIndustry && !form.industryCode
+                            ? 'Select industry first…'
+                            : 'Select machine…',
+                      },
+                      ...catalogMachineChoices.map((m) => ({
+                        value: m.value,
+                        label: m.label,
+                      })),
+                      { value: '__custom__', label: 'Other / type name manually' },
+                    ]}
                   />
                   <Input
                     label="Machine name *"
@@ -898,178 +1075,249 @@ export function TicketsPage() {
                     onChange={(e) => setForm({ ...form, machineName: e.target.value })}
                     className="lg:col-span-2"
                   />
-                  <Input label="Capacity" value={form.capacity} onChange={(e) => setForm({ ...form, capacity: e.target.value })} />
-                  <Input label="Accuracy" value={form.accuracy} onChange={(e) => setForm({ ...form, accuracy: e.target.value })} />
-                  <Input label="Platform size" value={form.platformSize} onChange={(e) => setForm({ ...form, platformSize: e.target.value })} />
-                  <Input label="Model" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />
-                  <Input label="Serial number" value={form.serialNo} onChange={(e) => setForm({ ...form, serialNo: e.target.value })} />
-                </>
-              )}
-              {!form.newMachine && assets.length > 0 ? (
-                <div className="sm:col-span-2 lg:col-span-3">
-                  <Select
-                    label="Machine origin"
-                    value={form.origin}
-                    onChange={(e) => {
-                      const origin = e.target.value
-                      setForm({
-                        ...form,
-                        origin,
-                        // Outside / repair is not under our AMC plan — hide & clear
-                        ...(origin === 'THIRD_PARTY'
-                          ? { servicePlan: 'NON_AMC', amcStartDate: '', amcEndDate: '' }
-                          : {}),
-                      })
-                    }}
-                    options={ASSET_ORIGIN_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                  <Input
+                    label="Capacity"
+                    value={form.capacity}
+                    onChange={(e) => setForm({ ...form, capacity: e.target.value })}
                   />
-                  <p className="mt-1 text-xs text-text-secondary">
-                    Change if this unit was sold by us vs brought only for repair.
-                  </p>
+                  <Input
+                    label="Accuracy"
+                    value={form.accuracy}
+                    onChange={(e) => setForm({ ...form, accuracy: e.target.value })}
+                  />
+                  <Input
+                    label="Platform size"
+                    value={form.platformSize}
+                    onChange={(e) => setForm({ ...form, platformSize: e.target.value })}
+                  />
+                  <Input
+                    label="Model"
+                    value={form.model}
+                    onChange={(e) => setForm({ ...form, model: e.target.value })}
+                  />
+                  <Input
+                    label="Serial number"
+                    value={form.serialNo}
+                    onChange={(e) => setForm({ ...form, serialNo: e.target.value })}
+                  />
+                </>
+              ) : null}
+
+              {form.contactId && selectedAsset ? (
+                <div className="sm:col-span-2 lg:col-span-3 rounded-[8px] border border-border bg-card px-3 py-2 text-sm">
+                  <div className="font-medium text-text-primary">{String(selectedAsset.name)}</div>
+                  <div className="mt-0.5 text-xs text-text-secondary">
+                    {[
+                      selectedAsset.serialNo ? `S/N ${String(selectedAsset.serialNo)}` : null,
+                      selectedAsset.machineType
+                        ? String(selectedAsset.machineType).replaceAll('_', ' ')
+                        : null,
+                      assetOriginShort(
+                        selectedAsset.origin ? String(selectedAsset.origin) : null,
+                      ),
+                      selectedAsset.servicePlan === 'AMC' ? 'AMC' : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </div>
                 </div>
               ) : null}
-              {form.origin !== 'THIRD_PARTY' ? (
+
+              {form.contactId && (form.newMachine || form.assetId) ? (
                 <>
-                  <Select
-                    label="Service plan"
-                    value={form.servicePlan}
-                    onChange={(e) => setForm({ ...form, servicePlan: e.target.value })}
-                    options={[
-                      { value: 'NON_AMC', label: 'Non-AMC' },
-                      { value: 'AMC', label: 'AMC' },
-                    ]}
-                  />
-                  {form.servicePlan === 'AMC' ? (
-                    <>
-                      <Input
-                        label="AMC start date"
-                        type="date"
-                        value={form.amcStartDate}
-                        onChange={(e) => setForm({ ...form, amcStartDate: e.target.value })}
+                  {!form.newMachine && form.assetId ? (
+                    <div className="sm:col-span-2 lg:col-span-3">
+                      <Select
+                        label="Machine origin"
+                        value={form.origin}
+                        onChange={(e) => {
+                          const origin = e.target.value
+                          setForm({
+                            ...form,
+                            origin,
+                            ...(origin === 'THIRD_PARTY'
+                              ? { servicePlan: 'NON_AMC', amcStartDate: '', amcEndDate: '' }
+                              : {}),
+                          })
+                        }}
+                        options={ASSET_ORIGIN_OPTIONS.map((o) => ({
+                          value: o.value,
+                          label: o.label,
+                        }))}
                       />
-                      <Input
-                        label="AMC end date"
-                        type="date"
-                        value={form.amcEndDate}
-                        onChange={(e) => setForm({ ...form, amcEndDate: e.target.value })}
-                      />
-                    </>
+                      <p className="mt-1 text-xs text-text-secondary">
+                        Change if this unit was sold by us vs brought only for repair.
+                      </p>
+                    </div>
                   ) : null}
-                </>
-              ) : (
-                <p className="sm:col-span-2 lg:col-span-3 -mt-1 rounded-[8px] border border-amber-200/80 bg-amber-50/80 px-3 py-2 text-xs text-amber-950 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-100">
-                  Outside / repair — no Service plan (AMC / Non-AMC). That applies only to machines sold by us.
-                </p>
-              )}
-              <Select
-                label="Warranty (GC / NGC)"
-                value={form.warrantyType}
-                onChange={(e) => setForm({ ...form, warrantyType: e.target.value })}
-                options={[
-                  { value: 'GC', label: 'GC — under company warranty' },
-                  { value: 'NGC', label: 'NGC — chargeable / out of warranty' },
-                ]}
-              />
-              <Input
-                label="Warranty valid until"
-                type="date"
-                value={form.warrantyUntil}
-                onChange={(e) => setForm({ ...form, warrantyUntil: e.target.value })}
-              />
-            </section>
-
-            <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <h3 className="sm:col-span-2 lg:col-span-4 text-sm font-semibold text-text-primary">
-                {isDesk ? '3. Schedule & dates' : '3. Schedule, dates & payment'}
-              </h3>
-              <Input
-                label="Scheduled date"
-                type="date"
-                value={form.scheduledDate}
-                onChange={(e) => setForm({ ...form, scheduledDate: e.target.value })}
-              />
-              <Input
-                label="Scheduled time"
-                type="time"
-                value={form.scheduledTime}
-                onChange={(e) => setForm({ ...form, scheduledTime: e.target.value })}
-              />
-              {formRequiresStamping ? (
-                <>
-                  <Input
-                    label="Stamping date"
-                    type="date"
-                    value={form.stampingDate}
-                    onChange={(e) => setForm({ ...form, stampingDate: e.target.value })}
-                  />
-                  <Input
-                    label="Next due date"
-                    type="date"
-                    value={form.nextDueDate}
-                    onChange={(e) => setForm({ ...form, nextDueDate: e.target.value })}
-                  />
-                  <Input
-                    label="VC number"
-                    value={form.vcNumber}
-                    onChange={(e) => setForm({ ...form, vcNumber: e.target.value })}
-                    placeholder="Verification certificate"
-                  />
+                  {form.origin !== 'THIRD_PARTY' ? (
+                    <>
+                      <Select
+                        label="Service plan"
+                        value={form.servicePlan}
+                        onChange={(e) => setForm({ ...form, servicePlan: e.target.value })}
+                        options={[
+                          { value: 'NON_AMC', label: 'Non-AMC' },
+                          { value: 'AMC', label: 'AMC' },
+                        ]}
+                      />
+                      {form.servicePlan === 'AMC' ? (
+                        <>
+                          <Input
+                            label="AMC start date"
+                            type="date"
+                            value={form.amcStartDate}
+                            onChange={(e) => setForm({ ...form, amcStartDate: e.target.value })}
+                          />
+                          <Input
+                            label="AMC end date"
+                            type="date"
+                            value={form.amcEndDate}
+                            onChange={(e) => setForm({ ...form, amcEndDate: e.target.value })}
+                          />
+                        </>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="sm:col-span-2 lg:col-span-3 -mt-1 rounded-[8px] border border-amber-200/80 bg-amber-50/80 px-3 py-2 text-xs text-amber-950 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-100">
+                      Outside / repair — no Service plan (AMC / Non-AMC). That applies only to
+                      machines sold by us.
+                    </p>
+                  )}
                   <Select
-                    label="Stamping quarter"
-                    value={form.stampingQuarter}
-                    onChange={(e) => setForm({ ...form, stampingQuarter: e.target.value })}
+                    label="Warranty (GC / NGC)"
+                    value={form.warrantyType}
+                    onChange={(e) => setForm({ ...form, warrantyType: e.target.value })}
                     options={[
-                      { value: '', label: '—' },
-                      { value: 'A', label: 'Quarter A' },
-                      { value: 'B', label: 'Quarter B' },
-                      { value: 'C', label: 'Quarter C' },
-                      { value: 'D', label: 'Quarter D' },
+                      { value: 'GC', label: 'GC — under company warranty' },
+                      { value: 'NGC', label: 'NGC — chargeable / out of warranty' },
                     ]}
                   />
                   <Input
-                    label="Plate no."
-                    value={form.plateNo}
-                    onChange={(e) => setForm({ ...form, plateNo: e.target.value })}
+                    label="Warranty valid until"
+                    type="date"
+                    value={form.warrantyUntil}
+                    onChange={(e) => setForm({ ...form, warrantyUntil: e.target.value })}
                   />
-                  <Input
-                    label="Verification class"
-                    value={form.verificationClass}
-                    onChange={(e) => setForm({ ...form, verificationClass: e.target.value })}
-                    placeholder="e.g. III"
-                  />
-                </>
-              ) : null}
-              {!isDesk ? (
-                <>
-              <Input
-                label="Total payment ₹"
-                type="number"
-                value={form.paymentTotal}
-                onChange={(e) => setForm({ ...form, paymentTotal: e.target.value })}
-              />
-              <Input
-                label="Advance ₹"
-                type="number"
-                value={form.advanceAmount}
-                onChange={(e) => setForm({ ...form, advanceAmount: e.target.value })}
-              />
-              <div className="rounded-[8px] border border-border bg-card px-3 py-2">
-                <div className="text-xs text-text-secondary">Balance (auto)</div>
-                <div className="text-lg font-bold text-accent-amber">{formatCurrency(balancePreview)}</div>
-              </div>
                 </>
               ) : null}
             </section>
 
-            <section id="section-ticket-assign" className={`scroll-mt-24 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 ${sectionErrorClass(Boolean(fieldErrors.receivedByUserId))}`}>
+            {formRequiresStamping && form.contactId && (form.newMachine || form.assetId) ? (
+              <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="sm:col-span-2 lg:col-span-4 space-y-1">
+                  <h3 className="text-sm font-semibold text-text-primary">
+                    {form.category === 'Stamping' ? '3. Stamping / verification details' : '3. Stamping (weighing)'}
+                  </h3>
+                  <p className="text-xs text-text-secondary">
+                    {form.category === 'Stamping'
+                      ? 'Customer came for stamping — capture last stamp date, VC number, plate, and next due (usually +1 year). These save on the ticket and the machine.'
+                      : 'Weighing machines need stamping / verification fields when available. Skip blank fields if not known yet.'}
+                  </p>
+                </div>
+                <Input
+                  label={form.category === 'Stamping' ? 'Stamping date *' : 'Stamping date'}
+                  type="date"
+                  value={form.stampingDate}
+                  onChange={(e) => {
+                    const stampingDate = e.target.value
+                    setForm({
+                      ...form,
+                      stampingDate,
+                      nextDueDate:
+                        form.nextDueDate || !stampingDate
+                          ? form.nextDueDate
+                          : addOneYear(stampingDate),
+                    })
+                  }}
+                />
+                <Input
+                  label={form.category === 'Stamping' ? 'Next due date *' : 'Next due date'}
+                  type="date"
+                  value={form.nextDueDate}
+                  onChange={(e) => setForm({ ...form, nextDueDate: e.target.value })}
+                />
+                <Input
+                  label="VC number"
+                  value={form.vcNumber}
+                  onChange={(e) => setForm({ ...form, vcNumber: e.target.value })}
+                  placeholder="Verification certificate"
+                />
+                <Select
+                  label="Stamping quarter"
+                  value={form.stampingQuarter}
+                  onChange={(e) => setForm({ ...form, stampingQuarter: e.target.value })}
+                  options={[
+                    { value: '', label: '—' },
+                    { value: 'A', label: 'Quarter A' },
+                    { value: 'B', label: 'Quarter B' },
+                    { value: 'C', label: 'Quarter C' },
+                    { value: 'D', label: 'Quarter D' },
+                  ]}
+                />
+                <Input
+                  label="Plate no."
+                  value={form.plateNo}
+                  onChange={(e) => setForm({ ...form, plateNo: e.target.value })}
+                />
+                <Input
+                  label="Verification class"
+                  value={form.verificationClass}
+                  onChange={(e) => setForm({ ...form, verificationClass: e.target.value })}
+                  placeholder="e.g. III"
+                />
+              </section>
+            ) : null}
+
+            {!isDesk ? (
+              <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <h3 className="sm:col-span-2 lg:col-span-4 text-sm font-semibold text-text-primary">
+                  {formRequiresStamping ? '4. Payment' : '3. Payment'}
+                </h3>
+                <Input
+                  label="Total payment ₹"
+                  type="number"
+                  value={form.paymentTotal}
+                  onChange={(e) => setForm({ ...form, paymentTotal: e.target.value })}
+                />
+                <Input
+                  label="Advance ₹"
+                  type="number"
+                  value={form.advanceAmount}
+                  onChange={(e) => setForm({ ...form, advanceAmount: e.target.value })}
+                />
+                <div className="rounded-[8px] border border-border bg-card px-3 py-2">
+                  <div className="text-xs text-text-secondary">Balance (auto)</div>
+                  <div className="text-lg font-bold text-accent-amber">
+                    {formatCurrency(balancePreview)}
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
+            <section
+              id="section-ticket-assign"
+              className={`scroll-mt-24 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 ${sectionErrorClass(Boolean(fieldErrors.receivedByUserId || fieldErrors.description))}`}
+            >
               <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
-                {isDesk ? '4. Issue log' : '4. Engineer, issue log & status'}
+                {isDesk
+                  ? formRequiresStamping
+                    ? '4. Issue log'
+                    : '3. Issue log'
+                  : formRequiresStamping
+                    ? '5. Engineer, issue log & status'
+                    : '4. Engineer, issue log & status'}
+              </h3>
               {fieldErrors.receivedByUserId ? (
                 <div className="sm:col-span-2 lg:col-span-3">
                   <MissingBanner message={fieldErrors.receivedByUserId} />
                 </div>
               ) : null}
-              </h3>
+              {fieldErrors.description ? (
+                <div className="sm:col-span-2 lg:col-span-3">
+                  <MissingBanner message={fieldErrors.description} />
+                </div>
+              ) : null}
               <Select
                 label="Category"
                 value={form.category}
@@ -1082,6 +1330,11 @@ export function TicketsPage() {
                   { value: 'Other', label: 'Other' },
                 ]}
               />
+              {form.category === 'Stamping' ? (
+                <p className="sm:col-span-2 -mt-2 text-xs text-text-secondary lg:col-span-2">
+                  Stamping jobs unlock the verification fields above (date, VC, plate, next due).
+                </p>
+              ) : null}
               <Select
                 label="Channel"
                 value={form.channel}
@@ -1100,7 +1353,12 @@ export function TicketsPage() {
                     value={form.receivedByUserId}
                     onChange={(e) => setForm({ ...form, receivedByUserId: e.target.value })}
                     options={[
-                      { value: '', label: engineers.length ? 'Select engineer' : 'No service engineers — add in Users' },
+                      {
+                        value: '',
+                        label: engineers.length
+                          ? 'Select engineer'
+                          : 'No service engineers — add in Users',
+                      },
                       ...engineers.map((u) => ({
                         value: u.id,
                         label: u.phone ? `${u.name} · ${u.phone}` : u.name,
@@ -1120,30 +1378,48 @@ export function TicketsPage() {
                         })),
                       ]}
                     />
-                    <p className="mt-1 text-xs text-text-secondary">Optional now — set on the job after delivery.</p>
+                    <p className="mt-1 text-xs text-text-secondary">
+                      Optional now — set on the job after delivery.
+                    </p>
                   </div>
                   <p className="sm:col-span-2 lg:col-span-3 -mt-1 text-xs text-text-secondary">
                     The selected engineer sees this job on Home and My tickets immediately.
                   </p>
                 </>
               ) : (
-                <p className="sm:col-span-2 lg:col-span-3 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-950">
-                  Ticket will be created as <strong>OPEN</strong>. Admin assigns the service engineer next.
+                <p className="sm:col-span-2 lg:col-span-3 rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 text-sm text-amber-950 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-100">
+                  Ticket will be created as <strong>OPEN</strong>. Admin assigns the service engineer
+                  next.
                 </p>
               )}
               <Select
                 label="Priority"
                 value={form.priority}
                 onChange={(e) => setForm({ ...form, priority: e.target.value })}
-                options={['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((v) => ({ value: v, label: labelize(v) }))}
+                options={['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((v) => ({
+                  value: v,
+                  label: labelize(v),
+                }))}
               />
               <label className="block text-sm sm:col-span-2 lg:col-span-3">
-                <span className="mb-1 block font-medium text-text-secondary">Issue log</span>
+                <span className="mb-1 block font-medium text-text-secondary">Issue log *</span>
                 <textarea
-                  className="min-h-24 w-full rounded-[8px] border border-border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
+                  className={`min-h-24 w-full rounded-[8px] border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20 ${
+                    fieldErrors.description ? 'border-red-500' : 'border-border'
+                  }`}
                   value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                  onChange={(e) => {
+                    setForm({ ...form, description: e.target.value })
+                    if (fieldErrors.description) {
+                      setFieldErrors((prev) => {
+                        const next = { ...prev }
+                        delete next.description
+                        return next
+                      })
+                    }
+                  }}
                   placeholder="Customer complaint, symptoms, parts needed…"
+                  required
                 />
               </label>
             </section>

@@ -758,7 +758,7 @@ export function UsersPage() {
         }
         confirmLabel="Remove"
       />
-    </div>
+  </div>
   )
 }
 

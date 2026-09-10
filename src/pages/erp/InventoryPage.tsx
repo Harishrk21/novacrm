@@ -280,46 +280,50 @@ export function InventoryPage() {
     if (!returnConfirm) return
     setReturnBusy(true)
     try {
-      const cf = returnConfirm.customFields ?? {}
-      const leadId = returnConfirm.leadId || (cf.demoLeadId ? String(cf.demoLeadId) : '')
-      if (leadId) {
-        const result = await api.returnLeadDemo(leadId, {
-          outcome: returnOutcome,
-          notes: returnNotes.trim() || undefined,
-        })
-        setReturnConfirm(null)
-        setReturnNotes('')
-        if (result.outcome === 'READY_TO_BUY' || result.next === 'invoice') {
-          const contactId = String(result.contactId ?? '')
-          const productId = String(result.productId ?? returnConfirm.productId ?? '')
-          const serialNo = String(result.serialNo ?? returnConfirm.serialNo ?? '')
-          addToast({
-            type: 'success',
-            message: 'Customer converted — open proforma to complete sale',
-          })
-          if (contactId) {
-            navigate(
-              `/erp/invoices?open=1&contactId=${encodeURIComponent(contactId)}&productId=${encodeURIComponent(productId)}&serialNo=${encodeURIComponent(serialNo)}`,
-            )
-            return
-          }
-        } else {
-          addToast({
-            type: 'success',
-            message: `Serial ${returnConfirm.serialNo} returned — enquiry closed`,
-          })
-        }
-        await load()
-        return
-      }
-
-      await api.returnDemoUnit(returnConfirm.id, returnNotes.trim() || undefined)
-      addToast({
-        type: 'success',
-        message: `Serial ${returnConfirm.serialNo} returned — back in stock`,
-      })
+      const linkedEnquiry = Boolean(
+        returnConfirm.leadId || returnConfirm.customFields?.demoLeadId,
+      )
+      const result = await api.returnDemoUnit(
+        returnConfirm.id,
+        linkedEnquiry
+          ? {
+              outcome: returnOutcome,
+              notes: returnNotes.trim() || undefined,
+            }
+          : { notes: returnNotes.trim() || undefined },
+      )
       setReturnConfirm(null)
       setReturnNotes('')
+      if (result.outcome === 'READY_TO_BUY' || result.next === 'invoice') {
+        const contactId = String(result.contactId ?? '')
+        const productId = String(result.productId ?? returnConfirm.productId ?? '')
+        const serialNo = String(result.serialNo ?? returnConfirm.serialNo ?? '')
+        addToast({
+          type: 'success',
+          message: 'Customer converted — open proforma to complete sale',
+        })
+        if (contactId) {
+          navigate(
+            `/erp/invoices?open=1&contactId=${encodeURIComponent(contactId)}&productId=${encodeURIComponent(productId)}&serialNo=${encodeURIComponent(serialNo)}`,
+          )
+          return
+        }
+      } else if (result.enquiryMissing) {
+        addToast({
+          type: 'success',
+          message: `Serial ${returnConfirm.serialNo} returned to stock (linked enquiry was missing or deleted)`,
+        })
+      } else if (linkedEnquiry) {
+        addToast({
+          type: 'success',
+          message: `Serial ${returnConfirm.serialNo} returned — enquiry closed`,
+        })
+      } else {
+        addToast({
+          type: 'success',
+          message: `Serial ${returnConfirm.serialNo} returned — back in stock`,
+        })
+      }
       await load()
     } catch (err) {
       addToast({

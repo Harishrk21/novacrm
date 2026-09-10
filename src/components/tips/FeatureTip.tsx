@@ -59,8 +59,8 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
     tipType: 'TIP',
   },
   'crm.contacts': {
-    title: 'Contacts',
-    body: 'Store buyers and decision-makers here. Click a row for the full customer profile.',
+    title: 'Customers + bulk import',
+    body: 'Directory holds buyers and machines. Use the Import tab to upload CSV/Excel — AI maps columns, then creates customers (and machines) in bulk. Download the sample first.',
     tipType: 'TIP',
   },
   'crm.deals': {
@@ -69,8 +69,8 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
     tipType: 'BEST_PRACTICE',
   },
   'crm.tickets': {
-    title: 'Service tickets first',
-    body: 'Find the customer in Contacts, review purchase history, open a service ticket, assign an agent. Completing the ticket can WhatsApp the customer automatically.',
+    title: 'Six clear service steps',
+    body: '1 Desk creates → 2 Admin assigns (WhatsApp) → 3 Engineer on site → 4 Daily tracking → 5 Admin pay & close → 6 Service proforma. Follow the progress bar on each ticket.',
     tipType: 'TIP',
   },
   'erp.products': {

@@ -930,6 +930,7 @@ export async function returnDemoUnit(
           demoReturnedAt: returnedAt,
           demoReturnNotes: opts?.notes?.trim() || null,
           lastDemoLeadId: leadId ?? unitCf.demoLeadId ?? null,
+          demoLeadId: null,
         },
       },
     });
@@ -1006,6 +1007,212 @@ export async function returnDemoUnit(
   });
 
   return getUnit(t, unit.id);
+}
+
+/** Resolve the live enquiry linked to a DEMO serial (handles stale / soft-deleted links). */
+async function resolveLeadForDemoUnit(t: string, unit: {
+  id: string;
+  serialNo: string;
+  leadId: string | null;
+  customFields: unknown;
+}) {
+  const unitCf =
+    unit.customFields && typeof unit.customFields === "object" && !Array.isArray(unit.customFields)
+      ? (unit.customFields as Record<string, unknown>)
+      : {};
+  const candidateIds = [unit.leadId, unitCf.demoLeadId ? String(unitCf.demoLeadId) : null].filter(
+    (x): x is string => Boolean(x),
+  );
+
+  for (const id of candidateIds) {
+    const live = await prisma.lead.findFirst({
+      where: { id, tenantId: t, deletedAt: null },
+    });
+    if (live) return { lead: live, stale: false as const };
+  }
+
+  // Lead may still hold demoStockUnitId even if unit.leadId was cleared / wrong
+  const demoLeads = await prisma.lead.findMany({
+    where: { tenantId: t, deletedAt: null, status: "DEMO" },
+    take: 300,
+  });
+  const byUnit = demoLeads.find((l) => {
+    const cf =
+      l.customFields && typeof l.customFields === "object" && !Array.isArray(l.customFields)
+        ? (l.customFields as Record<string, unknown>)
+        : {};
+    return (
+      String(cf.demoStockUnitId ?? "") === unit.id ||
+      String(cf.demoSerialNo ?? "").toUpperCase() === unit.serialNo.toUpperCase()
+    );
+  });
+  if (byUnit) return { lead: byUnit, stale: false as const };
+
+  for (const id of candidateIds) {
+    const soft = await prisma.lead.findFirst({
+      where: { id, tenantId: t, deletedAt: { not: null } },
+    });
+    if (soft) return { lead: soft, stale: true as const };
+  }
+
+  return { lead: null, stale: false as const };
+}
+
+/**
+ * Inventory “Close demo” with outcome — works even when the enquiry link is stale.
+ * READY_TO_BUY needs a live enquiry; NOT_INTERESTED always returns the serial to stock.
+ */
+export async function closeDemoFromUnit(
+  t: string,
+  user: string,
+  stockUnitId: string,
+  body: {
+    notes?: string;
+    outcome: "NOT_INTERESTED" | "READY_TO_BUY";
+    stageId?: string;
+    sendWhatsApp?: boolean;
+  },
+) {
+  const unit = await prisma.stockUnit.findFirst({
+    where: { id: stockUnitId, tenantId: t, deletedAt: null },
+  });
+  if (!unit) throw notFound("Stock unit");
+  if (unit.status !== "DEMO") {
+    throw new AppError(`Unit ${unit.serialNo} is not on demo (status: ${unit.status})`, 409);
+  }
+
+  const resolved = await resolveLeadForDemoUnit(t, unit);
+  const notes = body.notes?.trim() || undefined;
+
+  if (body.outcome === "READY_TO_BUY") {
+    if (!resolved.lead || resolved.stale) {
+      throw new AppError(
+        "Sale enquiry for this demo is missing or was deleted. Re-open the enquiry from Sale tracking, or choose Not interested to return the serial to stock.",
+        404,
+      );
+    }
+    // Heal link so leads.returnDemo finds demoStockUnitId
+    const leadCf =
+      resolved.lead.customFields &&
+      typeof resolved.lead.customFields === "object" &&
+      !Array.isArray(resolved.lead.customFields)
+        ? (resolved.lead.customFields as Record<string, unknown>)
+        : {};
+    if (String(leadCf.demoStockUnitId ?? "") !== unit.id || resolved.lead.status !== "DEMO") {
+      await prisma.lead.update({
+        where: { id: resolved.lead.id },
+        data: {
+          status: "DEMO",
+          deletedAt: null,
+          customFields: {
+            ...leadCf,
+            demoStockUnitId: unit.id,
+            demoSerialNo: unit.serialNo,
+            demoProductId: unit.productId,
+          },
+        },
+      });
+    }
+    if (unit.leadId !== resolved.lead.id) {
+      await prisma.stockUnit.update({
+        where: { id: unit.id },
+        data: {
+          leadId: resolved.lead.id,
+          customFields: {
+            ...((unit.customFields &&
+            typeof unit.customFields === "object" &&
+            !Array.isArray(unit.customFields)
+              ? unit.customFields
+              : {}) as Record<string, unknown>),
+            demoLeadId: resolved.lead.id,
+          },
+        },
+      });
+    }
+    const { returnDemo } = await import("../leads/leads.service.js");
+    return returnDemo(t, user, resolved.lead.id, {
+      notes,
+      outcome: "READY_TO_BUY",
+      stageId: body.stageId,
+      sendWhatsApp: body.sendWhatsApp,
+    });
+  }
+
+  // NOT_INTERESTED — always free the serial; close enquiry when live
+  if (resolved.lead && !resolved.stale) {
+    const leadCf =
+      resolved.lead.customFields &&
+      typeof resolved.lead.customFields === "object" &&
+      !Array.isArray(resolved.lead.customFields)
+        ? (resolved.lead.customFields as Record<string, unknown>)
+        : {};
+    if (String(leadCf.demoStockUnitId ?? "") !== unit.id) {
+      await prisma.lead.update({
+        where: { id: resolved.lead.id },
+        data: {
+          customFields: {
+            ...leadCf,
+            demoStockUnitId: unit.id,
+            demoSerialNo: unit.serialNo,
+            demoProductId: unit.productId,
+          },
+        },
+      });
+    }
+    try {
+      const { returnDemo } = await import("../leads/leads.service.js");
+      return await returnDemo(t, user, resolved.lead.id, {
+        notes,
+        outcome: "NOT_INTERESTED",
+        sendWhatsApp: body.sendWhatsApp,
+      });
+    } catch (err) {
+      // If enquiry path still fails, never leave the serial stuck on DEMO
+      console.error("closeDemoFromUnit lead path failed, returning serial only", err);
+    }
+  }
+
+  const stockUnit = await returnDemoUnit(t, user, unit.id, {
+    notes: notes || "Demo returned — enquiry missing or already closed",
+    leadId: resolved.lead?.id ?? unit.leadId ?? undefined,
+  });
+
+  if (resolved.lead && !resolved.stale) {
+    try {
+      const after = await prisma.lead.findFirst({
+        where: { id: resolved.lead.id, tenantId: t, deletedAt: null },
+      });
+      if (after && after.status !== "LOST" && after.status !== "CONVERTED") {
+        const afterCf =
+          after.customFields && typeof after.customFields === "object" && !Array.isArray(after.customFields)
+            ? (after.customFields as Record<string, unknown>)
+            : {};
+        await prisma.lead.update({
+          where: { id: after.id },
+          data: {
+            status: "LOST",
+            customFields: {
+              ...afterCf,
+              demoReturnReason: "NOT_INTERESTED",
+              demoStockUnitId: null,
+              demoSerialNo: null,
+              closedAt: new Date().toISOString(),
+            },
+          },
+        });
+      }
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  return {
+    outcome: "NOT_INTERESTED" as const,
+    stockUnit,
+    leadId: resolved.lead?.id ?? null,
+    enquiryMissing: !resolved.lead || resolved.stale,
+    next: null,
+  };
 }
 
 /** Mark demo unit sold when lead converts — creates customer machine when possible */

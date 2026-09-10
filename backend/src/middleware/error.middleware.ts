@@ -17,7 +17,9 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
         ? "That email is already registered (including a removed employee). Use another email, or re-add with the same email to restore them."
         : /employee_code|employeeCode/i.test(target)
           ? "That employee code is already used. Leave code blank for auto, or pick a new one."
-          : "A record with this value already exists";
+          : /invoice_number|invoiceNumber/i.test(target)
+            ? "Invoice number already used — try Create again (number sequence was behind)."
+            : "A record with this value already exists";
     return res.status(409).json({ success: false, message: hint, details: target || undefined });
   }
   if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2000") {

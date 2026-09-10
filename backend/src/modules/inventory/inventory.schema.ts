@@ -60,6 +60,10 @@ export const idSchema = z.object({
 export const returnDemoSchema = z.object({
   body: z.object({
     notes: z.string().max(500).optional(),
+    /** When set, runs full sale-enquiry close (convert or not interested). */
+    outcome: z.enum(["NOT_INTERESTED", "READY_TO_BUY"]).optional(),
+    stageId: z.string().min(1).max(36).optional(),
+    sendWhatsApp: z.boolean().optional(),
   }),
   query: z.any(),
   params: z.object({ id: z.string().min(1).max(36) }),

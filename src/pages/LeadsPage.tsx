@@ -1250,8 +1250,8 @@ export function LeadsPage() {
                   onClick={() => openCreateEnquiry()}
                 >
                   <Plus size={16} /> New sale enquiry
-                </Button>
-              </div>
+            </Button>
+          </div>
               <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 {[
                   { n: '1', t: 'Sales creates lead', d: 'Quoted price on enquiry' },
@@ -1266,7 +1266,7 @@ export function LeadsPage() {
                     <div className="text-[10px] font-bold text-sky-200">STEP {s.n}</div>
                     <div className="text-sm font-semibold">{s.t}</div>
                     <div className="text-[11px] text-sky-100/75">{s.d}</div>
-                  </div>
+        </div>
                 ))}
               </div>
             </div>
@@ -1321,7 +1321,7 @@ export function LeadsPage() {
                   <div className="flex items-center justify-between gap-2">
                     <div className={`flex h-10 w-10 items-center justify-center rounded-[10px] ${s.iconBg}`}>
                       <s.icon size={18} />
-                    </div>
+        </div>
                     <TrendingUp size={14} className="opacity-40" />
                   </div>
                   <div className="mt-3 text-3xl font-bold tabular-nums tracking-tight text-text-primary">
@@ -1490,9 +1490,9 @@ export function LeadsPage() {
                                 {cf.demoDcNo ? (
                                   <div className="text-amber-800 dark:text-amber-200">
                                     {String(cf.demoDcNo)}
-                                  </div>
-                                ) : null}
                               </div>
+                                ) : null}
+                            </div>
                             ) : (
                               '—'
                             )}
@@ -1512,8 +1512,8 @@ export function LeadsPage() {
                   </tbody>
                 </table>
               </div>
-            )}
-          </Card>
+          )}
+        </Card>
         </>
       ) : null}
 

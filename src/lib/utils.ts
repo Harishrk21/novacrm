@@ -7,14 +7,17 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatCurrency(value: number): string {
-  if (value >= 10000000) return `₹${(value / 10000000).toFixed(2)}Cr`
-  if (value >= 100000) return `₹${(value / 100000).toFixed(1)}L`
-  if (value >= 1000) return `₹${(value / 1000).toFixed(0)}K`
-  return `₹${value.toLocaleString('en-IN')}`
+  if (!Number.isFinite(value)) return '₹0'
+  const n = Math.abs(value) < 0.005 ? 0 : value
+  // Compact only for large dashboard figures — never round ₹3,500 → "₹4K"
+  if (Math.abs(n) >= 10000000) return `₹${(n / 10000000).toFixed(2)}Cr`
+  if (Math.abs(n) >= 100000) return `₹${(n / 100000).toFixed(1)}L`
+  return `₹${Math.round(n).toLocaleString('en-IN')}`
 }
 
 export function formatCurrencyFull(value: number): string {
-  return `₹${value.toLocaleString('en-IN')}`
+  if (!Number.isFinite(value)) return '₹0'
+  return `₹${Math.round(value).toLocaleString('en-IN')}`
 }
 
 export function formatDate(date?: string | null): string {

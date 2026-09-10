@@ -243,7 +243,7 @@ export function EmployeeDashboardPage() {
         ))}
       </div>
 
-      <Card className="border-accent-blue/30 bg-gradient-to-br from-amber-50/80 to-white">
+      <Card className="border-accent-blue/30 bg-gradient-to-br from-amber-50/90 to-card dark:from-amber-950/35 dark:to-card">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-lg font-semibold text-text-primary">Focus — next service ticket</h2>
@@ -260,9 +260,9 @@ export function EmployeeDashboardPage() {
         </div>
 
         {!loading && !current ? (
-          <div className="rounded-[8px] border border-dashed border-border bg-white p-8 text-center">
+          <div className="rounded-[8px] border border-dashed border-border bg-card p-8 text-center">
             <CheckCircle2 className="mx-auto text-accent-green" size={28} />
-            <p className="mt-2 font-medium">No open tickets assigned to you</p>
+            <p className="mt-2 font-medium text-text-primary">No open tickets assigned to you</p>
             <p className="mt-1 text-sm text-text-secondary">
               Look up a walk-in customer in Contacts, then create a service ticket.
             </p>
@@ -276,9 +276,10 @@ export function EmployeeDashboardPage() {
             </div>
           </div>
         ) : current ? (
-          <div className="rounded-[10px] border border-border bg-white p-5 shadow-sm">
+          <div className="rounded-[10px] border border-border bg-card p-5 shadow-sm">
             <h3 className="text-xl font-semibold text-text-primary">
-              {formatServiceId(current.ticketNo != null ? String(current.ticketNo) : undefined)} — {String(current.subject)}
+              {formatServiceId(current.ticketNo != null ? String(current.ticketNo) : undefined)} —{' '}
+              {String(current.subject)}
             </h3>
             {current.description ? (
               <p className="mt-2 line-clamp-3 text-sm text-text-secondary">{String(current.description)}</p>
@@ -319,14 +320,15 @@ export function EmployeeDashboardPage() {
                   key={String(t.id)}
                   type="button"
                   onClick={() => setFocusId(String(t.id))}
-                  className="flex w-full items-center justify-between gap-3 rounded-[8px] border border-border bg-white px-3 py-2 text-left text-sm hover:border-accent-blue/40"
+                  className="flex w-full items-center justify-between gap-3 rounded-[8px] border border-border bg-card px-3 py-2 text-left text-sm text-text-primary hover:border-accent-blue/40"
                 >
                   <span className="flex min-w-0 items-center gap-2">
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-text-primary">
                       {idx + 2}
                     </span>
-                    <span className="truncate font-medium">
-                      {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} {String(t.subject)}
+                    <span className="truncate font-medium text-text-primary">
+                      {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)}{' '}
+                      {String(t.subject)}
                     </span>
                   </span>
                   <ChevronRight size={16} className="shrink-0 text-text-secondary" />

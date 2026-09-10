@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { success } from "../../common/utils/response.js";
 import { paramId } from "../../common/utils/params.js";
 import * as s from "./contacts.service.js";
+import { importCustomers, type ImportRowInput } from "./import.service.js";
 
 const t = (q: Request) => q.auth!.tenantId!;
 
@@ -36,4 +37,10 @@ export const updateNote = async (q: Request, r: Response) =>
 export const removeNote = async (q: Request, r: Response) => {
   await s.removeNote(t(q), paramId(q), String(q.params.noteId));
   return success(r, null, "Note deleted");
+};
+
+export const importBulk = async (q: Request, r: Response) => {
+  const rows = (q.body?.rows ?? []) as ImportRowInput[];
+  const summary = await importCustomers(t(q), rows);
+  return success(r, summary, "Import finished");
 };

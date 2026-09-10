@@ -1,0 +1,5 @@
+name,mobile,email,doorNo,street,buildingName,area,city,state,pincode,landmark,whatsapp,description,machineName,machineType,serialNo,model,capacity,accuracy,platformSize,origin,servicePlan,stampingDate,nextDueDate,machineNotes
+Sri Murugan Stores,9876543210,sri@example.com,12,Gandhi Road,City Plaza,Anna Nagar,Chennai,TN,600040,Near bus stand,9876543210,Regular weighing customer,Platform Scale 300kg,WEIGHING,HMS-2018-0042,PS-300,300kg,III,600x600,SOLD_BY_US,AMC,2024-06-15,2025-06-15,Annual AMC active
+Preethu Traders,9988776655,,5A,Market Street,,Gandhipuram,Coimbatore,TN,641012,,9988776655,,Table Top 30kg,WEIGHING,HMS-2019-1102,TT-30,30kg,III,,SOLD_BY_US,NON_AMC,2023-01-10,2024-01-10,
+Kumar Electronics,9123456780,kumar@shop.in,,Main Road,,,Salem,TN,636001,,,CCTV site,4ch DVR Kit,CCTV,SN-CCTV-88,DVR-4CH,,,,,SOLD_BY_US,NON_AMC,,,
+Lakshmi Rice Mill,9000011122,,,,Industrial Estate,,Erode,TN,638001,,,Outside repair unit,Floor Scale 1T,WEIGHING,OUT-7781,FS-1000,1000kg,,1000x1000,THIRD_PARTY,NON_AMC,,,Brought for repair only

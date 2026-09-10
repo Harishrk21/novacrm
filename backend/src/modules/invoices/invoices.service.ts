@@ -9,6 +9,8 @@ export async function list(t: string, q: any) {
   const where: any = { tenantId: t, deletedAt: null };
   if (q.status) where.status = q.status;
   if (q.accountId) where.accountId = q.accountId;
+  if (q.contactId) where.contactId = String(q.contactId);
+  if (q.serviceTicketId) where.serviceTicketId = String(q.serviceTicketId);
   const [items, total] = await Promise.all([
     prisma.invoice.findMany({
       where,
@@ -202,6 +204,40 @@ export async function create(t: string, user: string, d: any) {
     }
   }
 
+  // Block duplicate service invoices before allocating a number / writing rows
+  if (d.serviceTicketId) {
+    const svc = await prisma.ticket.findFirst({
+      where: { id: String(d.serviceTicketId), tenantId: t, deletedAt: null },
+    });
+    if (!svc) throw notFound("Service ticket");
+    const existingInv =
+      (svc.serviceInvoiceId
+        ? await prisma.invoice.findFirst({
+            where: { id: svc.serviceInvoiceId, tenantId: t, deletedAt: null },
+          })
+        : null) ??
+      (await prisma.invoice.findFirst({
+        where: {
+          tenantId: t,
+          deletedAt: null,
+          serviceTicketId: String(d.serviceTicketId),
+        },
+        orderBy: { createdAt: "desc" },
+      }));
+    if (existingInv) {
+      throw new AppError("Service invoice already exists for this ticket", 409, {
+        invoiceId: existingInv.id,
+        invoiceNumber: existingInv.invoiceNumber,
+      });
+    }
+    const { assertCanInvoice } = await import("../tickets/ticketLifecycle.js");
+    assertCanInvoice({
+      status: svc.status,
+      paymentTotal: Number(svc.paymentTotal),
+      advanceAmount: Number(svc.advanceAmount),
+    });
+  }
+
   const created = await prisma.$transaction(async (tx) => {
     let seq = await tx.numberSequence.findUnique({
       where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "INVOICE" } },
@@ -217,11 +253,29 @@ export async function create(t: string, user: string, d: any) {
         },
       });
     }
-    await tx.numberSequence.update({
+
+    // Atomic allocate — avoid read/increment races that reuse INV-xxxxx
+    const allocated = await tx.numberSequence.update({
       where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "INVOICE" } },
       data: { nextValue: { increment: 1 } },
     });
-    const invoiceNumber = `${seq.prefix}${String(seq.nextValue).padStart(seq.padding, "0")}`;
+    let nextNum = allocated.nextValue - 1;
+    let invoiceNumber = `${allocated.prefix}${String(nextNum).padStart(allocated.padding, "0")}`;
+
+    // If sequence drifted behind existing rows, jump past the highest INV-##### 
+    for (let attempt = 0; attempt < 25; attempt++) {
+      const clash = await tx.invoice.findFirst({
+        where: { tenantId: t, invoiceNumber },
+        select: { id: true },
+      });
+      if (!clash) break;
+      const bumped = await tx.numberSequence.update({
+        where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "INVOICE" } },
+        data: { nextValue: { increment: 1 } },
+      });
+      nextNum = bumped.nextValue - 1;
+      invoiceNumber = `${bumped.prefix}${String(nextNum).padStart(bumped.padding, "0")}`;
+    }
 
     let subtotal = new Prisma.Decimal(0);
     let taxTotal = new Prisma.Decimal(0);
@@ -500,16 +554,6 @@ export async function create(t: string, user: string, d: any) {
   });
 
   if (d.serviceTicketId) {
-    const svc = await prisma.ticket.findFirst({
-      where: { id: String(d.serviceTicketId), tenantId: t, deletedAt: null },
-    });
-    if (!svc) throw notFound("Service ticket");
-    const { assertCanInvoice } = await import("../tickets/ticketLifecycle.js");
-    assertCanInvoice({
-      status: svc.status,
-      paymentTotal: Number(svc.paymentTotal),
-      advanceAmount: Number(svc.advanceAmount),
-    });
     await prisma.ticket.updateMany({
       where: { id: String(d.serviceTicketId), tenantId: t, deletedAt: null },
       data: { serviceInvoiceId: String(created.id) },

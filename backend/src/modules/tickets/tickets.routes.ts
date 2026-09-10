@@ -518,7 +518,19 @@ ticketsRouter.get("/", async (q: Request, r: Response) => {
   const and: Prisma.TicketWhereInput[] = [];
   const where: Prisma.TicketWhereInput = { tenantId: t, deletedAt: null };
 
-  if (q.query.status) where.status = String(q.query.status) as Prisma.TicketWhereInput["status"];
+  if (q.query.status) {
+    const raw = String(q.query.status)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const allowed = new Set(["OPEN", "IN_PROGRESS", "PENDING", "RESOLVED", "CLOSED"]);
+    const statuses = raw.filter((s) => allowed.has(s));
+    if (statuses.length === 1) {
+      where.status = statuses[0] as Prisma.TicketWhereInput["status"];
+    } else if (statuses.length > 1) {
+      where.status = { in: statuses as Array<"OPEN" | "IN_PROGRESS" | "PENDING" | "RESOLVED" | "CLOSED"> };
+    }
+  }
   if (q.query.priority) where.priority = String(q.query.priority) as Prisma.TicketWhereInput["priority"];
   if (q.query.contactId) where.contactId = String(q.query.contactId);
   if (q.query.assetId) where.assetId = String(q.query.assetId);

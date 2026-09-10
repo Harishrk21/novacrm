@@ -369,6 +369,18 @@ export const api = {
       { method: 'POST', body: JSON.stringify(body) },
     ),
 
+  aiMapCustomerImport: (body: {
+    headers: string[]
+    sampleRows?: Array<Record<string, unknown>>
+  }) =>
+    apiFetch<{
+      mapping: Record<string, string | null>
+      usedAi?: boolean
+      model?: string | null
+      notes?: string
+      fields?: string[]
+    }>('/ai/map-customer-import', { method: 'POST', body: JSON.stringify(body) }),
+
   platformStats: () => apiFetch<Record<string, unknown>>('/platform/dashboard/stats'),
   listTenants: () => apiFetch<unknown[]>('/platform/tenants'),
   createTenant: (body: Record<string, unknown>) =>
@@ -483,6 +495,14 @@ export const api = {
     }),
   deleteContactNote: (id: string, noteId: string) =>
     apiFetch<null>(`/contacts/${id}/notes/${noteId}`, { method: 'DELETE' }),
+  importContacts: (body: { rows: Array<Record<string, unknown>> }) =>
+    apiFetch<{
+      created: number
+      merged: number
+      machinesAdded: number
+      skipped: number
+      errors: Array<{ row: number; message: string }>
+    }>('/contacts/import', { method: 'POST', body: JSON.stringify(body) }),
 
   // Accounts
   accounts: (params?: Record<string, string | number | undefined>) =>
@@ -663,10 +683,22 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
-  returnDemoUnit: (id: string, notes?: string) =>
+  returnDemoUnit: (
+    id: string,
+    body?: {
+      notes?: string
+      outcome?: 'NOT_INTERESTED' | 'READY_TO_BUY'
+      stageId?: string
+      sendWhatsApp?: boolean
+    },
+  ) =>
     apiFetch<Record<string, unknown>>(`/inventory/units/${id}/return-demo`, {
       method: 'POST',
-      body: JSON.stringify({ notes: notes || undefined }),
+      body: JSON.stringify(
+        typeof body === 'string' || body === undefined
+          ? { notes: typeof body === 'string' ? body : undefined }
+          : body ?? {},
+      ),
     }),
   stampStockUnit: (id: string, stampingDate: string, notes?: string) =>
     apiFetch<Record<string, unknown>>(`/inventory/units/${id}/stamp`, {

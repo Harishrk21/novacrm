@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, Wrench } from 'lucide-react'
+import { ChevronDown, Plus, Wrench } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -49,6 +49,10 @@ type Props = {
   fixedAssetId?: string
   /** Called after spare parts change (e.g. refresh ticket payment total) */
   onTicketUpdated?: () => void
+  /** Render as accordion; body starts closed unless defaultOpen */
+  collapsible?: boolean
+  /** Initial open state when collapsible (default false) */
+  defaultOpen?: boolean
 }
 
 export function SparePartsPanel({
@@ -57,6 +61,8 @@ export function SparePartsPanel({
   ticketId: fixedTicketId,
   fixedAssetId,
   onTicketUpdated,
+  collapsible = false,
+  defaultOpen = false,
 }: Props) {
   const addToast = useUIStore((s) => s.addToast)
   const [rows, setRows] = useState<Record<string, unknown>[]>([])
@@ -70,6 +76,7 @@ export function SparePartsPanel({
   const [form, setForm] = useState({ ...emptyForm, contactId: fixedContactId ?? '' })
   const [saving, setSaving] = useState(false)
   const [confirmId, setConfirmId] = useState<string | null>(null)
+  const [sectionOpen, setSectionOpen] = useState(!collapsible || defaultOpen)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -235,19 +242,60 @@ export function SparePartsPanel({
     <>
       <Card padding={false}>
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-          <div>
-            <div className="text-sm font-semibold">
-              {fixedContactId ? `Spare parts — ${contactName ?? 'Customer'}` : 'Spare parts log'}
+          {collapsible ? (
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-start gap-2 text-left"
+              onClick={() => setSectionOpen((o) => !o)}
+              aria-expanded={sectionOpen}
+            >
+              <ChevronDown
+                size={18}
+                className={`mt-0.5 shrink-0 text-text-secondary transition-transform ${
+                  sectionOpen ? 'rotate-0' : '-rotate-90'
+                }`}
+              />
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-text-primary">
+                  {fixedContactId ? `Spare parts — ${contactName ?? 'Customer'}` : 'Spare parts log'}
+                  {!loading ? (
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-text-secondary">
+                      {filtered.length}
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-0.5 text-xs text-text-secondary">
+                  {sectionOpen
+                    ? 'Record load cells, printer heads, batteries, sensors and other part changes per machine.'
+                    : 'Tap to open and log spare replacements for this job.'}
+                </p>
+              </div>
+            </button>
+          ) : (
+            <div>
+              <div className="text-sm font-semibold">
+                {fixedContactId ? `Spare parts — ${contactName ?? 'Customer'}` : 'Spare parts log'}
+              </div>
+              <p className="mt-0.5 text-xs text-text-secondary">
+                Record load cells, printer heads, batteries, sensors and other part changes per machine.
+              </p>
             </div>
-            <p className="mt-0.5 text-xs text-text-secondary">
-              Record load cells, printer heads, batteries, sensors and other part changes per machine.
-            </p>
-          </div>
-          <Button size="sm" onClick={openAdd}>
-            <Plus size={14} /> Record change
-          </Button>
+          )}
+          {(!collapsible || sectionOpen) && (
+            <Button
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation()
+                openAdd()
+              }}
+            >
+              <Plus size={14} /> Record change
+            </Button>
+          )}
         </div>
 
+        {(!collapsible || sectionOpen) && (
+          <>
         {!fixedContactId ? (
           <div className="border-b border-border px-4 py-3">
             <Input
@@ -353,6 +401,8 @@ export function SparePartsPanel({
               </tbody>
             </table>
           </div>
+        )}
+          </>
         )}
       </Card>
 

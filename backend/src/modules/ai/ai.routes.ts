@@ -723,6 +723,136 @@ ${text}
   return success(res, payload);
 }
 
+/* ── Customer import column mapping ─────────────────────────────────── */
+
+const IMPORT_FIELDS = [
+  "name",
+  "phone",
+  "mobile",
+  "whatsapp",
+  "email",
+  "doorNo",
+  "street",
+  "buildingName",
+  "area",
+  "city",
+  "state",
+  "pincode",
+  "landmark",
+  "description",
+  "machineName",
+  "machineType",
+  "serialNo",
+  "model",
+  "capacity",
+  "accuracy",
+  "platformSize",
+  "origin",
+  "servicePlan",
+  "stampingDate",
+  "nextDueDate",
+  "machineNotes",
+] as const;
+
+const mapImportSchema = z.object({
+  body: z.object({
+    headers: z.array(z.string().max(120)).min(1).max(80),
+    sampleRows: z.array(z.record(z.unknown())).max(5).optional(),
+  }),
+});
+
+async function mapCustomerImport(req: Request, res: Response) {
+  const { headers, sampleRows = [] } = req.body as {
+    headers: string[];
+    sampleRows?: Array<Record<string, unknown>>;
+  };
+
+  const heuristic: Record<string, string | null> = {};
+  for (const h of headers) {
+    heuristic[h] = heuristicMapHeader(h);
+  }
+
+  let mapping = heuristic;
+  let usedAi = false;
+  let model: string | null = null;
+  let note = "Mapped with column-name rules. Review before importing.";
+
+  try {
+    const prompt = `You map spreadsheet columns for HMS Enterprises CRM customer + machine import.
+Allowed target fields (use exact keys, or null if no match):
+${IMPORT_FIELDS.join(", ")}
+
+Rules:
+- name = customer / shop / company name (required)
+- phone or mobile = primary phone (required). Prefer mobile for mobiles.
+- Machine fields map to one machine on the same row (machineName, machineType, serialNo, model, etc.)
+- origin: SOLD_BY_US vs THIRD_PARTY / outside
+- servicePlan: AMC vs NON_AMC
+- Do not invent columns. Only map from the given headers.
+- Return JSON only: { "mapping": { "<header>": "<field|null>" }, "notes": "short tip" }
+
+Headers: ${JSON.stringify(headers)}
+Sample rows: ${JSON.stringify(sampleRows.slice(0, 3))}
+`;
+    const raw = await callGemini(prompt, { maxTokens: 1500 });
+    const parsed = parseJsonLoose<{
+      mapping?: Record<string, unknown>;
+      notes?: string;
+    }>(raw);
+    if (parsed.mapping && typeof parsed.mapping === "object") {
+      const allowed = new Set<string>(IMPORT_FIELDS as unknown as string[]);
+      const next: Record<string, string | null> = {};
+      for (const h of headers) {
+        const v = parsed.mapping[h];
+        const field = v == null || v === "" ? null : String(v);
+        next[h] = field && allowed.has(field) ? field : heuristic[h] ?? null;
+      }
+      mapping = next;
+      usedAi = true;
+      model = geminiModelName();
+      note = parsed.notes ? String(parsed.notes) : "AI mapped your columns. Review before importing.";
+    }
+  } catch {
+    // Gemini optional — keep heuristic
+    note =
+      "AI mapping unavailable — used column-name rules. Rename headers to match the sample template for best results.";
+  }
+
+  return success(res, { mapping, usedAi, model, notes: note, fields: IMPORT_FIELDS });
+}
+
+function heuristicMapHeader(header: string): string | null {
+  const h = header.trim().toLowerCase().replace(/[_\-]+/g, " ");
+  if (/^(customer|shop|company|client)?\s*name$|^name$|customer name|shop name/.test(h)) return "name";
+  if (/whatsapp|wa\b/.test(h)) return "whatsapp";
+  if (/mobile|cell/.test(h)) return "mobile";
+  if (/^phone$|phone no|phone number|contact no|contact number/.test(h)) return "phone";
+  if (/e-?mail/.test(h)) return "email";
+  if (/door|door no|door number|door#/.test(h)) return "doorNo";
+  if (/street|road|address line 1|addr1/.test(h)) return "street";
+  if (/building|complex|tower/.test(h)) return "buildingName";
+  if (/^area$|locality|colony|nagar/.test(h)) return "area";
+  if (/^city$|town|district/.test(h)) return "city";
+  if (/^state$/.test(h)) return "state";
+  if (/pin|postal|zip/.test(h)) return "pincode";
+  if (/landmark|near/.test(h)) return "landmark";
+  if (/description|remarks|notes$/.test(h) && !/machine/.test(h)) return "description";
+  if (/machine name|product name|equipment name|asset name/.test(h)) return "machineName";
+  if (/machine type|product type|equipment type|category/.test(h)) return "machineType";
+  if (/serial|sr no|srno|s\/n/.test(h)) return "serialNo";
+  if (/^model$|model no|model name/.test(h)) return "model";
+  if (/capacity|cap\b/.test(h)) return "capacity";
+  if (/accuracy|class/.test(h)) return "accuracy";
+  if (/platform|platter/.test(h)) return "platformSize";
+  if (/origin|sold by|third party|outside/.test(h)) return "origin";
+  if (/amc|service plan|service type/.test(h)) return "servicePlan";
+  if (/stamping date|stamp date|last stamp/.test(h)) return "stampingDate";
+  if (/next due|due date|next stamp/.test(h)) return "nextDueDate";
+  if (/machine note|machine remark/.test(h)) return "machineNotes";
+  if (/^address$/.test(h)) return "street";
+  return null;
+}
+
 export const aiRouter = Router();
 aiRouter.use(authenticate, requireTenant);
 
@@ -769,4 +899,11 @@ aiRouter.post(
   ),
   validate(polishSchema),
   polishText,
+);
+
+aiRouter.post(
+  "/map-customer-import",
+  requireRoles("ADMIN", "MANAGER", "SERVICE_DESK"),
+  validate(mapImportSchema),
+  mapCustomerImport,
 );

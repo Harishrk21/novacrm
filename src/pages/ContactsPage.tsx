@@ -26,6 +26,7 @@ import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { SparePartsPanel } from '@/components/contacts/SparePartsPanel'
+import { CustomerImportPanel } from '@/components/contacts/CustomerImportPanel'
 import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError } from '@/lib/api'
@@ -39,7 +40,7 @@ import { firstError, validateContactForm, type FieldErrors } from '@/lib/formVal
 import { cn, formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
-import { canAssignTickets, isServiceDesk } from '@/lib/roles'
+import { canAssignTickets, canCreateTickets, isServiceDesk } from '@/lib/roles'
 
 type ContactRow = {
   id: string
@@ -153,7 +154,7 @@ export function ContactsPage() {
   const [phone, setPhone] = useState('')
   const [phoneResult, setPhoneResult] = useState<string | null>(null)
   const [phoneNotFound, setPhoneNotFound] = useState(false)
-  const [tab, setTab] = useState<'list' | 'create' | 'spare'>('list')
+  const [tab, setTab] = useState<'list' | 'create' | 'spare' | 'import'>('list')
   const [createStep, setCreateStep] = useState<'customer' | 'product'>('customer')
   const [returnTo, setReturnTo] = useState<string | null>(null)
   const [form, setForm] = useState(emptyForm)
@@ -475,7 +476,7 @@ export function ContactsPage() {
         accent="theme"
         active={tab}
         onChange={(id) => {
-          setTab(id as 'list' | 'create' | 'spare')
+          setTab(id as 'list' | 'create' | 'spare' | 'import')
           if (id === 'create') {
             setForm(emptyForm)
             setMachine(emptyMachine)
@@ -485,12 +486,21 @@ export function ContactsPage() {
         }}
         tabs={[
           { id: 'list', label: 'Directory', count: items.length },
+          ...(canCreateTickets(authRole) ? [{ id: 'import', label: 'Import' }] : []),
           { id: 'spare', label: 'Spare parts' },
           { id: 'create', label: 'Add customer' },
         ]}
       />
 
       {tab === 'spare' ? <SparePartsPanel /> : null}
+      {tab === 'import' ? (
+        <CustomerImportPanel
+          onImported={() => {
+            void load()
+            setTab('list')
+          }}
+        />
+      ) : null}
 
       {tab === 'list' ? (
         <>

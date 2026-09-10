@@ -1,13 +1,24 @@
 # Service ticket lifecycle (enforced)
 
-Canonical path:
+Crystal-clear **6-step** path (UI progress bar on ticket detail):
+
+| Step | Who | What happens |
+|------|-----|----------------|
+| **1 Created** | Service desk | Opens ticket as `OPEN`, unassigned. No engineer picker. |
+| **2 Assigned** | Admin | Assigns engineer → `IN_PROGRESS`. WhatsApp to customer + engineer. |
+| **3 On site** | Engineer | Starts work; reviews customer history (AI summary optional). |
+| **4 Daily tracking** | Engineer | Day 1…N notes (`customFields.dayNotes`) — visible to admin on timeline. |
+| **5 Admin close** | Engineer → Admin | Engineer **Mark complete** → `RESOLVED`. Admin verifies, **Mark paid** if charged, **Approve & close** → `CLOSED`. |
+| **6 Invoice** | Admin | Auto-opens service proforma prefilled from ticket; create stores under Invoices (HMS logo on form/print). Final GST stays in Tally. |
+
+Canonical status machine:
 
 1. **Desk / Admin create** → `OPEN` (desk always unassigned)
 2. **Admin assigns** → `IN_PROGRESS` (auto on assign)
-3. **Engineer works** → day notes, visits, spares, photos, signature, amounts
+3. **Engineer works** → day notes, visits, spares (`workType` e.g. Spare replacement), photos, signature, amounts
 4. **Engineer Mark complete** → `RESOLVED` (requires assignee; **cannot** jump from `OPEN`)
 5. **Admin Mark paid** → method required; UPI/NEFT/RTGS/CARD need UTR + proof; writes ERP `Payment` row  
-   - Typing Total/Advance alone never sets `PAID` (stays `PARTIAL` until Mark paid)
+    - Typing Total/Advance alone never sets `PAID` (stays `PARTIAL` until Mark paid)
 6. **Admin Approve & close** → `CLOSED` only from `RESOLVED` and only if **PAID** (or ₹0 free job); customer WhatsApp “completed” fires here; **redirects to ERP Invoices** with `type=service&ticketId=…`
 7. **Create service invoice** on Invoices page:
    - Invoice type = **Service**
@@ -28,3 +39,5 @@ Canonical path:
 | Service invoice before RESOLVED | Blocked |
 
 Sales machine bills use Invoice type = **Sales** (product + serial proforma) on the same page.
+
+**Activities** (`/activities`) are CRM follow-ups (calls/tasks), not this pipeline — use **Service tickets** for Steps 1–6.

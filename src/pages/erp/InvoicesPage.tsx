@@ -10,6 +10,7 @@ import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Input } from '@/components/ui/Input'
+import { Modal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
@@ -185,8 +186,13 @@ function openPrintableInvoice(opts: {
     <div class="hero">
       <div class="hero-top">
         <div>
-          <div class="brand">${escapeHtml(opts.sellerName || 'HMS Enterprises')}</div>
-          <div class="tag">Proforma Invoice</div>
+          <div class="brand-row" style="display:flex;align-items:center;gap:14px;margin-bottom:8px">
+            <img src="${typeof window !== 'undefined' ? window.location.origin : ''}/hms-logo.png" alt="HMS Enterprises" style="height:48px;width:auto;object-fit:contain;background:#fff;border-radius:8px;padding:4px" onerror="this.style.display='none'" />
+            <div>
+              <div class="brand">${escapeHtml(opts.sellerName || 'HMS Enterprises')}</div>
+              <div class="tag">Proforma Invoice</div>
+            </div>
+          </div>
         </div>
         <div class="inv-meta">
           <div class="inv-no">${escapeHtml(opts.invoiceNumber)}</div>
@@ -319,6 +325,8 @@ export function InvoicesPage() {
   const [serviceTicketId, setServiceTicketId] = useState('')
   const [serviceTickets, setServiceTickets] = useState<Record<string, unknown>[]>([])
   const [loadingTickets, setLoadingTickets] = useState(false)
+  const [ticketLoadHint, setTicketLoadHint] = useState<string | null>(null)
+  const [existingInvoiceOpen, setExistingInvoiceOpen] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [detail, setDetail] = useState<InvoiceDetail | null>(null)
   const [saving, setSaving] = useState(false)
@@ -445,19 +453,79 @@ export function InvoicesPage() {
   async function loadServiceTicketsForContact(contactId: string) {
     if (!contactId) {
       setServiceTickets([])
+      setTicketLoadHint(null)
       return
     }
     setLoadingTickets(true)
+    setTicketLoadHint(null)
     try {
-      const res = await api.tickets({ contactId, limit: 200 })
-      const rows = (res.items ?? []).filter((t) =>
-        ['RESOLVED', 'CLOSED'].includes(String(t.status)),
-      )
+      const res = await api.tickets({
+        contactId,
+        status: 'CLOSED,RESOLVED',
+        limit: 200,
+      })
+      let rows = res.items ?? []
+      if (rows.length === 0) {
+        const all = await api.tickets({ contactId, limit: 200 })
+        const every = all.items ?? []
+        rows = every.filter((t) => ['RESOLVED', 'CLOSED'].includes(String(t.status)))
+        const openish = every.filter((t) =>
+          ['OPEN', 'IN_PROGRESS', 'PENDING'].includes(String(t.status)),
+        ).length
+        if (rows.length === 0) {
+          setTicketLoadHint(
+            openish > 0
+              ? `No closed/resolved jobs for this customer (${openish} still open). Close the service ticket first.`
+              : 'No service tickets for this customer yet.',
+          )
+        }
+      }
+      rows = [...rows].sort((a, b) => {
+        const ta = new Date(
+          String(a.closedAt ?? a.resolvedAt ?? a.updatedAt ?? a.createdAt ?? 0),
+        ).getTime()
+        const tb = new Date(
+          String(b.closedAt ?? b.resolvedAt ?? b.updatedAt ?? b.createdAt ?? 0),
+        ).getTime()
+        return tb - ta
+      })
       setServiceTickets(rows)
-    } catch {
+    } catch (err) {
       setServiceTickets([])
+      setTicketLoadHint(null)
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not load service tickets',
+      })
     } finally {
       setLoadingTickets(false)
+    }
+  }
+
+  async function openExistingServiceInvoice(invoiceId: string) {
+    try {
+      const inv = (await api.getInvoice(invoiceId)) as InvoiceDetail
+      setDetail(inv)
+      setExistingInvoiceOpen(true)
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not load existing invoice',
+      })
+    }
+  }
+
+  async function resolveExistingInvoiceId(t: Record<string, unknown>): Promise<string | null> {
+    if (t.serviceInvoiceId) return String(t.serviceInvoiceId)
+    try {
+      const page = await api.invoices({
+        serviceTicketId: String(t.id),
+        limit: 5,
+      })
+      const hit = (page.items ?? [])[0]
+      return hit?.id ? String(hit.id) : null
+    } catch {
+      return null
     }
   }
 
@@ -466,11 +534,11 @@ export function InvoicesPage() {
     if (!ticketId) return
     try {
       const t = await api.getTicket(ticketId)
-      if (t.serviceInvoiceId) {
-        addToast({
-          type: 'warning',
-          message: `This ticket already has invoice linked — creating another will still attach; prefer opening the existing one.`,
-        })
+      const existingId = await resolveExistingInvoiceId(t)
+      if (existingId) {
+        setServiceTicketId('')
+        await openExistingServiceInvoice(existingId)
+        return
       }
       const contactId = t.contactId ? String(t.contactId) : ''
       if (contactId && contactId !== form.contactId) {
@@ -504,7 +572,8 @@ export function InvoicesPage() {
         notes:
           f.notes ||
           `Service job ${`SVC-${String(t.ticketNo).padStart(5, '0')}`} — ${String(t.subject ?? '')}`,
-        paymentTerms: f.paymentTerms || (String(t.paymentStatus) === 'PAID' ? 'Paid' : 'Due on receipt'),
+        paymentTerms:
+          f.paymentTerms || (String(t.paymentStatus) === 'PAID' ? 'Paid' : 'Due on receipt'),
       }))
       if (!serviceTickets.some((x) => String(x.id) === ticketId)) {
         setServiceTickets((prev) => [t, ...prev])
@@ -990,6 +1059,15 @@ export function InvoicesPage() {
   async function doCreateInvoice(sendWhatsApp: boolean) {
     setSaving(true)
     try {
+      if (invoiceKind === 'SERVICE' && serviceTicketId) {
+        const t = await api.getTicket(serviceTicketId)
+        const existingId = await resolveExistingInvoiceId(t)
+        if (existingId) {
+          setServiceTicketId('')
+          await openExistingServiceInvoice(existingId)
+          return
+        }
+      }
       const ticketMeta =
         invoiceKind === 'SERVICE' && serviceTicketId
           ? serviceTickets.find((t) => String(t.id) === serviceTicketId)
@@ -1054,6 +1132,23 @@ export function InvoicesPage() {
       setDetail(created)
       setPreviewOpen(true)
     } catch (err) {
+      if (err instanceof ApiClientError && err.status === 409) {
+        const details = err.details as { invoiceId?: string; invoiceNumber?: string } | undefined
+        let invoiceId = details?.invoiceId
+        if (!invoiceId && invoiceKind === 'SERVICE' && serviceTicketId) {
+          try {
+            const t = await api.getTicket(serviceTicketId)
+            invoiceId = (await resolveExistingInvoiceId(t)) ?? undefined
+          } catch {
+            /* ignore */
+          }
+        }
+        if (invoiceId) {
+          setServiceTicketId('')
+          await openExistingServiceInvoice(invoiceId)
+          return
+        }
+      }
       addToast({
         type: 'error',
         message: err instanceof ApiClientError ? err.message : 'Invoice create failed',
@@ -1561,6 +1656,19 @@ export function InvoicesPage() {
             </>
           }
         >
+          <div className="mb-4 flex items-center gap-3 rounded-[10px] border border-border bg-surface/80 px-4 py-3">
+            <img
+              src="/hms-logo.png"
+              alt="HMS Enterprises"
+              className="h-10 w-auto object-contain"
+            />
+            <div>
+              <div className="text-sm font-semibold text-text-primary">HMS Enterprises</div>
+              <div className="text-xs text-text-secondary">
+                {invoiceKind === 'SERVICE' ? 'Service invoice (CRM proforma)' : 'Sales proforma'}
+              </div>
+            </div>
+          </div>
           <div className="mb-4">
             <AiAssistCard
               title="Billing AI"
@@ -1633,14 +1741,21 @@ export function InvoicesPage() {
                   label="Service ticket *"
                   value={serviceTicketId}
                   onChange={(e) => void applyServiceTicket(e.target.value)}
+                  onFocus={() => {
+                    if (form.contactId && serviceTickets.length === 0 && !loadingTickets) {
+                      void loadServiceTicketsForContact(form.contactId)
+                    }
+                  }}
                   options={[
                     {
                       value: '',
                       label: loadingTickets
                         ? 'Loading tickets…'
-                        : form.contactId
-                          ? 'Select ticket (RESOLVED / CLOSED)'
-                          : 'Pick a customer first',
+                        : !form.contactId
+                          ? 'Pick a customer first'
+                          : serviceTickets.length === 0
+                            ? 'No closed/resolved tickets for this customer'
+                            : 'Select ticket (RESOLVED / CLOSED)',
                     },
                     ...serviceTickets.map((t) => ({
                       value: String(t.id),
@@ -1651,10 +1766,14 @@ export function InvoicesPage() {
                 {errors.serviceTicketId ? (
                   <p className="mt-1 text-xs text-accent-red">{errors.serviceTicketId}</p>
                 ) : null}
-                <p className="mt-1 text-xs text-text-secondary">
-                  Each ticket has its own id (SVC-xxxxx). Selecting one autofills amounts (total payment / advance / balance) and description from
-                  that job.
-                </p>
+                {ticketLoadHint ? (
+                  <p className="mt-1 text-xs text-accent-amber">{ticketLoadHint}</p>
+                ) : (
+                  <p className="mt-1 text-xs text-text-secondary">
+                    Shows this customer’s CLOSED / RESOLVED jobs. If an invoice already exists for a
+                    ticket, selecting it opens that invoice instead of creating another.
+                  </p>
+                )}
               </div>
             ) : null}
             <Input
@@ -1936,6 +2055,59 @@ export function InvoicesPage() {
           </div>
         </FormPanel>
       )}
+
+      <Modal
+        open={existingInvoiceOpen && Boolean(detail)}
+        onClose={() => setExistingInvoiceOpen(false)}
+        title="Invoice already created"
+        subtitle={
+          detail
+            ? `${String(detail.invoiceNumber)} · ${formatCurrency(num(detail.grandTotal))}`
+            : undefined
+        }
+        size="md"
+        accent="sky"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setExistingInvoiceOpen(false)}>
+              Close
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setExistingInvoiceOpen(false)
+                setPreviewOpen(true)
+              }}
+            >
+              <Eye size={16} /> Preview
+            </Button>
+            <Button
+              onClick={() => {
+                downloadDetail()
+              }}
+            >
+              <Download size={16} /> Download / print
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm leading-relaxed text-text-secondary">
+          A service proforma already exists for this ticket. Creating another is blocked — open the
+          existing invoice to preview or download.
+        </p>
+        {detail ? (
+          <div className="mt-4 space-y-2 rounded-[10px] border border-border bg-surface px-3 py-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-text-primary">{String(detail.invoiceNumber)}</span>
+              <Badge color="blue">{String(detail.status)}</Badge>
+            </div>
+            <div className="text-text-secondary">
+              Date {detail.invoiceDate ? formatDate(String(detail.invoiceDate)) : '—'} · Total{' '}
+              {formatCurrency(num(detail.grandTotal))}
+            </div>
+          </div>
+        ) : null}
+      </Modal>
 
       <WhatsAppSendConfirm
         open={Boolean(waPending)}

@@ -468,7 +468,26 @@ export async function returnDemo(
     lead.customFields && typeof lead.customFields === "object" && !Array.isArray(lead.customFields)
       ? (lead.customFields as Record<string, unknown>)
       : {};
-  const unitId = cf.demoStockUnitId ? String(cf.demoStockUnitId) : "";
+  let unitId = cf.demoStockUnitId ? String(cf.demoStockUnitId) : "";
+  if (!unitId) {
+    const linked = await prisma.stockUnit.findFirst({
+      where: { tenantId: t, leadId, status: "DEMO", deletedAt: null },
+    });
+    if (linked) {
+      unitId = linked.id;
+      await prisma.lead.update({
+        where: { id: leadId },
+        data: {
+          customFields: {
+            ...cf,
+            demoStockUnitId: linked.id,
+            demoSerialNo: linked.serialNo,
+            demoProductId: linked.productId,
+          },
+        },
+      });
+    }
+  }
   if (!unitId) throw new AppError("No demo unit linked to this enquiry", 400);
 
   const outcome = body.outcome ?? "NOT_INTERESTED";

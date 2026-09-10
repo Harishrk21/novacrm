@@ -61,3 +61,47 @@ export const noteIdSchema = z.object({
   query: z.any(),
   params: z.object({ id: z.string().min(1).max(36), noteId: z.string().min(1).max(36) }),
 });
+
+const importMachine = z
+  .object({
+    name: z.string().nullable().optional(),
+    machineType: z.string().nullable().optional(),
+    serialNo: z.string().nullable().optional(),
+    model: z.string().nullable().optional(),
+    capacity: z.string().nullable().optional(),
+    accuracy: z.string().nullable().optional(),
+    platformSize: z.string().nullable().optional(),
+    origin: z.string().nullable().optional(),
+    servicePlan: z.string().nullable().optional(),
+    stampingDate: z.string().nullable().optional(),
+    nextDueDate: z.string().nullable().optional(),
+    notes: z.string().nullable().optional(),
+  })
+  .nullable()
+  .optional();
+
+const importRow = z.object({
+  name: z.string().nullable().optional(),
+  phone: z.string().nullable().optional(),
+  mobile: z.string().nullable().optional(),
+  whatsapp: z.string().nullable().optional(),
+  email: z.string().nullable().optional(),
+  doorNo: z.string().nullable().optional(),
+  street: z.string().nullable().optional(),
+  buildingName: z.string().nullable().optional(),
+  area: z.string().nullable().optional(),
+  city: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+  pincode: z.string().nullable().optional(),
+  landmark: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  machine: importMachine,
+});
+
+export const importSchema = z.object({
+  body: z.object({
+    rows: z.array(importRow).min(1).max(500),
+  }),
+  query: z.any(),
+  params: z.any(),
+});

@@ -21,12 +21,31 @@ export const addUnit = async (q: Request, r: Response) =>
 export const updateUnit = async (q: Request, r: Response) =>
   success(r, await s.updateStockUnit(q.auth!.tenantId!, paramId(q), q.body), "Stock unit updated");
 
-export const returnDemo = async (q: Request, r: Response) =>
-  success(
+export const returnDemo = async (q: Request, r: Response) => {
+  const body = (q.body ?? {}) as {
+    notes?: string;
+    outcome?: "NOT_INTERESTED" | "READY_TO_BUY";
+    stageId?: string;
+    sendWhatsApp?: boolean;
+  };
+  if (body.outcome === "NOT_INTERESTED" || body.outcome === "READY_TO_BUY") {
+    return success(
+      r,
+      await s.closeDemoFromUnit(q.auth!.tenantId!, q.auth!.userId, paramId(q), {
+        notes: body.notes,
+        outcome: body.outcome,
+        stageId: body.stageId,
+        sendWhatsApp: body.sendWhatsApp,
+      }),
+      body.outcome === "READY_TO_BUY" ? "Demo converted — raise proforma" : "Demo closed",
+    );
+  }
+  return success(
     r,
-    await s.returnDemoUnit(q.auth!.tenantId!, q.auth!.userId, paramId(q), q.body),
+    await s.returnDemoUnit(q.auth!.tenantId!, q.auth!.userId, paramId(q), body),
     "Demo unit returned to stock",
   );
+};
 
 export const stampUnit = async (q: Request, r: Response) =>
   success(

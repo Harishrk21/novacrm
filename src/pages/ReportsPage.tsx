@@ -571,7 +571,7 @@ export function ReportsPage() {
                     </tbody>
                   </table>
                 </div>
-              </Card>
+    </Card>
             </div>
           ) : null}
 
@@ -582,7 +582,7 @@ export function ReportsPage() {
                 <Kpi label="Resolved (range)" value={k.resolvedInRange} />
                 <Kpi label="Avg resolution" value={`${k.avgResolutionHours}h`} />
                 <Kpi label="Outstanding" value={formatCurrency(k.balanceOutstanding)} />
-              </div>
+      </div>
               <div className="grid gap-4 lg:grid-cols-2">
                 <Card className="p-4">
                   <h3 className="mb-2 text-sm font-semibold">Status mix</h3>
@@ -620,7 +620,7 @@ export function ReportsPage() {
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
-                </Card>
+    </Card>
               </div>
               <Card className="overflow-hidden">
                 <div className="border-b border-border px-4 py-3 text-sm font-semibold">Workload by assignee</div>
@@ -655,7 +655,7 @@ export function ReportsPage() {
                     </tbody>
                   </table>
                 </div>
-              </Card>
+    </Card>
             </div>
           ) : null}
 
@@ -705,7 +705,7 @@ export function ReportsPage() {
                       ) : null}
                     </tbody>
                   </table>
-                </div>
+      </div>
               </Card>
               <Card className="p-4">
                 <h3 className="mb-2 text-sm font-semibold">City mix (live ops revenue)</h3>
@@ -725,8 +725,8 @@ export function ReportsPage() {
                     </BarChart>
                   </ResponsiveContainer>
                 )}
-              </Card>
-            </div>
+    </Card>
+  </div>
           ) : null}
 
           {tab === 'stock' ? (

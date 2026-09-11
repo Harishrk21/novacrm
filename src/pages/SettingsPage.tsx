@@ -22,9 +22,15 @@ import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Input } from '@/components/ui/Input'
+import { PhoneInput } from '@/components/ui/PhoneInput'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError } from '@/lib/api'
 import { cn, formatDateTime } from '@/lib/utils'
+import {
+  indianMobileLocal,
+  isValidIndianMobile,
+  toStoredIndianMobile,
+} from '@/lib/phoneIndia'
 import { useUIStore } from '@/store/uiStore'
 import { useAskMeisterStore } from '@/store/askMeisterStore'
 import { useCrmStore } from '@/store/crmStore'
@@ -312,7 +318,7 @@ function Profile() {
         if (cancelled) return
         setName(me.name ?? '')
         setEmail(me.email ?? '')
-        setPhone(me.phone ?? '')
+        setPhone(indianMobileLocal(me.phone))
         setAvatarUrl(me.avatarUrl ?? null)
         setTimezone(me.timezone || 'Asia/Kolkata')
         const prefs = me.preferences ?? {}
@@ -370,11 +376,16 @@ function Profile() {
       addToast({ type: 'error', message: 'Name must be at least 2 characters' })
       return
     }
+    if (phone.trim() && !isValidIndianMobile(phone)) {
+      addToast({ type: 'error', message: 'Phone must be a valid 10-digit Indian mobile' })
+      return
+    }
     setSaving(true)
     try {
+      const storedPhone = toStoredIndianMobile(phone)
       const updated = (await api.updateProfile({
         name: name.trim(),
-        phone: phone.trim() || null,
+        phone: storedPhone,
         timezone,
         preferences: {
           emailNotifications: emailNotifs,
@@ -384,7 +395,7 @@ function Profile() {
       })) as { name?: string; phone?: string | null; avatarUrl?: string | null }
       patchUser({
         name: updated.name ?? name.trim(),
-        phone: updated.phone ?? (phone.trim() || null),
+        phone: updated.phone ?? storedPhone,
         avatarUrl: updated.avatarUrl ?? avatarUrl,
       })
       addToast({ type: 'success', message: 'Profile updated' })
@@ -458,12 +469,11 @@ function Profile() {
           <div className="grid gap-4 sm:grid-cols-2">
             <Input label="Full name" value={name} onChange={(e) => setName(e.target.value)} required />
             <Input label="Email" type="email" value={email} disabled />
-            <Input
+            <PhoneInput
               label="Phone"
-              type="tel"
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="+91 …"
+              onChange={setPhone}
+              hint="India (+91) — 10 digits"
             />
             <Select
               label="Timezone"
@@ -556,7 +566,7 @@ function Company() {
         if (cancelled) return
         setName(t.name ?? '')
         setEmail(t.email ?? '')
-        setPhone(t.phone ?? '')
+        setPhone(indianMobileLocal(t.phone))
         setGstin(t.gstin ?? '')
         setWebsite(t.website ?? '')
         setAddressLine1(t.addressLine1 ?? '')
@@ -584,7 +594,7 @@ function Company() {
     try {
       await api.updateMyTenant({
         email: email.trim() || null,
-        phone: phone.trim() || null,
+        phone: toStoredIndianMobile(phone),
         gstin: gstin.trim() || null,
         website: website.trim() || null,
         addressLine1: addressLine1.trim() || null,
@@ -613,7 +623,7 @@ function Company() {
           <Input label="Company name" value={name} disabled />
           <Input label="Currency" value={currency} disabled />
           <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <Input label="Phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
+          <PhoneInput label="Phone" value={phone} onChange={setPhone} hint="India (+91) — 10 digits" />
           <Input label="GSTIN" value={gstin} onChange={(e) => setGstin(e.target.value)} placeholder="22AAAAA0000A1Z5" />
           <Input label="Website" value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://" />
           <div className="sm:col-span-2">
@@ -1141,10 +1151,10 @@ export function UsersSettings() {
       addToast({ type: 'error', message: 'Name, email, and password (8+) are required' })
       return
     }
-    if (phone.replace(/\D/g, '').length < 10) {
+    if (!isValidIndianMobile(phone)) {
       addToast({
         type: 'error',
-        message: 'WhatsApp / mobile number is required (include country code, e.g. 91…)',
+        message: 'WhatsApp / mobile must be a valid 10-digit Indian number',
       })
       return
     }
@@ -1154,7 +1164,7 @@ export function UsersSettings() {
         name: name.trim(),
         email: email.trim().toLowerCase(),
         password,
-        phone: phone.trim(),
+        phone: toStoredIndianMobile(phone),
         roleCode,
       })
       addToast({ type: 'success', message: 'User created' })
@@ -1197,11 +1207,12 @@ export function UsersSettings() {
           <div className="grid gap-4 sm:grid-cols-2">
             <Input label="Full name" value={name} onChange={(e) => setName(e.target.value)} />
             <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <Input
-              label="WhatsApp / mobile *"
+            <PhoneInput
+              label="WhatsApp / mobile"
+              required
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="91XXXXXXXXXX"
+              onChange={setPhone}
+              hint="India (+91) — 10 digits"
             />
             <Input
               label="Temporary password"

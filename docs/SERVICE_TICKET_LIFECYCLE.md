@@ -41,3 +41,15 @@ Canonical status machine:
 Sales machine bills use Invoice type = **Sales** (product + serial proforma) on the same page.
 
 **Activities** (`/activities`) are CRM follow-ups (calls/tasks), not this pipeline — use **Service tickets** for Steps 1–6.
+
+## Stamping visits (same 6 steps)
+
+When a customer comes **for government stamping / verification**, treat it as a service ticket:
+
+1. **Stamping page** → **New stamping job**, or open a customer machine → **Open stamping job**
+2. Ticket create opens with **category = Stamping**, customer + machine prefilled
+3. Desk enters stamp date / VC / plate / next due (+1 year) → subject `Stamping — {machine}`
+4. Follow the **same** Created → Assigned → On site → Daily tracking → Admin close → Invoice path
+5. Machine register dates update from the ticket; Stamping page stays the compliance / due list
+
+Do **not** invent a parallel workflow — stamping is a ticket **category**, not a separate board.

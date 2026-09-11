@@ -1,33 +1,34 @@
-import "dotenv/config";
+/**
+ * Quick MySQL / RDS connectivity check (uses backend/.env DATABASE_URL).
+ * Usage: cd backend && npx tsx scripts/test-db.ts
+ */
+import "./../src/config/env.js";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log(
-    "DATABASE_URL host check:",
-    process.env.DATABASE_URL?.replace(/:[^:@/]+@/, ":****@"),
-  );
-  const rows = await prisma.$queryRawUnsafe<Array<{ tables: bigint }>>(
-    "SELECT COUNT(*)::bigint AS tables FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
-  );
+  const raw = process.env.DATABASE_URL ?? "";
+  const safe = raw.replace(/:[^:@/]+@/, ":****@");
+  console.log("DATABASE_URL:", safe);
+
+  await prisma.$queryRawUnsafe("SELECT 1 AS ok");
   const tenants = await prisma.tenant.count().catch(() => -1);
-  const categories = await prisma.businessCategory.count().catch(() => -1);
-  console.log("✅ Connected to Supabase (PostgreSQL)");
-  console.log("   Tables in public schema:", Number(rows[0]?.tables ?? 0));
+  const contacts = await prisma.contact.count().catch(() => -1);
+  console.log("✅ Connected");
   console.log("   Tenants:", tenants);
-  console.log("   Business categories:", categories);
+  console.log("   Contacts:", contacts);
 }
 
 main()
   .catch((err) => {
     console.error("❌ Connection failed");
-    console.error(err.message);
-    console.error("\nPaste your Supabase Direct URI into backend/.env:");
+    console.error(err instanceof Error ? err.message : err);
+    console.error("\nFor AWS RDS from Render, DATABASE_URL should look like:");
     console.error(
-      'DATABASE_URL="postgresql://postgres:PASSWORD@db.xxxx.supabase.co:5432/postgres"',
+      'mysql://USER:PASSWORD@xxx.rds.amazonaws.com:3306/novacrm?sslaccept=accept_invalid_certs&connection_limit=5&pool_timeout=20&connect_timeout=15',
     );
-    console.error("\nSee: database/SUPABASE_SETUP.md");
+    console.error("Also open RDS security group inbound TCP 3306 to Render (or 0.0.0.0/0 for a quick test).");
     process.exit(1);
   })
   .finally(async () => {

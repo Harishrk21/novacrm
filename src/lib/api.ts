@@ -97,7 +97,7 @@ async function refreshAccessToken(): Promise<string | null> {
 
 export async function apiFetch<T>(
   path: string,
-  options: RequestInit & { skipAuth?: boolean } = {},
+  options: RequestInit & { skipAuth?: boolean; noRetry?: boolean } = {},
 ): Promise<T> {
   const headers = new Headers(options.headers)
   if (!headers.has('Content-Type') && options.body) headers.set('Content-Type', 'application/json')
@@ -106,13 +106,15 @@ export async function apiFetch<T>(
     if (auth?.accessToken) headers.set('Authorization', `Bearer ${auth.accessToken}`)
   }
 
-  let res = await fetchWithRetry(`${API_BASE}${path}`, { ...options, headers })
+  // AI endpoints: no multi-retry — Gemini/DB waits already feel long
+  const attempts = options.noRetry || path.startsWith('/ai/') ? 1 : 4
+  let res = await fetchWithRetry(`${API_BASE}${path}`, { ...options, headers }, attempts)
 
   if (res.status === 401 && !options.skipAuth) {
     const next = await refreshAccessToken()
     if (next) {
       headers.set('Authorization', `Bearer ${next}`)
-      res = await fetchWithRetry(`${API_BASE}${path}`, { ...options, headers })
+      res = await fetchWithRetry(`${API_BASE}${path}`, { ...options, headers }, attempts)
     } else {
       setAuth(null)
       try {
@@ -141,9 +143,10 @@ export async function apiFetch<T>(
       throw new ApiClientError(res.status, {
         code,
         message:
-          res.status === 503
+          (json && 'message' in json && typeof json.message === 'string' && json.message) ||
+          (res.status === 503
             ? 'Database is busy — wait a moment and try again.'
-            : message,
+            : message),
         details: json && 'details' in json ? json.details : undefined,
       })
     }

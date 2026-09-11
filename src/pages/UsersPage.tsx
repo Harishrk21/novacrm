@@ -14,12 +14,18 @@ import {
 } from '@/components/ui/BulkSelect'
 import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
+import { PhoneInput } from '@/components/ui/PhoneInput'
 import { ConfirmModal, Modal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
 import { TENANT_ROLE_OPTIONS } from '@/lib/roles'
 import { formatCurrency, formatDateTime } from '@/lib/utils'
+import {
+  indianMobileLocal,
+  isValidIndianMobile,
+  toStoredIndianMobile,
+} from '@/lib/phoneIndia'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
@@ -96,7 +102,7 @@ function formFromUser(u: TeamUser): FormState {
     name: u.name,
     email: u.email,
     password: '',
-    phone: u.phone ?? '',
+    phone: indianMobileLocal(u.phone),
     avatarUrl: u.avatarUrl ?? '',
     roleCode: u.role?.code ?? 'SERVICE_ENGINEER',
     status: u.status || 'ACTIVE',
@@ -227,11 +233,10 @@ export function UsersPage() {
       addToast({ type: 'error', message: 'Password must be at least 8 characters' })
       return
     }
-    const phoneDigits = form.phone.replace(/\D/g, '')
-    if (phoneDigits.length < 10) {
+    if (!isValidIndianMobile(form.phone)) {
       addToast({
         type: 'error',
-        message: 'WhatsApp / mobile number is required (include country code, e.g. 91…)',
+        message: 'WhatsApp / mobile must be a valid 10-digit Indian number',
       })
       return
     }
@@ -239,7 +244,7 @@ export function UsersPage() {
     try {
       const body: Record<string, unknown> = {
         name: form.name.trim(),
-        phone: form.phone.trim(),
+        phone: toStoredIndianMobile(form.phone),
         avatarUrl: form.avatarUrl.trim() || null,
         roleCode: form.roleCode,
         status: form.status,
@@ -274,7 +279,7 @@ export function UsersPage() {
           patchUser({
             avatarUrl: (updated.avatarUrl ?? form.avatarUrl.trim()) || null,
             name: form.name.trim(),
-            phone: form.phone.trim(),
+            phone: toStoredIndianMobile(form.phone),
           })
         }
       }
@@ -374,20 +379,21 @@ export function UsersPage() {
         onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
         placeholder={formMode === 'edit' ? 'Leave blank to keep current' : undefined}
       />
-      <Input
+      <PhoneInput
         id="user-phone-wa"
         label={
           <span className="inline-flex items-center gap-1.5">
             Mobile / <WhatsAppIcon size={14} />
-            <span style={{ color: WA_GREEN }}>WhatsApp</span> *
+            <span style={{ color: WA_GREEN }}>WhatsApp</span>
           </span>
         }
+        required
         value={form.phone}
-        onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
-        placeholder="91XXXXXXXXXX"
+        onChange={(phone) => setForm((f) => ({ ...f, phone }))}
+        hint="India (+91) — 10 digits for WhatsApp alerts"
       />
       <p className="-mt-2 text-xs text-text-secondary sm:col-span-2">
-        Required for every employee. Use country code (e.g. 91…). Used for{' '}
+        Required for every employee. Used for{' '}
         <span className="inline-flex items-center gap-1" style={{ color: WA_GREEN }}>
           <WhatsAppIcon size={12} /> WhatsApp
         </span>{' '}

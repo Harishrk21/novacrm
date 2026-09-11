@@ -1,3 +1,8 @@
+import {
+  optionalIndianMobileError,
+  requiredIndianMobileError,
+} from '@/lib/phoneIndia'
+
 export type FieldErrors = Record<string, string>
 
 export function isEmail(value: string) {
@@ -66,9 +71,8 @@ export function validateLeadForm(form: {
     const withProto = /^https?:\/\//i.test(w) ? w : `https://${w}`
     if (!isHttpUrl(withProto)) errors.website = 'Enter a valid website'
   }
-  if (form.phone.trim() && form.phone.replace(/\D/g, '').length < 8) {
-    errors.phone = 'Enter a valid phone number'
-  }
+  const phoneErr = optionalIndianMobileError(form.phone, 'Phone')
+  if (phoneErr) errors.phone = phoneErr
   const score = Number(form.score)
   if (form.score === '' || Number.isNaN(score) || score < 0 || score > 100) {
     errors.score = 'Score must be 0–100'
@@ -87,6 +91,8 @@ export function validateContactForm(form: {
   pincode?: string
   landline?: string
   whatsapp?: string
+  mobile2?: string
+  mobile3?: string
 }) {
   const errors: FieldErrors = {}
   if (!form.name.trim()) errors.name = 'Company / shop / customer name is required'
@@ -94,16 +100,23 @@ export function validateContactForm(form: {
   if (form.alternateEmail?.trim() && !isEmail(form.alternateEmail)) {
     errors.alternateEmail = 'Enter a valid alternate email'
   }
-  const phoneDigits = (form.mobile || form.phone || form.landline || form.whatsapp || '').replace(
-    /\D/g,
-    '',
+
+  const mobile1Err = requiredIndianMobileError(
+    form.mobile || form.whatsapp || form.phone,
+    'Mobile number 1',
   )
-  if (phoneDigits.length < 8) {
-    errors.phone = 'Mobile number 1 (or landline / WhatsApp) is required'
+  if (mobile1Err) {
+    errors.mobile = mobile1Err
+    errors.phone = mobile1Err
   }
-  if (form.mobile.trim() && form.mobile.replace(/\D/g, '').length < 8) {
-    errors.mobile = 'Enter a valid mobile number'
-  }
+
+  const m2 = optionalIndianMobileError(form.mobile2, 'Mobile number 2')
+  if (m2) errors.mobile2 = m2
+  const m3 = optionalIndianMobileError(form.mobile3, 'Mobile number 3')
+  if (m3) errors.mobile3 = m3
+  const wa = optionalIndianMobileError(form.whatsapp, 'WhatsApp number')
+  if (wa) errors.whatsapp = wa
+
   if (form.country.trim() && form.country.trim().length !== 2) {
     errors.country = 'Use 2-letter country code (e.g. IN)'
   }

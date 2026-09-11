@@ -51,7 +51,11 @@ export function getInitials(name: string): string {
 }
 
 export function normalizePhone(phone: string): string {
-  return phone.replace(/[\s\-()+]/g, '').replace(/^91/, '')
+  const digits = phone.replace(/\D/g, '')
+  if (digits.length >= 12 && digits.startsWith('91')) return digits.slice(-10)
+  if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1)
+  if (digits.startsWith('91') && digits.length === 12) return digits.slice(2)
+  return digits.replace(/^91/, '').slice(-10)
 }
 
 export function formatPhone(phone?: string): string {

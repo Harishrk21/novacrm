@@ -193,6 +193,10 @@ export function connectNotificationsSocket(
       // Refresh from server shortly so IDs persist for mark-read
       window.setTimeout(() => void useNotificationsStore.getState().load(), 800)
     })
+    // Assign / approve resolves earlier rows — refresh list + unread badge
+    s.on('notification:updated', () => {
+      void useNotificationsStore.getState().load()
+    })
   })
 
   return () => {

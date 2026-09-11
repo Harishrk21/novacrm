@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  Building2,
-  MapPin,
+  Filter,
+  Package,
   Phone,
   Search,
-  Users,
   UserPlus,
-  Filter,
+  Users,
+  Wrench,
 } from 'lucide-react'
 import { Avatar } from '@/components/ui/Avatar'
 import { Button } from '@/components/ui/Button'
@@ -20,12 +20,12 @@ import {
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
+import { PhoneInput } from '@/components/ui/PhoneInput'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { SparePartsPanel } from '@/components/contacts/SparePartsPanel'
 import { CustomerImportPanel } from '@/components/contacts/CustomerImportPanel'
 import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import { useRowSelection } from '@/hooks/useRowSelection'
@@ -38,6 +38,7 @@ import {
 } from '@/lib/productCatalog'
 import { firstError, validateContactForm, type FieldErrors } from '@/lib/formValidation'
 import { cn, formatDate, formatPhone } from '@/lib/utils'
+import { toStoredIndianMobile } from '@/lib/phoneIndia'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { canAssignTickets, canCreateTickets, isServiceDesk } from '@/lib/roles'
@@ -50,6 +51,7 @@ type ContactRow = {
   email?: string | null
   phone?: string | null
   mobile?: string | null
+  whatsapp?: string | null
   title?: string | null
   department?: string | null
   street?: string | null
@@ -60,6 +62,13 @@ type ContactRow = {
   city?: string | null
   state?: string | null
   accountId?: string | null
+  accountName?: string | null
+  ownerUserId?: string | null
+  ownerName?: string | null
+  machineCount?: number
+  openJobCount?: number
+  lastServiceAt?: string | null
+  lastServiceStatus?: string | null
   createdAt?: string
 }
 
@@ -150,11 +159,10 @@ export function ContactsPage() {
   const [accountFilter, setAccountFilter] = useState('')
   const [ownerFilter, setOwnerFilter] = useState('')
   const [cityFilter, setCityFilter] = useState('')
-  const [linkFilter, setLinkFilter] = useState('') // '' | linked | unlinked
   const [phone, setPhone] = useState('')
   const [phoneResult, setPhoneResult] = useState<string | null>(null)
   const [phoneNotFound, setPhoneNotFound] = useState(false)
-  const [tab, setTab] = useState<'list' | 'create' | 'spare' | 'import'>('list')
+  const [tab, setTab] = useState<'list' | 'create' | 'import'>('list')
   const [createStep, setCreateStep] = useState<'customer' | 'product'>('customer')
   const [returnTo, setReturnTo] = useState<string | null>(null)
   const [form, setForm] = useState(emptyForm)
@@ -163,18 +171,33 @@ export function ContactsPage() {
   const [errors, setErrors] = useState<FieldErrors>({})
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
   const [busyDelete, setBusyDelete] = useState(false)
-
-  const ids = useMemo(() => items.map((i) => String(i.id)), [items])
-  const selection = useRowSelection(ids)
+  const [quickFilter, setQuickFilter] = useState<'all' | 'phone' | 'machines' | 'openJobs'>('all')
 
   const overview = useMemo(() => {
     const withPhone = items.filter((c) => Boolean(c.phone || c.mobile)).length
-    const linked = items.filter((c) => Boolean(c.accountId)).length
-    const cities = new Set(items.map((c) => (c.city || '').trim()).filter(Boolean)).size
-    return { total: items.length, withPhone, linked, cities }
+    const withMachines = items.filter((c) => Number(c.machineCount ?? 0) > 0).length
+    const openJobs = items.reduce((sum, c) => sum + Number(c.openJobCount ?? 0), 0)
+    return { total: items.length, withPhone, withMachines, openJobs }
   }, [items])
 
-  const filtersActive = Boolean(accountFilter || ownerFilter || linkFilter || cityFilter || search)
+  const displayed = useMemo(() => {
+    if (quickFilter === 'phone') return items.filter((c) => Boolean(c.phone || c.mobile))
+    if (quickFilter === 'machines') return items.filter((c) => Number(c.machineCount ?? 0) > 0)
+    if (quickFilter === 'openJobs') return items.filter((c) => Number(c.openJobCount ?? 0) > 0)
+    return items
+  }, [items, quickFilter])
+
+  const ids = useMemo(() => displayed.map((i) => String(i.id)), [displayed])
+  const selection = useRowSelection(ids)
+
+  const filtersActive = Boolean(
+    accountFilter || ownerFilter || cityFilter || search || quickFilter !== 'all',
+  )
+
+  function toggleQuickFilter(next: 'all' | 'phone' | 'machines' | 'openJobs') {
+    setQuickFilter((prev) => (prev === next || next === 'all' ? 'all' : next))
+    document.getElementById('customer-directory')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   useEffect(() => {
     const open = searchParams.get('open') === '1'
@@ -205,7 +228,7 @@ export function ContactsPage() {
           accountId: accountFilter || undefined,
           ownerUserId: ownerFilter || undefined,
           city: cityFilter || undefined,
-          hasAccount: linkFilter === 'linked' ? '1' : linkFilter === 'unlinked' ? '0' : undefined,
+          hasAccount: undefined,
         }),
         api.lookups(),
         api.products({ limit: 500 }),
@@ -231,7 +254,7 @@ export function ContactsPage() {
     } finally {
       setLoading(false)
     }
-  }, [addToast, search, accountFilter, ownerFilter, cityFilter, linkFilter])
+  }, [addToast, search, accountFilter, ownerFilter, cityFilter])
 
   useEffect(() => {
     void load()
@@ -342,20 +365,22 @@ export function ContactsPage() {
     const saveProduct = !machine.skip && machine.name.trim()
     setSaving(true)
     try {
+      const mobileStored = toStoredIndianMobile(form.mobile)
+      const waStored =
+        toStoredIndianMobile(form.whatsapp) || mobileStored
       const customFields = {
         building_name: form.buildingName.trim() || null,
         landline: form.landline.trim() || null,
-        mobile_2: form.mobile2.trim() || null,
-        mobile_3: form.mobile3.trim() || null,
-        whatsapp: form.whatsapp.trim() || form.mobile.trim() || null,
+        mobile_2: toStoredIndianMobile(form.mobile2),
+        mobile_3: toStoredIndianMobile(form.mobile3),
+        whatsapp: waStored,
         gps_location: form.gpsLocation.trim() || null,
       }
-      const primaryPhone = form.mobile.trim() || form.landline.trim() || form.whatsapp.trim()
       const created = await api.createContact({
         name: form.name.trim(),
         email: form.email.trim() || null,
-        phone: form.landline.trim() || primaryPhone || null,
-        mobile: form.mobile.trim() || null,
+        phone: form.landline.trim() || mobileStored || waStored,
+        mobile: mobileStored,
         street: form.street.trim() || null,
         doorNo: form.doorNo.trim() || null,
         area: form.area.trim() || null,
@@ -476,7 +501,7 @@ export function ContactsPage() {
         accent="theme"
         active={tab}
         onChange={(id) => {
-          setTab(id as 'list' | 'create' | 'spare' | 'import')
+          setTab(id as 'list' | 'create' | 'import')
           if (id === 'create') {
             setForm(emptyForm)
             setMachine(emptyMachine)
@@ -487,12 +512,10 @@ export function ContactsPage() {
         tabs={[
           { id: 'list', label: 'Directory', count: items.length },
           ...(canCreateTickets(authRole) ? [{ id: 'import', label: 'Import' }] : []),
-          { id: 'spare', label: 'Spare parts' },
           { id: 'create', label: 'Add customer' },
         ]}
       />
 
-      {tab === 'spare' ? <SparePartsPanel /> : null}
       {tab === 'import' ? (
         <CustomerImportPanel
           onImported={() => {
@@ -506,41 +529,61 @@ export function ContactsPage() {
         <>
           {/* Overview strip */}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {[
-              {
-                label: 'Total customers',
-                value: overview.total,
-                icon: Users,
-                tint: 'from-sky-500/15 to-transparent text-sky-700 dark:text-sky-300',
-              },
-              {
-                label: 'With phone',
-                value: overview.withPhone,
-                icon: Phone,
-                tint: 'from-emerald-500/15 to-transparent text-emerald-700 dark:text-emerald-300',
-              },
-              {
-                label: 'Linked accounts',
-                value: overview.linked,
-                icon: Building2,
-                tint: 'from-indigo-500/15 to-transparent text-indigo-700 dark:text-indigo-300',
-              },
-              {
-                label: 'Cities covered',
-                value: overview.cities,
-                icon: MapPin,
-                tint: 'from-amber-500/15 to-transparent text-amber-800 dark:text-amber-300',
-              },
-            ].map((stat) => {
+            {(
+              [
+                {
+                  id: 'all' as const,
+                  label: 'Total customers',
+                  value: overview.total,
+                  icon: Users,
+                  tint: 'from-sky-500/15 to-transparent text-sky-700 dark:text-sky-300',
+                  ring: 'ring-sky-400/60',
+                },
+                {
+                  id: 'phone' as const,
+                  label: 'With phone',
+                  value: overview.withPhone,
+                  icon: Phone,
+                  tint: 'from-emerald-500/15 to-transparent text-emerald-700 dark:text-emerald-300',
+                  ring: 'ring-emerald-400/60',
+                },
+                {
+                  id: 'machines' as const,
+                  label: 'With machines',
+                  value: overview.withMachines,
+                  icon: Package,
+                  tint: 'from-violet-500/15 to-transparent text-violet-700 dark:text-violet-300',
+                  ring: 'ring-violet-400/60',
+                },
+                {
+                  id: 'openJobs' as const,
+                  label: 'Open service jobs',
+                  value: overview.openJobs,
+                  icon: Wrench,
+                  tint: 'from-amber-500/15 to-transparent text-amber-800 dark:text-amber-300',
+                  ring: 'ring-amber-400/60',
+                },
+              ] as const
+            ).map((stat) => {
               const Icon = stat.icon
+              const active = quickFilter === stat.id
               return (
-                <div
-                  key={stat.label}
+                <button
+                  key={stat.id}
+                  type="button"
+                  onClick={() => toggleQuickFilter(stat.id)}
                   className={cn(
-                    'relative overflow-hidden rounded-2xl border border-border bg-card p-4 shadow-[var(--shadow-card)]',
-                    'bg-gradient-to-br',
+                    'relative overflow-hidden rounded-2xl border border-border bg-card p-4 text-left shadow-[var(--shadow-card)] transition',
+                    'bg-gradient-to-br hover:brightness-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40',
                     stat.tint,
+                    active && `ring-2 ${stat.ring}`,
                   )}
+                  aria-pressed={active}
+                  title={
+                    active && stat.id !== 'all'
+                      ? 'Click again to show all customers'
+                      : `Show ${stat.label.toLowerCase()}`
+                  }
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div>
@@ -548,20 +591,26 @@ export function ContactsPage() {
                         {stat.label}
                       </p>
                       <p className="mt-1.5 text-2xl font-semibold tabular-nums tracking-tight text-text-primary">
-                        {loading ? '—' : stat.value}
+                        {loading ? '…' : stat.value}
+                      </p>
+                      <p className="mt-1 text-[10px] font-medium text-text-secondary">
+                        {active ? 'Filtered · click to clear' : 'Click to filter'}
                       </p>
                     </div>
                     <div className="flex size-10 items-center justify-center rounded-xl bg-card/80 ring-1 ring-border/60">
                       <Icon size={18} className="opacity-80" />
                     </div>
                   </div>
-                </div>
+                </button>
               )
             })}
           </div>
 
           {/* Quick lookup */}
-          <Card className="overflow-hidden border-border/80 p-0 shadow-[var(--shadow-card)]">
+          <Card
+            id="customer-directory"
+            className="scroll-mt-4 overflow-hidden border-border/80 p-0 shadow-[var(--shadow-card)]"
+          >
             <div className="border-b border-border bg-gradient-to-r from-[var(--color-panel-from)] via-card to-[var(--color-panel-to)] px-5 py-4">
               <div className="flex flex-wrap items-end justify-between gap-3">
                 <div>
@@ -633,7 +682,7 @@ export function ContactsPage() {
                   onChange={(e) => setAccountFilter(e.target.value)}
                   className="w-44"
                   options={[
-                    { value: '', label: 'All accounts' },
+                    { value: '', label: 'All companies' },
                     ...accounts.map((a) => ({ value: a.id, label: a.name })),
                   ]}
                 />
@@ -643,26 +692,16 @@ export function ContactsPage() {
                     onChange={(e) => setOwnerFilter(e.target.value)}
                     className="w-40"
                     options={[
-                      { value: '', label: 'All owners' },
+                      { value: '', label: 'All executives' },
                       ...users.map((u) => ({ value: u.id, label: u.name })),
                     ]}
                   />
                 ) : null}
-                <Select
-                  value={linkFilter}
-                  onChange={(e) => setLinkFilter(e.target.value)}
-                  className="w-40"
-                  options={[
-                    { value: '', label: 'Linked / any' },
-                    { value: 'linked', label: 'Has account' },
-                    { value: 'unlinked', label: 'No account' },
-                  ]}
-                />
                 <Input
-                  placeholder="City"
+                  placeholder="Area / city"
                   value={cityFilter}
                   onChange={(e) => setCityFilter(e.target.value)}
-                  className="w-32"
+                  className="w-36"
                 />
                 {filtersActive ? (
                   <Button
@@ -672,8 +711,8 @@ export function ContactsPage() {
                       setSearch('')
                       setAccountFilter('')
                       setOwnerFilter('')
-                      setLinkFilter('')
                       setCityFilter('')
+                      setQuickFilter('all')
                     }}
                   >
                     Clear
@@ -707,6 +746,14 @@ export function ContactsPage() {
                   setTab('create')
                 }}
               />
+            ) : displayed.length === 0 ? (
+              <EmptyState
+                icon={<Users size={26} />}
+                title="No customers in this filter"
+                subtitle="Try another tile or clear the filter."
+                actionLabel="Show all"
+                onAction={() => setQuickFilter('all')}
+              />
             ) : (
               <div className="p-4 pt-3">
                 {selection.someSelected ? (
@@ -720,7 +767,7 @@ export function ContactsPage() {
                 ) : null}
                 <div className="overflow-hidden rounded-xl border border-border/80">
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[980px] text-left text-sm">
+                    <table className="w-full min-w-[1080px] text-left text-sm">
                       <thead>
                         <tr className="border-b border-border bg-muted/50 text-[11px] uppercase tracking-[0.06em] text-text-secondary">
                           <th className="w-10 px-4 py-3">
@@ -733,10 +780,12 @@ export function ContactsPage() {
                           </th>
                           {[
                             'Customer',
-                            'Contact',
-                            'Location',
-                            'Account',
-                            'Added',
+                            'Phone',
+                            'Area',
+                            'Machines',
+                            'Open jobs',
+                            'Last service',
+                            'Executive',
                             'Actions',
                           ].map((h) => (
                             <th key={h} className="px-4 py-3 font-semibold">
@@ -746,27 +795,33 @@ export function ContactsPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {items.map((c) => {
-                          const phoneDisplay = formatPhone(c.phone || c.mobile || '') || '—'
-                          const place = [c.area, c.location].filter(Boolean).join(' · ')
-                          const cityLine = [c.city, c.state].filter(Boolean).join(', ')
+                        {displayed.map((c) => {
+                          const rawPhone = c.phone || c.mobile || ''
+                          const phoneDisplay = formatPhone(rawPhone) || 'No phone'
+                          const waRaw = c.whatsapp?.trim() || ''
+                          const showWa =
+                            Boolean(waRaw) &&
+                            waRaw.replace(/\D/g, '') !== rawPhone.replace(/\D/g, '')
+                          const areaLine = [c.area, c.city].filter(Boolean).join(' · ') || 'No area'
+                          const machines = Number(c.machineCount ?? 0)
+                          const openJobs = Number(c.openJobCount ?? 0)
                           return (
                             <tr
                               key={c.id}
                               className="group cursor-pointer border-t border-border/70 transition-colors hover:bg-accent-soft/40"
                               onClick={() => navigate(`/contacts/${c.id}`)}
                             >
-                              <td className="px-4 py-3.5" onClick={(e) => e.stopPropagation()}>
+                              <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
                                 <SelectCheckbox
                                   checked={selection.isSelected(c.id)}
                                   onChange={() => selection.toggle(c.id)}
                                   aria-label={`Select ${c.name}`}
                                 />
                               </td>
-                              <td className="px-4 py-3.5">
+                              <td className="px-4 py-2.5">
                                 <Link
                                   to={`/contacts/${c.id}`}
-                                  className="flex items-center gap-3"
+                                  className="flex min-w-0 items-center gap-2.5"
                                   onClick={(e) => e.stopPropagation()}
                                 >
                                   <Avatar name={c.name} size="sm" />
@@ -774,37 +829,72 @@ export function ContactsPage() {
                                     <div className="truncate font-semibold text-text-primary group-hover:text-accent-blue">
                                       {c.name}
                                     </div>
-                                    <div className="mt-0.5 font-mono text-[11px] font-medium text-accent-blue/90">
+                                    <div className="font-mono text-[11px] text-text-secondary">
                                       {c.customerCode ?? 'No ID'}
+                                      {c.email ? (
+                                        <span className="ml-1.5 font-sans text-text-secondary/80">
+                                          · {c.email}
+                                        </span>
+                                      ) : null}
                                     </div>
                                   </div>
                                 </Link>
                               </td>
-                              <td className="px-4 py-3.5">
-                                <div className="font-medium tabular-nums text-text-primary">{phoneDisplay}</div>
-                                {c.email ? (
-                                  <div className="mt-0.5 truncate text-xs text-text-secondary">{c.email}</div>
+                              <td className="px-4 py-2.5">
+                                <div
+                                  className={cn(
+                                    'font-medium tabular-nums',
+                                    rawPhone ? 'text-text-primary' : 'text-text-secondary',
+                                  )}
+                                >
+                                  {phoneDisplay}
+                                </div>
+                                {showWa ? (
+                                  <div className="mt-0.5 flex items-center gap-1 text-[11px] text-text-secondary">
+                                    <WhatsAppIcon size={11} color={WA_GREEN} />
+                                    {formatPhone(waRaw) || waRaw}
+                                  </div>
                                 ) : null}
                               </td>
-                              <td className="px-4 py-3.5">
-                                <div className="text-text-primary">{place || '—'}</div>
-                                <div className="mt-0.5 text-xs text-text-secondary">{cityLine || '—'}</div>
-                              </td>
-                              <td className="px-4 py-3.5">
-                                {c.accountId ? (
-                                  <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-500/20 dark:text-emerald-300">
-                                    Linked
+                              <td className="px-4 py-2.5 text-text-primary">{areaLine}</td>
+                              <td className="px-4 py-2.5">
+                                {machines > 0 ? (
+                                  <span className="inline-flex items-center gap-1 rounded-md bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-700 dark:text-violet-300">
+                                    <Package size={12} /> {machines}
                                   </span>
                                 ) : (
-                                  <span className="inline-flex items-center rounded-full bg-muted px-2.5 py-0.5 text-[11px] font-semibold text-text-secondary ring-1 ring-border">
-                                    No account
-                                  </span>
+                                  <span className="text-xs text-text-secondary">None</span>
                                 )}
                               </td>
-                              <td className="px-4 py-3.5 text-text-secondary">
-                                {c.createdAt ? formatDate(String(c.createdAt)) : '—'}
+                              <td className="px-4 py-2.5">
+                                {openJobs > 0 ? (
+                                  <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                                    <Wrench size={12} /> {openJobs}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-text-secondary">None</span>
+                                )}
                               </td>
-                              <td className="px-4 py-3.5" onClick={(e) => e.stopPropagation()}>
+                              <td className="px-4 py-2.5 text-text-secondary">
+                                {c.lastServiceAt ? (
+                                  <div>
+                                    <div>{formatDate(String(c.lastServiceAt))}</div>
+                                    {c.lastServiceStatus ? (
+                                      <div className="text-[11px] capitalize">
+                                        {String(c.lastServiceStatus)
+                                          .replaceAll('_', ' ')
+                                          .toLowerCase()}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                ) : (
+                                  <span className="text-xs">No visits</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-2.5 text-text-secondary">
+                                {c.ownerName ?? 'Unassigned'}
+                              </td>
+                              <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
                                 <div className="flex items-center gap-0.5 opacity-80 transition-opacity group-hover:opacity-100">
                                   <ViewIconButton onClick={() => navigate(`/contacts/${c.id}`)} />
                                   <DeleteIconButton
@@ -821,7 +911,7 @@ export function ContactsPage() {
                   </div>
                 </div>
                 <p className="mt-3 px-1 text-xs text-text-secondary">
-                  Showing {items.length} customer{items.length === 1 ? '' : 's'}
+                  Showing {displayed.length} customer{displayed.length === 1 ? '' : 's'}
                   {filtersActive ? ' · filters applied' : ''}
                 </p>
               </div>
@@ -930,29 +1020,32 @@ export function ContactsPage() {
                 <Input
                   label="Landline number"
                   value={form.landline}
-                  error={errors.phone}
                   onChange={(e) =>
                     setForm({ ...form, landline: e.target.value, phone: e.target.value })
                   }
+                  placeholder="Optional landline"
                 />
-                <Input
-                  label="Mobile number 1 *"
+                <PhoneInput
+                  label="Mobile number 1"
+                  required
                   value={form.mobile}
                   error={errors.mobile || errors.phone}
-                  onChange={(e) => setForm({ ...form, mobile: e.target.value })}
-                  placeholder="+91 98xxx xxxxx"
+                  onChange={(mobile) => setForm({ ...form, mobile })}
+                  hint="India (+91) — enter 10 digits only"
                 />
-                <Input
+                <PhoneInput
                   label="Mobile number 2"
                   value={form.mobile2}
-                  onChange={(e) => setForm({ ...form, mobile2: e.target.value })}
+                  error={errors.mobile2}
+                  onChange={(mobile2) => setForm({ ...form, mobile2 })}
                 />
-                <Input
+                <PhoneInput
                   label="Mobile number 3"
                   value={form.mobile3}
-                  onChange={(e) => setForm({ ...form, mobile3: e.target.value })}
+                  error={errors.mobile3}
+                  onChange={(mobile3) => setForm({ ...form, mobile3 })}
                 />
-                <Input
+                <PhoneInput
                   id="whatsapp-number"
                   label={
                     <span className="inline-flex items-center gap-1.5">
@@ -961,8 +1054,9 @@ export function ContactsPage() {
                     </span>
                   }
                   value={form.whatsapp}
-                  onChange={(e) => setForm({ ...form, whatsapp: e.target.value })}
-                  placeholder="Defaults to mobile 1 if empty"
+                  error={errors.whatsapp}
+                  onChange={(whatsapp) => setForm({ ...form, whatsapp })}
+                  hint="Defaults to mobile 1 if empty"
                 />
                 <Input
                   label="Email ID"

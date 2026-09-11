@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isIndianMobile } from "../../common/utils/phone.js";
 
 const contactFields = z.object({
   accountId: z.string().min(1).max(36).nullable().optional(),
@@ -23,12 +24,33 @@ const contactFields = z.object({
 });
 
 const createBody = contactFields.superRefine((v, ctx) => {
-  const phone = (v.phone || v.mobile || "").trim();
-  if (phone.length < 5) {
+  const mobile = (v.mobile || "").trim();
+  const phone = (v.phone || "").trim();
+  if (mobile) {
+    if (!isIndianMobile(mobile)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Mobile must be a valid 10-digit Indian number (+91)",
+        path: ["mobile"],
+      });
+    }
+    return;
+  }
+  if (phone && isIndianMobile(phone)) return;
+  if (!phone && !mobile) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "Phone number is required to identify the customer",
-      path: ["phone"],
+      message: "Mobile number is required (10 digits, India +91)",
+      path: ["mobile"],
+    });
+    return;
+  }
+  // Landline-only without mobile — still require a mobile for customer identity
+  if (phone && !isIndianMobile(phone)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Add Mobile number 1 (10 digits). Landline alone is not enough.",
+      path: ["mobile"],
     });
   }
 });

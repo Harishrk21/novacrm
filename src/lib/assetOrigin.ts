@@ -4,12 +4,12 @@ export const ASSET_ORIGIN_OPTIONS: Array<{ value: AssetOrigin; label: string; hi
   {
     value: 'SOLD_BY_US',
     label: 'Sold by us',
-    hint: 'Machine purchased from our shop (installed base)',
+    hint: 'Machine purchased / installed from HMS — shows on customer products as our installed base',
   },
   {
     value: 'THIRD_PARTY',
-    label: 'Outside / repair only',
-    hint: 'Not bought from us — customer brought it for repair or maintenance',
+    label: 'Outside — repair / stamping only',
+    hint: 'Not sold by HMS — customer brought it for repair, service, or government stamping only',
   },
 ]
 

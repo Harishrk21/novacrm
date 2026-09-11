@@ -303,6 +303,15 @@ export function AmcPage() {
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'AMC / Service' }]}
       />
 
+      <Card className="mb-3 border-emerald-200/60 bg-emerald-50/40 p-4 dark:border-emerald-900/40 dark:bg-emerald-950/20">
+        <p className="text-sm font-medium text-text-primary">AMC flow</p>
+        <p className="mt-1 text-xs text-text-secondary">
+          Customer asks for AMC → open an <strong>Inspect for AMC</strong> / AMC visit ticket on the
+          machine → after inspection, on the customer Products tab use <strong>Enroll AMC</strong> with
+          start + end dates. Stamping is separate (engineer records stamp date on the stamping ticket).
+        </p>
+      </Card>
+
       <div className="mb-3 flex flex-wrap gap-2">
         {[
           { label: 'AMC', value: amcRows.length, icon: Shield },

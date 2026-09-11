@@ -1,6 +1,8 @@
 import type { Dispatch, SetStateAction } from 'react'
 import { Input } from '@/components/ui/Input'
+import { PhoneInput } from '@/components/ui/PhoneInput'
 import { Select } from '@/components/ui/Select'
+import { indianMobileLocal, toStoredIndianMobile } from '@/lib/phoneIndia'
 
 export type AccountFormState = {
   name: string
@@ -122,7 +124,7 @@ export function formToPayload(form: AccountFormState) {
     accountType: form.accountType || null,
     industry: form.industry || null,
     website: form.website || null,
-    phone: form.phone || null,
+    phone: toStoredIndianMobile(form.phone),
     email: form.email || null,
     gstin: form.gstin || null,
     pan: form.pan || null,
@@ -150,7 +152,7 @@ export function accountToForm(account: Record<string, unknown>): AccountFormStat
     accountType: String(account.accountType ?? 'Customer'),
     industry: String(account.industry ?? ''),
     website: String(account.website ?? ''),
-    phone: String(account.phone ?? ''),
+    phone: indianMobileLocal(String(account.phone ?? '')),
     email: String(account.email ?? ''),
     gstin: String(account.gstin ?? ''),
     pan: String(account.pan ?? ''),
@@ -253,11 +255,11 @@ export function AccountFormFields({
       </Section>
 
       <Section title="Contact">
-        <Input
+        <PhoneInput
           label="Phone"
-          placeholder="+91 98400 10001"
           value={form.phone}
-          onChange={(e) => set({ phone: e.target.value })}
+          onChange={(phone) => set({ phone })}
+          hint="India (+91) — 10 digits"
         />
         <Input
           label="Email"

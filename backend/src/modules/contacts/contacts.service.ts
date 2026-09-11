@@ -93,7 +93,106 @@ export async function list(t: string, q: Record<string, unknown>) {
     }),
     prisma.contact.count({ where }),
   ]);
-  return pageResult(items, total, p.page, p.limit);
+
+  const ids = items.map((c) => c.id);
+  const accountIds = [
+    ...new Set(items.map((c) => c.accountId).filter(Boolean).map(String)),
+  ];
+  const ownerIds = [
+    ...new Set(items.map((c) => c.ownerUserId).filter(Boolean).map(String)),
+  ];
+
+  const [accounts, owners, assetGroups, openTicketGroups, lastTickets] = await Promise.all([
+    accountIds.length
+      ? prisma.account.findMany({
+          where: { tenantId: t, id: { in: accountIds }, deletedAt: null },
+          select: { id: true, name: true },
+        })
+      : Promise.resolve([] as Array<{ id: string; name: string }>),
+    ownerIds.length
+      ? prisma.user.findMany({
+          where: { tenantId: t, id: { in: ownerIds }, deletedAt: null },
+          select: { id: true, name: true },
+        })
+      : Promise.resolve([] as Array<{ id: string; name: string }>),
+    ids.length
+      ? prisma.customerAsset.groupBy({
+          by: ["contactId"],
+          where: { tenantId: t, contactId: { in: ids }, deletedAt: null },
+          _count: { _all: true },
+        })
+      : Promise.resolve([] as Array<{ contactId: string; _count: { _all: number } }>),
+    ids.length
+      ? prisma.ticket.groupBy({
+          by: ["contactId"],
+          where: {
+            tenantId: t,
+            contactId: { in: ids },
+            deletedAt: null,
+            status: { in: ["OPEN", "IN_PROGRESS", "PENDING", "RESOLVED"] },
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([] as Array<{ contactId: string | null; _count: { _all: number } }>),
+    ids.length
+      ? prisma.ticket.findMany({
+          where: { tenantId: t, contactId: { in: ids }, deletedAt: null },
+          orderBy: { createdAt: "desc" },
+          distinct: ["contactId"],
+          select: { contactId: true, createdAt: true, status: true, ticketNo: true },
+        })
+      : Promise.resolve(
+          [] as Array<{
+            contactId: string | null;
+            createdAt: Date;
+            status: string;
+            ticketNo: number;
+          }>,
+        ),
+  ]);
+
+  const accountMap = Object.fromEntries(accounts.map((a) => [a.id, a.name]));
+  const ownerMap = Object.fromEntries(owners.map((u) => [u.id, u.name]));
+  const machineMap = Object.fromEntries(
+    assetGroups.map((g) => [g.contactId, g._count._all]),
+  );
+  const openJobMap = Object.fromEntries(
+    openTicketGroups
+      .filter((g) => g.contactId)
+      .map((g) => [String(g.contactId), g._count._all]),
+  );
+  const lastTicketMap = Object.fromEntries(
+    lastTickets
+      .filter((r) => r.contactId)
+      .map((r) => [
+        String(r.contactId),
+        {
+          at: r.createdAt,
+          status: r.status,
+          ticketNo: r.ticketNo,
+        },
+      ]),
+  );
+
+  return pageResult(
+    items.map((c) => {
+      const cf = (c.customFields as Record<string, unknown> | null) ?? {};
+      const last = lastTicketMap[c.id];
+      return {
+        ...c,
+        accountName: c.accountId ? accountMap[c.accountId] ?? null : null,
+        ownerName: c.ownerUserId ? ownerMap[c.ownerUserId] ?? null : null,
+        machineCount: machineMap[c.id] ?? 0,
+        openJobCount: openJobMap[c.id] ?? 0,
+        lastServiceAt: last?.at ?? null,
+        lastServiceStatus: last?.status ?? null,
+        whatsapp: typeof cf.whatsapp === "string" ? cf.whatsapp : null,
+      };
+    }),
+    total,
+    p.page,
+    p.limit,
+  );
 }
 
 export async function get(t: string, id: string) {

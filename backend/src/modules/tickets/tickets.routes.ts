@@ -21,7 +21,11 @@ import {
   isFreeJob,
   ticketCf,
 } from "./ticketLifecycle.js";
-import { createNotifications, notifyAdmins } from "../notifications/notify.service.js";
+import {
+  createNotifications,
+  notifyAdmins,
+  resolveEntityNotifications,
+} from "../notifications/notify.service.js";
 import { create as createInvoice } from "../invoices/invoices.service.js";
 import { updateStatus as updateInvoiceStatus } from "../invoices/invoices.service.js";
 
@@ -1185,6 +1189,27 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
       });
     }
     await createNotifications(notifRows, q);
+
+    // Admin "awaiting assignment" → engineer assigned + mark read
+    const eng = await prisma.user.findFirst({
+      where: { id: ticket.assignedToId, tenantId: t },
+      select: { name: true },
+    });
+    const svcLabel = `SVC-${String(ticket.ticketNo).padStart(5, "0")}`;
+    await resolveEntityNotifications(
+      {
+        tenantId: t,
+        entityType: "ticket",
+        entityId: ticket.id,
+        types: ["TICKET_CREATED"],
+        title: "Engineer assigned",
+        message: `${svcLabel} ${ticket.subject} — assigned to ${eng?.name ?? "engineer"}`,
+        nextType: "TICKET_ASSIGNED_DONE",
+        markRead: true,
+      },
+      q,
+    );
+
     try {
       if (sendWhatsApp) {
         engineerWhatsapp = await notifyTicketAssignedEngineer(
@@ -1240,13 +1265,29 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
   }
 
   if (ticket.status === "CLOSED" && prevStatus !== "CLOSED") {
+    const svcLabel = `SVC-${String(ticket.ticketNo).padStart(5, "0")}`;
+    // Admin "Pending approval" → approved + mark read
+    await resolveEntityNotifications(
+      {
+        tenantId: t,
+        entityType: "ticket",
+        entityId: ticket.id,
+        types: ["TICKET_PENDING_APPROVAL", "TICKET_PROGRESS"],
+        title: "Ticket approved",
+        message: `${svcLabel} ${ticket.subject} — approved & closed`,
+        nextType: "TICKET_APPROVED",
+        markRead: true,
+      },
+      q,
+    );
+
     const closeNotifs = [];
     if (ticket.assignedToId) {
       closeNotifs.push({
         tenantId: t,
         userId: ticket.assignedToId,
         title: "Ticket approved & closed",
-        message: `SVC-${String(ticket.ticketNo).padStart(5, "0")} — admin approved completion`,
+        message: `${svcLabel} — admin approved completion`,
         type: "TICKET_CLOSED",
         entityType: "ticket",
         entityId: ticket.id,
@@ -1259,7 +1300,7 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
         tenantId: t,
         userId: createdBy,
         title: "Ticket closed",
-        message: `SVC-${String(ticket.ticketNo).padStart(5, "0")} — service completed and approved`,
+        message: `${svcLabel} — service completed and approved`,
         type: "TICKET_CLOSED",
         entityType: "ticket",
         entityId: ticket.id,

@@ -9,11 +9,13 @@ import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Input } from '@/components/ui/Input'
+import { PhoneInput } from '@/components/ui/PhoneInput'
 import { Modal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency, formatDate } from '@/lib/utils'
+import { toStoredIndianMobile } from '@/lib/phoneIndia'
 import { useUIStore } from '@/store/uiStore'
 
 type LineDraft = {
@@ -254,7 +256,7 @@ export function PurchaseOrdersPage() {
     try {
       const row = (await api.createVendor({
         name: vendorForm.name.trim(),
-        phone: vendorForm.phone || null,
+        phone: toStoredIndianMobile(vendorForm.phone),
         email: vendorForm.email || null,
         gstin: vendorForm.gstin || null,
         paymentTerms: vendorForm.paymentTerms || null,
@@ -549,7 +551,12 @@ export function PurchaseOrdersPage() {
             <h2 className="mb-3 font-semibold">Add vendor</h2>
             <div className="grid gap-3">
               <Input label="Vendor name *" value={vendorForm.name} onChange={(e) => setVendorForm({ ...vendorForm, name: e.target.value })} />
-              <Input label="Phone" value={vendorForm.phone} onChange={(e) => setVendorForm({ ...vendorForm, phone: e.target.value })} />
+              <PhoneInput
+                label="Phone"
+                value={vendorForm.phone}
+                onChange={(phone) => setVendorForm({ ...vendorForm, phone })}
+                hint="India (+91) — 10 digits"
+              />
               <Input label="Email" value={vendorForm.email} onChange={(e) => setVendorForm({ ...vendorForm, email: e.target.value })} />
               <Input label="GSTIN" value={vendorForm.gstin} onChange={(e) => setVendorForm({ ...vendorForm, gstin: e.target.value })} />
               <Input label="Payment terms" value={vendorForm.paymentTerms} onChange={(e) => setVendorForm({ ...vendorForm, paymentTerms: e.target.value })} />

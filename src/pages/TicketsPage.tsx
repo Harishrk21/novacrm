@@ -19,7 +19,7 @@ import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
-import { ASSET_ORIGIN_OPTIONS, assetOriginShort } from '@/lib/assetOrigin'
+import { ASSET_ORIGIN_OPTIONS, assetOriginLabel, assetOriginShort } from '@/lib/assetOrigin'
 import {
   familyByCode,
   HMS_FAMILY_OPTIONS,
@@ -261,31 +261,50 @@ export function TicketsPage() {
   }
 
   function applyAssetToForm(a: Record<string, unknown>) {
+    const cf = (a.customFields as Record<string, unknown> | undefined) ?? {}
+    const origin = a.origin ? String(a.origin) : 'SOLD_BY_US'
     setForm((f) => ({
       ...f,
       assetId: String(a.id),
       newMachine: false,
+      machineName: a.name ? String(a.name) : '',
+      machineType: a.machineType ? String(a.machineType) : f.machineType,
+      capacity: a.capacity != null ? String(a.capacity) : '',
+      accuracy: a.accuracy != null ? String(a.accuracy) : '',
+      platformSize: a.platformSize != null ? String(a.platformSize) : '',
+      model: a.model != null ? String(a.model) : '',
+      serialNo: a.serialNo != null ? String(a.serialNo) : '',
       stampingDate: a.stampingDate ? String(a.stampingDate).slice(0, 10) : '',
       nextDueDate: a.nextDueDate ? String(a.nextDueDate).slice(0, 10) : '',
       servicePlan: a.servicePlan ? String(a.servicePlan) : 'NON_AMC',
       amcStartDate: a.amcStartDate ? String(a.amcStartDate).slice(0, 10) : '',
       amcEndDate: a.amcEndDate ? String(a.amcEndDate).slice(0, 10) : '',
-      origin: a.origin ? String(a.origin) : f.origin,
+      origin,
       remindersEnabled: a.remindersEnabled !== false,
+      warrantyType: cf.warrantyType ? String(cf.warrantyType) : f.warrantyType || 'NGC',
+      warrantyUntil: cf.warrantyUntil ? String(cf.warrantyUntil).slice(0, 10) : '',
+      vcNumber: cf.vcNumber ? String(cf.vcNumber) : '',
+      stampingQuarter: cf.stampingQuarter ? String(cf.stampingQuarter) : '',
+      plateNo: cf.plateNo ? String(cf.plateNo) : '',
+      verificationClass: cf.verificationClass ? String(cf.verificationClass) : '',
     }))
   }
 
   useEffect(() => {
     const contactId = searchParams.get('contactId')
     const assetId = searchParams.get('assetId')
+    const category = searchParams.get('category')
     const shouldOpen = searchParams.get('open') === '1'
     if (contactId) {
       setForm((f) => ({
         ...f,
         contactId,
         assetId: assetId || f.assetId,
+        ...(category ? { category } : {}),
       }))
       void loadAssets(contactId)
+    } else if (category) {
+      setForm((f) => ({ ...f, category }))
     }
     if (shouldOpen && canCreate) setTab('create')
   }, [canCreate, loadAssets, searchParams])
@@ -323,9 +342,25 @@ export function TicketsPage() {
     return Math.max(0, pay - adv)
   }, [form.advanceAmount, form.paymentTotal])
 
+  const isStampingJob = form.category === 'Stamping'
+  const selectedAssetOrigin = useMemo(() => {
+    if (form.newMachine) return form.origin
+    const a = assets.find((x) => String(x.id) === form.assetId)
+    return a?.origin ? String(a.origin) : ''
+  }, [form.newMachine, form.origin, form.assetId, assets])
+  const selectedAssetNextDue = useMemo(() => {
+    if (form.newMachine) return form.nextDueDate || ''
+    const a = assets.find((x) => String(x.id) === form.assetId)
+    return a?.nextDueDate ? String(a.nextDueDate).slice(0, 10) : ''
+  }, [form.newMachine, form.nextDueDate, form.assetId, assets])
+  const selectedAssetLastStamp = useMemo(() => {
+    if (form.newMachine) return ''
+    const a = assets.find((x) => String(x.id) === form.assetId)
+    return a?.stampingDate ? String(a.stampingDate).slice(0, 10) : ''
+  }, [form.newMachine, form.assetId, assets])
   const formRequiresStamping = useMemo(() => {
-    // Stamping category always collects VC / due dates (govt verification job)
-    if (form.category === 'Stamping') return true
+    // Weighing machines still show optional legal fields on non-stamping jobs
+    if (isStampingJob) return false
     if (form.assetId && !form.newMachine) {
       const asset = assets.find((a) => String(a.id) === form.assetId)
       if (asset) {
@@ -333,15 +368,7 @@ export function TicketsPage() {
       }
     }
     return form.machineType === 'WEIGHING'
-  }, [form.assetId, form.newMachine, form.machineType, form.category, assets])
-
-  function addOneYear(dateStr: string) {
-    if (!dateStr) return ''
-    const d = new Date(`${dateStr.slice(0, 10)}T12:00:00`)
-    if (Number.isNaN(d.getTime())) return ''
-    d.setFullYear(d.getFullYear() + 1)
-    return d.toISOString().slice(0, 10)
-  }
+  }, [form.assetId, form.newMachine, form.machineType, isStampingJob, assets])
 
   const newMachineNeedsIndustry = useMemo(
     () => Boolean(familyByCode(form.familyCode)?.hasIndustry),
@@ -497,8 +524,13 @@ export function TicketsPage() {
           amcStartDate: form.servicePlan === 'AMC' ? form.amcStartDate || null : null,
           amcEndDate: form.servicePlan === 'AMC' ? form.amcEndDate || null : null,
           remindersEnabled: form.remindersEnabled,
-          stampingDate: formRequiresStamping ? form.stampingDate || null : null,
-          nextDueDate: formRequiresStamping ? form.nextDueDate || null : null,
+          stampingDate: null,
+          nextDueDate:
+            form.category === 'Stamping'
+              ? null
+              : formRequiresStamping
+                ? form.nextDueDate || null
+                : null,
           customFields: {
             warrantyType: form.warrantyType,
             warrantyUntil: form.warrantyUntil || null,
@@ -512,6 +544,12 @@ export function TicketsPage() {
             catalogIndustryName: ind?.name ?? null,
             machineSku:
               form.machineSku && form.machineSku !== '__custom__' ? form.machineSku : null,
+            ...(form.category === 'Stamping'
+              ? {
+                  visitPurpose: 'STAMPING',
+                  cameOnlyForStamping: form.origin === 'THIRD_PARTY',
+                }
+              : {}),
           },
         })
         assetId = String(machine.id)
@@ -523,7 +561,7 @@ export function TicketsPage() {
         return
       }
 
-      // Enrich existing machine with stamping legal fields when provided
+      // Enrich existing machine with optional legal fields (not stamp dates — engineer records those)
       if (
         assetId &&
         !form.newMachine &&
@@ -539,8 +577,6 @@ export function TicketsPage() {
             plateNo: form.plateNo || prevCf.plateNo || null,
             verificationClass: form.verificationClass || prevCf.verificationClass || null,
           },
-          ...(formRequiresStamping && form.stampingDate ? { stampingDate: form.stampingDate } : {}),
-          ...(formRequiresStamping && form.nextDueDate ? { nextDueDate: form.nextDueDate } : {}),
         })
       }
 
@@ -550,6 +586,12 @@ export function TicketsPage() {
 
       const assigneeId = canAssign ? form.receivedByUserId || null : null
       const subjectPrefix = form.category === 'Stamping' ? 'Stamping' : 'Service'
+      const existingAsset = assets.find((a) => String(a.id) === assetId)
+      const originForJob = form.newMachine
+        ? form.origin
+        : existingAsset?.origin
+          ? String(existingAsset.origin)
+          : 'SOLD_BY_US'
 
       const created = await api.createTicket({
         subject: `${subjectPrefix} — ${machineLabel}`,
@@ -558,8 +600,9 @@ export function TicketsPage() {
         status: canAssign && assigneeId ? 'IN_PROGRESS' : 'OPEN',
         contactId: form.contactId,
         assetId,
-        stampingDate: formRequiresStamping ? form.stampingDate || null : null,
-        nextDueDate: formRequiresStamping ? form.nextDueDate || null : null,
+        // Stamp result dates are entered by engineer after the visit — not at desk create
+        stampingDate: null,
+        nextDueDate: null,
         odAmount: 0,
         paymentTotal: isDesk ? 0 : Number(form.paymentTotal) || 0,
         advanceAmount: isDesk ? 0 : Number(form.advanceAmount) || 0,
@@ -580,6 +623,17 @@ export function TicketsPage() {
             plateNo: form.plateNo || null,
             verificationClass: form.verificationClass || null,
           },
+          ...(form.category === 'Stamping'
+            ? {
+                visitPurpose: 'STAMPING',
+                machineOrigin: originForJob,
+                cameOnlyForStamping: originForJob === 'THIRD_PARTY',
+                outsideStamping:
+                  originForJob === 'THIRD_PARTY'
+                    ? 'Outside machine — customer came only for stamping / verification'
+                    : 'Sold by us — renewal / re-stamp visit',
+              }
+            : {}),
         },
       })
 
@@ -883,11 +937,13 @@ export function TicketsPage() {
           open
           accent="theme"
           eyebrow="SERVICE"
-          title="New ticket"
+          title={form.category === 'Stamping' ? 'New stamping job' : 'New ticket'}
           subtitle={
-            isDesk
-              ? 'Find or add customer, select machine, log the issue. Step 1 creates an OPEN ticket — admin assigns the engineer (Step 2).'
-              : 'Customer, machine, issue log, and assign an engineer (Steps 1–2).'
+            form.category === 'Stamping'
+              ? 'Desk opens the job — engineer records the new stamp date after verification, then marks complete.'
+              : isDesk
+                ? 'Find or add customer, select machine, log the issue. Step 1 creates an OPEN ticket — admin assigns the engineer (Step 2).'
+                : 'Customer, machine, issue log, and assign an engineer (Steps 1–2).'
           }
           onClose={() => {
             setTab('list')
@@ -908,11 +964,57 @@ export function TicketsPage() {
           }
         >
           <form id="service-job-form" onSubmit={(e) => void createJob(e)} className="space-y-6">
+            <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
+                1. Job category
+              </h3>
+              <Select
+                label="Category *"
+                value={form.category}
+                onChange={(e) => {
+                  const category = e.target.value
+                  setForm((f) => ({
+                    ...f,
+                    category,
+                    // Outside walk-in for stamp is the common case — desk can switch to Sold by us
+                    ...(category === 'Stamping' && f.newMachine
+                      ? { origin: 'THIRD_PARTY', servicePlan: 'NON_AMC' }
+                      : {}),
+                  }))
+                }}
+                options={[
+                  { value: 'Breakdown', label: 'Breakdown / repair' },
+                  { value: 'Installation', label: 'Installation' },
+                  { value: 'Stamping', label: 'Stamping / verification' },
+                  { value: 'AMC visit', label: 'AMC visit' },
+                  { value: 'Other', label: 'Other' },
+                ]}
+              />
+              <Select
+                label="Channel"
+                value={form.channel}
+                onChange={(e) => setForm({ ...form, channel: e.target.value })}
+                options={[
+                  { value: 'Walk-in', label: 'Walk-in' },
+                  { value: 'Phone', label: 'Phone' },
+                  { value: 'WhatsApp', label: 'WhatsApp' },
+                  { value: 'Field', label: 'Field visit' },
+                ]}
+              />
+              {isStampingJob ? (
+                <p className="sm:col-span-2 lg:col-span-3 -mt-1 rounded-[8px] border border-violet-200/80 bg-violet-50/80 px-3 py-2 text-xs text-violet-950 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-100">
+                  Stamping job — desk does <strong>not</strong> enter today’s stamp date. After the
+                  visit, the <strong>engineer</strong> records stamp date + next due, then marks
+                  complete. Machine register updates from that.
+                </p>
+              ) : null}
+            </section>
+
             <section
               id="section-ticket-customer"
               className={`scroll-mt-24 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 ${sectionErrorClass(Boolean(fieldErrors.contactId))}`}
             >
-              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">1. Customer</h3>
+              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">2. Customer</h3>
               {fieldErrors.contactId ? (
                 <div className="sm:col-span-2 lg:col-span-3">
                   <MissingBanner message={fieldErrors.contactId} />
@@ -940,7 +1042,7 @@ export function TicketsPage() {
               className={`scroll-mt-24 grid gap-4 rounded-[12px] border border-border bg-muted/30 p-4 sm:grid-cols-2 lg:grid-cols-3 ${sectionErrorClass(Boolean(fieldErrors.assetId))}`}
             >
               <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
-                2. Select machine
+                3. Select machine
               </h3>
               {fieldErrors.assetId ? (
                 <div className="sm:col-span-2 lg:col-span-3">
@@ -1100,56 +1202,6 @@ export function TicketsPage() {
                     value={form.serialNo}
                     onChange={(e) => setForm({ ...form, serialNo: e.target.value })}
                   />
-                </>
-              ) : null}
-
-              {form.contactId && selectedAsset ? (
-                <div className="sm:col-span-2 lg:col-span-3 rounded-[8px] border border-border bg-card px-3 py-2 text-sm">
-                  <div className="font-medium text-text-primary">{String(selectedAsset.name)}</div>
-                  <div className="mt-0.5 text-xs text-text-secondary">
-                    {[
-                      selectedAsset.serialNo ? `S/N ${String(selectedAsset.serialNo)}` : null,
-                      selectedAsset.machineType
-                        ? String(selectedAsset.machineType).replaceAll('_', ' ')
-                        : null,
-                      assetOriginShort(
-                        selectedAsset.origin ? String(selectedAsset.origin) : null,
-                      ),
-                      selectedAsset.servicePlan === 'AMC' ? 'AMC' : null,
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </div>
-                </div>
-              ) : null}
-
-              {form.contactId && (form.newMachine || form.assetId) ? (
-                <>
-                  {!form.newMachine && form.assetId ? (
-                    <div className="sm:col-span-2 lg:col-span-3">
-                      <Select
-                        label="Machine origin"
-                        value={form.origin}
-                        onChange={(e) => {
-                          const origin = e.target.value
-                          setForm({
-                            ...form,
-                            origin,
-                            ...(origin === 'THIRD_PARTY'
-                              ? { servicePlan: 'NON_AMC', amcStartDate: '', amcEndDate: '' }
-                              : {}),
-                          })
-                        }}
-                        options={ASSET_ORIGIN_OPTIONS.map((o) => ({
-                          value: o.value,
-                          label: o.label,
-                        }))}
-                      />
-                      <p className="mt-1 text-xs text-text-secondary">
-                        Change if this unit was sold by us vs brought only for repair.
-                      </p>
-                    </div>
-                  ) : null}
                   {form.origin !== 'THIRD_PARTY' ? (
                     <>
                       <Select
@@ -1179,9 +1231,8 @@ export function TicketsPage() {
                       ) : null}
                     </>
                   ) : (
-                    <p className="sm:col-span-2 lg:col-span-3 -mt-1 rounded-[8px] border border-amber-200/80 bg-amber-50/80 px-3 py-2 text-xs text-amber-950 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-100">
-                      Outside / repair — no Service plan (AMC / Non-AMC). That applies only to
-                      machines sold by us.
+                    <p className="sm:col-span-2 lg:col-span-3 rounded-[8px] border border-amber-200/80 bg-amber-50/80 px-3 py-2 text-xs text-amber-950 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-100">
+                      Outside / repair — enroll AMC later after inspect if needed.
                     </p>
                   )}
                   <Select
@@ -1201,70 +1252,211 @@ export function TicketsPage() {
                   />
                 </>
               ) : null}
+
+              {form.contactId && selectedAsset ? (
+                <div className="sm:col-span-2 lg:col-span-3 space-y-3">
+                  <div
+                    className={`rounded-[10px] border px-3 py-3 ${
+                      selectedAssetOrigin === 'THIRD_PARTY'
+                        ? 'border-amber-300/80 bg-amber-50/70 dark:border-amber-800 dark:bg-amber-950/25'
+                        : 'border-sky-200/80 bg-sky-50/60 dark:border-sky-900/40 dark:bg-sky-950/20'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="font-semibold text-text-primary">
+                        {String(selectedAsset.name)}
+                      </div>
+                      <Badge color={selectedAssetOrigin === 'THIRD_PARTY' ? 'amber' : 'blue'}>
+                        {assetOriginLabel(selectedAssetOrigin || null)}
+                      </Badge>
+                      {selectedAsset.servicePlan === 'AMC' ? (
+                        <Badge color="green">AMC</Badge>
+                      ) : selectedAssetOrigin !== 'THIRD_PARTY' ? (
+                        <Badge color="gray">Non-AMC</Badge>
+                      ) : null}
+                    </div>
+                    <p className="mt-1 text-xs text-text-secondary">
+                      Stored machine details (read-only on this ticket). Origin comes from the product
+                      record — not re-chosen here.
+                    </p>
+                    <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                      <div>
+                        <dt className="text-[11px] text-text-secondary">Type</dt>
+                        <dd className="font-medium">
+                          {selectedAsset.machineType
+                            ? String(selectedAsset.machineType).replaceAll('_', ' ')
+                            : '—'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[11px] text-text-secondary">Serial</dt>
+                        <dd className="font-mono font-medium">
+                          {selectedAsset.serialNo ? String(selectedAsset.serialNo) : '—'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[11px] text-text-secondary">Model</dt>
+                        <dd className="font-medium">
+                          {selectedAsset.model ? String(selectedAsset.model) : '—'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[11px] text-text-secondary">Capacity</dt>
+                        <dd className="font-medium">
+                          {selectedAsset.capacity ? String(selectedAsset.capacity) : '—'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[11px] text-text-secondary">Accuracy</dt>
+                        <dd className="font-medium">
+                          {selectedAsset.accuracy ? String(selectedAsset.accuracy) : '—'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[11px] text-text-secondary">Platform</dt>
+                        <dd className="font-medium">
+                          {selectedAsset.platformSize ? String(selectedAsset.platformSize) : '—'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[11px] text-text-secondary">Last stamp</dt>
+                        <dd className="font-medium">
+                          {selectedAsset.stampingDate
+                            ? formatDate(String(selectedAsset.stampingDate))
+                            : '—'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[11px] text-text-secondary">Stamping valid till</dt>
+                        <dd className="font-semibold">
+                          {selectedAsset.nextDueDate
+                            ? formatDate(String(selectedAsset.nextDueDate))
+                            : '—'}
+                        </dd>
+                      </div>
+                      {selectedAssetOrigin !== 'THIRD_PARTY' ? (
+                        <div>
+                          <dt className="text-[11px] text-text-secondary">AMC period</dt>
+                          <dd className="font-medium">
+                            {selectedAsset.servicePlan === 'AMC'
+                              ? [
+                                  selectedAsset.amcStartDate
+                                    ? formatDate(String(selectedAsset.amcStartDate))
+                                    : null,
+                                  selectedAsset.amcEndDate
+                                    ? formatDate(String(selectedAsset.amcEndDate))
+                                    : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join(' → ') || 'AMC (dates not set)'
+                              : 'Non-AMC'}
+                          </dd>
+                        </div>
+                      ) : (
+                        <div className="sm:col-span-2 lg:col-span-3">
+                          <p className="rounded-[8px] border border-amber-200/80 bg-card/60 px-2.5 py-1.5 text-xs text-amber-950 dark:border-amber-800 dark:text-amber-100">
+                            Outside unit — brought for repair / stamping only (not sold by HMS).
+                          </p>
+                        </div>
+                      )}
+                    </dl>
+                  </div>
+                </div>
+              ) : null}
             </section>
+
+            {isStampingJob && form.contactId && (form.newMachine || form.assetId) ? (
+              <section className="grid gap-4 rounded-[12px] border border-violet-200/70 bg-violet-50/40 p-4 dark:border-violet-900/40 dark:bg-violet-950/20 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="sm:col-span-2 lg:col-span-3 space-y-1">
+                  <h3 className="text-sm font-semibold text-text-primary">4. Stamping visit context</h3>
+                  <p className="text-xs text-text-secondary">
+                    Read-only context for the engineer. New stamp date is entered when they complete
+                    the job — not here.
+                  </p>
+                </div>
+                {selectedAssetOrigin === 'THIRD_PARTY' ||
+                (form.newMachine && form.origin === 'THIRD_PARTY') ? (
+                  <div className="sm:col-span-2 lg:col-span-3 rounded-[8px] border border-amber-300/80 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+                    <strong>Outside machine</strong> — customer came <strong>only for stamping /
+                    verification</strong> (not sold by HMS). We stamp this unit and return it; no AMC
+                    plan on create.
+                  </div>
+                ) : (
+                  <div className="sm:col-span-2 lg:col-span-3 rounded-[8px] border border-sky-200 bg-sky-50/80 px-3 py-2 text-sm text-sky-950 dark:border-sky-900/40 dark:bg-sky-950/30 dark:text-sky-100">
+                    <strong>Sold by us</strong> — renewal / re-stamp visit on an HMS-installed machine.
+                  </div>
+                )}
+                {!form.newMachine && selectedAssetOrigin !== 'THIRD_PARTY' ? (
+                  <div className="rounded-[8px] border border-border bg-card px-3 py-2 sm:col-span-2">
+                    <div className="text-xs text-text-secondary">Stamping valid till</div>
+                    <div className="text-base font-semibold text-text-primary">
+                      {selectedAssetNextDue
+                        ? formatDate(selectedAssetNextDue)
+                        : 'Not on file — engineer will set next due after this visit'}
+                    </div>
+                    {selectedAssetLastStamp ? (
+                      <div className="mt-1 text-xs text-text-secondary">
+                        Last stamp on file: {formatDate(selectedAssetLastStamp)}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {form.newMachine ? (
+                  <div className="sm:col-span-2 lg:col-span-3">
+                    <Select
+                      label="Machine origin for this stamping visit *"
+                      value={form.origin}
+                      onChange={(e) => {
+                        const origin = e.target.value
+                        setForm({
+                          ...form,
+                          origin,
+                          ...(origin === 'THIRD_PARTY'
+                            ? { servicePlan: 'NON_AMC', amcStartDate: '', amcEndDate: '' }
+                            : {}),
+                        })
+                      }}
+                      options={[
+                        {
+                          value: 'THIRD_PARTY',
+                          label: 'Outside — came only for stamping',
+                        },
+                        {
+                          value: 'SOLD_BY_US',
+                          label: 'Sold by us — renewal / re-stamp',
+                        },
+                      ]}
+                    />
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
 
             {formRequiresStamping && form.contactId && (form.newMachine || form.assetId) ? (
               <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="sm:col-span-2 lg:col-span-4 space-y-1">
-                  <h3 className="text-sm font-semibold text-text-primary">
-                    {form.category === 'Stamping' ? '3. Stamping / verification details' : '3. Stamping (weighing)'}
-                  </h3>
+                  <h3 className="text-sm font-semibold text-text-primary">4. Weighing — stamp validity (optional)</h3>
                   <p className="text-xs text-text-secondary">
-                    {form.category === 'Stamping'
-                      ? 'Customer came for stamping — capture last stamp date, VC number, plate, and next due (usually +1 year). These save on the ticket and the machine.'
-                      : 'Weighing machines need stamping / verification fields when available. Skip blank fields if not known yet.'}
+                    For repair/breakdown on weighing machines: show known <strong>valid till</strong>{' '}
+                    if on file. Do not invent a new stamp date here unless you are correcting history.
                   </p>
                 </div>
+                {!form.newMachine && selectedAssetNextDue ? (
+                  <div className="rounded-[8px] border border-border bg-card px-3 py-2 sm:col-span-2">
+                    <div className="text-xs text-text-secondary">Stamping valid till (on machine)</div>
+                    <div className="font-semibold">{formatDate(selectedAssetNextDue)}</div>
+                  </div>
+                ) : null}
                 <Input
-                  label={form.category === 'Stamping' ? 'Stamping date *' : 'Stamping date'}
-                  type="date"
-                  value={form.stampingDate}
-                  onChange={(e) => {
-                    const stampingDate = e.target.value
-                    setForm({
-                      ...form,
-                      stampingDate,
-                      nextDueDate:
-                        form.nextDueDate || !stampingDate
-                          ? form.nextDueDate
-                          : addOneYear(stampingDate),
-                    })
-                  }}
-                />
-                <Input
-                  label={form.category === 'Stamping' ? 'Next due date *' : 'Next due date'}
-                  type="date"
-                  value={form.nextDueDate}
-                  onChange={(e) => setForm({ ...form, nextDueDate: e.target.value })}
-                />
-                <Input
-                  label="VC number"
+                  label="VC number (if known)"
                   value={form.vcNumber}
                   onChange={(e) => setForm({ ...form, vcNumber: e.target.value })}
                   placeholder="Verification certificate"
-                />
-                <Select
-                  label="Stamping quarter"
-                  value={form.stampingQuarter}
-                  onChange={(e) => setForm({ ...form, stampingQuarter: e.target.value })}
-                  options={[
-                    { value: '', label: '—' },
-                    { value: 'A', label: 'Quarter A' },
-                    { value: 'B', label: 'Quarter B' },
-                    { value: 'C', label: 'Quarter C' },
-                    { value: 'D', label: 'Quarter D' },
-                  ]}
                 />
                 <Input
                   label="Plate no."
                   value={form.plateNo}
                   onChange={(e) => setForm({ ...form, plateNo: e.target.value })}
-                />
-                <Input
-                  label="Verification class"
-                  value={form.verificationClass}
-                  onChange={(e) => setForm({ ...form, verificationClass: e.target.value })}
-                  placeholder="e.g. III"
                 />
               </section>
             ) : null}
@@ -1272,7 +1464,7 @@ export function TicketsPage() {
             {!isDesk ? (
               <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <h3 className="sm:col-span-2 lg:col-span-4 text-sm font-semibold text-text-primary">
-                  {formRequiresStamping ? '4. Payment' : '3. Payment'}
+                  {isStampingJob || formRequiresStamping ? '5. Payment' : '4. Payment'}
                 </h3>
                 <Input
                   label="Total payment ₹"
@@ -1301,12 +1493,12 @@ export function TicketsPage() {
             >
               <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
                 {isDesk
-                  ? formRequiresStamping
-                    ? '4. Issue log'
-                    : '3. Issue log'
-                  : formRequiresStamping
-                    ? '5. Engineer, issue log & status'
-                    : '4. Engineer, issue log & status'}
+                  ? isStampingJob || formRequiresStamping
+                    ? '5. Issue log'
+                    : '4. Issue log'
+                  : isStampingJob || formRequiresStamping
+                    ? '6. Engineer, issue log & status'
+                    : '5. Engineer, issue log & status'}
               </h3>
               {fieldErrors.receivedByUserId ? (
                 <div className="sm:col-span-2 lg:col-span-3">
@@ -1318,34 +1510,11 @@ export function TicketsPage() {
                   <MissingBanner message={fieldErrors.description} />
                 </div>
               ) : null}
-              <Select
-                label="Category"
-                value={form.category}
-                onChange={(e) => setForm({ ...form, category: e.target.value })}
-                options={[
-                  { value: 'Breakdown', label: 'Breakdown' },
-                  { value: 'Installation', label: 'Installation' },
-                  { value: 'Stamping', label: 'Stamping' },
-                  { value: 'AMC visit', label: 'AMC visit' },
-                  { value: 'Other', label: 'Other' },
-                ]}
-              />
-              {form.category === 'Stamping' ? (
-                <p className="sm:col-span-2 -mt-2 text-xs text-text-secondary lg:col-span-2">
-                  Stamping jobs unlock the verification fields above (date, VC, plate, next due).
+              {isStampingJob ? (
+                <p className="sm:col-span-2 lg:col-span-3 -mt-1 text-xs text-text-secondary">
+                  Suggested issue log: “Customer walk-in for government stamping / verification.”
                 </p>
               ) : null}
-              <Select
-                label="Channel"
-                value={form.channel}
-                onChange={(e) => setForm({ ...form, channel: e.target.value })}
-                options={[
-                  { value: 'Walk-in', label: 'Walk-in' },
-                  { value: 'Phone', label: 'Phone' },
-                  { value: 'WhatsApp', label: 'WhatsApp' },
-                  { value: 'Field', label: 'Field visit' },
-                ]}
-              />
               {canAssign ? (
                 <>
                   <Select

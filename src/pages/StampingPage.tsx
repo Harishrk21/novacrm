@@ -474,8 +474,16 @@ export function StampingPage() {
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Stamping' }]}
         actions={
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => openCreate(mainTab === 'warehouse' ? 'warehouse' : 'customer')}>
-              <Plus size={16} /> New stamping
+            <Link to="/tickets?category=Stamping&open=1">
+              <Button>
+                <Plus size={16} /> New stamping job
+              </Button>
+            </Link>
+            <Button
+              variant="outline"
+              onClick={() => openCreate(mainTab === 'warehouse' ? 'warehouse' : 'customer')}
+            >
+              Record dates only
             </Button>
             <Link to="/erp/inventory">
               <Button variant="outline">
@@ -487,12 +495,26 @@ export function StampingPage() {
       />
 
       <Card className="mb-4 p-4">
-        <p className="text-sm text-text-secondary">
-          Record govt verification as <strong>product → serial → stamping date</strong>.{' '}
-          <strong>Warehouse serials</strong> are units you sell from stock.{' '}
-          <strong>Customer machines</strong> include outside / repair machines brought only for stamping
-          service — confirm condition before stamping.
+        <p className="text-sm font-medium text-text-primary">
+          Walk-in for stamping = a Service ticket (same 6 steps)
         </p>
+        <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-text-secondary">
+          <li>
+            Desk clicks <strong>New stamping job</strong> — category first. Pick customer + machine.
+            Desk does <strong>not</strong> enter today’s stamp date.
+          </li>
+          <li>
+            <strong>Sold by us</strong> shows <em>stamping valid till</em> on file.{' '}
+            <strong>Outside</strong> is marked clearly (came only for stamping).
+          </li>
+          <li>
+            Same pipeline: Created → Assigned → On site → Daily tracking → Admin close → Invoice.
+          </li>
+          <li>
+            After verification, <strong>engineer</strong> enters stamp date + valid till, then Mark
+            complete (updates machine register).
+          </li>
+        </ol>
       </Card>
 
       <div className="mb-3 flex flex-wrap gap-2">
@@ -870,9 +892,25 @@ export function StampingPage() {
               : null
         }
         footer={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            {detailAsset &&
+            ((detailAsset.contact as { id?: string })?.id || detailAsset.contactId) ? (
+              <Link
+                className="flex-1"
+                to={`/tickets?contactId=${encodeURIComponent(
+                  String((detailAsset.contact as { id?: string })?.id || detailAsset.contactId),
+                )}&assetId=${encodeURIComponent(String(detailAsset.id))}&category=Stamping&open=1`}
+                onClick={() => {
+                  setDetailAsset(null)
+                }}
+              >
+                <Button className="w-full" variant="outline">
+                  Open stamping job
+                </Button>
+              </Link>
+            ) : null}
             <Button className="flex-1" disabled={saving} onClick={() => void saveDetailStamp()}>
-              {saving ? 'Saving…' : 'Save stamping'}
+              {saving ? 'Saving…' : 'Save dates only'}
             </Button>
           </div>
         }

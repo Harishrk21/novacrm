@@ -30,7 +30,7 @@ export function cacheKey(parts: Array<string | number | undefined | null>) {
 
 export async function callGemini(
   prompt: string,
-  opts?: { json?: boolean; maxTokens?: number },
+  opts?: { json?: boolean; maxTokens?: number; timeoutMs?: number; retries?: number },
 ): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
@@ -43,44 +43,62 @@ export async function callGemini(
   const model = process.env.GEMINI_MODEL?.trim() || "gemini-flash-latest";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   const wantJson = opts?.json !== false;
+  const maxAttempts = Math.max(1, opts?.retries ?? 2);
+  const timeoutMs = opts?.timeoutMs ?? 22_000;
 
   let lastErr = "Gemini request failed";
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 800 * attempt));
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 400 * attempt));
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-goog-api-key": apiKey,
-      },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: opts?.maxTokens ?? 1024,
-          ...(wantJson ? { responseMimeType: "application/json" } : {}),
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-goog-api-key": apiKey,
         },
-      }),
-    });
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: opts?.maxTokens ?? 1024,
+            ...(wantJson ? { responseMimeType: "application/json" } : {}),
+          },
+        }),
+      });
 
-    const json = (await res.json().catch(() => null)) as {
-      error?: { message?: string };
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    } | null;
+      const json = (await res.json().catch(() => null)) as {
+        error?: { message?: string };
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      } | null;
 
-    if (res.status === 503 || res.status === 429) {
-      lastErr = json?.error?.message || `Gemini temporarily unavailable (${res.status})`;
-      continue;
+      if (res.status === 503 || res.status === 429) {
+        lastErr = json?.error?.message || `Gemini temporarily unavailable (${res.status})`;
+        continue;
+      }
+
+      if (!res.ok) {
+        throw new AppError(json?.error?.message || "Gemini request failed", 502);
+      }
+
+      const text = json?.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+      if (!text.trim()) throw new AppError("Gemini returned an empty answer", 502);
+      return text;
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      const aborted = err instanceof Error && err.name === "AbortError";
+      lastErr = aborted
+        ? "Gemini timed out — try again or use a quick suggestion chip"
+        : err instanceof Error
+          ? err.message
+          : lastErr;
+      if (!aborted && attempt >= maxAttempts - 1) break;
+    } finally {
+      clearTimeout(timer);
     }
-
-    if (!res.ok) {
-      throw new AppError(json?.error?.message || "Gemini request failed", 502);
-    }
-
-    const text = json?.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
-    if (!text.trim()) throw new AppError("Gemini returned an empty answer", 502);
-    return text;
   }
 
   throw new AppError(lastErr, 503);

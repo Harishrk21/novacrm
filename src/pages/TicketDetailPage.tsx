@@ -290,6 +290,26 @@ export function TicketDetailPage() {
         })
         return
       }
+      const cat = String(
+        (ticket?.customFields as Record<string, unknown> | undefined)?.category ??
+          editDraft.category ??
+          '',
+      )
+      const wt = String(
+        (ticket?.customFields as Record<string, unknown> | undefined)?.workType ?? '',
+      )
+      const needsStampResult = cat === 'Stamping' || wt === 'Stamping'
+      if (needsStampResult && !editDraft.stampingDate.trim()) {
+        addToast({
+          type: 'error',
+          message: 'Enter today’s stamping date (and next due) before marking complete',
+        })
+        document.getElementById('section-stamp-result')?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+        })
+        return
+      }
     }
     if (nextStatus === 'CLOSED') {
       const total = num(ticket?.paymentTotal)
@@ -306,6 +326,14 @@ export function TicketDetailPage() {
     }
     setCompleteStatus(nextStatus)
     setCompleteOpen(true)
+  }
+
+  function addOneYearIso(dateStr: string) {
+    if (!dateStr) return ''
+    const d = new Date(`${dateStr.slice(0, 10)}T12:00:00`)
+    if (Number.isNaN(d.getTime())) return ''
+    d.setFullYear(d.getFullYear() + 1)
+    return d.toISOString().slice(0, 10)
   }
 
   async function confirmComplete() {
@@ -332,11 +360,41 @@ export function TicketDetailPage() {
           `Status → Resolved · ticket ${formatServiceId(ticket?.ticketNo != null ? String(ticket.ticketNo) : undefined)}`,
         ],
       },
-      execute: (send) =>
-        patchTicket(
-          { status: 'RESOLVED', sendWhatsApp: send, whatsappNote: 'Service marked complete — pending admin approval' },
-          'Service marked complete',
-        ),
+      execute: (send) => {
+        const cat = String(cf.category ?? editDraft.category ?? '')
+        const wt = String(cf.workType ?? '')
+        const needsStampResult = cat === 'Stamping' || wt === 'Stamping'
+        const stamp = editDraft.stampingDate.trim()
+        const due = editDraft.nextDueDate.trim() || (stamp ? addOneYearIso(stamp) : '')
+        const legal = {
+          ...((cf.stampingLegal as Record<string, unknown> | undefined) ?? {}),
+          vcNumber: editDraft.vcNumber.trim() || null,
+          stampingQuarter: editDraft.stampingQuarter.trim() || null,
+          plateNo: editDraft.plateNo.trim() || null,
+          verificationClass: editDraft.verificationClass.trim() || null,
+        }
+        return patchTicket(
+          {
+            status: 'RESOLVED',
+            sendWhatsApp: send,
+            whatsappNote: 'Service marked complete — pending admin approval',
+            ...(needsStampResult && stamp
+              ? {
+                  stampingDate: stamp,
+                  nextDueDate: due || null,
+                  customFields: {
+                    ...cf,
+                    stampingLegal: legal,
+                    stampedCompletedAt: new Date().toISOString(),
+                  },
+                }
+              : {}),
+          },
+          needsStampResult && stamp
+            ? 'Stamping recorded · service marked complete'
+            : 'Service marked complete',
+        )
+      },
     })
   }
 
@@ -1052,6 +1110,9 @@ export function TicketDetailPage() {
     null
 
   const outsideMachine = isThirdPartyOrigin(asset?.origin ? String(asset.origin) : null)
+  const isStampingJob =
+    String(cf.category ?? '') === 'Stamping' || String(cf.workType ?? '') === 'Stamping'
+  const cameOnlyForStamping = Boolean(cf.cameOnlyForStamping) || outsideMachine
   const waitingAssign = status === 'OPEN' && !ticket.assignedToId
   const workType = String(cf.workType ?? '')
   const hasInvoice = Boolean(ticket.serviceInvoiceId)
@@ -1073,14 +1134,23 @@ export function TicketDetailPage() {
   }
   if (stepDoneFlags.every(Boolean)) activeStep = 5
 
-  const flowSteps = [
-    { key: 'created', label: 'Created', hint: 'Desk opens ticket' },
-    { key: 'assigned', label: 'Assigned', hint: 'Admin picks engineer' },
-    { key: 'onsite', label: 'On site', hint: 'Engineer starts work' },
-    { key: 'tracking', label: 'Daily tracking', hint: 'Day notes for admin' },
-    { key: 'close', label: 'Admin close', hint: 'Pay & approve' },
-    { key: 'invoice', label: 'Invoice', hint: 'Service proforma' },
-  ] as const
+  const flowSteps = isStampingJob
+    ? ([
+        { key: 'created', label: 'Created', hint: 'Desk: stamping job' },
+        { key: 'assigned', label: 'Assigned', hint: 'Admin picks engineer' },
+        { key: 'onsite', label: 'On site', hint: 'Verification visit' },
+        { key: 'tracking', label: 'Daily tracking', hint: 'Day notes / VC' },
+        { key: 'close', label: 'Admin close', hint: 'Pay stamp fee' },
+        { key: 'invoice', label: 'Invoice', hint: 'Service proforma' },
+      ] as const)
+    : ([
+        { key: 'created', label: 'Created', hint: 'Desk opens ticket' },
+        { key: 'assigned', label: 'Assigned', hint: 'Admin picks engineer' },
+        { key: 'onsite', label: 'On site', hint: 'Engineer starts work' },
+        { key: 'tracking', label: 'Daily tracking', hint: 'Day notes for admin' },
+        { key: 'close', label: 'Admin close', hint: 'Pay & approve' },
+        { key: 'invoice', label: 'Invoice', hint: 'Service proforma' },
+      ] as const)
 
   const nextAction = (() => {
     if (isDesk && !isAdmin) {
@@ -1150,7 +1220,7 @@ export function TicketDetailPage() {
         ]
       : []),
     {
-      label: 'Stamping date',
+      label: 'Last stamp date',
       value: asset?.stampingDate
         ? formatDate(String(asset.stampingDate))
         : ticket.stampingDate
@@ -1158,7 +1228,7 @@ export function TicketDetailPage() {
           : '—',
     },
     {
-      label: 'Next due',
+      label: 'Stamping valid till',
       value: asset?.nextDueDate
         ? formatDate(String(asset.nextDueDate))
         : ticket.nextDueDate
@@ -1212,7 +1282,7 @@ export function TicketDetailPage() {
 
       <Card className="p-4">
         <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-secondary">
-          Service progress
+          {isStampingJob ? 'Stamping job progress' : 'Service progress'}
         </div>
         <div className="mt-3 flex items-start gap-0 overflow-x-auto pb-1">
           {flowSteps.map((s, i) => {
@@ -1283,6 +1353,26 @@ export function TicketDetailPage() {
           </div>
         </div>
       </Card>
+
+      {isStampingJob ? (
+        <Card className="border-violet-200/80 bg-violet-50/50 p-4 dark:border-violet-900/40 dark:bg-violet-950/20">
+          <div className="text-xs font-semibold uppercase tracking-wide text-violet-800 dark:text-violet-200">
+            Stamping visit
+          </div>
+          <p className="mt-1 text-sm text-text-primary">
+            {cameOnlyForStamping || outsideMachine
+              ? 'Outside machine — customer came only for stamping / verification (not an HMS sale unit).'
+              : 'Sold by us — renewal / re-stamp on an HMS machine.'}
+          </p>
+          <p className="mt-1 text-xs text-text-secondary">
+            Desk opened the job. Engineer records stamp date + valid till after verification, then
+            marks complete.
+            {!outsideMachine && asset?.nextDueDate
+              ? ` Current valid till on file: ${formatDate(String(asset.nextDueDate))}.`
+              : ''}
+          </p>
+        </Card>
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-2">
         <div className="space-y-4">
@@ -1758,6 +1848,86 @@ export function TicketDetailPage() {
 
         {ticketOverview}
 
+        {isStampingJob && isOpen ? (
+          <Card
+            id="section-stamp-result"
+            className="scroll-mt-24 border-2 border-violet-400/60 bg-violet-50/40 p-4 sm:p-5 dark:border-violet-700/50 dark:bg-violet-950/20"
+          >
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Badge color="purple">Stamping result</Badge>
+              <h2 className="text-base font-semibold text-text-primary">
+                Record stamp after verification
+              </h2>
+            </div>
+            {cameOnlyForStamping || outsideMachine ? (
+              <p className="mb-3 rounded-[8px] border border-amber-300/80 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+                <strong>Outside machine</strong> — customer came only for stamping / verification. Enter
+                the stamp date HMS completed today; next due usually +1 year.
+              </p>
+            ) : (
+              <p className="mb-3 text-sm text-text-secondary">
+                Sold-by-us renewal. Previous valid till:{' '}
+                <strong>
+                  {asset?.nextDueDate ? formatDate(String(asset.nextDueDate)) : 'not on file'}
+                </strong>
+                . Enter the new stamp date after verification.
+              </p>
+            )}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <Input
+                label="Stamping date *"
+                type="date"
+                value={editDraft.stampingDate}
+                onChange={(e) => {
+                  const stampingDate = e.target.value
+                  setEditDraft((d) => ({
+                    ...d,
+                    stampingDate,
+                    nextDueDate: d.nextDueDate || (stampingDate ? addOneYearIso(stampingDate) : ''),
+                  }))
+                }}
+              />
+              <Input
+                label="Next due / valid till *"
+                type="date"
+                value={editDraft.nextDueDate}
+                onChange={(e) => setEditDraft((d) => ({ ...d, nextDueDate: e.target.value }))}
+              />
+              <Input
+                label="VC number"
+                value={editDraft.vcNumber}
+                onChange={(e) => setEditDraft((d) => ({ ...d, vcNumber: e.target.value }))}
+              />
+              <Input
+                label="Plate no."
+                value={editDraft.plateNo}
+                onChange={(e) => setEditDraft((d) => ({ ...d, plateNo: e.target.value }))}
+              />
+              <Select
+                label="Stamping quarter"
+                value={editDraft.stampingQuarter}
+                onChange={(e) => setEditDraft((d) => ({ ...d, stampingQuarter: e.target.value }))}
+                options={[
+                  { value: '', label: '—' },
+                  { value: 'A', label: 'Quarter A' },
+                  { value: 'B', label: 'Quarter B' },
+                  { value: 'C', label: 'Quarter C' },
+                  { value: 'D', label: 'Quarter D' },
+                ]}
+              />
+              <Input
+                label="Verification class"
+                value={editDraft.verificationClass}
+                onChange={(e) => setEditDraft((d) => ({ ...d, verificationClass: e.target.value }))}
+                placeholder="e.g. III"
+              />
+            </div>
+            <p className="mt-2 text-xs text-text-secondary">
+              Required before Mark complete. Saves on ticket + machine register.
+            </p>
+          </Card>
+        ) : null}
+
         {isOpen ? (
           <Card id="section-work-type" className="scroll-mt-24 p-4 sm:p-5">
             <h2 className="mb-3 text-sm font-semibold text-text-primary">Work type</h2>
@@ -1873,9 +2043,17 @@ export function TicketDetailPage() {
               contactName={contact.name}
               ticketId={id}
               fixedAssetId={ticket.assetId ? String(ticket.assetId) : undefined}
+              fixedAssetLabel={
+                asset
+                  ? `${String(asset.name ?? 'Machine')}${
+                      asset.serialNo ? ` · ${String(asset.serialNo)}` : ''
+                    }`
+                  : undefined
+              }
               onTicketUpdated={() => void load()}
               collapsible
               defaultOpen={false}
+              canEdit={isAdmin || isEngineer}
             />
           </div>
         ) : null}
@@ -2720,7 +2898,17 @@ export function TicketDetailPage() {
             contactName={contact.name}
             ticketId={id}
             fixedAssetId={ticket.assetId ? String(ticket.assetId) : undefined}
+            fixedAssetLabel={
+              asset
+                ? `${String(asset.name ?? 'Machine')}${
+                    asset.serialNo ? ` · ${String(asset.serialNo)}` : ''
+                  }`
+                : undefined
+            }
             onTicketUpdated={() => void load()}
+            collapsible
+            defaultOpen={false}
+            canEdit
           />
         </div>
       ) : null}

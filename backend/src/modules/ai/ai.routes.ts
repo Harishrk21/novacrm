@@ -57,6 +57,21 @@ function requireRoles(...codes: string[]) {
 }
 
 async function buildDashboardSnapshot(tenantId: string, range: string) {
+  const snapKey = cacheKey(["dash-snap", tenantId, range]);
+  const snapCached = cacheGet(snapKey);
+  if (snapCached) {
+    try {
+      return JSON.parse(snapCached) as Awaited<ReturnType<typeof buildDashboardSnapshotFresh>>;
+    } catch {
+      /* rebuild */
+    }
+  }
+  const fresh = await buildDashboardSnapshotFresh(tenantId, range);
+  cacheSet(snapKey, JSON.stringify(fresh), 3 * 60 * 1000);
+  return fresh;
+}
+
+async function buildDashboardSnapshotFresh(tenantId: string, range: string) {
   const now = new Date();
   const from = new Date(now);
   if (range === "week") from.setDate(from.getDate() - 7);
@@ -67,53 +82,99 @@ async function buildDashboardSnapshot(tenantId: string, range: string) {
   const span = now.getTime() - from.getTime();
   const prevFrom = new Date(from.getTime() - span);
   const prevTo = from;
+  const openStatuses = ["OPEN", "IN_PROGRESS", "PENDING"] as const;
+  const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
 
   const [
-    leads,
-    tickets,
+    leadTotal,
+    leadsInRange,
+    leadsPrev,
+    convertedLeads,
+    ticketTotal,
+    ticketsInRange,
+    ticketsPrev,
+    openTickets,
+    breached,
+    breachedInRange,
+    breachedPrev,
+    unassigned,
+    openTicketPay,
     deals,
     stages,
-    invoices,
+    invoiceAgg,
     products,
-    stock,
+    stockAgg,
     contactCount,
     accountCount,
     activities,
     recentTickets,
+    ticketsForMonthly,
   ] = await Promise.all([
-    prisma.lead.findMany({
-      where: { tenantId, deletedAt: null },
-      select: { id: true, status: true, createdAt: true },
+    prisma.lead.count({ where: { tenantId, deletedAt: null } }),
+    prisma.lead.count({ where: { tenantId, deletedAt: null, createdAt: { gte: from } } }),
+    prisma.lead.count({
+      where: { tenantId, deletedAt: null, createdAt: { gte: prevFrom, lt: prevTo } },
+    }),
+    prisma.lead.count({ where: { tenantId, deletedAt: null, status: "CONVERTED" } }),
+    prisma.ticket.count({ where: { tenantId, deletedAt: null } }),
+    prisma.ticket.count({ where: { tenantId, deletedAt: null, createdAt: { gte: from } } }),
+    prisma.ticket.count({
+      where: { tenantId, deletedAt: null, createdAt: { gte: prevFrom, lt: prevTo } },
+    }),
+    prisma.ticket.count({
+      where: { tenantId, deletedAt: null, status: { in: [...openStatuses] } },
+    }),
+    prisma.ticket.count({
+      where: {
+        tenantId,
+        deletedAt: null,
+        status: { in: [...openStatuses] },
+        slaBreached: true,
+      },
+    }),
+    prisma.ticket.count({
+      where: { tenantId, deletedAt: null, slaBreached: true, createdAt: { gte: from } },
+    }),
+    prisma.ticket.count({
+      where: {
+        tenantId,
+        deletedAt: null,
+        slaBreached: true,
+        createdAt: { gte: prevFrom, lt: prevTo },
+      },
+    }),
+    prisma.ticket.count({
+      where: {
+        tenantId,
+        deletedAt: null,
+        status: { in: [...openStatuses] },
+        assignedToId: null,
+      },
     }),
     prisma.ticket.findMany({
-      where: { tenantId, deletedAt: null },
-      select: {
-        id: true,
-        status: true,
-        slaBreached: true,
-        assignedToId: true,
-        createdAt: true,
-        resolvedAt: true,
-        paymentTotal: true,
-        advanceAmount: true,
-        odAmount: true,
-      },
+      where: { tenantId, deletedAt: null, status: { in: [...openStatuses] } },
+      select: { paymentTotal: true, advanceAmount: true },
+      take: 2000,
     }),
     prisma.deal.findMany({
       where: { tenantId, deletedAt: null },
-      select: { amount: true, probability: true, stageId: true, closedAt: true, createdAt: true },
-      take: 1000,
+      select: { amount: true, probability: true, stageId: true, closedAt: true },
+      take: 500,
     }),
     prisma.pipelineStage.findMany({
       where: { tenantId, isActive: true },
       select: { id: true, code: true, isWon: true },
     }),
-    prisma.invoice.findMany({
+    prisma.invoice.aggregate({
       where: { tenantId, deletedAt: null },
-      select: { grandTotal: true, status: true, invoiceDate: true },
+      _sum: { grandTotal: true },
+      _count: true,
     }),
     prisma.product.count({ where: { tenantId, deletedAt: null } }),
-    prisma.stockLevel.findMany({ where: { tenantId }, select: { quantityOnHand: true } }),
+    prisma.stockLevel.aggregate({
+      where: { tenantId },
+      _sum: { quantityOnHand: true },
+    }),
     prisma.contact.count({ where: { tenantId, deletedAt: null } }),
     prisma.account.count({ where: { tenantId, deletedAt: null } }),
     prisma.activity.count({
@@ -123,10 +184,10 @@ async function buildDashboardSnapshot(tenantId: string, range: string) {
       where: {
         tenantId,
         deletedAt: null,
-        status: { in: ["OPEN", "IN_PROGRESS", "PENDING"] },
+        status: { in: [...openStatuses] },
       },
       orderBy: [{ slaBreached: "desc" }, { slaDueAt: "asc" }],
-      take: 10,
+      take: 8,
       select: {
         ticketNo: true,
         subject: true,
@@ -136,24 +197,18 @@ async function buildDashboardSnapshot(tenantId: string, range: string) {
         slaDueAt: true,
       },
     }),
+    prisma.ticket.findMany({
+      where: { tenantId, deletedAt: null, createdAt: { gte: sixMonthsAgo } },
+      select: { createdAt: true, resolvedAt: true, slaBreached: true },
+      take: 3000,
+    }),
   ]);
 
-  const openStatuses = new Set(["OPEN", "IN_PROGRESS", "PENDING"]);
-  const openTickets = tickets.filter((t) => openStatuses.has(t.status));
-  const breached = openTickets.filter((t) => t.slaBreached).length;
-  const unassigned = openTickets.filter((t) => !t.assignedToId).length;
-  const balanceOutstanding = openTickets.reduce((s, t) => {
+  const balanceOutstanding = openTicketPay.reduce((s, t) => {
     const pay = Number(t.paymentTotal ?? 0);
     const adv = Number(t.advanceAmount ?? 0);
     return s + Math.max(0, pay - adv);
   }, 0);
-
-  const ticketsInRange = tickets.filter((t) => t.createdAt >= from).length;
-  const ticketsPrev = tickets.filter((t) => t.createdAt >= prevFrom && t.createdAt < prevTo).length;
-  const breachedInRange = tickets.filter((t) => t.slaBreached && t.createdAt >= from).length;
-  const breachedPrev = tickets.filter(
-    (t) => t.slaBreached && t.createdAt >= prevFrom && t.createdAt < prevTo,
-  ).length;
 
   const wonIds = new Set(stages.filter((s) => s.isWon || /WON/i.test(s.code)).map((s) => s.id));
   const wonDeals = deals.filter((d) => d.stageId && wonIds.has(d.stageId));
@@ -164,12 +219,8 @@ async function buildDashboardSnapshot(tenantId: string, range: string) {
     0,
   );
 
-  const convertedLeads = leads.filter((l) => l.status === "CONVERTED").length;
-  const leadsInRange = leads.filter((l) => l.createdAt >= from).length;
-  const leadsPrev = leads.filter((l) => l.createdAt >= prevFrom && l.createdAt < prevTo).length;
-
-  const invoiceRevenue = invoices.reduce((s, i) => s + Number(i.grandTotal ?? 0), 0);
-  const stockUnits = stock.reduce((s, r) => s + Number(r.quantityOnHand ?? 0), 0);
+  const invoiceRevenue = Number(invoiceAgg._sum.grandTotal ?? 0);
+  const stockUnits = Number(stockAgg._sum.quantityOnHand ?? 0);
 
   const ticketMonthly: Array<{ month: string; created: number; resolved: number; breached: number }> =
     [];
@@ -177,11 +228,11 @@ async function buildDashboardSnapshot(tenantId: string, range: string) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const next = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     const label = d.toLocaleString("en-IN", { month: "short" });
-    const inMonth = tickets.filter((t) => t.createdAt >= d && t.createdAt < next);
+    const inMonth = ticketsForMonthly.filter((t) => t.createdAt >= d && t.createdAt < next);
     ticketMonthly.push({
       month: label,
       created: inMonth.length,
-      resolved: tickets.filter(
+      resolved: ticketsForMonthly.filter(
         (t) => t.resolvedAt && t.resolvedAt >= d && t.resolvedAt < next,
       ).length,
       breached: inMonth.filter((t) => t.slaBreached).length,
@@ -201,18 +252,17 @@ async function buildDashboardSnapshot(tenantId: string, range: string) {
       "Compare current range vs previous equal period for spikes.",
     ],
     kpis: {
-      leads: leads.length,
+      leads: leadTotal,
       leadsInRange,
       leadsPrev,
       leadGrowthPct: pct(leadsInRange, leadsPrev),
       convertedLeads,
-      conversionRatePct: leads.length
-        ? Math.round((convertedLeads / leads.length) * 1000) / 10
-        : 0,
-      openTickets: openTickets.length,
+      conversionRatePct: leadTotal ? Math.round((convertedLeads / leadTotal) * 1000) / 10 : 0,
+      openTickets,
       ticketsInRange,
       ticketsPrev,
       ticketGrowthPct: pct(ticketsInRange, ticketsPrev),
+      ticketTotal,
       slaBreached: breached,
       breachedInRange,
       breachedPrev,
@@ -222,7 +272,7 @@ async function buildDashboardSnapshot(tenantId: string, range: string) {
       wonRevenue,
       openPipeline,
       openDeals: openDeals.length,
-      proformaCount: invoices.length,
+      proformaCount: invoiceAgg._count,
       proformaRevenue: invoiceRevenue,
       products,
       stockUnits,
@@ -259,6 +309,96 @@ async function buildDashboardSnapshot(tenantId: string, range: string) {
   };
 }
 
+function inr(n: number) {
+  return `₹${Math.round(n).toLocaleString("en-IN")}`;
+}
+
+function localDashboardAnswer(
+  mode: string,
+  question: string,
+  snapshot: Awaited<ReturnType<typeof buildDashboardSnapshotFresh>>,
+) {
+  const k = snapshot.kpis;
+  const s = snapshot.spikes;
+
+  if (mode === "overview") {
+    return {
+      answer: "Overview from live KPIs (no LLM wait).",
+      bullets: [
+        `Service: ${k.openTickets} open jobs · ${k.slaBreached} SLA breached · ${k.unassignedTickets} unassigned.`,
+        `Sales: open pipeline ~${inr(k.openPipeline)} · won ~${inr(k.wonRevenue)} · ${k.openDeals} open deals.`,
+        `Leads: ${k.leadsInRange} new this ${snapshot.range} (prev ${k.leadsPrev}, ${k.leadGrowthPct}%) · ${k.convertedLeads} converted overall (${k.conversionRatePct}%).`,
+        `Stock & billing: ${k.stockUnits} units on hand · ${k.proformaCount} proformas · ${inr(k.proformaRevenue)} proforma total.`,
+        `Attention first: ${
+          k.slaBreached > 0
+            ? "clear SLA breaches"
+            : k.unassignedTickets > 0
+              ? "assign open tickets"
+              : k.balanceOutstanding > 0
+                ? "collect outstanding balances"
+                : "review pipeline & due stamping"
+        }.`,
+      ],
+      links: [
+        { label: "Tickets", to: "/tickets" },
+        { label: "SLA breached", to: "/tickets?slaBreached=1" },
+        { label: "Sale tracking", to: "/sale-tracking" },
+        { label: "Stamping", to: "/stamping" },
+      ],
+      caution: "Verify figures on the linked screens before acting.",
+    };
+  }
+
+  if (mode === "spikes") {
+    return {
+      answer: "Spike check vs previous equal period.",
+      bullets: [
+        `Ticket volume: ${s.ticketVolume.current} vs ${s.ticketVolume.previous} (${s.ticketVolume.changePct}%).`,
+        `SLA breaches in range: ${s.slaBreaches.current} vs ${s.slaBreaches.previous} (${s.slaBreaches.changePct}%) · open breached now ${s.slaBreaches.openBreachedNow}.`,
+        `Outstanding on open jobs: ${inr(s.outstandingBalance.current)}.`,
+        s.ticketVolume.changePct >= 20
+          ? "Ticket volume rose sharply — check staffing and recurring machine issues."
+          : s.slaBreaches.changePct >= 20
+            ? "SLA breaches rose — prioritize assignment and day notes."
+            : "No extreme spike; keep watching open jobs and balances.",
+      ],
+      links: [
+        { label: "Open tickets", to: "/tickets?status=OPEN" },
+        { label: "SLA breached", to: "/tickets?slaBreached=1" },
+        { label: "Invoices", to: "/erp/invoices" },
+      ],
+      caution: "Spikes compare this range to the previous equal window.",
+    };
+  }
+
+  // Generic local fallback for free-text ask when Gemini is slow/unavailable
+  const q = question.toLowerCase();
+  const bullets = [
+    `${k.openTickets} open tickets · ${k.slaBreached} SLA breached · ${k.unassignedTickets} unassigned.`,
+    `Leads this ${snapshot.range}: ${k.leadsInRange} (prev ${k.leadsPrev}). Conversion ${k.conversionRatePct}%.`,
+    `Pipeline ~${inr(k.openPipeline)} · outstanding balances ${inr(k.balanceOutstanding)}.`,
+  ];
+  if (/sale|pipeline|deal|convert/.test(q)) {
+    bullets.unshift(
+      `Sales pulse: won ${inr(k.wonRevenue)} · ${k.openDeals} open deals · conversion ${k.conversionRatePct}%.`,
+    );
+  }
+  if (/stamp|amc|due/.test(q)) {
+    bullets.push("Open Stamping / AMC pages for machines due renewal.");
+  }
+  return {
+    answer: "Quick KPI answer (AI model skipped or unavailable).",
+    bullets,
+    links: [
+      { label: "Tickets", to: "/tickets" },
+      { label: "Sale tracking", to: "/sale-tracking" },
+      { label: "Stamping", to: "/stamping" },
+      { label: "Inventory", to: "/erp/inventory" },
+    ],
+    caution: "Live KPIs only — open links to verify details.",
+  };
+}
+
 const askSchema = z.object({
   body: z.object({
     question: z.string().trim().min(3).max(500),
@@ -284,17 +424,34 @@ async function askDashboard(req: Request, res: Response) {
 
   const snapshot = await buildDashboardSnapshot(t, range);
 
-  let userQ = question;
-  if (mode === "overview") {
-    userQ =
-      "Summarize the Overview tab in exactly 5 short bullets covering service health, sales, leads, stock/proforma, and what needs attention first.";
-  } else if (mode === "spikes") {
-    userQ =
-      "Explain spikes using the spikes object: ticket volume growth, SLA breaches, and outstanding balance. Say what rose/fell vs previous period and what to do next.";
+  // Overview / spikes: answer instantly from KPIs (no Gemini wait)
+  if (mode === "overview" || mode === "spikes") {
+    const local = localDashboardAnswer(mode, question, snapshot);
+    const payload = {
+      ...local,
+      links: filterLinks(local.links),
+      model: "live-kpis",
+      range,
+      mode,
+      generatedAt: snapshot.generatedAt,
+      cached: false,
+    };
+    cacheSet(key, JSON.stringify(payload));
+    return success(res, payload);
   }
 
+  let userQ = question;
+  const slim = {
+    range: snapshot.range,
+    generatedAt: snapshot.generatedAt,
+    kpis: snapshot.kpis,
+    spikes: snapshot.spikes,
+    ticketMonthly: snapshot.ticketMonthly,
+    openTicketSample: snapshot.openTicketSample,
+  };
+
   const prompt = `You are HMS Enterprises CRM assistant for company admins.
-Answer ONLY using the JSON snapshot (includes /analytics-style KPIs + spikes + ticketMonthly).
+Answer ONLY using the JSON snapshot.
 Be concise. Prefer bullets. Always deep-link when useful.
 Allowed link paths: ${DASH_LINKS.join(", ")}
 Never invent GST invoice numbers, serials, or payments.
@@ -311,29 +468,46 @@ Return strict JSON:
 User request: ${userQ}
 
 Snapshot:
-${JSON.stringify(snapshot)}`;
+${JSON.stringify(slim)}`;
 
-  const raw = await callGemini(prompt);
-  const parsed = parseJsonLoose<{
-    answer?: string;
-    bullets?: string[];
-    links?: Array<{ label: string; to: string }>;
-    caution?: string;
-  }>(raw);
+  try {
+    const raw = await callGemini(prompt, { maxTokens: 700, timeoutMs: 18_000, retries: 1 });
+    const parsed = parseJsonLoose<{
+      answer?: string;
+      bullets?: string[];
+      links?: Array<{ label: string; to: string }>;
+      caution?: string;
+    }>(raw);
 
-  const payload = {
-    answer: String(parsed.answer ?? "").trim() || "No answer generated.",
-    bullets: Array.isArray(parsed.bullets) ? parsed.bullets.map(String).slice(0, 8) : [],
-    links: filterLinks(parsed.links),
-    caution: parsed.caution ? String(parsed.caution) : undefined,
-    model: geminiModelName(),
-    range,
-    mode,
-    generatedAt: snapshot.generatedAt,
-    cached: false,
-  };
-  cacheSet(key, JSON.stringify(payload));
-  return success(res, payload);
+    const payload = {
+      answer: String(parsed.answer ?? "").trim() || "No answer generated.",
+      bullets: Array.isArray(parsed.bullets) ? parsed.bullets.map(String).slice(0, 8) : [],
+      links: filterLinks(parsed.links),
+      caution: parsed.caution ? String(parsed.caution) : undefined,
+      model: geminiModelName(),
+      range,
+      mode,
+      generatedAt: snapshot.generatedAt,
+      cached: false,
+    };
+    cacheSet(key, JSON.stringify(payload));
+    return success(res, payload);
+  } catch {
+    // Soft-fail: still return useful KPIs instead of hanging / 503
+    const local = localDashboardAnswer("ask", question, snapshot);
+    const payload = {
+      ...local,
+      links: filterLinks(local.links),
+      model: "live-kpis-fallback",
+      range,
+      mode,
+      generatedAt: snapshot.generatedAt,
+      cached: false,
+      caution: `${local.caution ?? ""} AI was slow — showing live KPIs.`.trim(),
+    };
+    cacheSet(key, JSON.stringify(payload), 60_000);
+    return success(res, payload);
+  }
 }
 
 /* ── Ticket assist (desk + engineer + admin) ─────────────────────────── */
@@ -613,7 +787,7 @@ async function customerAssist(req: Request, res: Response) {
     contactId: string;
     action?: string;
   };
-  const key = cacheKey(["cust", t, contactId, action]);
+  const key = cacheKey(["cust-v2", t, contactId, action]);
   const cached = cacheGet(key);
   if (cached) return success(res, { ...JSON.parse(cached), cached: true });
 
@@ -625,16 +799,18 @@ async function customerAssist(req: Request, res: Response) {
       phone: true,
       email: true,
       city: true,
+      area: true,
+      customerCode: true,
       customFields: true,
     },
   });
   if (!contact) throw new AppError("Customer not found", 404);
 
-  const [tickets, assets] = await Promise.all([
+  const [tickets, assets, spareParts, invoices] = await Promise.all([
     prisma.ticket.findMany({
       where: { tenantId: t, contactId, deletedAt: null },
       orderBy: { createdAt: "desc" },
-      take: 12,
+      take: 25,
       select: {
         ticketNo: true,
         subject: true,
@@ -642,30 +818,70 @@ async function customerAssist(req: Request, res: Response) {
         priority: true,
         paymentTotal: true,
         advanceAmount: true,
+        paymentStatus: true,
         nextDueDate: true,
+        description: true,
         createdAt: true,
+        customFields: true,
       },
     }),
     prisma.customerAsset.findMany({
       where: { tenantId: t, contactId, deletedAt: null },
-      take: 20,
+      take: 30,
       select: {
         id: true,
         name: true,
         serialNo: true,
+        machineType: true,
+        origin: true,
         nextDueDate: true,
         stampingDate: true,
+        amcStartDate: true,
         amcEndDate: true,
+        servicePlan: true,
         customFields: true,
+      },
+    }),
+    prisma.sparePartChange.findMany({
+      where: { tenantId: t, contactId, deletedAt: null },
+      orderBy: { changedAt: "desc" },
+      take: 20,
+      select: {
+        partName: true,
+        changeType: true,
+        changedAt: true,
+        chargeAmount: true,
+        underWarranty: true,
+        assetId: true,
+        notes: true,
+      },
+    }),
+    prisma.invoice.findMany({
+      where: { tenantId: t, contactId, deletedAt: null },
+      orderBy: { invoiceDate: "desc" },
+      take: 12,
+      select: {
+        invoiceNumber: true,
+        status: true,
+        invoiceDate: true,
+        grandTotal: true,
+        amountPaid: true,
       },
     }),
   ]);
 
-  const prompt = `HMS CRM customer assistant. Action: ${action}
-Return JSON: { "answer":"...", "bullets":["..."], "flags":["machines due / stamping"], "visitQuestions":["..."], "caution":"optional" }
-Never invent dues. Use provided data only.
+  const prompt = `HMS CRM customer history assistant. Action: ${action}
+Return JSON: {
+  "answer":"2-4 sentence history overview for admin",
+  "bullets":["key timeline / service facts"],
+  "flags":["machines due / stamping / AMC / unpaid"],
+  "visitQuestions":["useful next-visit questions"],
+  "caution":"optional"
+}
+Focus on this customer's service history, machines, spare parts changed, invoices and open issues.
+Never invent dues, serials, amounts, or dates. Use provided data only.
 
-${JSON.stringify({ contact, tickets, assets })}
+${JSON.stringify({ contact, tickets, assets, spareParts, invoices })}
 `;
 
   const raw = await callGemini(prompt);
@@ -675,7 +891,7 @@ ${JSON.stringify({ contact, tickets, assets })}
     model: geminiModelName(),
     action,
     cached: false,
-    disclaimer: "AI summary — verify dates on the customer profile.",
+    disclaimer: "AI summary of CRM history — verify dates and amounts on the customer profile.",
   };
   cacheSet(key, JSON.stringify(payload));
   return success(res, payload);

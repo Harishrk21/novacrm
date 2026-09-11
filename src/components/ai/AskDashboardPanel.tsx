@@ -65,7 +65,8 @@ export function AskDashboardPanel({ range }: { range: string }) {
             </span>
           </div>
           <p className="mt-0.5 text-xs text-text-secondary">
-            Live KPIs · spike explain · overview summary · deep links. Cached ~3 min. Verify before acting.
+            Overview & spikes are instant from live KPIs. Free-text Ask uses AI (falls back to KPIs if slow).
+            Cached ~3 min. Verify before acting.
           </p>
         </div>
       </div>

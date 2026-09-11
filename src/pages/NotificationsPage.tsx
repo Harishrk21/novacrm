@@ -11,8 +11,6 @@ import { timeAgo, cn } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useNotificationsStore } from '@/store/notificationsStore'
 import { useUIStore } from '@/store/uiStore'
-import { AiAssistCard } from '@/components/ai/AiAssistCard'
-import { api } from '@/lib/api'
 
 function typeColor(type: string) {
   if (type.includes('PENDING') || type.includes('CREATED')) return 'amber' as const
@@ -71,13 +69,15 @@ export function NotificationsPage() {
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
+              size="sm"
               disabled={unreadCount === 0}
               onClick={() => void markAllRead(userId)}
             >
-              <CheckCheck size={16} /> Mark all read
+              <CheckCheck size={14} /> Mark all read
             </Button>
             <Button
               variant="outline"
+              size="sm"
               disabled={items.length === 0}
               onClick={() => {
                 void clearAll().then(() => {
@@ -85,47 +85,17 @@ export function NotificationsPage() {
                 })
               }}
             >
-              <Trash2 size={16} /> Clear all
+              <Trash2 size={14} /> Clear all
             </Button>
           </div>
         }
       />
 
-      <p className="mb-4 text-sm text-text-secondary">
-        Real-time updates for your role
-        {role ? ` (${role.replaceAll('_', ' ')})` : ''} — ticket assignment, progress, and approvals.
-        Use clear to remove items from this list.
+      <p className="mb-3 text-xs text-text-secondary">
+        Ticket assignment, progress, and approvals for your role
+        {role ? ` (${role.replaceAll('_', ' ')})` : ''}. Resolved items update in place and mark as
+        read.
       </p>
-
-      {filtered[0] ? (
-        <div className="mb-4">
-          <AiAssistCard
-            title="Notification AI"
-            subtitle="Shorten / clarify the latest notification title. Does not send messages."
-            actions={[
-              {
-                id: 'shorten',
-                label: 'Clarify latest title',
-                run: () =>
-                  api.aiPolish({
-                    text: `${filtered[0].title ?? ''}\n${filtered[0].message ?? ''}`,
-                    action: 'shorten_title',
-                  }),
-              },
-              {
-                id: 'translate',
-                label: 'Simplify / translate',
-                run: () =>
-                  api.aiPolish({
-                    text: `${filtered[0].title ?? ''}\n${filtered[0].message ?? ''}`,
-                    action: 'translate_simplify',
-                    target: 'simple',
-                  }),
-              },
-            ]}
-          />
-        </div>
-      ) : null}
 
       <PageTabs
         accent="theme"
@@ -138,7 +108,7 @@ export function NotificationsPage() {
       />
 
       {types.length > 0 ? (
-        <div className="mb-4 flex flex-wrap gap-2">
+        <div className="mb-3 flex flex-wrap gap-1.5">
           <Button
             size="sm"
             variant={typeFilter === '' ? 'primary' : 'outline'}
@@ -161,7 +131,7 @@ export function NotificationsPage() {
 
       <Card padding={false}>
         {loading && items.length === 0 ? (
-          <div className="p-8 text-center text-sm text-text-secondary">Loading notifications…</div>
+          <div className="p-6 text-center text-sm text-text-secondary">Loading notifications…</div>
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={<Inbox size={22} />}
@@ -171,11 +141,11 @@ export function NotificationsPage() {
         ) : (
           <ul className="divide-y divide-border">
             {filtered.map((n) => (
-              <li key={n.id} className="flex items-stretch">
+              <li key={n.id} className="flex items-center">
                 <button
                   type="button"
                   className={cn(
-                    'flex min-w-0 flex-1 items-start gap-3 px-4 py-3.5 text-left transition hover:bg-muted/40',
+                    'flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left transition hover:bg-muted/40',
                     !n.isRead && 'bg-accent-soft/40',
                   )}
                   onClick={() => {
@@ -183,41 +153,52 @@ export function NotificationsPage() {
                     if (n.href) navigate(n.href)
                   }}
                 >
-                  <div className="mt-0.5 rounded-full bg-muted p-2 text-text-secondary">
-                    <Bell size={14} />
-                  </div>
+                  <Bell
+                    size={13}
+                    className={cn(
+                      'shrink-0 text-text-secondary',
+                      !n.isRead && 'text-accent-blue',
+                    )}
+                  />
                   <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium text-text-primary">{n.title}</span>
-                      {!n.isRead ? <Badge color="blue">New</Badge> : null}
-                      <Badge color={typeColor(n.type ?? n.kind)}>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="truncate text-sm font-medium text-text-primary">
+                        {n.title}
+                      </span>
+                      {!n.isRead ? (
+                        <Badge color="blue" className="!px-1.5 !py-0 text-[10px]">
+                          New
+                        </Badge>
+                      ) : null}
+                      <Badge
+                        color={typeColor(n.type ?? n.kind)}
+                        className="!px-1.5 !py-0 text-[10px]"
+                      >
                         {(n.type ?? n.kind).replaceAll('_', ' ')}
                       </Badge>
+                      <span className="text-[11px] text-text-secondary">{timeAgo(n.createdAt)}</span>
                     </div>
-                    <p className="mt-0.5 text-sm text-text-secondary">{n.message}</p>
-                    <div className="mt-1 text-xs text-text-secondary">{timeAgo(n.createdAt)}</div>
+                    <p className="truncate text-xs text-text-secondary">{n.message}</p>
                   </div>
                   {n.href ? (
                     <Link
                       to={n.href}
-                      className="shrink-0 text-xs font-medium text-accent"
+                      className="shrink-0 text-[11px] font-medium text-accent"
                       onClick={(e) => e.stopPropagation()}
                     >
                       Open
                     </Link>
                   ) : null}
                 </button>
-                <div className="flex items-center pr-3">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    title="Clear notification"
-                    aria-label="Clear notification"
-                    onClick={() => void clearOne(n.id)}
-                  >
-                    <Trash2 size={16} />
-                  </Button>
-                </div>
+                <button
+                  type="button"
+                  className="mr-2 shrink-0 rounded-[6px] p-1.5 text-text-secondary hover:bg-muted hover:text-accent-red"
+                  title="Clear notification"
+                  aria-label="Clear notification"
+                  onClick={() => void clearOne(n.id)}
+                >
+                  <Trash2 size={14} />
+                </button>
               </li>
             ))}
           </ul>

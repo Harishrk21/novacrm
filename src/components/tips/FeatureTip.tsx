@@ -49,8 +49,8 @@ export function FeatureTip({
 /** Default tips when API not connected yet */
 export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType: TipType }> = {
   'crm.dashboard': {
-    title: 'Service desk first',
-    body: 'Start on Service desk: open tickets, SLA breaches, resolved today. Sales / Leads tabs stay available below for pipeline work.',
+    title: 'Ask HMS is fast now',
+    body: 'Overview & Explain spikes answer instantly from live KPIs. Free-text Ask uses AI and falls back to KPIs if the model is slow.',
     tipType: 'TIP',
   },
   'crm.leads': {

@@ -2,7 +2,28 @@ import type { NextFunction, Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import { ZodError } from "zod";
 import { AppError } from "../common/errors.js";
-export function notFoundHandler(req: Request, _res: Response, next: NextFunction) { next(new AppError(`Route ${req.method} ${req.path} not found`, 404)); }
+
+export function notFoundHandler(req: Request, _res: Response, next: NextFunction) {
+  next(new AppError(`Route ${req.method} ${req.path} not found`, 404));
+}
+
+function isDbPoolExhausted(err: unknown, msg: string) {
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2024") return true;
+  return /Timed out fetching a new connection|connection pool|max clients|EMAXCONNSESSION|too many connections/i.test(
+    msg,
+  );
+}
+
+function isDbUnreachable(err: unknown, msg: string) {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    if (err.code === "P1001" || err.code === "P1017" || err.code === "P1000") return true;
+  }
+  if (err instanceof Prisma.PrismaClientInitializationError) return true;
+  return /Can't reach database|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|TLS|SSL|Access denied|Server has gone away/i.test(
+    msg,
+  );
+}
+
 export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
   if (err instanceof ZodError) {
     return res.status(422).json({ success: false, message: "Validation failed", details: err.flatten() });
@@ -28,14 +49,35 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
       message: "One or more values are too long. Shorten the product name or SKU and try again.",
     });
   }
+
   const msg = err instanceof Error ? err.message : String(err);
-  if (/max clients|EMAXCONNSESSION|Can't reach database|P1001|P1017|connection/i.test(msg)) {
-    console.error(err);
+  const code =
+    err instanceof Prisma.PrismaClientKnownRequestError
+      ? err.code
+      : err instanceof Prisma.PrismaClientInitializationError
+        ? "INIT"
+        : undefined;
+
+  if (isDbPoolExhausted(err, msg)) {
+    console.error("[db-pool]", code ?? "", msg);
     return res.status(503).json({
       success: false,
-      message: "Database is busy (connection pool full). Wait a few seconds and try again — keep only one API server running.",
+      message:
+        "Database connection pool is full. Wait a few seconds and retry. On Render, set DATABASE_URL with connection_limit=5&pool_timeout=20 and avoid running multiple API copies against the same small RDS.",
+      details: code ? { code } : undefined,
     });
   }
+
+  if (isDbUnreachable(err, msg)) {
+    console.error("[db-unreachable]", code ?? "", msg);
+    return res.status(503).json({
+      success: false,
+      message:
+        "Cannot reach the database (RDS). Check Render DATABASE_URL, RDS security group (allow Render / 0.0.0.0:3306 for testing), and that the RDS instance is running.",
+      details: code ? { code } : undefined,
+    });
+  }
+
   console.error(err);
   return res.status(500).json({ success: false, message: "Internal server error" });
 }

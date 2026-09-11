@@ -16,6 +16,7 @@ import {
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
+import { PhoneInput } from '@/components/ui/PhoneInput'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
@@ -25,6 +26,7 @@ import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
 import { firstError, validateLeadForm, type FieldErrors } from '@/lib/formValidation'
 import { formatDate, formatPhone } from '@/lib/utils'
+import { indianMobileLocal, toStoredIndianMobile } from '@/lib/phoneIndia'
 import { productRequiresStamping } from '@/lib/productCatalog'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -475,7 +477,7 @@ export function LeadsPage() {
         contactId: c.id,
         customerType: 'EXISTING',
         name: c.name || f.name,
-        phone: c.phone || c.mobile || f.phone,
+        phone: indianMobileLocal(c.phone || c.mobile || f.phone),
         email: c.email || f.email,
         company: f.company || c.name,
       }))
@@ -578,7 +580,7 @@ export function LeadsPage() {
       const created = await api.createLead({
         name: form.name.trim(),
         email: form.email.trim() || null,
-        phone: form.phone.trim() || null,
+        phone: form.phone.trim() ? toStoredIndianMobile(form.phone) : null,
         company: form.company.trim() || null,
         website: website || null,
         city: form.city.trim() || null,
@@ -1052,7 +1054,13 @@ export function LeadsPage() {
           <Input label="Full name *" placeholder="e.g. Meena Krishnan" value={form.name} error={errors.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <Input label="Company / shop" placeholder="e.g. Harbour Traders" value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} />
           <Input label="Email" type="email" placeholder="name@company.in" value={form.email} error={errors.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          <Input label="Phone" placeholder="+91 98400 10001" value={form.phone} error={errors.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+          <PhoneInput
+            label="Phone"
+            value={form.phone}
+            error={errors.phone}
+            onChange={(phone) => setForm({ ...form, phone })}
+            hint="India (+91) — 10 digits"
+          />
           <Input label="Enquiry date *" type="date" value={form.enquiryDate} onChange={(e) => setForm({ ...form, enquiryDate: e.target.value })} />
           <SearchableSelect
             label="Interested product"

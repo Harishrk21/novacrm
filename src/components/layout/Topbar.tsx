@@ -423,7 +423,7 @@ export function Topbar() {
                     <div
                       key={n.id}
                       className={cn(
-                        'flex w-full items-start gap-2 border-b border-border px-3 py-3 transition-colors duration-150 hover:bg-surface',
+                        'flex w-full items-center gap-2 border-b border-border px-3 py-2 transition-colors duration-150 hover:bg-surface',
                         !n.isRead && 'border-l-2 border-l-accent-blue bg-accent-blue/5',
                       )}
                     >
@@ -436,9 +436,15 @@ export function Topbar() {
                           if (n.href) navigate(n.href)
                         }}
                       >
-                        <div className="text-sm font-medium text-text-primary">{n.title}</div>
+                        <div className="flex items-center gap-1.5">
+                          <div className="truncate text-sm font-medium text-text-primary">
+                            {n.title}
+                          </div>
+                          <span className="shrink-0 text-[10px] text-text-secondary">
+                            {timeAgo(n.createdAt)}
+                          </span>
+                        </div>
                         <div className="truncate text-xs text-text-secondary">{n.message}</div>
-                        <div className="mt-1 text-xs text-text-secondary">{timeAgo(n.createdAt)}</div>
                       </button>
                       <button
                         type="button"

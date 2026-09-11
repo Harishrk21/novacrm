@@ -8,11 +8,13 @@ import {
   Download,
   Edit3,
   Eye,
+  Loader2,
   Mail,
   MapPin,
   Package,
   Phone,
   ShoppingBag,
+  Sparkles,
   TicketCheck,
   TicketPlus,
   Trash2,
@@ -41,7 +43,9 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import { formatServiceId } from '@/lib/serviceId'
 import { Input } from '@/components/ui/Input'
+import { PhoneInput } from '@/components/ui/PhoneInput'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
+import { Modal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { SparePartsPanel } from '@/components/contacts/SparePartsPanel'
 import { AiAssistCard } from '@/components/ai/AiAssistCard'
@@ -49,9 +53,11 @@ import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS, isThirdPartyOrigin } from '@/lib/assetOrigin'
 import { formatCurrency, formatDate, formatPhone } from '@/lib/utils'
+import { indianMobileLocal, toStoredIndianMobile } from '@/lib/phoneIndia'
+import { firstError, validateContactForm } from '@/lib/formValidation'
 import { useUIStore } from '@/store/uiStore'
 
-type Tab = 'Overview' | 'Products' | 'SpareParts' | 'Tickets' | 'Notes'
+type Tab = 'Overview' | 'Products' | 'Tickets' | 'Notes'
 
 const MACHINE_TYPES = [
   { value: 'WEIGHING', label: 'Weighing machine' },
@@ -80,6 +86,9 @@ export function ContactDetailPage() {
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null)
   const [editingNoteText, setEditingNoteText] = useState('')
   const [noteBusy, setNoteBusy] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyBusy, setHistoryBusy] = useState(false)
+  const [historyResult, setHistoryResult] = useState<Record<string, unknown> | null>(null)
   const [form, setForm] = useState({
     name: '',
     email: '',
@@ -163,11 +172,11 @@ export function ContactDetailPage() {
         name: String(row.name ?? ''),
         email: String(row.email ?? ''),
         phone: String(row.phone ?? ''),
-        mobile: String(row.mobile ?? ''),
-        mobile2: String(custom.mobile_2 ?? ''),
-        mobile3: String(custom.mobile_3 ?? ''),
-        whatsapp: String(custom.whatsapp ?? ''),
-        landline: String(custom.landline ?? row.phone ?? ''),
+        mobile: indianMobileLocal(String(row.mobile ?? row.phone ?? '')),
+        mobile2: indianMobileLocal(String(custom.mobile_2 ?? '')),
+        mobile3: indianMobileLocal(String(custom.mobile_3 ?? '')),
+        whatsapp: indianMobileLocal(String(custom.whatsapp ?? '')),
+        landline: String(custom.landline ?? ''),
         buildingName: String(custom.building_name ?? ''),
         street: String(row.street ?? ''),
         doorNo: String(row.doorNo ?? ''),
@@ -194,16 +203,33 @@ export function ContactDetailPage() {
 
   async function saveEdit() {
     if (!id) return
+    const nextErrors = validateContactForm({
+      name: form.name,
+      email: form.email,
+      phone: form.phone,
+      mobile: form.mobile,
+      country: 'IN',
+      landline: form.landline,
+      whatsapp: form.whatsapp,
+      mobile2: form.mobile2,
+      mobile3: form.mobile3,
+    })
+    if (Object.keys(nextErrors).length) {
+      addToast({ type: 'error', message: firstError(nextErrors) })
+      return
+    }
     try {
       const prevCustom =
         contact?.customFields && typeof contact.customFields === 'object'
           ? (contact.customFields as Record<string, unknown>)
           : {}
+      const mobileStored = toStoredIndianMobile(form.mobile)
+      const waStored = toStoredIndianMobile(form.whatsapp) || mobileStored
       const updated = await api.updateContact(id, {
         name: form.name,
         email: form.email || null,
-        phone: form.landline || form.phone || form.mobile || null,
-        mobile: form.mobile || null,
+        phone: form.landline.trim() || mobileStored || waStored,
+        mobile: mobileStored,
         street: form.street || null,
         doorNo: form.doorNo || null,
         area: form.area || null,
@@ -218,9 +244,9 @@ export function ContactDetailPage() {
           ...prevCustom,
           building_name: form.buildingName.trim() || null,
           landline: form.landline.trim() || null,
-          mobile_2: form.mobile2.trim() || null,
-          mobile_3: form.mobile3.trim() || null,
-          whatsapp: form.whatsapp.trim() || form.mobile.trim() || null,
+          mobile_2: toStoredIndianMobile(form.mobile2),
+          mobile_3: toStoredIndianMobile(form.mobile3),
+          whatsapp: waStored,
           gps_location: form.gpsLocation.trim() || null,
         },
       })
@@ -394,6 +420,26 @@ export function ContactDetailPage() {
     }
   }
 
+  async function runCustomerHistorySummary() {
+    if (!contact?.id && !id) return
+    const contactId = String(contact?.id ?? id)
+    setHistoryOpen(true)
+    setHistoryBusy(true)
+    setHistoryResult(null)
+    try {
+      const data = await api.aiCustomerAssist({ contactId, action: 'summarize' })
+      setHistoryResult(data)
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not load AI history summary',
+      })
+      setHistoryOpen(false)
+    } finally {
+      setHistoryBusy(false)
+    }
+  }
+
   if (loading) {
     return <Card className="p-8 text-sm text-text-secondary">Loading contact…</Card>
   }
@@ -432,6 +478,9 @@ export function ContactDetailPage() {
           <ArrowLeft size={16} /> Back
         </Button>
         <div className="flex-1" />
+        <Button variant="outline" onClick={() => void runCustomerHistorySummary()}>
+          <Sparkles size={16} /> History summary
+        </Button>
         <Button
           onClick={() =>
             navigate(
@@ -448,14 +497,14 @@ export function ContactDetailPage() {
         </Button>
       </div>
 
-      <div className="mb-5">
+      <div className="mb-5" id="customer-ai">
         <AiAssistCard
           title="Customer AI"
-          subtitle="360 summary · machines due · visit questions. Verify dates on the profile."
+          subtitle="History summary · machines due · visit questions. Verify dates on the profile."
           actions={[
             {
               id: 'summarize',
-              label: 'Summarize 360',
+              label: 'History summary',
               run: () => api.aiCustomerAssist({ contactId: String(contact.id), action: 'summarize' }),
             },
             {
@@ -472,6 +521,67 @@ export function ContactDetailPage() {
           ]}
         />
       </div>
+
+      <Modal
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        title="Customer history summary"
+        subtitle={String(contact.name)}
+        size="md"
+        accent="violet"
+        footer={
+          <Button variant="outline" onClick={() => setHistoryOpen(false)}>
+            Close
+          </Button>
+        }
+      >
+        {historyBusy ? (
+          <div className="flex items-center gap-2 py-8 text-sm text-text-secondary">
+            <Loader2 size={16} className="animate-spin" /> Reading tickets, machines, parts & invoices…
+          </div>
+        ) : historyResult ? (
+          <div className="space-y-3 text-sm">
+            {typeof historyResult.answer === 'string' ? (
+              <p className="whitespace-pre-wrap leading-relaxed text-text-primary">
+                {historyResult.answer}
+              </p>
+            ) : null}
+            {Array.isArray(historyResult.bullets) && historyResult.bullets.length ? (
+              <ul className="list-disc space-y-1 pl-5 text-text-secondary">
+                {(historyResult.bullets as string[]).map((b) => (
+                  <li key={b}>{b}</li>
+                ))}
+              </ul>
+            ) : null}
+            {Array.isArray(historyResult.flags) && historyResult.flags.length ? (
+              <div className="flex flex-wrap gap-1.5">
+                {(historyResult.flags as string[]).map((f) => (
+                  <Badge key={f} color="amber">
+                    {f}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
+            {Array.isArray(historyResult.visitQuestions) && historyResult.visitQuestions.length ? (
+              <div>
+                <div className="mb-1 text-xs font-semibold uppercase text-text-secondary">
+                  Next visit
+                </div>
+                <ul className="list-disc space-y-1 pl-5 text-text-secondary">
+                  {(historyResult.visitQuestions as string[]).map((q) => (
+                    <li key={q}>{q}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {typeof historyResult.disclaimer === 'string' ? (
+              <p className="text-xs text-text-secondary">{historyResult.disclaimer}</p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="py-6 text-sm text-text-secondary">No summary yet.</p>
+        )}
+      </Modal>
 
       <FormPanel
         open={editOpen}
@@ -524,11 +634,26 @@ export function ContactDetailPage() {
             label="Landline number"
             value={form.landline}
             onChange={(e) => setForm({ ...form, landline: e.target.value, phone: e.target.value })}
+            placeholder="Optional landline"
           />
-          <Input label="Mobile number 1" value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
-          <Input label="Mobile number 2" value={form.mobile2} onChange={(e) => setForm({ ...form, mobile2: e.target.value })} />
-          <Input label="Mobile number 3" value={form.mobile3} onChange={(e) => setForm({ ...form, mobile3: e.target.value })} />
-          <Input
+          <PhoneInput
+            label="Mobile number 1"
+            required
+            value={form.mobile}
+            onChange={(mobile) => setForm({ ...form, mobile })}
+            hint="India (+91) — enter 10 digits only"
+          />
+          <PhoneInput
+            label="Mobile number 2"
+            value={form.mobile2}
+            onChange={(mobile2) => setForm({ ...form, mobile2 })}
+          />
+          <PhoneInput
+            label="Mobile number 3"
+            value={form.mobile3}
+            onChange={(mobile3) => setForm({ ...form, mobile3 })}
+          />
+          <PhoneInput
             id="contact-whatsapp"
             label={
               <span className="inline-flex items-center gap-1.5">
@@ -537,7 +662,8 @@ export function ContactDetailPage() {
               </span>
             }
             value={form.whatsapp}
-            onChange={(e) => setForm({ ...form, whatsapp: e.target.value })}
+            onChange={(whatsapp) => setForm({ ...form, whatsapp })}
+            hint="Defaults to mobile 1 if empty"
           />
           <Input label="Email ID" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
           <Input
@@ -573,8 +699,8 @@ export function ContactDetailPage() {
         open={machineOpen}
         accent="theme"
         eyebrow="Products"
-        title={editingMachineId ? 'Edit product' : 'Add product'}
-        subtitle="Sold by us or Outside (repair only). Set AMC start + end when needed."
+        title={editingMachineId ? 'Edit product / machine' : 'Add product / machine'}
+        subtitle="Segregate clearly: Sold by us vs Outside (repair/stamping). AMC only after inspection — set start + end. Stamp dates come from engineer after a stamping job."
         onClose={() => {
           setMachineOpen(false)
           setEditingMachineId(null)
@@ -594,11 +720,27 @@ export function ContactDetailPage() {
         }
       >
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="sm:col-span-2 lg:col-span-3 rounded-[10px] border border-border bg-muted/40 px-3 py-2 text-xs text-text-secondary">
+            <strong className="text-text-primary">How to store:</strong> pick origin first → identity
+            (type/name/serial) → plan (Non-AMC or AMC after inspect) → stamping validity is filled by
+            the engineer when a stamping ticket is completed (you can correct history here if needed).
+          </div>
           <div className="sm:col-span-2 lg:col-span-3">
             <Select
-              label="Machine origin *"
+              label="1. Machine origin *"
               value={machineForm.origin}
-              onChange={(e) => setMachineForm({ ...machineForm, origin: e.target.value })}
+              onChange={(e) => {
+                const origin = e.target.value
+                setMachineForm({
+                  ...machineForm,
+                  origin,
+                  ...(origin === 'THIRD_PARTY' && machineForm.servicePlan === 'AMC'
+                    ? {}
+                    : origin === 'THIRD_PARTY'
+                      ? {}
+                      : {}),
+                })
+              }}
               options={ASSET_ORIGIN_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
             />
             <p className="mt-1 text-xs text-text-secondary">
@@ -606,7 +748,7 @@ export function ContactDetailPage() {
             </p>
           </div>
           <Select
-            label="Machine type"
+            label="2. Machine type"
             value={machineForm.machineType}
             onChange={(e) => setMachineForm({ ...machineForm, machineType: e.target.value })}
             options={MACHINE_TYPES}
@@ -623,41 +765,66 @@ export function ContactDetailPage() {
           <Input label="Platform size" value={machineForm.platformSize} onChange={(e) => setMachineForm({ ...machineForm, platformSize: e.target.value })} />
           <Input label="Model" value={machineForm.model} onChange={(e) => setMachineForm({ ...machineForm, model: e.target.value })} />
           <Input label="Serial number" value={machineForm.serialNo} onChange={(e) => setMachineForm({ ...machineForm, serialNo: e.target.value })} />
-          <Select
-            label="Service plan"
-            value={machineForm.servicePlan}
-            onChange={(e) => setMachineForm({ ...machineForm, servicePlan: e.target.value })}
-            options={[
-              { value: 'NON_AMC', label: 'Non-AMC' },
-              { value: 'AMC', label: 'AMC' },
-            ]}
-          />
-          {machineForm.origin === 'THIRD_PARTY' ? (
-            <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
-              Outside / repair-only machines can still enroll in AMC — set start and end dates below.
+          <div className="sm:col-span-2 lg:col-span-3 rounded-[10px] border border-emerald-200/70 bg-emerald-50/50 px-3 py-3 dark:border-emerald-900/40 dark:bg-emerald-950/20">
+            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-200">
+              3. AMC (after inspection)
+            </div>
+            <p className="mb-3 text-xs text-text-secondary">
+              Customer wants AMC → create an inspect / service ticket first → if machine is fit, enroll
+              AMC with start + end dates here (or use Add AMC on the product card).
             </p>
-          ) : null}
-          {machineForm.servicePlan === 'AMC' ? (
-            <>
-              <Input
-                label="AMC start date"
-                type="date"
-                value={machineForm.amcStartDate}
-                onChange={(e) => setMachineForm({ ...machineForm, amcStartDate: e.target.value })}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <Select
+                label="Service plan"
+                value={machineForm.servicePlan}
+                onChange={(e) => setMachineForm({ ...machineForm, servicePlan: e.target.value })}
+                options={[
+                  { value: 'NON_AMC', label: 'Non-AMC (no contract yet)' },
+                  { value: 'AMC', label: 'AMC (enrolled after inspect)' },
+                ]}
               />
-              <Input
-                label="AMC end date"
-                type="date"
-                value={machineForm.amcEndDate}
-                onChange={(e) => setMachineForm({ ...machineForm, amcEndDate: e.target.value })}
-              />
-            </>
-          ) : null}
+              {machineForm.servicePlan === 'AMC' ? (
+                <>
+                  <Input
+                    label="AMC start date *"
+                    type="date"
+                    value={machineForm.amcStartDate}
+                    onChange={(e) => setMachineForm({ ...machineForm, amcStartDate: e.target.value })}
+                  />
+                  <Input
+                    label="AMC end date *"
+                    type="date"
+                    value={machineForm.amcEndDate}
+                    onChange={(e) => setMachineForm({ ...machineForm, amcEndDate: e.target.value })}
+                  />
+                </>
+              ) : null}
+            </div>
+          </div>
           {machineForm.machineType === 'WEIGHING' ? (
-            <>
-              <Input label="Stamping date" type="date" value={machineForm.stampingDate} onChange={(e) => setMachineForm({ ...machineForm, stampingDate: e.target.value })} />
-              <Input label="Next due date" type="date" value={machineForm.nextDueDate} onChange={(e) => setMachineForm({ ...machineForm, nextDueDate: e.target.value })} />
-            </>
+            <div className="sm:col-span-2 lg:col-span-3 rounded-[10px] border border-violet-200/70 bg-violet-50/50 px-3 py-3 dark:border-violet-900/40 dark:bg-violet-950/20">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-violet-800 dark:text-violet-200">
+                4. Stamping (engineer-owned)
+              </div>
+              <p className="mb-3 text-xs text-text-secondary">
+                After a stamping ticket, the engineer enters stamp date + valid till. Those values
+                sync here automatically. Edit only to correct history.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Input
+                  label="Last stamp date (engineer)"
+                  type="date"
+                  value={machineForm.stampingDate}
+                  onChange={(e) => setMachineForm({ ...machineForm, stampingDate: e.target.value })}
+                />
+                <Input
+                  label="Stamping valid till"
+                  type="date"
+                  value={machineForm.nextDueDate}
+                  onChange={(e) => setMachineForm({ ...machineForm, nextDueDate: e.target.value })}
+                />
+              </div>
+            </div>
           ) : null}
           <Input label="Notes" value={machineForm.notes} onChange={(e) => setMachineForm({ ...machineForm, notes: e.target.value })} className="sm:col-span-2 lg:col-span-3" />
         </div>
@@ -736,7 +903,6 @@ export function ContactDetailPage() {
             label: 'Products',
             count: ((contact.assets as Array<unknown>) ?? []).length,
           },
-          { id: 'SpareParts', label: 'Parts history' },
           { id: 'Tickets', label: 'Tickets', count: tickets.length },
           { id: 'Notes', label: 'Notes', count: notes.length },
         ]}
@@ -757,149 +923,299 @@ export function ContactDetailPage() {
 
       {tab === 'Products' && (
         <>
-        <Card padding={false}>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
-            <div>
-              <div className="text-sm font-semibold">Products</div>
-              <p className="mt-0.5 text-xs text-text-secondary">
-                {
-                  ((contact.assets as Array<Record<string, unknown>>) ?? []).filter(
-                    (a) => !isThirdPartyOrigin(a.origin ? String(a.origin) : null),
-                  ).length
-                }{' '}
-                sold by us ·{' '}
-                {
-                  ((contact.assets as Array<Record<string, unknown>>) ?? []).filter((a) =>
-                    isThirdPartyOrigin(a.origin ? String(a.origin) : null),
-                  ).length
-                }{' '}
-                outside / repair-only
-              </p>
-            </div>
-            <Button size="sm" onClick={openAddMachine}>
-              Add product
-            </Button>
-          </div>
-          {((contact.assets as Array<Record<string, unknown>>) ?? []).length === 0 ? (
-            <EmptyState
-              icon={<Package size={22} />}
-              title="No products yet"
-              subtitle="Add machines/equipment. Mark each as Sold by us or Outside (repair only)."
-              actionLabel="Add product"
-              onAction={openAddMachine}
-            />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1080px] text-left text-sm">
-                <thead className="bg-muted text-xs text-text-secondary">
-                  <tr>
-                    {[
-                      'Product',
-                      'Origin',
-                      'Type',
-                      'Plan',
-                      'Serial / Cap',
-                      'Stamping',
-                      'Next due',
-                      'AMC period',
-                      '',
-                    ].map((h) => (
-                      <th key={h || 'a'} className="px-4 py-3 font-medium">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {((contact.assets as Array<Record<string, unknown>>) ?? []).map((a) => (
-                    <tr key={String(a.id)} className="border-t border-border">
-                      <td className="px-4 py-3 font-medium">{String(a.name)}</td>
-                      <td className="px-4 py-3">
-                        <Badge
-                          color={isThirdPartyOrigin(a.origin ? String(a.origin) : null) ? 'amber' : 'blue'}
-                        >
-                          {isThirdPartyOrigin(a.origin ? String(a.origin) : null)
-                            ? 'Outside'
-                            : 'Sold by us'}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-3">
-                        <Badge color="blue">{String(a.machineType).replaceAll('_', ' ')}</Badge>
-                      </td>
-                      <td className="px-4 py-3">
-                        <Badge color={a.servicePlan === 'AMC' ? 'green' : 'gray'}>
-                          {a.servicePlan === 'AMC' ? 'AMC' : 'Non-AMC'}
-                        </Badge>
-                      </td>
-                      <td className="px-4 py-3 text-text-secondary">
-                        {[a.serialNo, a.capacity].filter(Boolean).join(' · ') || '—'}
-                      </td>
-                      <td className="px-4 py-3">
-                        {a.stampingDate ? formatDate(String(a.stampingDate)) : '—'}
-                      </td>
-                      <td className="px-4 py-3">
-                        {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-text-secondary">
-                        {a.servicePlan === 'AMC' ? (
-                          <>
-                            <div>
-                              Start:{' '}
-                              <span className="font-medium text-text-primary">
-                                {a.amcStartDate ? formatDate(String(a.amcStartDate)) : '—'}
-                              </span>
-                            </div>
-                            <div>
-                              End:{' '}
-                              <span className="font-medium text-text-primary">
-                                {a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}
-                              </span>
-                            </div>
-                          </>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-2">
-                          <Button size="sm" variant="outline" onClick={() => openEditMachine(a)}>
-                            <Edit3 size={14} /> Edit
-                          </Button>
-                          {a.servicePlan !== 'AMC' ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => {
-                                openEditMachine({
-                                  ...a,
-                                  servicePlan: 'AMC',
-                                  amcStartDate: a.amcStartDate || new Date().toISOString().slice(0, 10),
-                                })
-                              }}
-                            >
-                              Add AMC
-                            </Button>
-                          ) : null}
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() =>
-                              navigate(
-                                `/tickets?contactId=${encodeURIComponent(String(contact.id))}&assetId=${encodeURIComponent(String(a.id))}&open=1`,
-                              )
-                            }
-                          >
-                            New job
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+        <Card className="mb-4 border-sky-200/60 bg-sky-50/40 p-4 dark:border-sky-900/40 dark:bg-sky-950/20">
+          <p className="text-sm font-medium text-text-primary">Customer products — how to read this</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-text-secondary">
+            <li>
+              <strong>Sold by us</strong> = HMS installed base. <strong>Outside</strong> = brought only
+              for repair / stamping (not our sale).
+            </li>
+            <li>
+              <strong>Stamping</strong> = last stamp date + <em>valid till</em> (engineer fills after a
+              stamping ticket).
+            </li>
+            <li>
+              <strong>AMC</strong> = only after inspect. Use Inspect job → then Enroll AMC with start /
+              end.
+            </li>
+            <li>
+              <strong>Spare parts</strong> = parts changed on each machine (logged by engineer on the
+              service ticket). Expand per machine below — no separate Parts tab.
+            </li>
+          </ul>
         </Card>
+
+        {(() => {
+          const all = ((contact.assets as Array<Record<string, unknown>>) ?? [])
+          const sold = all.filter((a) => !isThirdPartyOrigin(a.origin ? String(a.origin) : null))
+          const outside = all.filter((a) => isThirdPartyOrigin(a.origin ? String(a.origin) : null))
+          const daysUntil = (dateStr?: string | null) => {
+            if (!dateStr) return null
+            const d = new Date(String(dateStr).slice(0, 10) + 'T12:00:00')
+            if (Number.isNaN(d.getTime())) return null
+            const today = new Date()
+            today.setHours(12, 0, 0, 0)
+            return Math.round((d.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+          }
+          const renderMachine = (a: Record<string, unknown>, kind: 'sold' | 'outside') => {
+            const validTill = a.nextDueDate ? String(a.nextDueDate).slice(0, 10) : ''
+            const lastStamp = a.stampingDate ? String(a.stampingDate).slice(0, 10) : ''
+            const dueDays = daysUntil(validTill)
+            const amcEndDays = daysUntil(a.amcEndDate ? String(a.amcEndDate) : null)
+            const onAmc = a.servicePlan === 'AMC'
+            return (
+              <div
+                key={String(a.id)}
+                className="rounded-[12px] border border-border bg-card p-4 shadow-[var(--shadow-card)]"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-base font-semibold text-text-primary">{String(a.name)}</div>
+                    <div className="mt-1 flex flex-wrap gap-1.5 text-xs text-text-secondary">
+                      <Badge color={kind === 'outside' ? 'amber' : 'blue'}>
+                        {kind === 'outside' ? 'Outside — repair / stamping' : 'Sold by us'}
+                      </Badge>
+                      <Badge color="gray">{String(a.machineType ?? '').replaceAll('_', ' ')}</Badge>
+                      {a.serialNo ? (
+                        <span className="font-mono text-text-primary">S/N {String(a.serialNo)}</span>
+                      ) : null}
+                      {a.capacity ? <span>· {String(a.capacity)}</span> : null}
+                      {a.model ? <span>· {String(a.model)}</span> : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-[10px] border border-violet-200/70 bg-violet-50/40 px-3 py-3 dark:border-violet-900/40 dark:bg-violet-950/20">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-800 dark:text-violet-200">
+                      Stamping (engineer)
+                    </div>
+                    {String(a.machineType) === 'WEIGHING' || lastStamp || validTill ? (
+                      <dl className="mt-2 space-y-1 text-sm">
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-text-secondary">Last stamp</dt>
+                          <dd className="font-medium">{lastStamp ? formatDate(lastStamp) : 'Not stamped yet'}</dd>
+                        </div>
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-text-secondary">Valid till</dt>
+                          <dd className="font-semibold text-text-primary">
+                            {validTill ? formatDate(validTill) : '—'}
+                          </dd>
+                        </div>
+                        {dueDays != null ? (
+                          <div className="pt-1">
+                            {dueDays < 0 ? (
+                              <Badge color="red">Overdue {Math.abs(dueDays)}d</Badge>
+                            ) : dueDays <= 30 ? (
+                              <Badge color="amber">Due in {dueDays}d</Badge>
+                            ) : (
+                              <Badge color="green">Valid · {dueDays}d left</Badge>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="mt-1 text-xs text-text-secondary">
+                            Opens a stamping job — engineer enters dates after verification.
+                          </p>
+                        )}
+                      </dl>
+                    ) : (
+                      <p className="mt-2 text-xs text-text-secondary">Not a weighing unit — stamping N/A.</p>
+                    )}
+                  </div>
+
+                  <div className="rounded-[10px] border border-emerald-200/70 bg-emerald-50/40 px-3 py-3 dark:border-emerald-900/40 dark:bg-emerald-950/20">
+                    <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-200">
+                      AMC (after inspect)
+                    </div>
+                    {onAmc ? (
+                      <dl className="mt-2 space-y-1 text-sm">
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-text-secondary">Plan</dt>
+                          <dd>
+                            <Badge color="green">AMC active</Badge>
+                          </dd>
+                        </div>
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-text-secondary">Start</dt>
+                          <dd className="font-medium">
+                            {a.amcStartDate ? formatDate(String(a.amcStartDate)) : '—'}
+                          </dd>
+                        </div>
+                        <div className="flex justify-between gap-2">
+                          <dt className="text-text-secondary">End</dt>
+                          <dd className="font-medium">
+                            {a.amcEndDate ? formatDate(String(a.amcEndDate)) : '—'}
+                          </dd>
+                        </div>
+                        {amcEndDays != null ? (
+                          <div className="pt-1">
+                            {amcEndDays < 0 ? (
+                              <Badge color="red">AMC expired</Badge>
+                            ) : amcEndDays <= 60 ? (
+                              <Badge color="amber">Renew in {amcEndDays}d</Badge>
+                            ) : (
+                              <Badge color="green">{amcEndDays}d left</Badge>
+                            )}
+                          </div>
+                        ) : null}
+                      </dl>
+                    ) : (
+                      <p className="mt-2 text-xs text-text-secondary">
+                        Non-AMC. Want contract? Run an <strong>inspect</strong> job, then enroll with
+                        start + end dates.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      navigate(
+                        `/tickets?contactId=${encodeURIComponent(String(contact.id))}&assetId=${encodeURIComponent(String(a.id))}&category=Stamping&open=1`,
+                      )
+                    }
+                  >
+                    Stamping job
+                  </Button>
+                  {!onAmc ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          navigate(
+                            `/tickets?contactId=${encodeURIComponent(String(contact.id))}&assetId=${encodeURIComponent(String(a.id))}&category=${encodeURIComponent('AMC visit')}&open=1`,
+                          )
+                        }
+                      >
+                        Inspect for AMC
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          openEditMachine({
+                            ...a,
+                            servicePlan: 'AMC',
+                            amcStartDate: a.amcStartDate || new Date().toISOString().slice(0, 10),
+                          })
+                        }}
+                      >
+                        Enroll AMC
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        navigate(
+                          `/tickets?contactId=${encodeURIComponent(String(contact.id))}&assetId=${encodeURIComponent(String(a.id))}&category=${encodeURIComponent('AMC visit')}&open=1`,
+                        )
+                      }
+                    >
+                      AMC visit job
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      navigate(
+                        `/tickets?contactId=${encodeURIComponent(String(contact.id))}&assetId=${encodeURIComponent(String(a.id))}&open=1`,
+                      )
+                    }
+                  >
+                    Repair job
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => openEditMachine(a)}>
+                    <Edit3 size={14} /> Edit
+                  </Button>
+                </div>
+
+                <div className="mt-3">
+                  <SparePartsPanel
+                    contactId={String(contact.id)}
+                    contactName={String(contact.name)}
+                    fixedAssetId={String(a.id)}
+                    fixedAssetLabel={`${String(a.name)}${a.serialNo ? ` · ${String(a.serialNo)}` : ''}`}
+                    title="Parts changed on this machine"
+                    collapsible
+                    defaultOpen={false}
+                    readOnly
+                  />
+                </div>
+              </div>
+            )
+          }
+
+          if (all.length === 0) {
+            return (
+              <Card padding={false}>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+                  <div className="text-sm font-semibold">Products / machines</div>
+                  <Button size="sm" onClick={openAddMachine}>
+                    Add product
+                  </Button>
+                </div>
+                <EmptyState
+                  icon={<Package size={22} />}
+                  title="No products yet"
+                  subtitle="Add machines clearly as Sold by us or Outside (repair / stamping only)."
+                  actionLabel="Add product"
+                  onAction={openAddMachine}
+                />
+              </Card>
+            )
+          }
+
+          return (
+            <div className="space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm text-text-secondary">
+                  {sold.length} sold by us · {outside.length} outside / stamping-repair
+                </p>
+                <Button size="sm" onClick={openAddMachine}>
+                  Add product
+                </Button>
+              </div>
+
+              <section className="space-y-3">
+                <h3 className="text-sm font-semibold text-text-primary">
+                  Sold by us <span className="font-normal text-text-secondary">({sold.length})</span>
+                </h3>
+                {sold.length === 0 ? (
+                  <p className="rounded-[10px] border border-dashed border-border px-4 py-6 text-center text-sm text-text-secondary">
+                    No HMS-sold machines on this customer yet.
+                  </p>
+                ) : (
+                  sold.map((a) => renderMachine(a, 'sold'))
+                )}
+              </section>
+
+              <section className="space-y-3">
+                <h3 className="text-sm font-semibold text-text-primary">
+                  Outside — repair / stamping only{' '}
+                  <span className="font-normal text-text-secondary">({outside.length})</span>
+                </h3>
+                <p className="text-xs text-text-secondary">
+                  Not purchased from HMS. Customer brought the unit for service or government
+                  stamping only.
+                </p>
+                {outside.length === 0 ? (
+                  <p className="rounded-[10px] border border-dashed border-border px-4 py-6 text-center text-sm text-text-secondary">
+                    No outside machines on file.
+                  </p>
+                ) : (
+                  outside.map((a) => renderMachine(a, 'outside'))
+                )}
+              </section>
+            </div>
+          )
+        })()}
 
         <div className="mt-4 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -964,17 +1280,6 @@ export function ContactDetailPage() {
           ) : null}
         </div>
         </>
-      )}
-
-      {tab === 'SpareParts' && (
-        <div className="space-y-3">
-          <Card className="border-sky-200/80 bg-sky-50/40 p-4 text-sm text-text-secondary dark:border-sky-900/40 dark:bg-sky-950/20">
-            <strong className="text-text-primary">Parts history</strong> — log of parts replaced / installed on
-            this customer&apos;s machines during service (not warehouse stock). Same panel is also on each
-            ticket for job-linked entries.
-          </Card>
-          <SparePartsPanel contactId={String(contact.id)} contactName={String(contact.name)} />
-        </div>
       )}
 
       {tab === 'Tickets' && (

@@ -65,6 +65,72 @@ export async function createNotifications(
   }
 }
 
+/**
+ * Update earlier workflow notifications for an entity (e.g. awaiting assign → engineer assigned)
+ * and optionally mark them read so the admin inbox stays current.
+ */
+export async function resolveEntityNotifications(
+  opts: {
+    tenantId: string;
+    entityType: string;
+    entityId: string;
+    /** Only match these types (e.g. TICKET_CREATED, TICKET_PENDING_APPROVAL) */
+    types?: string[];
+    title?: string;
+    message?: string;
+    /** Replace type so filters / badges reflect the new status */
+    nextType?: string;
+    markRead?: boolean;
+  },
+  req?: Request,
+): Promise<number> {
+  const where = {
+    tenantId: opts.tenantId,
+    entityType: opts.entityType,
+    entityId: opts.entityId,
+    ...(opts.types?.length ? { type: { in: opts.types } } : {}),
+  };
+  const existing = await prisma.notification.findMany({
+    where,
+    select: { id: true, userId: true },
+  });
+  if (!existing.length) return 0;
+
+  const data: {
+    title?: string;
+    message?: string;
+    type?: string;
+    isRead?: boolean;
+    readAt?: Date;
+  } = {};
+  if (opts.title) data.title = opts.title.slice(0, 160);
+  if (opts.message) data.message = opts.message.slice(0, 512);
+  if (opts.nextType) data.type = opts.nextType.slice(0, 64);
+  if (opts.markRead !== false) {
+    data.isRead = true;
+    data.readAt = new Date();
+  }
+
+  await prisma.notification.updateMany({
+    where: { id: { in: existing.map((r) => r.id) } },
+    data,
+  });
+
+  const io = getIo(req);
+  if (io) {
+    const userIds = [...new Set(existing.map((r) => r.userId))];
+    for (const userId of userIds) {
+      io.to(`user:${userId}`).emit("notification:updated", {
+        entityType: opts.entityType,
+        entityId: opts.entityId,
+        title: opts.title ?? null,
+        type: opts.nextType ?? null,
+      });
+    }
+  }
+  return existing.length;
+}
+
 export async function userIdsByRoleCodes(tenantId: string, codes: string[]) {
   const roles = await prisma.role.findMany({
     where: { tenantId, code: { in: codes }, deletedAt: null },

@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -20,6 +21,16 @@ app.use(
   cors({
     origin: env.CLIENT_URL.split(",").map((v) => v.trim()),
     credentials: true,
+  }),
+);
+/** Gzip JSON/API responses — big win for analytics + list payloads */
+app.use(
+  compression({
+    threshold: 1024,
+    filter: (req, res) => {
+      if (req.headers["x-no-compression"]) return false;
+      return compression.filter(req, res);
+    },
   }),
 );
 app.use(express.json({ limit: "2mb" }));

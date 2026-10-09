@@ -19,7 +19,13 @@ import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError, num } from '@/lib/api'
-import { ASSET_ORIGIN_OPTIONS, assetOriginLabel, assetOriginShort } from '@/lib/assetOrigin'
+import {
+  assetOriginLabel,
+  assetOriginShort,
+  machineSourceTagsFromCf,
+  serviceNewMachineTags,
+  stampingOutsideMachineTags,
+} from '@/lib/assetOrigin'
 import {
   familyByCode,
   HMS_FAMILY_OPTIONS,
@@ -27,19 +33,24 @@ import {
   machineOptions,
 } from '@/lib/hmsCatalog'
 import { assetRequiresStamping } from '@/lib/productCatalog'
-import { formatCurrency, formatDate } from '@/lib/utils'
-import { isCompanyAdmin, isScopedEmployee, isServiceDesk, canAssignTickets, canCreateTickets, filterServiceEngineers, type LookupUser } from '@/lib/roles'
-import { WhatsAppSendConfirm, type WhatsAppConfirmPayload } from '@/components/whatsapp/WhatsAppSendConfirm'
+import { isWeighingMachine } from '@/lib/hmsCoverage'
+import { cn, formatCurrency, formatDate } from '@/lib/utils'
+import { isCompanyAdmin, isScopedEmployee, isServiceDesk, isServiceEngineer, canAssignTickets, canCreateTickets, filterServiceEngineers, type LookupUser } from '@/lib/roles'
 import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import { formatServiceId } from '@/lib/serviceId'
 import { MissingBanner, focusFirstMissing, sectionErrorClass } from '@/components/ui/MissingField'
+import { FlowStepBar } from '@/components/ui/FlowStepBar'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
+import { useFieldShell } from '@/hooks/useFieldShell'
 
 const labelize = (value: string) =>
   value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
 
 const ADD_NEW_MACHINE = '__add_new__'
+
+/** First step on create: Service / Stamping (Rental goes to /rentals). */
+type CreateJobKind = '' | 'SERVICE' | 'STAMPING'
 
 const emptyJob = {
   contactId: '',
@@ -55,7 +66,8 @@ const emptyJob = {
   platformSize: '',
   model: '',
   serialNo: '',
-  origin: 'SOLD_BY_US',
+  /** New machines on Service tickets default Outside (THIRD_PARTY) */
+  origin: 'THIRD_PARTY' as string,
   servicePlan: 'NON_AMC',
   amcStartDate: '',
   amcEndDate: '',
@@ -80,14 +92,24 @@ const emptyJob = {
   slaHours: '24',
 }
 
+function jobKindFromParams(params: URLSearchParams): CreateJobKind {
+  const category = params.get('category')
+  const job = params.get('job')
+  if (category === 'Stamping' || job === 'stamping') return 'STAMPING'
+  if (job === 'service' || (category && category !== 'Stamping')) return 'SERVICE'
+  return ''
+}
+
 export function TicketsPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const addToast = useUIStore((s) => s.addToast)
   const authUser = useAuthStore((s) => s.user)
+  const fieldShell = useFieldShell()
   const isAdmin = isCompanyAdmin(authUser?.role)
   const isAgent = isScopedEmployee(authUser?.role)
   const isDesk = isServiceDesk(authUser?.role)
+  const isEngineer = isServiceEngineer(authUser?.role)
   const canAssign = canAssignTickets(authUser?.role)
   const canCreate = canCreateTickets(authUser?.role)
 
@@ -95,23 +117,23 @@ export function TicketsPage() {
   const [assets, setAssets] = useState<Record<string, unknown>[]>([])
   const [users, setUsers] = useState<LookupUser[]>([])
   const [status, setStatus] = useState(searchParams.get('status') ?? '')
+  const [areaFilter, setAreaFilter] = useState(searchParams.get('area') ?? '')
   const [queue, setQueue] = useState<
     'all' | 'awaiting' | 'progress' | 'approval' | 'closed'
   >((searchParams.get('queue') as 'all' | 'awaiting' | 'progress' | 'approval' | 'closed') || 'all')
   const [tab, setTab] = useState<'list' | 'create'>('list')
+  const [jobKind, setJobKind] = useState<CreateJobKind>(() => jobKindFromParams(searchParams))
   const [assignModal, setAssignModal] = useState<{ id: string; ticketNo?: string } | null>(null)
   const [assignUserId, setAssignUserId] = useState('')
   const [assignBusy, setAssignBusy] = useState(false)
   const [form, setForm] = useState(emptyJob)
   const [pickedContact, setPickedContact] = useState<ContactPick | null>(null)
   const [saving, setSaving] = useState(false)
-  const [waPending, setWaPending] = useState<{
-    payload: WhatsAppConfirmPayload
-    execute: (sendWhatsApp: boolean) => Promise<void>
-  } | null>(null)
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
   const [busyDelete, setBusyDelete] = useState(false)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+  /** Stamping only: existing machine came vs add new under customer */
+  const [machinePath, setMachinePath] = useState<'' | 'existing' | 'new'>('')
 
   const engineers = useMemo(() => filterServiceEngineers(users), [users])
 
@@ -119,12 +141,13 @@ export function TicketsPage() {
     try {
       const [res, lookups] = await Promise.all([
         api.tickets({
-          limit: 500,
+          limit: 200,
           sort: 'newest',
           status: status || undefined,
+          area: areaFilter.trim() || undefined,
           contactId: searchParams.get('contactId') || undefined,
           slaBreached: searchParams.get('slaBreached') || undefined,
-          ...(isAgent ? { mine: 1 } : {}),
+          ...(isAgent ? { mine: 1, ...(isServiceEngineer(authUser?.role) ? { claimable: 1 } : {}) } : {}),
         }),
         api.lookups(),
       ])
@@ -137,7 +160,7 @@ export function TicketsPage() {
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Failed to load jobs' })
     }
-  }, [addToast, authUser?.id, isAdmin, isAgent, searchParams, status])
+  }, [addToast, authUser?.id, authUser?.role, areaFilter, isAdmin, isAgent, searchParams, status])
 
   const loadAssets = useCallback(
     async (contactId: string) => {
@@ -149,11 +172,17 @@ export function TicketsPage() {
         const res = await api.assets({ contactId, limit: 100 })
         const items = res.items ?? []
         setAssets(items)
-        // No machines on file → open “Add new machine” so desk can register one immediately
+        // No machines on file → open “Add new machine” (Outside + Service new / Stamping tags)
         if (items.length === 0) {
+          setMachinePath((prev) => (prev === 'existing' ? 'new' : prev || 'new'))
           setForm((f) =>
             f.contactId === contactId && !f.assetId
-              ? { ...f, newMachine: true }
+              ? {
+                  ...f,
+                  newMachine: true,
+                  origin: 'THIRD_PARTY',
+                  servicePlan: 'NON_AMC',
+                }
               : f,
           )
         }
@@ -168,15 +197,15 @@ export function TicketsPage() {
     void load()
   }, [load])
 
-  // Admin: quiet list poll (no flash) — only when tab is visible
+  // Admin / desk / engineer: quiet list poll so Mark complete shows up for desk
   useEffect(() => {
-    if (!isAdmin || tab !== 'list') return
+    if ((!isAdmin && !isDesk && !isServiceEngineer(authUser?.role)) || tab !== 'list') return
     const id = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return
       void load()
-    }, 30000)
+    }, 45_000)
     return () => window.clearInterval(id)
-  }, [isAdmin, tab, load])
+  }, [isAdmin, isDesk, authUser?.role, tab, load])
 
   const queueCounts = useMemo(() => {
     const awaiting = tickets.filter((t) => String(t.status) === 'OPEN' && !t.assignedToId).length
@@ -189,8 +218,9 @@ export function TicketsPage() {
   }, [tickets])
 
   const displayedTickets = useMemo(() => {
+    const useQueue = isAdmin || isDesk
     const rows =
-      !isAdmin || queue === 'all'
+      !useQueue || queue === 'all'
         ? [...tickets]
         : tickets.filter((t) => {
             const st = String(t.status)
@@ -207,7 +237,7 @@ export function TicketsPage() {
       if (tb !== ta) return tb - ta
       return num(b.ticketNo) - num(a.ticketNo)
     })
-  }, [tickets, queue, isAdmin])
+  }, [tickets, queue, isAdmin, isDesk])
 
   const ticketIds = useMemo(() => displayedTickets.map((t) => String(t.id)), [displayedTickets])
   const selection = useRowSelection(ticketIds)
@@ -294,17 +324,59 @@ export function TicketsPage() {
     const contactId = searchParams.get('contactId')
     const assetId = searchParams.get('assetId')
     const category = searchParams.get('category')
+    const machine = searchParams.get('machine')
+    const leadId = searchParams.get('leadId')
     const shouldOpen = searchParams.get('open') === '1'
+    const kind = jobKindFromParams(searchParams)
+    if (kind) setJobKind(kind)
+    if (machine === 'new') {
+      setMachinePath('new')
+      setForm((f) => ({ ...f, newMachine: true, origin: 'THIRD_PARTY', assetId: '' }))
+    } else if (machine === 'existing' || assetId) {
+      setMachinePath('existing')
+      setForm((f) => ({ ...f, newMachine: false }))
+    }
     if (contactId) {
       setForm((f) => ({
         ...f,
         contactId,
         assetId: assetId || f.assetId,
-        ...(category ? { category } : {}),
+        ...(category ? { category } : kind === 'STAMPING' ? { category: 'Stamping' } : {}),
+        ...(kind === 'STAMPING' && !f.description.trim()
+          ? {
+              description: leadId
+                ? 'From intake — government stamping / verification.'
+                : 'Customer walk-in for government stamping / verification.',
+            }
+          : kind === 'SERVICE' && leadId && !f.description.trim()
+            ? { description: 'From intake — service job. Log the customer complaint below.' }
+            : {}),
       }))
       void loadAssets(contactId)
+      void api
+        .getContact(contactId)
+        .then((c) => {
+          setPickedContact({
+            id: String(c.id),
+            name: String(c.name ?? ''),
+            phone: c.phone ? String(c.phone) : null,
+            email: c.email ? String(c.email) : null,
+            customerCode: c.customerCode ? String(c.customerCode) : null,
+          } as ContactPick)
+        })
+        .catch(() => {
+          /* ignore */
+        })
     } else if (category) {
       setForm((f) => ({ ...f, category }))
+    } else if (kind === 'STAMPING') {
+      setForm((f) => ({
+        ...f,
+        category: 'Stamping',
+        ...(f.description.trim()
+          ? {}
+          : { description: 'Customer walk-in for government stamping / verification.' }),
+      }))
     }
     if (shouldOpen && canCreate) setTab('create')
   }, [canCreate, loadAssets, searchParams])
@@ -320,6 +392,7 @@ export function TicketsPage() {
   const onPickContact = useCallback(
     (c: ContactPick | null) => {
       setPickedContact(c)
+      setMachinePath('')
       setForm((f) => ({
         ...f,
         contactId: c?.id ?? '',
@@ -329,12 +402,45 @@ export function TicketsPage() {
         industryCode: '',
         machineSku: '',
         machineName: '',
+        ...(jobKind === 'STAMPING' && !f.description.trim()
+          ? { description: 'Customer walk-in for government stamping / verification.' }
+          : {}),
       }))
       if (c?.id) void loadAssets(c.id)
       else setAssets([])
     },
-    [loadAssets],
+    [jobKind, loadAssets],
   )
+
+  function chooseStampingMachinePath(path: 'existing' | 'new') {
+    setMachinePath(path)
+    if (path === 'new') {
+      setForm((f) => ({
+        ...f,
+        newMachine: true,
+        assetId: '',
+        origin: 'THIRD_PARTY',
+        servicePlan: 'NON_AMC',
+        machineName: '',
+        serialNo: '',
+        familyCode: 'WEIGHING_SCALES',
+        industryCode: '',
+        machineSku: '',
+      }))
+    } else {
+      setForm((f) => ({
+        ...f,
+        newMachine: false,
+        assetId: '',
+        machineName: '',
+      }))
+    }
+    setFieldErrors((fe) => {
+      const next = { ...fe }
+      delete next.assetId
+      return next
+    })
+  }
 
   const balancePreview = useMemo(() => {
     const pay = Number(form.paymentTotal) || 0
@@ -342,7 +448,12 @@ export function TicketsPage() {
     return Math.max(0, pay - adv)
   }, [form.advanceAmount, form.paymentTotal])
 
-  const isStampingJob = form.category === 'Stamping'
+  const isStampingJob = jobKind === 'STAMPING' || form.category === 'Stamping'
+  const isServiceJob = jobKind === 'SERVICE' && !isStampingJob
+  const createReturnTo =
+    jobKind === 'STAMPING'
+      ? '/tickets?open=1&job=stamping&category=Stamping'
+      : '/tickets?open=1&job=service'
   const selectedAssetOrigin = useMemo(() => {
     if (form.newMachine) return form.origin
     const a = assets.find((x) => String(x.id) === form.assetId)
@@ -387,13 +498,43 @@ export function TicketsPage() {
   )
 
   function resetCreate() {
+    setJobKind('')
+    setMachinePath('')
     setForm({ ...emptyJob, receivedByUserId: authUser?.id || '' })
     setPickedContact(null)
     setAssets([])
+    setFieldErrors({})
+  }
+
+  function selectJobKind(kind: CreateJobKind) {
+    setJobKind(kind)
+    setMachinePath('')
+    if (kind === 'STAMPING') {
+      setForm((f) => ({
+        ...f,
+        category: 'Stamping',
+        origin: 'THIRD_PARTY',
+        servicePlan: 'NON_AMC',
+        amcStartDate: '',
+        amcEndDate: '',
+        description: f.description.trim()
+          ? f.description
+          : 'Customer walk-in for government stamping / verification.',
+      }))
+    } else if (kind === 'SERVICE') {
+      setForm((f) => ({
+        ...f,
+        category: f.category === 'Stamping' ? 'Breakdown' : f.category || 'Breakdown',
+        origin: 'THIRD_PARTY',
+        servicePlan: 'NON_AMC',
+      }))
+    }
   }
 
   function pickMachineFromDropdown(value: string) {
     if (value === ADD_NEW_MACHINE) {
+      setMachinePath('new')
+      // Service / stamping walk-in new machines are Outside (+ Service new tag on save)
       setForm((f) => ({
         ...f,
         newMachine: true,
@@ -408,11 +549,14 @@ export function TicketsPage() {
         platformSize: '',
         model: '',
         serialNo: '',
-        origin: 'SOLD_BY_US',
+        origin: 'THIRD_PARTY',
         servicePlan: 'NON_AMC',
+        amcStartDate: '',
+        amcEndDate: '',
       }))
       return
     }
+    setMachinePath('existing')
     const a = assets.find((x) => String(x.id) === value)
     if (a) applyAssetToForm(a)
     else setForm((f) => ({ ...f, assetId: value, newMachine: false }))
@@ -439,6 +583,10 @@ export function TicketsPage() {
 
   async function createJob(e: FormEvent) {
     e.preventDefault()
+    if (!jobKind) {
+      addToast({ type: 'error', message: 'Choose Service or Stamping first' })
+      return
+    }
     const machineOk = form.newMachine
       ? Boolean(form.machineName.trim()) &&
         Boolean(form.familyCode) &&
@@ -455,12 +603,14 @@ export function TicketsPage() {
         {
           key: 'assetId',
           sectionId: 'section-ticket-machine',
-          ok: machineOk,
-          message: form.newMachine
-            ? newMachineNeedsIndustry && !form.industryCode
-              ? 'Select industry, then machine details.'
-              : 'Enter machine details (product / name).'
-            : 'Select a machine for this customer, or add a new one.',
+          ok: isStampingJob ? Boolean(machinePath) && machineOk : machineOk,
+          message: isStampingJob && !machinePath
+            ? 'Choose: existing machine came, or new machine for stamping.'
+            : form.newMachine
+              ? newMachineNeedsIndustry && !form.industryCode
+                ? 'Select industry, then machine details.'
+                : 'Enter machine details (product / name).'
+              : 'Select a machine for this customer, or add a new one.',
         },
         {
           key: 'description',
@@ -481,20 +631,8 @@ export function TicketsPage() {
       addToast({ type: 'error', message: 'Missing required fields — scrolled to the red section.' })
       return
     }
-    const engName = engineers.find((u) => u.id === form.receivedByUserId)?.name
-    setWaPending({
-      payload: {
-        title: 'Create ticket & send WhatsApp?',
-        lines: [
-          'Template ticket_created_customer → customer',
-          ...(canAssign && form.receivedByUserId
-            ? [`Template ticket_assigned_engineer → ${engName || 'engineer'}`]
-            : ['Engineer WhatsApp only after admin assigns']),
-        ],
-        note: 'Uses customer name, ticket no, company name, machine/issue (+ engineer location fields when assigned).',
-      },
-      execute: (send) => doCreateJob(send),
-    })
+    // WhatsApp on create is off for now — create ticket directly
+    void doCreateJob(false)
   }
 
   async function doCreateJob(sendWhatsApp: boolean) {
@@ -510,6 +648,14 @@ export function TicketsPage() {
         }
         const fam = familyByCode(form.familyCode)
         const ind = fam?.industries?.find((i) => i.code === form.industryCode)
+        // New machine on Service → Outside + Service new; Stamping outside → Outside + Stamping
+        const originForNew =
+          isServiceJob || isStampingJob ? 'THIRD_PARTY' : form.origin || 'THIRD_PARTY'
+        const machineTags: string[] = isStampingJob
+          ? originForNew === 'THIRD_PARTY'
+            ? [...stampingOutsideMachineTags()]
+            : ['Stamping']
+          : [...serviceNewMachineTags()]
         const machine = await api.createAsset({
           contactId: form.contactId,
           machineType: form.machineType,
@@ -519,14 +665,20 @@ export function TicketsPage() {
           platformSize: form.platformSize || null,
           model: form.model || null,
           serialNo: form.serialNo || null,
-          origin: form.origin,
-          servicePlan: form.servicePlan,
-          amcStartDate: form.servicePlan === 'AMC' ? form.amcStartDate || null : null,
-          amcEndDate: form.servicePlan === 'AMC' ? form.amcEndDate || null : null,
+          origin: originForNew,
+          servicePlan: originForNew === 'THIRD_PARTY' ? 'NON_AMC' : form.servicePlan,
+          amcStartDate:
+            originForNew !== 'THIRD_PARTY' && form.servicePlan === 'AMC'
+              ? form.amcStartDate || null
+              : null,
+          amcEndDate:
+            originForNew !== 'THIRD_PARTY' && form.servicePlan === 'AMC'
+              ? form.amcEndDate || null
+              : null,
           remindersEnabled: form.remindersEnabled,
           stampingDate: null,
           nextDueDate:
-            form.category === 'Stamping'
+            isStampingJob
               ? null
               : formRequiresStamping
                 ? form.nextDueDate || null
@@ -544,12 +696,16 @@ export function TicketsPage() {
             catalogIndustryName: ind?.name ?? null,
             machineSku:
               form.machineSku && form.machineSku !== '__custom__' ? form.machineSku : null,
-            ...(form.category === 'Stamping'
+            machineTags: [...machineTags],
+            serviceNew: isServiceJob,
+            ...(isStampingJob
               ? {
                   visitPurpose: 'STAMPING',
-                  cameOnlyForStamping: form.origin === 'THIRD_PARTY',
+                  cameOnlyForStamping: originForNew === 'THIRD_PARTY',
                 }
-              : {}),
+              : {
+                  visitPurpose: 'SERVICE',
+                }),
           },
         })
         assetId = String(machine.id)
@@ -585,10 +741,11 @@ export function TicketsPage() {
         String(assets.find((a) => String(a.id) === form.assetId)?.name ?? 'Service')
 
       const assigneeId = canAssign ? form.receivedByUserId || null : null
-      const subjectPrefix = form.category === 'Stamping' ? 'Stamping' : 'Service'
+      const ticketCategory = isStampingJob ? 'Stamping' : form.category
+      const subjectPrefix = isStampingJob ? 'Stamping' : 'Service'
       const existingAsset = assets.find((a) => String(a.id) === assetId)
       const originForJob = form.newMachine
-        ? form.origin
+        ? 'THIRD_PARTY'
         : existingAsset?.origin
           ? String(existingAsset.origin)
           : 'SOLD_BY_US'
@@ -609,7 +766,7 @@ export function TicketsPage() {
         assignedToId: assigneeId,
         receivedByUserId: assigneeId,
         deliveredByUserId: canAssign ? form.deliveredByUserId || null : null,
-        category: form.category,
+        category: ticketCategory,
         channel: form.channel,
         slaHours: Number(form.slaHours) || 24,
         sendWhatsApp,
@@ -623,7 +780,10 @@ export function TicketsPage() {
             plateNo: form.plateNo || null,
             verificationClass: form.verificationClass || null,
           },
-          ...(form.category === 'Stamping'
+          ...(searchParams.get('leadId')
+            ? { fromLeadId: searchParams.get('leadId') }
+            : {}),
+          ...(isStampingJob
             ? {
                 visitPurpose: 'STAMPING',
                 machineOrigin: originForJob,
@@ -633,9 +793,18 @@ export function TicketsPage() {
                     ? 'Outside machine — customer came only for stamping / verification'
                     : 'Sold by us — renewal / re-stamp visit',
               }
-            : {}),
+            : { visitPurpose: 'SERVICE' }),
         },
       })
+
+      const intakeLeadId = searchParams.get('leadId')
+      if (intakeLeadId && created.id) {
+        try {
+          await api.linkLeadTicket(intakeLeadId, String(created.id))
+        } catch {
+          /* ticket still valid — link is best-effort */
+        }
+      }
 
       setTab('list')
       resetCreate()
@@ -643,13 +812,22 @@ export function TicketsPage() {
         const n = new URLSearchParams(prev)
         n.delete('open')
         n.delete('assetId')
+        n.delete('job')
+        n.delete('category')
+        n.delete('leadId')
+        n.delete('contactId')
+        n.delete('machine')
         return n
       })
       addToast({
         type: 'success',
         message: isDesk
-          ? 'Ticket created — waiting for admin to assign an engineer'
-          : 'Service job saved',
+          ? isStampingJob
+            ? 'Stamping job created OPEN — engineers notified.'
+            : 'Ticket created OPEN — all engineers notified. First to Accept gets the job.'
+          : isStampingJob
+            ? 'Stamping job saved'
+            : 'Service job saved',
       })
       if (created.id) {
         navigate(`/tickets/${String(created.id)}`)
@@ -705,7 +883,11 @@ export function TicketsPage() {
         tabs={[
           {
             id: 'list',
-            label: isAdmin || isDesk ? 'All tickets' : 'Assigned to me',
+            label: isAdmin || isDesk
+              ? 'All tickets'
+              : isServiceEngineer(authUser?.role)
+                ? 'My jobs & open pool'
+                : 'Assigned to me',
             count: tickets.length,
           },
           ...(canCreate ? [{ id: 'create', label: 'New ticket' }] : []),
@@ -714,12 +896,12 @@ export function TicketsPage() {
 
       {tab === 'list' ? (
         <>
-          {isAdmin ? (
+          {isAdmin || isDesk ? (
             <div className="mb-4 flex flex-wrap gap-2">
               {(
                 [
                   { id: 'all', label: 'All', count: queueCounts.all },
-                  { id: 'awaiting', label: 'Awaiting assignment', count: queueCounts.awaiting },
+                  { id: 'awaiting', label: 'Awaiting Accept', count: queueCounts.awaiting },
                   { id: 'progress', label: 'In progress', count: queueCounts.progress },
                   { id: 'approval', label: 'Pending approval', count: queueCounts.approval },
                   { id: 'closed', label: 'Closed', count: queueCounts.closed },
@@ -752,35 +934,43 @@ export function TicketsPage() {
                 })),
               ]}
             />
+            {isAdmin || isDesk ? (
+              <Input
+                value={areaFilter}
+                onChange={(e) => setAreaFilter(e.target.value)}
+                placeholder="Filter by area…"
+                className="w-48"
+              />
+            ) : null}
           </div>
 
           <Card padding={false}>
             {displayedTickets.length === 0 ? (
               <EmptyState
                 title={
-                  isAdmin
+                  isAdmin || isDesk
                     ? queue === 'awaiting'
-                      ? 'No tickets awaiting assignment'
+                      ? 'No tickets awaiting Accept'
                       : queue === 'approval'
                         ? 'No tickets pending approval'
                         : 'No service jobs in this queue'
-                    : isDesk
-                      ? 'No tickets yet'
+                    : isServiceEngineer(authUser?.role)
+                      ? 'No open jobs in your pool'
                       : 'No jobs assigned to you'
                 }
                 subtitle={
-                  isAdmin
-                    ? 'New desk tickets appear under Awaiting assignment. Completed jobs need your approval.'
-                    : isDesk
-                      ? 'Create an OPEN ticket for a customer. Admin will assign the engineer.'
-                      : 'When an admin assigns a ticket to you, it shows up here from the live database.'
+                  isAdmin || isDesk
+                    ? 'Create an OPEN ticket — engineers Accept from the pool. Desk marks complete, collects payment, and closes.'
+                    : isServiceEngineer(authUser?.role)
+                      ? 'Open jobs appear here and in Workqueue → Open to accept. Tap Accept before another engineer takes it.'
+                      : 'When a ticket is assigned to you, it shows up here from the live database.'
                 }
                 actionLabel={canCreate ? 'New ticket' : undefined}
                 onAction={canCreate ? () => setTab('create') : undefined}
               />
             ) : (
               <div className="p-4 pt-3">
-                {isAdmin && selection.someSelected ? (
+                {isAdmin && selection.someSelected && !fieldShell ? (
                   <BulkActionBar
                     count={selection.selectedCount}
                     noun="job"
@@ -789,7 +979,81 @@ export function TicketsPage() {
                     onDelete={() => setConfirm({ ids: selection.selectedIds })}
                   />
                 ) : null}
-                <div className="overflow-x-auto">
+                {fieldShell && isEngineer ? (
+                  <div className="space-y-2.5">
+                    {displayedTickets.map((ticket) => {
+                      const id = String(ticket.id)
+                      const contact = ticket.contact as {
+                        name?: string
+                        customerCode?: string
+                        area?: string
+                      } | null
+                      const st = String(ticket.status)
+                      const unassigned = !ticket.assignedToId
+                      const serviceId = formatServiceId(ticket.ticketNo as number | string)
+                      const area =
+                        contact?.area ||
+                        (ticket.customFields as { serviceArea?: string } | null)?.serviceArea ||
+                        ''
+                      return (
+                        <div
+                          key={id}
+                          className="rounded-xl border border-border bg-card p-3.5 shadow-sm"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-[15px] font-semibold text-text-primary">
+                                {serviceId} — {String(ticket.subject ?? 'Job')}
+                              </div>
+                              <div className="mt-1 text-[13px] text-text-secondary">
+                                {contact?.name ?? 'Customer'}
+                                {area ? ` · ${area}` : ''}
+                              </div>
+                            </div>
+                            <Badge color={st === 'OPEN' ? 'amber' : st === 'RESOLVED' ? 'green' : 'blue'}>
+                              {labelize(st)}
+                            </Badge>
+                          </div>
+                          <div className="mt-3 flex flex-col gap-2">
+                            {unassigned && st === 'OPEN' ? (
+                              <Button
+                                className="min-h-12 w-full text-base"
+                                onClick={() => {
+                                  void (async () => {
+                                    try {
+                                      await api.claimTicket(id)
+                                      addToast({ type: 'success', message: 'Job accepted' })
+                                      navigate(`/tickets/${id}`)
+                                    } catch (e) {
+                                      addToast({
+                                        type: 'error',
+                                        message:
+                                          e instanceof ApiClientError
+                                            ? e.message
+                                            : 'Already taken',
+                                      })
+                                      await load()
+                                    }
+                                  })()
+                                }}
+                              >
+                                Accept job
+                              </Button>
+                            ) : null}
+                            <Button
+                              variant="outline"
+                              className="min-h-11 w-full"
+                              onClick={() => navigate(`/tickets/${id}`)}
+                            >
+                              Open job
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : null}
+                <div className={cn('overflow-x-auto', fieldShell && isEngineer && 'hidden')}>
                   <table className="w-full min-w-[1400px] text-left text-sm">
                     <thead className="bg-surface text-xs text-text-secondary">
                       <tr className="border-b border-border">
@@ -804,6 +1068,7 @@ export function TicketsPage() {
                         {[
                           'Service ID',
                           'Customer',
+                          'Area',
                           'Machine',
                           'Engineer',
                           'AMC',
@@ -825,12 +1090,20 @@ export function TicketsPage() {
                     <tbody>
                       {displayedTickets.map((ticket) => {
                         const id = String(ticket.id)
-                        const contact = ticket.contact as { name?: string; customerCode?: string } | null
+                        const contact = ticket.contact as {
+                          name?: string
+                          customerCode?: string
+                          area?: string
+                        } | null
                         const asset = ticket.asset as { name?: string; servicePlan?: string } | null
                         const st = String(ticket.status)
                         const paySt = String(ticket.paymentStatus ?? 'UNPAID')
                         const unassigned = !ticket.assignedToId
                         const serviceId = formatServiceId(ticket.ticketNo as number | string)
+                        const area =
+                          contact?.area ||
+                          (ticket.customFields as { serviceArea?: string } | null)?.serviceArea ||
+                          ''
                         return (
                           <tr
                             key={id}
@@ -864,10 +1137,13 @@ export function TicketsPage() {
                                 {contact?.customerCode ?? ''}
                               </div>
                             </td>
+                            <td className="px-3 py-3 text-text-secondary">{area || '—'}</td>
                             <td className="max-w-[160px] px-3 py-3">{asset?.name ?? String(ticket.subject)}</td>
                             <td className="px-3 py-3">
                               {unassigned ? (
-                                <Badge color="amber">Unassigned</Badge>
+                                <Badge color="amber">
+                                  {st === 'OPEN' ? 'Open to accept' : 'Unassigned'}
+                                </Badge>
                               ) : (
                                 String(ticket.assignedToName ?? ticket.receivedByName ?? '—')
                               )}
@@ -894,7 +1170,9 @@ export function TicketsPage() {
                               {ticket.nextDueDate ? formatDate(String(ticket.nextDueDate)) : '—'}
                             </td>
                             <td className="px-3 py-3">
-                              <Badge color={ticketStatusColor[st] ?? 'gray'}>{labelize(st)}</Badge>
+                              <Badge color={ticketStatusColor[st] ?? 'gray'} solid>
+                                {labelize(st)}
+                              </Badge>
                             </td>
                             <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center gap-0.5">
@@ -912,6 +1190,32 @@ export function TicketsPage() {
                                     }}
                                   >
                                     {unassigned ? 'Assign' : 'Reassign'}
+                                  </Button>
+                                ) : null}
+                                {isServiceEngineer(authUser?.role) && unassigned && st === 'OPEN' ? (
+                                  <Button
+                                    size="sm"
+                                    onClick={() => {
+                                      void (async () => {
+                                        try {
+                                          await api.claimTicket(id)
+                                          addToast({ type: 'success', message: 'Job accepted' })
+                                          await load()
+                                          navigate(`/tickets/${id}`)
+                                        } catch (e) {
+                                          addToast({
+                                            type: 'error',
+                                            message:
+                                              e instanceof ApiClientError
+                                                ? e.message
+                                                : 'Already taken',
+                                          })
+                                          await load()
+                                        }
+                                      })()
+                                    }}
+                                  >
+                                    Accept
                                   </Button>
                                 ) : null}
                                 {isAdmin ? (
@@ -936,14 +1240,24 @@ export function TicketsPage() {
         <FormPanel
           open
           accent="theme"
-          eyebrow="SERVICE"
-          title={form.category === 'Stamping' ? 'New stamping job' : 'New ticket'}
+          eyebrow={isStampingJob ? 'STAMPING' : isServiceJob ? 'SERVICE' : 'NEW JOB'}
+          title={
+            !jobKind
+              ? 'New job — choose type'
+              : isStampingJob
+                ? 'New stamping job'
+                : 'New service ticket'
+          }
+          width={720}
+          storageKey="nova.drawer.tickets.create"
           subtitle={
-            form.category === 'Stamping'
-              ? 'Desk opens the job — engineer records the new stamp date after verification, then marks complete.'
-              : isDesk
-                ? 'Find or add customer, select machine, log the issue. Step 1 creates an OPEN ticket — admin assigns the engineer (Step 2).'
-                : 'Customer, machine, issue log, and assign an engineer (Steps 1–2).'
+            !jobKind
+              ? 'First pick Service, Stamping, or Rental. Rentals open a separate section — not a service ticket.'
+              : isStampingJob
+                ? 'Old customer → existing machine or add new → create job. After verification, stamp date + next due update the machine.'
+                : isDesk
+                  ? 'Search customer → existing or new machine (Outside + Service new) → log the issue. OPEN ticket for engineers to Accept.'
+                  : 'Customer, machine, issue log, and assign an engineer.'
           }
           onClose={() => {
             setTab('list')
@@ -957,39 +1271,135 @@ export function TicketsPage() {
                   resetCreate()
                 }}
               />
-              <Button type="submit" form="service-job-form" disabled={saving}>
-                {saving ? 'Saving…' : isDesk ? 'Create ticket (OPEN)' : 'Save service job'}
-              </Button>
+              {jobKind ? (
+                <Button type="submit" form="service-job-form" disabled={saving}>
+                  {saving
+                    ? 'Saving…'
+                    : isDesk
+                      ? isStampingJob
+                        ? 'Create stamping job'
+                        : 'Create ticket (OPEN)'
+                      : 'Save job'}
+                </Button>
+              ) : null}
             </>
           }
         >
           <form id="service-job-form" onSubmit={(e) => void createJob(e)} className="space-y-6">
-            <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
-                1. Job category
-              </h3>
-              <Select
-                label="Category *"
-                value={form.category}
-                onChange={(e) => {
-                  const category = e.target.value
-                  setForm((f) => ({
-                    ...f,
-                    category,
-                    // Outside walk-in for stamp is the common case — desk can switch to Sold by us
-                    ...(category === 'Stamping' && f.newMachine
-                      ? { origin: 'THIRD_PARTY', servicePlan: 'NON_AMC' }
-                      : {}),
-                  }))
-                }}
-                options={[
-                  { value: 'Breakdown', label: 'Breakdown / repair' },
-                  { value: 'Installation', label: 'Installation' },
-                  { value: 'Stamping', label: 'Stamping / verification' },
-                  { value: 'AMC visit', label: 'AMC visit' },
-                  { value: 'Other', label: 'Other' },
+            {isStampingJob ? (
+              <FlowStepBar
+                className="rounded-[12px] border border-violet-200/70 bg-violet-50/40 px-2 py-3 dark:border-violet-900/40 dark:bg-violet-950/20"
+                steps={[
+                  { key: 'type', label: 'Type', hint: 'Stamping' },
+                  { key: 'customer', label: 'Customer', hint: 'Old customer' },
+                  {
+                    key: 'machine',
+                    label: 'Machine',
+                    hint: machinePath === 'new' ? 'Add new' : machinePath === 'existing' ? 'Existing' : 'Choose path',
+                  },
+                  { key: 'log', label: 'Issue log', hint: 'Create job' },
+                  { key: 'done', label: 'Stamp dates', hint: 'On complete' },
+                ]}
+                doneFlags={[
+                  true,
+                  Boolean(form.contactId),
+                  Boolean(form.contactId) && (form.newMachine || Boolean(form.assetId)),
+                  Boolean(form.description.trim()) && (form.newMachine || Boolean(form.assetId)),
+                  false,
                 ]}
               />
+            ) : null}
+            <section className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-text-primary">1. Type of job</h3>
+                {jobKind ? (
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-accent-blue hover:underline"
+                    onClick={() => {
+                      setJobKind('')
+                      setFieldErrors({})
+                    }}
+                  >
+                    Change type
+                  </button>
+                ) : null}
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                {(
+                  [
+                    {
+                      id: 'SERVICE' as const,
+                      title: 'Service',
+                      body: 'Repair / breakdown / installation / AMC visit on a customer machine.',
+                    },
+                    {
+                      id: 'STAMPING' as const,
+                      title: 'Stamping',
+                      body: 'Government stamping / verification — same machine details, stamping purpose.',
+                    },
+                    {
+                      id: 'RENTAL' as const,
+                      title: 'Rental',
+                      body: 'Issue a rental machine — separate Rentals section (not a service ticket).',
+                    },
+                  ] as const
+                ).map((opt) => {
+                  const selected =
+                    (opt.id === 'SERVICE' && jobKind === 'SERVICE') ||
+                    (opt.id === 'STAMPING' && jobKind === 'STAMPING')
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => {
+                        if (opt.id === 'RENTAL') {
+                          resetCreate()
+                          setTab('list')
+                          navigate('/rentals?open=1')
+                          return
+                        }
+                        selectJobKind(opt.id)
+                      }}
+                      className={`rounded-[12px] border px-3 py-3 text-left transition ${
+                        selected
+                          ? 'border-accent-blue bg-accent-blue/10 ring-2 ring-accent-blue/30'
+                          : 'border-border bg-card hover:border-accent-blue/50 hover:bg-muted/40'
+                      }`}
+                    >
+                      <div className="text-sm font-semibold text-text-primary">{opt.title}</div>
+                      <p className="mt-1 text-xs text-text-secondary">{opt.body}</p>
+                    </button>
+                  )
+                })}
+              </div>
+            </section>
+
+            {jobKind ? (
+              <>
+            <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
+                2. {isStampingJob ? 'Channel' : 'Service details'}
+              </h3>
+              {isServiceJob ? (
+                <Select
+                  label="Service type *"
+                  value={form.category}
+                  onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
+                  options={[
+                    { value: 'Breakdown', label: 'Breakdown / repair' },
+                    { value: 'Installation', label: 'Installation' },
+                    { value: 'AMC visit', label: 'AMC visit' },
+                    { value: 'Other', label: 'Other' },
+                  ]}
+                />
+              ) : (
+                <div className="rounded-[8px] border border-violet-200/80 bg-violet-50/80 px-3 py-2 text-xs text-violet-950 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-100 sm:col-span-2 lg:col-span-3">
+                  Stamping job — do <strong>not</strong> enter today’s stamp date at create. After
+                  verification, desk or engineer enters <strong>stamp date + next due</strong> on
+                  the ticket, then Mark complete (updates the customer machine).
+                </div>
+              )}
               <Select
                 label="Channel"
                 value={form.channel}
@@ -1001,20 +1411,15 @@ export function TicketsPage() {
                   { value: 'Field', label: 'Field visit' },
                 ]}
               />
-              {isStampingJob ? (
-                <p className="sm:col-span-2 lg:col-span-3 -mt-1 rounded-[8px] border border-violet-200/80 bg-violet-50/80 px-3 py-2 text-xs text-violet-950 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-100">
-                  Stamping job — desk does <strong>not</strong> enter today’s stamp date. After the
-                  visit, the <strong>engineer</strong> records stamp date + next due, then marks
-                  complete. Machine register updates from that.
-                </p>
-              ) : null}
             </section>
 
             <section
               id="section-ticket-customer"
               className={`scroll-mt-24 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 ${sectionErrorClass(Boolean(fieldErrors.contactId))}`}
             >
-              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">2. Customer</h3>
+              <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
+                3. Customer
+              </h3>
               {fieldErrors.contactId ? (
                 <div className="sm:col-span-2 lg:col-span-3">
                   <MissingBanner message={fieldErrors.contactId} />
@@ -1022,18 +1427,34 @@ export function TicketsPage() {
               ) : null}
               <ContactPicker
                 className="sm:col-span-2 lg:col-span-3"
-                label="Customer / shop *"
+                label="Search customer / shop *"
                 valueId={form.contactId}
                 selected={pickedContact}
                 onSelect={onPickContact}
-                returnTo="/tickets?open=1"
+                returnTo={createReturnTo}
               />
               <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
-                New customer?{' '}
-                <Link to="/contacts?open=1&returnTo=/tickets?open=1" className="font-medium text-accent-blue hover:underline">
+                Not found?{' '}
+                <Link
+                  to={`/contacts?open=1&returnTo=${encodeURIComponent(createReturnTo)}`}
+                  className="font-medium text-accent-blue hover:underline"
+                >
                   Add customer
                 </Link>
-                , add their product/machine, then return here and search again.
+                , fill details, then come back here. Add a new machine below as{' '}
+                <strong>Outside</strong>
+                {isServiceJob ? (
+                  <>
+                    {' '}
+                    + <strong>Service new</strong>
+                  </>
+                ) : (
+                  <>
+                    {' '}
+                    + <strong>Stamping</strong>
+                  </>
+                )}
+                .
               </p>
             </section>
 
@@ -1042,7 +1463,7 @@ export function TicketsPage() {
               className={`scroll-mt-24 grid gap-4 rounded-[12px] border border-border bg-muted/30 p-4 sm:grid-cols-2 lg:grid-cols-3 ${sectionErrorClass(Boolean(fieldErrors.assetId))}`}
             >
               <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
-                3. Select machine
+                4. Machine
               </h3>
               {fieldErrors.assetId ? (
                 <div className="sm:col-span-2 lg:col-span-3">
@@ -1053,6 +1474,75 @@ export function TicketsPage() {
                 <p className="sm:col-span-2 lg:col-span-3 text-sm text-text-secondary">
                   Select a customer first — their sold and outside/repair machines will appear here.
                 </p>
+              ) : isStampingJob ? (
+                <>
+                  <p className="sm:col-span-2 lg:col-span-3 text-sm text-text-secondary">
+                    Old customer found. Did they bring an <strong>existing</strong> machine on file, or a{' '}
+                    <strong>new</strong> machine only for stamping?
+                  </p>
+                  <div className="sm:col-span-2 lg:col-span-3 grid gap-3 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => chooseStampingMachinePath('existing')}
+                      className={`rounded-[12px] border px-3 py-3 text-left transition ${
+                        machinePath === 'existing'
+                          ? 'border-accent-blue bg-accent-blue/10 ring-2 ring-accent-blue/30'
+                          : 'border-border bg-card hover:border-accent-blue/50'
+                      }`}
+                    >
+                      <div className="text-sm font-semibold text-text-primary">Existing machine came</div>
+                      <p className="mt-1 text-xs text-text-secondary">
+                        Pick from this customer’s machines (sold by us or previously logged).
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => chooseStampingMachinePath('new')}
+                      className={`rounded-[12px] border px-3 py-3 text-left transition ${
+                        machinePath === 'new'
+                          ? 'border-violet-500 bg-violet-50/80 ring-2 ring-violet-400/40 dark:bg-violet-950/30'
+                          : 'border-border bg-card hover:border-violet-400/50'
+                      }`}
+                    >
+                      <div className="text-sm font-semibold text-text-primary">New machine for stamping</div>
+                      <p className="mt-1 text-xs text-text-secondary">
+                        Add under this customer (Outside + Stamping), then continue the same job.
+                      </p>
+                    </button>
+                  </div>
+                  {machinePath === 'existing' ? (
+                    <>
+                      <Select
+                        className="sm:col-span-2 lg:col-span-3"
+                        label="Select machine *"
+                        value={form.assetId}
+                        onChange={(e) => pickMachineFromDropdown(e.target.value)}
+                        options={[
+                          {
+                            value: '',
+                            label: assets.length
+                              ? 'Select machine…'
+                              : 'No machines on file — choose “New machine for stamping”',
+                          },
+                          ...assets.map((a) => ({
+                            value: String(a.id),
+                            label: `${String(a.name)}${a.serialNo ? ` · ${String(a.serialNo)}` : ''} · ${assetOriginShort(a.origin ? String(a.origin) : null)}${a.nextDueDate ? ` · valid till ${formatDate(String(a.nextDueDate).slice(0, 10))}` : ''}`,
+                          })),
+                        ]}
+                      />
+                      {assets.length === 0 ? (
+                        <p className="sm:col-span-2 lg:col-span-3 text-xs text-amber-800 dark:text-amber-200">
+                          This customer has no machines yet. Switch to <strong>New machine for stamping</strong>.
+                        </p>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {machinePath === 'new' ? (
+                    <p className="sm:col-span-2 lg:col-span-3 -mt-1 text-xs text-text-secondary">
+                      Fill machine details below — saved on the customer profile, then this stamping job continues.
+                    </p>
+                  ) : null}
+                </>
               ) : (
                 <>
                   <Select
@@ -1084,30 +1574,29 @@ export function TicketsPage() {
 
               {form.contactId && form.newMachine ? (
                 <>
-                  <div className="sm:col-span-2 lg:col-span-3 rounded-[8px] border border-border bg-card/80 px-3 py-2 text-xs text-text-secondary">
-                    New machine for this visit — pick product family
-                    {newMachineNeedsIndustry ? ', industry (weighing only)' : ''}, then model and
-                    details. It will be saved on the customer for next time.
-                  </div>
-                  <div className="sm:col-span-2 lg:col-span-3">
-                    <Select
-                      label="Machine origin *"
-                      value={form.origin}
-                      onChange={(e) => {
-                        const origin = e.target.value
-                        setForm({
-                          ...form,
-                          origin,
-                          ...(origin === 'THIRD_PARTY'
-                            ? { servicePlan: 'NON_AMC', amcStartDate: '', amcEndDate: '' }
-                            : {}),
-                        })
-                      }}
-                      options={ASSET_ORIGIN_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-                    />
-                    <p className="mt-1 text-xs text-text-secondary">
-                      {ASSET_ORIGIN_OPTIONS.find((o) => o.value === form.origin)?.hint}
-                    </p>
+                  <div className="sm:col-span-2 lg:col-span-3 rounded-[8px] border border-amber-200/80 bg-amber-50/70 px-3 py-2 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+                    <div className="mb-1.5 flex flex-wrap gap-1.5">
+                      <Badge color="amber">Outside</Badge>
+                      {isServiceJob ? <Badge color="orange">Service new</Badge> : null}
+                      {isStampingJob ? <Badge color="purple">Stamping</Badge> : null}
+                    </div>
+                    New machine for this {isStampingJob ? 'stamping' : 'service'} visit — tagged{' '}
+                    <strong>Outside</strong>
+                    {isServiceJob ? (
+                      <>
+                        {' '}
+                        + <strong>Service new</strong>
+                      </>
+                    ) : (
+                      <>
+                        {' '}
+                        + <strong>Stamping</strong>
+                      </>
+                    )}
+                    . Pick product family
+                    {newMachineNeedsIndustry ? ', industry (weighing only)' : ''}, then model. Saved on
+                    the customer for next time. HMS sold machines should be selected from the list
+                    above (or added on the customer profile as Sold by us).
                   </div>
                   <Select
                     label="Product *"
@@ -1209,8 +1698,10 @@ export function TicketsPage() {
                         value={form.servicePlan}
                         onChange={(e) => setForm({ ...form, servicePlan: e.target.value })}
                         options={[
-                          { value: 'NON_AMC', label: 'Non-AMC' },
-                          { value: 'AMC', label: 'AMC' },
+                          { value: 'NON_AMC', label: 'GC / NGC (no AMC)' },
+                          ...(isWeighingMachine(form.machineType)
+                            ? [{ value: 'AMC', label: 'AMC — weighing only' }]
+                            : []),
                         ]}
                       />
                       {form.servicePlan === 'AMC' ? (
@@ -1269,6 +1760,16 @@ export function TicketsPage() {
                       <Badge color={selectedAssetOrigin === 'THIRD_PARTY' ? 'amber' : 'blue'}>
                         {assetOriginLabel(selectedAssetOrigin || null)}
                       </Badge>
+                      {machineSourceTagsFromCf(
+                        (selectedAsset.customFields as Record<string, unknown> | undefined) ?? null,
+                      ).map((tag) => (
+                        <Badge
+                          key={tag}
+                          color={tag === 'Service new' ? 'orange' : tag === 'Stamping' ? 'purple' : 'amber'}
+                        >
+                          {tag}
+                        </Badge>
+                      ))}
                       {selectedAsset.servicePlan === 'AMC' ? (
                         <Badge color="green">AMC</Badge>
                       ) : selectedAssetOrigin !== 'THIRD_PARTY' ? (
@@ -1368,7 +1869,7 @@ export function TicketsPage() {
             {isStampingJob && form.contactId && (form.newMachine || form.assetId) ? (
               <section className="grid gap-4 rounded-[12px] border border-violet-200/70 bg-violet-50/40 p-4 dark:border-violet-900/40 dark:bg-violet-950/20 sm:grid-cols-2 lg:grid-cols-3">
                 <div className="sm:col-span-2 lg:col-span-3 space-y-1">
-                  <h3 className="text-sm font-semibold text-text-primary">4. Stamping visit context</h3>
+                  <h3 className="text-sm font-semibold text-text-primary">5. Stamping visit context</h3>
                   <p className="text-xs text-text-secondary">
                     Read-only context for the engineer. New stamp date is entered when they complete
                     the job — not here.
@@ -1402,32 +1903,10 @@ export function TicketsPage() {
                   </div>
                 ) : null}
                 {form.newMachine ? (
-                  <div className="sm:col-span-2 lg:col-span-3">
-                    <Select
-                      label="Machine origin for this stamping visit *"
-                      value={form.origin}
-                      onChange={(e) => {
-                        const origin = e.target.value
-                        setForm({
-                          ...form,
-                          origin,
-                          ...(origin === 'THIRD_PARTY'
-                            ? { servicePlan: 'NON_AMC', amcStartDate: '', amcEndDate: '' }
-                            : {}),
-                        })
-                      }}
-                      options={[
-                        {
-                          value: 'THIRD_PARTY',
-                          label: 'Outside — came only for stamping',
-                        },
-                        {
-                          value: 'SOLD_BY_US',
-                          label: 'Sold by us — renewal / re-stamp',
-                        },
-                      ]}
-                    />
-                  </div>
+                  <p className="sm:col-span-2 lg:col-span-3 text-xs text-text-secondary">
+                    New stamping machines are saved as <strong>Outside + Stamping</strong>. For an HMS
+                    sold machine, pick it from the customer’s machine list instead.
+                  </p>
                 ) : null}
               </section>
             ) : null}
@@ -1435,7 +1914,9 @@ export function TicketsPage() {
             {formRequiresStamping && form.contactId && (form.newMachine || form.assetId) ? (
               <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="sm:col-span-2 lg:col-span-4 space-y-1">
-                  <h3 className="text-sm font-semibold text-text-primary">4. Weighing — stamp validity (optional)</h3>
+                  <h3 className="text-sm font-semibold text-text-primary">
+                    5. Weighing — stamp validity (optional)
+                  </h3>
                   <p className="text-xs text-text-secondary">
                     For repair/breakdown on weighing machines: show known <strong>valid till</strong>{' '}
                     if on file. Do not invent a new stamp date here unless you are correcting history.
@@ -1464,7 +1945,7 @@ export function TicketsPage() {
             {!isDesk ? (
               <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <h3 className="sm:col-span-2 lg:col-span-4 text-sm font-semibold text-text-primary">
-                  {isStampingJob || formRequiresStamping ? '5. Payment' : '4. Payment'}
+                  Payment
                 </h3>
                 <Input
                   label="Total payment ₹"
@@ -1492,13 +1973,7 @@ export function TicketsPage() {
               className={`scroll-mt-24 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 ${sectionErrorClass(Boolean(fieldErrors.receivedByUserId || fieldErrors.description))}`}
             >
               <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
-                {isDesk
-                  ? isStampingJob || formRequiresStamping
-                    ? '5. Issue log'
-                    : '4. Issue log'
-                  : isStampingJob || formRequiresStamping
-                    ? '6. Engineer, issue log & status'
-                    : '5. Engineer, issue log & status'}
+                {canAssign ? 'Issue log & assign engineer' : 'Issue log'}
               </h3>
               {fieldErrors.receivedByUserId ? (
                 <div className="sm:col-span-2 lg:col-span-3">
@@ -1592,6 +2067,13 @@ export function TicketsPage() {
                 />
               </label>
             </section>
+              </>
+            ) : (
+              <p className="rounded-[10px] border border-dashed border-border bg-muted/20 px-4 py-6 text-center text-sm text-text-secondary">
+                Choose <strong>Service</strong> or <strong>Stamping</strong> above to continue.
+                For rentals, use the Rental card — it opens the Rentals section.
+              </p>
+            )}
           </form>
         </FormPanel>
       )}
@@ -1665,22 +2147,6 @@ export function TicketsPage() {
         }
       />
 
-      <WhatsAppSendConfirm
-        open={Boolean(waPending)}
-        payload={waPending?.payload ?? null}
-        busy={saving}
-        onCancel={() => setWaPending(null)}
-        onConfirmSend={() => {
-          const run = waPending?.execute
-          setWaPending(null)
-          if (run) void run(true)
-        }}
-        onConfirmSkip={() => {
-          const run = waPending?.execute
-          setWaPending(null)
-          if (run) void run(false)
-        }}
-      />
     </div>
   )
 }

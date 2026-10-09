@@ -4,6 +4,7 @@ import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { authenticate } from "../../middleware/auth.middleware.js";
 import { requireTenant } from "../../middleware/tenant.middleware.js";
+import { requirePermission } from "../../middleware/permissions.middleware.js";
 import { validate } from "../../middleware/validate.middleware.js";
 import { success } from "../../common/utils/response.js";
 import { paramId } from "../../common/utils/params.js";
@@ -56,7 +57,7 @@ const receiveSchema = z.object({
 export const purchaseOrdersRouter = Router();
 purchaseOrdersRouter.use(authenticate, requireTenant);
 
-purchaseOrdersRouter.get("/vendors", async (q: Request, r: Response) => {
+purchaseOrdersRouter.get("/vendors", requirePermission("purchase_orders:view"), async (q: Request, r: Response) => {
   const items = await prisma.vendor.findMany({
     where: { tenantId: q.auth!.tenantId!, deletedAt: null },
     orderBy: { name: "asc" },
@@ -64,14 +65,75 @@ purchaseOrdersRouter.get("/vendors", async (q: Request, r: Response) => {
   return success(r, items);
 });
 
-purchaseOrdersRouter.post("/vendors", validate(vendorSchema), async (q: Request, r: Response) => {
+purchaseOrdersRouter.post("/vendors", requirePermission("purchase_orders:write"), validate(vendorSchema), async (q: Request, r: Response) => {
   const row = await prisma.vendor.create({
     data: { ...q.body, id: newId(), tenantId: q.auth!.tenantId! },
   });
-  return success(r, row, "Vendor created", 201);
+  return success(r, row, "Supplier created", 201);
 });
 
-purchaseOrdersRouter.get("/", async (q: Request, r: Response) => {
+const vendorUpdateSchema = z.object({
+  body: vendorBody.partial().extend({
+    name: z.string().min(1).optional(),
+  }),
+  query: z.any(),
+  params,
+});
+
+purchaseOrdersRouter.patch(
+  "/vendors/:id",
+  requirePermission("purchase_orders:write"),
+  validate(vendorUpdateSchema),
+  async (q: Request, r: Response) => {
+    const t = q.auth!.tenantId!;
+    const id = paramId(q);
+    const existing = await prisma.vendor.findFirst({ where: { id, tenantId: t, deletedAt: null } });
+    if (!existing) throw notFound("Supplier");
+    const row = await prisma.vendor.update({
+      where: { id },
+      data: {
+        ...(q.body.name != null ? { name: q.body.name } : {}),
+        ...(q.body.email !== undefined ? { email: q.body.email } : {}),
+        ...(q.body.phone !== undefined ? { phone: q.body.phone } : {}),
+        ...(q.body.gstin !== undefined ? { gstin: q.body.gstin } : {}),
+        ...(q.body.paymentTerms !== undefined ? { paymentTerms: q.body.paymentTerms } : {}),
+        ...(q.body.address !== undefined ? { address: q.body.address } : {}),
+        ...(q.body.customFields !== undefined ? { customFields: q.body.customFields } : {}),
+      },
+    });
+    return success(r, row, "Supplier updated");
+  },
+);
+
+purchaseOrdersRouter.delete(
+  "/vendors/:id",
+  requirePermission("purchase_orders:write"),
+  validate(idSchema),
+  async (q: Request, r: Response) => {
+    const t = q.auth!.tenantId!;
+    const id = paramId(q);
+    const existing = await prisma.vendor.findFirst({ where: { id, tenantId: t, deletedAt: null } });
+    if (!existing) throw notFound("Supplier");
+    const openPos = await prisma.purchaseOrder.count({
+      where: {
+        tenantId: t,
+        vendorId: id,
+        deletedAt: null,
+        status: { notIn: ["CANCELLED", "RECEIVED"] },
+      },
+    });
+    if (openPos > 0) {
+      throw new AppError("Cannot delete supplier with open purchase orders — cancel or receive them first", 409);
+    }
+    await prisma.vendor.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
+    return success(r, null, "Supplier deleted");
+  },
+);
+
+purchaseOrdersRouter.get("/", requirePermission("purchase_orders:view"), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const p = pagination(q.query);
   const where: any = { tenantId: t, deletedAt: null };
@@ -94,7 +156,7 @@ purchaseOrdersRouter.get("/", async (q: Request, r: Response) => {
   );
 });
 
-purchaseOrdersRouter.post("/", validate(createSchema), async (q: Request, r: Response) => {
+purchaseOrdersRouter.post("/", requirePermission("purchase_orders:write"), validate(createSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const d = q.body;
   if (!(await prisma.vendor.findFirst({ where: { id: d.vendorId, tenantId: t, deletedAt: null } })))
@@ -164,7 +226,7 @@ purchaseOrdersRouter.post("/", validate(createSchema), async (q: Request, r: Res
   return success(r, result, "Purchase order created", 201);
 });
 
-purchaseOrdersRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) => {
+purchaseOrdersRouter.get("/:id", requirePermission("purchase_orders:view"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const po = await prisma.purchaseOrder.findFirst({ where: { id, tenantId: t, deletedAt: null } });
@@ -176,7 +238,7 @@ purchaseOrdersRouter.get("/:id", validate(idSchema), async (q: Request, r: Respo
   return success(r, { ...po, lines, vendor });
 });
 
-purchaseOrdersRouter.post("/:id/receive", validate(receiveSchema), async (q: Request, r: Response) => {
+purchaseOrdersRouter.post("/:id/receive", requirePermission("purchase_orders:write"), validate(receiveSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const po = await prisma.purchaseOrder.findFirst({ where: { id, tenantId: t, deletedAt: null } });

@@ -10,79 +10,136 @@ import { newId } from "../../common/utils/id.js";
 import { notFound } from "../../common/errors.js";
 import { paramId } from "../../common/utils/params.js";
 import { ensureStandardWarehouses } from "../inventory/warehouses.service.js";
+import { allPool } from "../../common/utils/concurrency.js";
 
 /** Dropdown / lookup data for forms across CRM + ERP */
 export const metaRouter = Router();
 metaRouter.use(authenticate, requireTenant);
 
+/** Short L1 cache — lookups are hit on almost every form open. */
+const lookupsCache = new Map<string, { at: number; body: unknown }>();
+const LOOKUPS_TTL_MS = 30_000;
+
 metaRouter.get("/lookups", async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
-  await ensureStandardWarehouses(t);
+  const lite = String(q.query.lite ?? "") === "1" || String(q.query.scope ?? "") === "warehouses";
+  // Only seed missing warehouses (no-op when already present) — never block every lookups call
+  // with four sequential upserts against remote RDS.
+  void ensureStandardWarehouses(t).catch(() => undefined);
+
+  if (lite) {
+    const warehouses = await prisma.warehouse.findMany({
+      where: { tenantId: t, deletedAt: null, isActive: true },
+      orderBy: [{ code: "asc" }],
+      select: { id: true, name: true, code: true },
+    });
+    return success(r, {
+      sources: [],
+      stages: [],
+      users: [],
+      warehouses,
+      categories: [],
+      accounts: [],
+      contacts: [],
+      products: [],
+      vendors: [],
+    });
+  }
+
+  const cacheKey = `lookups:${t}`;
+  const hit = lookupsCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < LOOKUPS_TTL_MS) {
+    r.setHeader("X-Cache", "HIT-memory");
+    return success(r, hit.body);
+  }
+
+  // Never open 10 connections at once against a shared RDS pool
   const [sources, stages, usersRaw, roles, warehouses, categories, accounts, contacts, products, vendors] =
-    await Promise.all([
-      prisma.leadSource.findMany({ where: { tenantId: t, isActive: true }, orderBy: { name: "asc" } }),
-      prisma.pipelineStage.findMany({ where: { tenantId: t, isActive: true }, orderBy: { sortOrder: "asc" } }),
-      prisma.user.findMany({
-        where: { tenantId: t, deletedAt: null, status: "ACTIVE" },
-        select: { id: true, name: true, email: true, phone: true, avatarUrl: true, roleId: true },
-        orderBy: { name: "asc" },
-      }),
-      prisma.role.findMany({
-        where: { tenantId: t, deletedAt: null },
-        select: { id: true, code: true, name: true },
-      }),
-      prisma.warehouse.findMany({
-        where: { tenantId: t, deletedAt: null, isActive: true },
-        orderBy: [{ code: "asc" }],
-      }),
-      prisma.productCategory.findMany({
-        where: { tenantId: t, deletedAt: null },
-        select: { id: true, name: true, code: true, parentId: true },
-        orderBy: { name: "asc" },
-      }),
-      prisma.account.findMany({
-        where: { tenantId: t, deletedAt: null },
-        select: { id: true, name: true, phone: true, email: true, city: true },
-        orderBy: { name: "asc" },
-        take: 500,
-      }),
-      prisma.contact.findMany({
-        where: { tenantId: t, deletedAt: null },
-        select: {
-          id: true,
-          name: true,
-          phone: true,
-          email: true,
-          accountId: true,
-          customerCode: true,
-          customerNo: true,
-        },
-        orderBy: { name: "asc" },
-        take: 500,
-      }),
-      prisma.product.findMany({
-        where: { tenantId: t, deletedAt: null, isActive: true },
-        select: {
-          id: true,
-          sku: true,
-          name: true,
-          salePrice: true,
-          purchasePrice: true,
-          unit: true,
-          taxPercent: true,
-          imageUrl: true,
-          productType: true,
-          attributes: true,
-        },
-        orderBy: { name: "asc" },
-        take: 500,
-      }),
-      prisma.vendor.findMany({
-        where: { tenantId: t, deletedAt: null },
-        select: { id: true, name: true, phone: true, email: true },
-        orderBy: { name: "asc" },
-      }),
-    ]);
+    await allPool(
+      [
+        () =>
+          prisma.leadSource.findMany({
+            where: { tenantId: t, isActive: true },
+            orderBy: { name: "asc" },
+          }),
+        () =>
+          prisma.pipelineStage.findMany({
+            where: { tenantId: t, isActive: true },
+            orderBy: { sortOrder: "asc" },
+          }),
+        () =>
+          prisma.user.findMany({
+            where: { tenantId: t, deletedAt: null, status: "ACTIVE" },
+            select: { id: true, name: true, email: true, phone: true, avatarUrl: true, roleId: true },
+            orderBy: { name: "asc" },
+            take: 300,
+          }),
+        () =>
+          prisma.role.findMany({
+            where: { tenantId: t, deletedAt: null },
+            select: { id: true, code: true, name: true },
+          }),
+        () =>
+          prisma.warehouse.findMany({
+            where: { tenantId: t, deletedAt: null, isActive: true },
+            orderBy: [{ code: "asc" }],
+          }),
+        () =>
+          prisma.productCategory.findMany({
+            where: { tenantId: t, deletedAt: null },
+            select: { id: true, name: true, code: true, parentId: true },
+            orderBy: { name: "asc" },
+          }),
+        () =>
+          prisma.account.findMany({
+            where: { tenantId: t, deletedAt: null },
+            select: { id: true, name: true, phone: true, email: true, city: true },
+            orderBy: { name: "asc" },
+            take: 500,
+          }),
+        () =>
+          prisma.contact.findMany({
+            where: { tenantId: t, deletedAt: null },
+            select: {
+              id: true,
+              name: true,
+              phone: true,
+              email: true,
+              accountId: true,
+              customerCode: true,
+              customerNo: true,
+            },
+            orderBy: { name: "asc" },
+            take: 500,
+          }),
+        () =>
+          prisma.product.findMany({
+            where: { tenantId: t, deletedAt: null, isActive: true },
+            select: {
+              id: true,
+              sku: true,
+              name: true,
+              salePrice: true,
+              purchasePrice: true,
+              unit: true,
+              taxPercent: true,
+              imageUrl: true,
+              productType: true,
+              attributes: true,
+            },
+            orderBy: { name: "asc" },
+            take: 500,
+          }),
+        () =>
+          prisma.vendor.findMany({
+            where: { tenantId: t, deletedAt: null },
+            select: { id: true, name: true, phone: true, email: true },
+            orderBy: { name: "asc" },
+            take: 300,
+          }),
+      ],
+      3,
+    );
   const roleById = Object.fromEntries(roles.map((r) => [r.id, r]));
   const users = usersRaw.map((u) => ({
     id: u.id,
@@ -94,7 +151,7 @@ metaRouter.get("/lookups", async (q: Request, r: Response) => {
     roleCode: roleById[u.roleId]?.code ?? null,
     roleName: roleById[u.roleId]?.name ?? null,
   }));
-  return success(r, {
+  const body = {
     sources,
     stages,
     users,
@@ -104,7 +161,9 @@ metaRouter.get("/lookups", async (q: Request, r: Response) => {
     contacts,
     products,
     vendors,
-  });
+  };
+  lookupsCache.set(cacheKey, { at: Date.now(), body });
+  return success(r, body);
 });
 
 function slugCode(name: string) {

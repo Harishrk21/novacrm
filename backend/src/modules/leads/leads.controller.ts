@@ -11,11 +11,11 @@ export const list = async (q: Request, r: Response) =>
 export const get = async (q: Request, r: Response) => success(r, await s.get(t(q), paramId(q)));
 export const create = async (q: Request, r: Response) => {
   const body = { ...(q.body as Record<string, unknown>) };
-  // Sales executives always own the enquiries they create.
+  // Sales executives always own the leads they create.
   if (isSalesExecutiveRole(q.auth?.role) && q.auth?.userId) {
     body.assignedToId = q.auth.userId;
   }
-  return success(r, await s.create(t(q), q.auth!.userId, body), "Lead created", 201);
+  return success(r, await s.create(t(q), q.auth!.userId, body, q), "Lead created", 201);
 };
 export const update = async (q: Request, r: Response) =>
   success(r, await s.update(t(q), paramId(q), q.body));
@@ -44,6 +44,27 @@ export const issueDemo = async (q: Request, r: Response) =>
 export const returnDemo = async (q: Request, r: Response) =>
   success(r, await s.returnDemo(t(q), q.auth!.userId!, paramId(q), q.body), "Demo return processed");
 export const demoUpdate = async (q: Request, r: Response) =>
-  success(r, await s.addDemoUpdate(t(q), q.auth!.userId!, paramId(q), q.body), "Demo update saved");
+  success(r, await s.addDemoUpdate(t(q), q.auth!.userId!, paramId(q), q.body), "Day update saved");
+export const verify = async (q: Request, r: Response) =>
+  success(r, await s.verify(t(q), paramId(q), q.auth!.userId!, q.body, q), "Lead confirmed");
+export const createTicket = async (q: Request, r: Response) =>
+  success(
+    r,
+    await s.createTicketFromLead(t(q), paramId(q), q.auth!.userId!, q.body),
+    "Service ticket created from intake",
+    201,
+  );
+export const prepareHandoff = async (q: Request, r: Response) =>
+  success(
+    r,
+    await s.prepareHandoffFromLead(t(q), paramId(q), q.auth!.userId!, q.body ?? {}),
+    "Handoff ready",
+  );
+export const linkTicket = async (q: Request, r: Response) =>
+  success(
+    r,
+    await s.linkTicketToLead(t(q), paramId(q), String(q.body.ticketId), q.auth!.userId!),
+    "Enquiry linked to ticket",
+  );
 export const phone = async (q: Request, r: Response) =>
   success(r, await s.phone(t(q), String(q.query.phone)));

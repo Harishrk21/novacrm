@@ -6,8 +6,8 @@ import { flattenHmsMachines, HMS_CATALOG, buildHmsAttributes } from "./hmsCatalo
 const prisma = new PrismaClient();
 const moduleGroup = (key:string) => key.startsWith("crm.") ? "CRM" as const : key.startsWith("erp.") ? "ERP" as const : "ENGAGEMENT" as const;
 const categories=[
- {code:"WEIGHING_MACHINES",name:"Weighing Machines & Scales",description:"Dealers and manufacturers of industrial, retail and precision scales",icon:"scale",colorHex:"#0EA5E9",defaultModules:{"crm.leads":true,"crm.contacts":true,"crm.accounts":true,"crm.deals":true,"crm.activities":true,"crm.tickets":true,"erp.products":true,"erp.inventory":true,"erp.invoices":true},terminology:{lead:"Enquiry",deal:"Quotation",account:"Dealer",product:"Machine"},templateConfig:{pipeline:["Enquiry","Site Survey","Quotation","Negotiation","Won","Lost"],lead_sources:["Website","Dealer Referral","Exhibition","IndiaMART"]},sortOrder:1},
- {code:"RETAIL_COMMERCE",name:"Retail & Commerce",description:"Retailers and distributors",icon:"shopping-bag",colorHex:"#10B981",defaultModules:{"crm.leads":true,"crm.contacts":true,"crm.deals":true,"erp.products":true,"erp.inventory":true,"erp.invoices":true},terminology:{lead:"Lead",deal:"Opportunity",account:"Customer",product:"SKU"},templateConfig:{pipeline:["Prospect","Qualified","Proposal","Won","Lost"],lead_sources:["Walk-in","Website","Social","Referral"]},sortOrder:2}
+ {code:"WEIGHING_MACHINES",name:"Weighing Machines & Scales",description:"Dealers and manufacturers of industrial, retail and precision scales",icon:"scale",colorHex:"#0EA5E9",defaultModules:{"crm.leads":true,"crm.contacts":true,"crm.accounts":true,"crm.deals":true,"crm.activities":true,"crm.tickets":true,"crm.amc":true,"crm.stamping":true,"erp.products":true,"erp.inventory":true,"erp.purchase_orders":true,"erp.invoices":true,"engagement.whatsapp":true,"engagement.emails":true,"reports":true,"settings":true},terminology:{lead:"Enquiry",deal:"Quotation",account:"Dealer",product:"Machine"},templateConfig:{pipeline:["Enquiry","Site Survey","Quotation","Negotiation","Won","Lost"],lead_sources:["ADV-JD, IM","OFFICE VISIT","SHOWROOM","CUS CARE DEPT","WEBSITE CALLS","WEBSITE MAILS","EXPO CALLS","INSTAGRAM"]},sortOrder:1},
+ {code:"RETAIL_COMMERCE",name:"Retail & Commerce",description:"Retailers and distributors",icon:"shopping-bag",colorHex:"#10B981",defaultModules:{"crm.leads":true,"crm.contacts":true,"crm.deals":true,"erp.products":true,"erp.inventory":true,"erp.invoices":true,"reports":true,"settings":true},terminology:{lead:"Lead",deal:"Opportunity",account:"Customer",product:"SKU"},templateConfig:{pipeline:["Prospect","Qualified","Proposal","Won","Lost"],lead_sources:["Walk-in","Website","Social","Referral"]},sortOrder:2}
 ];
 const tips=[
  {id:"10000000-0000-4000-8000-000000000001",moduleKey:"crm.leads",sectionKey:"list",title:"How to use Leads",body:"Capture every enquiry here first, qualify it, then convert it to a contact, account and deal.",tipType:"TIP" as const,sortOrder:1},
@@ -17,12 +17,15 @@ const tips=[
  {id:"10000000-0000-4000-8000-000000000005",moduleKey:"erp.invoices",sectionKey:"create",title:"Invoicing tip",body:"Create invoices from confirmed orders whenever possible.",tipType:"TIP" as const,sortOrder:1}
 ];
 async function main(){
- // Platform / super-admin is not used for this single-company HMS dashboard.
- // Keep a disabled row only so schema migrations remain happy if the table exists.
- const passwordHash=await bcrypt.hash(env.PLATFORM_ADMIN_PASSWORD,12);
- await prisma.platformAdmin.upsert({where:{email:env.PLATFORM_ADMIN_EMAIL},update:{passwordHash,status:"INACTIVE",deletedAt:null,name:"Disabled (HMS single-tenant)"},create:{id:uuid(),name:"Disabled (HMS single-tenant)",email:env.PLATFORM_ADMIN_EMAIL,passwordHash,role:"SUPER_ADMIN",status:"INACTIVE"}});
+ // Master platform SUPER_ADMIN — onboard clients, plans, modules (separate from HMS staff login).
+ const passwordHash=await bcrypt.hash(env.PLATFORM_ADMIN_PASSWORD, 10);
+ await prisma.platformAdmin.upsert({
+  where:{email:env.PLATFORM_ADMIN_EMAIL},
+  update:{passwordHash,status:"ACTIVE",deletedAt:null,name:"Meister Super Admin",role:"SUPER_ADMIN"},
+  create:{id:uuid(),name:"Meister Super Admin",email:env.PLATFORM_ADMIN_EMAIL,passwordHash,role:"SUPER_ADMIN",status:"ACTIVE"},
+ });
  if(await prisma.businessCategory.count({where:{deletedAt:null}})===0) await prisma.businessCategory.createMany({data:categories.map(c=>({id:uuid(),...c}))});
- for(const c of categories){await prisma.businessCategory.upsert({where:{code:c.code},update:{isActive:true,deletedAt:null},create:{id:uuid(),...c}})}
+ for(const c of categories){await prisma.businessCategory.upsert({where:{code:c.code},update:{isActive:true,deletedAt:null,defaultModules:c.defaultModules,terminology:c.terminology,templateConfig:c.templateConfig,name:c.name,description:c.description},create:{id:uuid(),...c}})}
  const category=await prisma.businessCategory.findUniqueOrThrow({where:{code:"WEIGHING_MACHINES"}});
  const salesSettings={revenueTarget:500000,targetPeriod:"month",currency:"INR"};
  const tenant=await prisma.tenant.upsert({
@@ -53,10 +56,13 @@ async function main(){
     activatedAt:new Date(),
   },
  });
- const modules=category.defaultModules as Record<string,boolean>;
+ const modules={...(category.defaultModules as Record<string,boolean>),...{
+  "crm.amc":true,"crm.stamping":true,"erp.purchase_orders":true,"engagement.whatsapp":true,"engagement.emails":true,"reports":true,"settings":true,
+ }};
+ await prisma.tenant.update({where:{id:tenant.id},data:{modulesEnabled:modules}});
  for(const [moduleKey,isEnabled] of Object.entries(modules)){await prisma.tenantModule.upsert({where:{tenantId_moduleKey:{tenantId:tenant.id,moduleKey}},update:{isEnabled},create:{id:uuid(),tenantId:tenant.id,moduleKey,moduleGroup:moduleGroup(moduleKey),label:moduleKey.split(".").at(-1)!.replaceAll("_"," "),isEnabled}})}
  const role=await prisma.role.upsert({where:{tenantId_code:{tenantId:tenant.id,code:"ADMIN"}},update:{permissions:["*"]},create:{id:uuid(),tenantId:tenant.id,code:"ADMIN",name:"Administrator",isSystem:true,permissions:["*"]}});
- const userPassword=await bcrypt.hash("Demo@12345",12);
+ const userPassword=await bcrypt.hash("Demo@12345", 10);
 
  /** Rename legacy Precision demo emails → HMS Enterprises. */
  async function migrateStaffEmail(from: string, to: string) {
@@ -80,7 +86,7 @@ async function main(){
  const user=await prisma.user.upsert({where:{tenantId_email:{tenantId:tenant.id,email:"admin@hmsenterprises.in"}},update:{passwordHash:userPassword,status:"ACTIVE",roleId:role.id,deletedAt:null,phone:"+91 94430 20000",name:"HMS Admin"},create:{id:uuid(),tenantId:tenant.id,roleId:role.id,name:"HMS Admin",email:"admin@hmsenterprises.in",phone:"+91 94430 20000",passwordHash:userPassword,status:"ACTIVE"}});
  const stageDefs=[{code:"ENQUIRY",name:"Enquiry",probability:10,colorHex:"#64748B"},{code:"SITE_SURVEY",name:"Site Survey",probability:30,colorHex:"#0EA5E9"},{code:"QUOTATION",name:"Quotation",probability:50,colorHex:"#2563EB"},{code:"NEGOTIATION",name:"Negotiation",probability:75,colorHex:"#F59E0B"},{code:"WON",name:"Won",probability:100,colorHex:"#10B981",isWon:true},{code:"LOST",name:"Lost",probability:0,colorHex:"#EF4444",isLost:true}];
  const stages=[];for(const [sortOrder,s]of stageDefs.entries()){stages.push(await prisma.pipelineStage.upsert({where:{tenantId_code:{tenantId:tenant.id,code:s.code}},update:{...s,sortOrder,isActive:true},create:{id:uuid(),tenantId:tenant.id,...s,sortOrder}}))}
- const sourceDefs=["Website","Dealer Referral","Exhibition","IndiaMART"];const sources=[];for(const name of sourceDefs){const code=name.toUpperCase().replace(/[^A-Z0-9]+/g,"_");sources.push(await prisma.leadSource.upsert({where:{tenantId_code:{tenantId:tenant.id,code}},update:{name,isActive:true},create:{id:uuid(),tenantId:tenant.id,name,code}}))}
+ const sourceDefs=["ADV-JD, IM","OFFICE VISIT","SHOWROOM","CUS CARE DEPT","WEBSITE CALLS","WEBSITE MAILS","EXPO CALLS","INSTAGRAM","Website","Dealer Referral","Exhibition","IndiaMART","Just Dial","Advertisement","Office Visit","Showroom","Customer Care","Website Call","Website Mail","Expo Call","Instagram"];const sources=[];for(const name of sourceDefs){const code=name.toUpperCase().replace(/[^A-Z0-9]+/g,"_");sources.push(await prisma.leadSource.upsert({where:{tenantId_code:{tenantId:tenant.id,code}},update:{name,isActive:true},create:{id:uuid(),tenantId:tenant.id,name,code}}))}
  const warehouse=await prisma.warehouse.upsert({where:{tenantId_code:{tenantId:tenant.id,code:"MAIN"}},update:{isActive:true,isDefault:true,deletedAt:null,name:"Main warehouse"},create:{id:uuid(),tenantId:tenant.id,code:"MAIN",name:"Main warehouse",isDefault:true}});
  for (const w of [
   { code: "STORE", name: "Store", isDefault: false },
@@ -91,6 +97,17 @@ async function main(){
     where: { tenantId_code: { tenantId: tenant.id, code: w.code } },
     update: { isActive: true, deletedAt: null, name: w.name },
     create: { id: uuid(), tenantId: tenant.id, code: w.code, name: w.name, isDefault: w.isDefault },
+  });
+ }
+ for (const b of [
+  { code: "RETSOL", name: "RETSOL" },
+  { code: "SMART", name: "SMART" },
+  { code: "ISTHA", name: "ISTHA" },
+ ] as const) {
+  await prisma.brand.upsert({
+    where: { tenantId_code: { tenantId: tenant.id, code: b.code } },
+    update: { name: b.name, isActive: true, deletedAt: null },
+    create: { id: uuid(), tenantId: tenant.id, code: b.code, name: b.name, isActive: true },
   });
  }
  const productCategoryByCode = new Map<string, { id: string }>();
@@ -391,8 +408,8 @@ async function main(){
  await prisma.user.upsert({where:{tenantId_email:{tenantId:tenant.id,email:"engineer@hmsenterprises.in"}},update:{passwordHash:userPassword,status:"ACTIVE",roleId:engineerRole.id,deletedAt:null,name:"Field Engineer"},create:{id:uuid(),tenantId:tenant.id,roleId:engineerRole.id,name:"Field Engineer",email:"engineer@hmsenterprises.in",phone:"+91 94430 20002",passwordHash:userPassword,status:"ACTIVE"}});
  await prisma.user.upsert({where:{tenantId_email:{tenantId:tenant.id,email:"warehouse@hmsenterprises.in"}},update:{passwordHash:userPassword,status:"ACTIVE",roleId:warehouseRole.id,deletedAt:null,name:"Warehouse Staff"},create:{id:uuid(),tenantId:tenant.id,roleId:warehouseRole.id,name:"Warehouse Staff",email:"warehouse@hmsenterprises.in",phone:"+91 94430 20003",passwordHash:userPassword,status:"ACTIVE"}});
 
- const salesRole=await prisma.role.upsert({where:{tenantId_code:{tenantId:tenant.id,code:"SALES_EXECUTIVE"}},update:{permissions:["crm"],name:"Sales Executive"},create:{id:uuid(),tenantId:tenant.id,code:"SALES_EXECUTIVE",name:"Sales Executive",isSystem:true,permissions:["crm"]}});
- await prisma.user.upsert({where:{tenantId_email:{tenantId:tenant.id,email:"sales@hmsenterprises.in"}},update:{passwordHash:userPassword,status:"ACTIVE",roleId:salesRole.id,deletedAt:null,name:"Sales Executive"},create:{id:uuid(),tenantId:tenant.id,roleId:salesRole.id,name:"Sales Executive",email:"sales@hmsenterprises.in",phone:"+91 94430 20004",passwordHash:userPassword,status:"ACTIVE"}});
+ const salesRole=await prisma.role.upsert({where:{tenantId_code:{tenantId:tenant.id,code:"SALES_EXECUTIVE"}},update:{permissions:["crm"],name:"Sales Desk"},create:{id:uuid(),tenantId:tenant.id,code:"SALES_EXECUTIVE",name:"Sales Desk",isSystem:true,permissions:["crm"]}});
+ await prisma.user.upsert({where:{tenantId_email:{tenantId:tenant.id,email:"sales@hmsenterprises.in"}},update:{passwordHash:userPassword,status:"ACTIVE",roleId:salesRole.id,deletedAt:null,name:"Sales Desk"},create:{id:uuid(),tenantId:tenant.id,roleId:salesRole.id,name:"Sales Desk",email:"sales@hmsenterprises.in",phone:"+91 94430 20004",passwordHash:userPassword,status:"ACTIVE"}});
 
  // Agent / engineer users for assignment demos
  const agentRole=await prisma.role.upsert({where:{tenantId_code:{tenantId:tenant.id,code:"AGENT"}},update:{permissions:["crm"],name:"Sales Executive"},create:{id:uuid(),tenantId:tenant.id,code:"AGENT",name:"Sales Executive",isSystem:true,permissions:["crm"]}});
@@ -422,7 +439,7 @@ async function main(){
     MANAGER: { department: "Management", designation: "Manager" },
     SERVICE_DESK: { department: "Service", designation: "Service Desk" },
     SERVICE_ENGINEER: { department: "Service", designation: "Field Engineer" },
-    SALES_EXECUTIVE: { department: "Sales", designation: "Sales Executive" },
+    SALES_EXECUTIVE: { department: "Sales", designation: "Sales Desk" },
     AGENT: { department: "Sales", designation: "Sales Executive" },
     WAREHOUSE: { department: "Warehouse", designation: "Warehouse & billing" },
   };

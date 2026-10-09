@@ -119,7 +119,11 @@ enum MachineType {
   PAPER_ROLL
   OTHER
 }
+/// GC = new-machine guarantee (6 mo free parts+service); NGC = after GC (paid);
+/// AMC = free service every 4 mo, parts charged; NON_AMC = legacy alias of NGC.
 enum ServicePlan {
+  GC
+  NGC
   AMC
   NON_AMC
 }
@@ -156,6 +160,7 @@ enum StockMovementType {
 enum StockUnitStatus {
   IN_STOCK
   DEMO
+  RENTED
   SOLD
   RETURNED
 }
@@ -172,6 +177,14 @@ enum SalesOrderStatus {
   PACKED
   SHIPPED
   DELIVERED
+  CANCELLED
+}
+enum SalesRequisitionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  FULFILLED
   CANCELLED
 }
 enum InvoiceStatus {
@@ -378,6 +391,8 @@ model User {
   name         String     @db.VarChar(120)
   email        String     @db.VarChar(191)
   passwordHash String     @map("password_hash") @db.VarChar(255)
+  /// Last password set by platform / company admin — visible to platform super admin only (cleared if user self-changes password).
+  tempPassword String?    @map("temp_password") @db.VarChar(128)
   phone        String?    @db.VarChar(32)
   avatarUrl    String?    @map("avatar_url") @db.VarChar(512)
   status       UserStatus @default(INVITED)
@@ -509,12 +524,15 @@ model Contact {
   @@index([tenantId, phoneNormalized])
   @@index([tenantId, email])
   @@index([tenantId, accountId])
+  @@index([tenantId, deletedAt, name])
   @@map("contacts")
 }
 
 model Lead {
   id                 String     @id @db.Char(36)
   tenantId           String     @map("tenant_id") @db.Char(36)
+  /// Human-facing enquiry number within the workspace (e.g. 42 → ENQ-00042)
+  leadNo             Int?       @map("lead_no") @db.Int
   name               String     @db.VarChar(120)
   email              String?    @db.VarChar(191)
   phone              String?    @db.VarChar(32)
@@ -523,6 +541,8 @@ model Lead {
   website            String?    @db.VarChar(255)
   city               String?    @db.VarChar(100)
   state              String?    @db.VarChar(100)
+  /// Service-desk area for engineer assignment (e.g. Anna Nagar)
+  area               String?    @db.VarChar(120)
   country            String     @default("IN") @db.Char(2)
   sourceId           String?    @map("source_id") @db.Char(36)
   status             LeadStatus @default(NEW)
@@ -540,10 +560,13 @@ model Lead {
   createdAt          DateTime   @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt          DateTime   @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt          DateTime?  @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, leadNo])
   @@index([tenantId, status, createdAt])
   @@index([tenantId, phoneNormalized])
-  @@index([tenantId, assignedToId])
+  @@index([tenantId, assignedToId, status])
   @@index([tenantId, sourceId])
+  @@index([tenantId, area])
+  @@index([tenantId, deletedAt, status])
   @@map("leads")
 }
 
@@ -570,6 +593,7 @@ model Deal {
   @@index([tenantId, stageId])
   @@index([tenantId, ownerUserId])
   @@index([tenantId, expectedCloseDate])
+  @@index([tenantId, deletedAt, createdAt])
   @@map("deals")
 }
 
@@ -597,6 +621,8 @@ model Activity {
   @@index([tenantId, contactId])
   @@index([tenantId, leadId])
   @@index([tenantId, type, status])
+  @@index([tenantId, assignedToId, status])
+  @@index([tenantId, status, scheduledAt])
   @@map("activities")
 }
 
@@ -645,6 +671,12 @@ model Ticket {
   @@index([tenantId, status, priority])
   @@index([tenantId, assetId])
   @@index([tenantId, nextDueDate])
+  @@index([tenantId, assignedToId, status])
+  @@index([tenantId, contactId, status])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, slaBreached, status])
+  @@index([tenantId, paymentStatus, status])
+  @@index([tenantId, deletedAt, status])
   @@map("tickets")
 }
 
@@ -662,14 +694,20 @@ model CustomerAsset {
   serialNo              String?     @map("serial_no") @db.VarChar(120)
   /// Bought from us vs outside machine (repair/service only)
   origin                AssetOrigin @default(SOLD_BY_US)
-  /// AMC contract vs one-off / non-AMC service
+  /// GC / NGC / AMC / NON_AMC (see ServicePlan)
   servicePlan           ServicePlan @default(NON_AMC) @map("service_plan")
+  /// GC window end (typically install/sale + 6 months)
+  warrantyEndDate       DateTime?   @map("warranty_end_date") @db.Date
   amcStartDate          DateTime?   @map("amc_start_date") @db.Date
   amcEndDate            DateTime?   @map("amc_end_date") @db.Date
+  /// Next free AMC service visit (every 4 months)
+  nextServiceDueDate    DateTime?   @map("next_service_due_date") @db.Date
   remindersEnabled      Boolean     @default(true) @map("reminders_enabled")
   lastMaintReminderAt   DateTime?   @map("last_maint_reminder_at") @db.DateTime(3)
   lastAmcReminderAt     DateTime?   @map("last_amc_reminder_at") @db.DateTime(3)
+  lastServiceReminderAt DateTime?   @map("last_service_reminder_at") @db.DateTime(3)
   stampingDate          DateTime?   @map("stamping_date") @db.Date
+  /// Stamping validity / next government due
   nextDueDate           DateTime?   @map("next_due_date") @db.Date
   notes                 String?     @db.Text
   customFields          Json?       @map("custom_fields")
@@ -679,6 +717,8 @@ model CustomerAsset {
   @@index([tenantId, contactId])
   @@index([tenantId, origin])
   @@index([tenantId, nextDueDate])
+  @@index([tenantId, nextServiceDueDate])
+  @@index([tenantId, warrantyEndDate])
   @@index([tenantId, amcStartDate])
   @@index([tenantId, amcEndDate])
   @@index([tenantId, serialNo])
@@ -711,6 +751,59 @@ model SparePartChange {
   @@index([tenantId, assetId])
   @@index([tenantId, changedAt])
   @@map("spare_part_changes")
+}
+
+/// Spare parts catalog by machine family (weighing vs billing) — quantity stock, not serial machines.
+enum SpareMachineFamily {
+  WEIGHING
+  BILLING
+}
+
+enum SpareStockTxnType {
+  IN
+  OUT
+}
+
+model SparePartItem {
+  id             String             @id @db.Char(36)
+  tenantId       String             @map("tenant_id") @db.Char(36)
+  machineFamily  SpareMachineFamily @map("machine_family")
+  name           String             @db.VarChar(191)
+  partCode       String?            @map("part_code") @db.VarChar(64)
+  unit           String             @default("NOS") @db.VarChar(32)
+  isActive       Boolean            @default(true) @map("is_active")
+  customFields   Json?              @map("custom_fields")
+  createdAt      DateTime           @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt      DateTime?          @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, machineFamily, name])
+  @@index([tenantId, machineFamily, isActive])
+  @@map("spare_part_items")
+}
+
+/// Quantity receive (IN) / issue to engineer (OUT) for spare parts stock.
+model SpareStockTxn {
+  id             String            @id @db.Char(36)
+  tenantId       String            @map("tenant_id") @db.Char(36)
+  sparePartId    String            @map("spare_part_id") @db.Char(36)
+  txnType        SpareStockTxnType @map("txn_type")
+  quantity       Decimal           @db.Decimal(15, 3)
+  txnDate        DateTime          @map("txn_date") @db.Date
+  supplierName   String?           @map("supplier_name") @db.VarChar(191)
+  invoiceDate    DateTime?         @map("invoice_date") @db.Date
+  invoiceNo      String?           @map("invoice_no") @db.VarChar(80)
+  issuedToUserId String?           @map("issued_to_user_id") @db.Char(36)
+  ticketId       String?           @map("ticket_id") @db.Char(36)
+  notes          String?           @db.Text
+  createdById    String            @map("created_by_id") @db.Char(36)
+  customFields   Json?             @map("custom_fields")
+  createdAt      DateTime          @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt      DateTime?         @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, sparePartId, txnDate])
+  @@index([tenantId, txnType, txnDate])
+  @@index([tenantId, issuedToUserId])
+  @@map("spare_stock_txns")
 }
 
 model TicketMessage {
@@ -844,6 +937,46 @@ model StockMovement {
   @@map("stock_movements")
 }
 
+/// Product brand master (RETSOL, SMART, ISTHA, …) — picked on stock receive.
+model Brand {
+  id        String    @id @db.Char(36)
+  tenantId  String    @map("tenant_id") @db.Char(36)
+  name      String    @db.VarChar(120)
+  code      String    @db.VarChar(32)
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, code])
+  @@index([tenantId, name])
+  @@map("brands")
+}
+
+/// One supplier invoice arrival — header shared by N physical stock units.
+model StockReceipt {
+  id           String    @id @db.Char(36)
+  tenantId     String    @map("tenant_id") @db.Char(36)
+  vendorId     String?   @map("vendor_id") @db.Char(36)
+  brandId      String?   @map("brand_id") @db.Char(36)
+  productId    String    @map("product_id") @db.Char(36)
+  warehouseId  String    @map("warehouse_id") @db.Char(36)
+  spec         String?   @db.VarChar(255)
+  quantity     Int       @db.Int
+  unitAmount   Decimal   @default(0) @map("unit_amount") @db.Decimal(15, 2)
+  invoiceNo    String?   @map("invoice_no") @db.VarChar(64)
+  invoiceDate  DateTime? @map("invoice_date") @db.Date
+  receivedDate DateTime  @map("received_date") @db.Date
+  notes        String?   @db.Text
+  createdById  String?   @map("created_by_id") @db.Char(36)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt    DateTime? @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, receivedDate])
+  @@index([tenantId, vendorId])
+  @@index([tenantId, productId])
+  @@map("stock_receipts")
+}
+
 /// One physical piece — unique serial. Stamping date = govt verification (like FC for a vehicle).
 model StockUnit {
   id           String          @id @db.Char(36)
@@ -851,6 +984,11 @@ model StockUnit {
   productId    String          @map("product_id") @db.Char(36)
   warehouseId  String          @map("warehouse_id") @db.Char(36)
   serialNo     String          @map("serial_no") @db.VarChar(120)
+  /// Internal HMS warehouse ID (provisional YYYY-FAM-####). Unique per tenant.
+  hmsUniqId    String?         @map("hms_uniq_id") @db.VarChar(40)
+  receiptId    String?         @map("receipt_id") @db.Char(36)
+  brandId      String?         @map("brand_id") @db.Char(36)
+  unitCost     Decimal?        @map("unit_cost") @db.Decimal(15, 2)
   stampingDate DateTime?       @map("stamping_date") @db.Date
   notes        String?         @db.Text
   status       StockUnitStatus @default(IN_STOCK)
@@ -861,9 +999,14 @@ model StockUnit {
   updatedAt    DateTime        @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt    DateTime?       @map("deleted_at") @db.DateTime(3)
   @@unique([tenantId, serialNo])
+  @@unique([tenantId, hmsUniqId])
   @@index([tenantId, productId, status])
   @@index([tenantId, warehouseId])
   @@index([tenantId, leadId])
+  @@index([tenantId, receiptId])
+  @@index([tenantId, brandId])
+  @@index([tenantId, status])
+  @@index([tenantId, deletedAt, status])
   @@map("stock_units")
 }
 
@@ -962,6 +1105,40 @@ model SalesOrderLine {
   @@map("sales_order_lines")
 }
 
+/// Digital sale release form — admin signs before warehouse removes stock / raises PI
+model SalesRequisition {
+  id              String                 @id @db.Char(36)
+  tenantId        String                 @map("tenant_id") @db.Char(36)
+  reqNumber       String                 @map("req_number") @db.VarChar(40)
+  leadId          String                 @map("lead_id") @db.Char(36)
+  contactId       String?                @map("contact_id") @db.Char(36)
+  dealId          String?                @map("deal_id") @db.Char(36)
+  productId       String?                @map("product_id") @db.Char(36)
+  stockUnitId     String?                @map("stock_unit_id") @db.Char(36)
+  serialNo        String?                @map("serial_no") @db.VarChar(80)
+  productName     String?                @map("product_name") @db.VarChar(191)
+  qty             Decimal                @default(1) @db.Decimal(15, 3)
+  advanceAmount   Decimal                @default(0) @map("advance_amount") @db.Decimal(15, 2)
+  paymentNotes    String?                @map("payment_notes") @db.Text
+  status          SalesRequisitionStatus @default(PENDING_APPROVAL)
+  requestedById   String                 @map("requested_by_id") @db.Char(36)
+  approvedById    String?                @map("approved_by_id") @db.Char(36)
+  approvedAt      DateTime?              @map("approved_at") @db.DateTime(3)
+  rejectedReason  String?                @map("rejected_reason") @db.VarChar(500)
+  invoiceId       String?                @map("invoice_id") @db.Char(36)
+  shippedAt       DateTime?              @map("shipped_at") @db.DateTime(3)
+  notes           String?                @db.Text
+  customFields    Json?                  @map("custom_fields")
+  createdAt       DateTime               @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime               @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt       DateTime?              @map("deleted_at") @db.DateTime(3)
+  @@unique([tenantId, reqNumber])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, leadId])
+  @@index([tenantId, stockUnitId])
+  @@map("sales_requisitions")
+}
+
 model Invoice {
   id             String        @id @db.Char(36)
   tenantId       String        @map("tenant_id") @db.Char(36)
@@ -989,6 +1166,8 @@ model Invoice {
   @@index([tenantId, accountId, status])
   @@index([tenantId, dueDate, status])
   @@index([tenantId, serviceTicketId])
+  @@index([tenantId, deletedAt, createdAt])
+  @@index([tenantId, status])
   @@map("invoices")
 }
 
@@ -1142,4 +1321,102 @@ model NumberSequence {
   updatedAt   DateTime @updatedAt @map("updated_at") @db.DateTime(3)
   @@id([tenantId, sequenceKey])
   @@map("number_sequences")
+}
+
+enum RentalStatus {
+  DRAFT
+  ACTIVE
+  OVERDUE
+  RETURNED
+  CANCELLED
+}
+
+/// Hire / rental of a physical stock unit — deducts warehouse stock while ACTIVE.
+model RentalAgreement {
+  id                String       @id @db.Char(36)
+  tenantId          String       @map("tenant_id") @db.Char(36)
+  rentalNo          String       @map("rental_no") @db.VarChar(40)
+  status            RentalStatus @default(DRAFT)
+  productId         String       @map("product_id") @db.Char(36)
+  stockUnitId       String       @map("stock_unit_id") @db.Char(36)
+  contactId         String?      @map("contact_id") @db.Char(36)
+  accountId         String?      @map("account_id") @db.Char(36)
+  leadId            String?      @map("lead_id") @db.Char(36)
+  customerName      String       @map("customer_name") @db.VarChar(160)
+  customerPhone     String?      @map("customer_phone") @db.VarChar(32)
+  customerEmail     String?      @map("customer_email") @db.VarChar(191)
+  customerCompany   String?      @map("customer_company") @db.VarChar(191)
+  customerAddress   String?      @map("customer_address") @db.VarChar(512)
+  city              String?      @db.VarChar(80)
+  state             String?      @db.VarChar(80)
+  startAt           DateTime     @map("start_at") @db.DateTime(3)
+  expectedReturnAt  DateTime?    @map("expected_return_at") @db.DateTime(3)
+  returnedAt        DateTime?    @map("returned_at") @db.DateTime(3)
+  dailyRate         Decimal?     @map("daily_rate") @db.Decimal(15, 2)
+  totalAmount       Decimal?     @map("total_amount") @db.Decimal(15, 2)
+  depositAmount     Decimal?     @map("deposit_amount") @db.Decimal(15, 2)
+  notes             String?      @db.Text
+  returnNotes       String?      @map("return_notes") @db.Text
+  issuedById        String?      @map("issued_by_id") @db.Char(36)
+  returnedById      String?      @map("returned_by_id") @db.Char(36)
+  fromWarehouseId   String?      @map("from_warehouse_id") @db.Char(36)
+  customFields      Json?        @map("custom_fields")
+  createdAt         DateTime     @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt         DateTime     @updatedAt @map("updated_at") @db.DateTime(3)
+  @@unique([tenantId, rentalNo])
+  @@index([tenantId, status, startAt])
+  @@index([tenantId, stockUnitId])
+  @@index([tenantId, contactId])
+  @@index([tenantId, productId])
+  @@map("rental_agreements")
+}
+
+enum TeamChannelType {
+  CHANNEL
+  DM
+}
+
+model TeamChannel {
+  id            String          @id @db.Char(36)
+  tenantId      String          @map("tenant_id") @db.Char(36)
+  type          TeamChannelType @default(CHANNEL)
+  name          String          @db.VarChar(120)
+  slug          String          @db.VarChar(160)
+  description   String?         @db.VarChar(255)
+  isDefault     Boolean         @default(false) @map("is_default")
+  createdById   String?         @map("created_by_id") @db.Char(36)
+  lastMessageAt DateTime?       @map("last_message_at") @db.DateTime(3)
+  createdAt     DateTime        @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt     DateTime        @updatedAt @map("updated_at") @db.DateTime(3)
+  @@unique([tenantId, slug])
+  @@index([tenantId, type, lastMessageAt])
+  @@map("team_channels")
+}
+
+model TeamChannelMember {
+  id         String    @id @db.Char(36)
+  tenantId   String    @map("tenant_id") @db.Char(36)
+  channelId  String    @map("channel_id") @db.Char(36)
+  userId     String    @map("user_id") @db.Char(36)
+  lastReadAt DateTime? @map("last_read_at") @db.DateTime(3)
+  pinnedAt   DateTime? @map("pinned_at") @db.DateTime(3)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  @@unique([channelId, userId])
+  @@index([tenantId, userId])
+  @@map("team_channel_members")
+}
+
+model TeamMessage {
+  id        String    @id @db.Char(36)
+  tenantId  String    @map("tenant_id") @db.Char(36)
+  channelId String    @map("channel_id") @db.Char(36)
+  senderId  String    @map("sender_id") @db.Char(36)
+  body      String    @db.Text
+  parentId  String?   @map("parent_id") @db.Char(36)
+  createdAt DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  deletedAt DateTime? @map("deleted_at") @db.DateTime(3)
+  @@index([tenantId, channelId, createdAt])
+  @@index([tenantId, parentId])
+  @@map("team_messages")
 }

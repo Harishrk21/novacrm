@@ -3,6 +3,7 @@ import { newId } from "../../common/utils/id.js";
 import { normalizePhone } from "../../common/utils/phone.js";
 import {
   isWhatsAppCloudConfigured,
+  resolveTenantCloudCfg,
   sendCloudText,
   sendCloudTemplate,
   templateBodyParams,
@@ -35,7 +36,7 @@ async function tryCloudSend(
   phone: string,
   body: string,
   template?: { name: string; languageCode?: string; params: string[] },
-  opts?: { preferTemplate?: boolean },
+  opts?: { preferTemplate?: boolean; tenantId?: string },
 ): Promise<{
   notified: boolean;
   provider: string;
@@ -43,7 +44,8 @@ async function tryCloudSend(
   reason?: string;
   template?: string;
 }> {
-  if (!isWhatsAppCloudConfigured()) {
+  const cloudCfg = await resolveTenantCloudCfg(opts?.tenantId);
+  if (!isWhatsAppCloudConfigured(cloudCfg)) {
     return { notified: false, provider: "local", reason: "cloud_not_configured" };
   }
 
@@ -54,6 +56,7 @@ async function tryCloudSend(
       templateName: template.name,
       languageCode: template.languageCode || "en",
       components: templateBodyParams(template.params),
+      tenantId: opts?.tenantId,
     });
     if (t.ok) {
       return {
@@ -64,11 +67,9 @@ async function tryCloudSend(
       };
     }
     templateError = t.error || "template_send_failed";
-    // Staff alerts used to stop here (requireTemplate) — that blocked engineers when the
-    // Utility template was missing/unapproved while customers still got free-text status updates.
   }
 
-  const text = await sendCloudText(phone, body);
+  const text = await sendCloudText(phone, body, { tenantId: opts?.tenantId });
   if (text.ok) {
     return {
       notified: true,
@@ -130,7 +131,7 @@ export async function sendCustomerWhatsApp(opts: {
   let failReason: string | undefined;
   let usedTemplate: string | undefined;
 
-  const cloud = await tryCloudSend(phone, body, template);
+  const cloud = await tryCloudSend(phone, body, template, { tenantId });
   if (cloud.notified) {
     notified = true;
     provider = cloud.provider;
@@ -275,7 +276,7 @@ export async function sendPhoneWhatsApp(opts: {
     ? `https://wa.me/${waDigits}?text=${encodeURIComponent(opts.body)}`
     : null;
 
-  const cloud = await tryCloudSend(phone, opts.body, opts.template);
+  const cloud = await tryCloudSend(phone, opts.body, opts.template, { tenantId: opts.tenantId });
   const phoneNorm = normalizePhone(phone) || phone.replace(/\D/g, "");
 
   let conversation = await prisma.whatsappConversation.findFirst({
@@ -389,6 +390,7 @@ export async function sendStaffWhatsApp(opts: {
 
   const cloud = await tryCloudSend(phone, opts.body, opts.template, {
     preferTemplate: Boolean(opts.template?.name),
+    tenantId: opts.tenantId,
   });
   const phoneNorm = normalizePhone(phone) || phone.replace(/\D/g, "");
 

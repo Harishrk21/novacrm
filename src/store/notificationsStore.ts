@@ -1,5 +1,27 @@
 import { create } from 'zustand'
 import { api, getAuth, isTenantSession } from '@/lib/api'
+import { notificationHref } from '@/lib/notificationHref'
+
+/** Fired when a brand-new notification should pop the header bell + sound. */
+export const NOTIFICATION_ARRIVED_EVENT = 'hms:notification-arrived'
+
+let lastArrivedEmitAt = 0
+let lastLivePrependAt = 0
+
+export function emitNotificationArrived(detail?: {
+  title?: string
+  message?: string
+  id?: string
+}) {
+  if (typeof window === 'undefined') return
+  const now = Date.now()
+  // Avoid double popup when socket + poll refresh the same alert
+  if (now - lastArrivedEmitAt < 2500) return
+  lastArrivedEmitAt = now
+  window.dispatchEvent(
+    new CustomEvent(NOTIFICATION_ARRIVED_EVENT, { detail: detail ?? {} }),
+  )
+}
 
 export type AppNotification = {
   id: string
@@ -45,6 +67,8 @@ export const useNotificationsStore = create<State>((set, get) => ({
       set({ items: [], unreadCount: 0, lastFetchedAt: Date.now() })
       return
     }
+    const prevIds = new Set(get().items.map((i) => i.id))
+    const hadFetch = get().lastFetchedAt != null
     set({ loading: true })
     try {
       const res = await api.notifications({ limit: 50 })
@@ -54,15 +78,12 @@ export const useNotificationsStore = create<State>((set, get) => ({
         message: String(n.message),
         createdAt: String(n.createdAt),
         isRead: Boolean(n.isRead),
-        href: n.href
-        ? String(n.href)
-        : n.entityType === 'lead' && n.entityId
-          ? `/sale-tracking/${n.entityId}`
-          : n.entityType === 'invoice_lead' && n.entityId
-            ? `/erp/invoices?open=1&contactId=${n.entityId}`
-            : n.entityType === 'ticket' && n.entityId
-              ? `/tickets/${n.entityId}`
-              : undefined,
+        href: notificationHref({
+          type: n.type ? String(n.type) : null,
+          entityType: n.entityType ? String(n.entityType) : null,
+          entityId: n.entityId ? String(n.entityId) : null,
+          href: n.href ? String(n.href) : null,
+        }),
         kind: mapKind(String(n.type ?? 'TICKET')),
         type: String(n.type ?? ''),
         entityType: n.entityType ? String(n.entityType) : null,
@@ -74,6 +95,20 @@ export const useNotificationsStore = create<State>((set, get) => ({
         lastFetchedAt: Date.now(),
         loading: false,
       })
+      // Poll path: if a new unread row appeared (socket missed), alert from header
+      if (hadFetch && Date.now() - lastLivePrependAt > 3000) {
+        const fresh = items.find((n) => !n.isRead && !prevIds.has(n.id) && !n.id.startsWith('live-'))
+        if (fresh) {
+          void import('@/lib/notificationSound').then(({ playNotificationBell }) => {
+            playNotificationBell()
+          })
+          emitNotificationArrived({
+            id: fresh.id,
+            title: fresh.title,
+            message: fresh.message,
+          })
+        }
+      }
     } catch {
       set({ loading: false, lastFetchedAt: Date.now() })
     }
@@ -137,23 +172,23 @@ export const useNotificationsStore = create<State>((set, get) => ({
       message: n.message,
       createdAt: n.createdAt ?? new Date().toISOString(),
       isRead: false,
-      href:
-        n.entityType === 'ticket' && n.entityId
-          ? `/tickets/${n.entityId}`
-          : n.entityType === 'lead' && n.entityId
-            ? `/sale-tracking/${n.entityId}`
-            : n.entityType === 'invoice_lead' && n.entityId
-              ? `/erp/invoices?open=1&contactId=${n.entityId}`
-              : '/notifications',
+      href: notificationHref({
+        type: n.type,
+        entityType: n.entityType,
+        entityId: n.entityId,
+        href: n.href,
+      }),
       kind: mapKind(String(n.type ?? n.kind ?? 'TICKET')),
       type: n.type,
       entityType: n.entityType,
       entityId: n.entityId,
     }
+    lastLivePrependAt = Date.now()
     set({
       items: [item, ...get().items].slice(0, 50),
       unreadCount: get().unreadCount + 1,
     })
+    emitNotificationArrived({ id, title: item.title, message: item.message })
   },
 }))
 
@@ -193,11 +228,60 @@ export function connectNotificationsSocket(
       // Refresh from server shortly so IDs persist for mark-read
       window.setTimeout(() => void useNotificationsStore.getState().load(), 800)
     })
-    // Assign / approve resolves earlier rows — refresh list + unread badge
-    s.on('notification:updated', () => {
+    // Assign / approve / task-done — refresh list + unread badge in real time
+    const refresh = () => {
       void useNotificationsStore.getState().load()
+    }
+    s.on('notification:updated', (payload: unknown) => {
+      const p = (payload && typeof payload === 'object' ? payload : {}) as {
+        ids?: string[]
+        removed?: boolean
+      }
+      if (Array.isArray(p.ids) && p.ids.length) {
+        const state = useNotificationsStore.getState()
+        const idSet = new Set(p.ids)
+        if (p.removed) {
+          const next = state.items.filter((n) => !idSet.has(n.id))
+          setOptimistic(next)
+        } else {
+          const next = state.items.map((n) =>
+            idSet.has(n.id) ? { ...n, isRead: true } : n,
+          )
+          setOptimistic(next)
+        }
+      }
+      refresh()
+    })
+    s.on('notification:expired', (payload: unknown) => {
+      const p = (payload && typeof payload === 'object' ? payload : {}) as {
+        ids?: string[]
+        removed?: boolean
+        entityId?: string | null
+      }
+      const state = useNotificationsStore.getState()
+      if (Array.isArray(p.ids) && p.ids.length) {
+        const idSet = new Set(p.ids)
+        const next = p.removed
+          ? state.items.filter((n) => !idSet.has(n.id))
+          : state.items.map((n) => (idSet.has(n.id) ? { ...n, isRead: true } : n))
+        setOptimistic(next)
+      } else if (p.entityId) {
+        // Live stubs may not have server ids yet — drop by entity
+        const next = state.items.filter(
+          (n) => !(n.entityId === p.entityId && !n.isRead),
+        )
+        setOptimistic(next)
+      }
+      refresh()
     })
   })
+
+  function setOptimistic(items: AppNotification[]) {
+    useNotificationsStore.setState({
+      items,
+      unreadCount: items.filter((i) => !i.isRead).length,
+    })
+  }
 
   return () => {
     cancelled = true

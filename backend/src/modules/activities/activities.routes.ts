@@ -11,6 +11,7 @@ import { newId } from "../../common/utils/id.js";
 import { AppError, notFound } from "../../common/errors.js";
 import { pagination, pageResult } from "../../common/utils/pagination.js";
 import { isScopedEmployeeRole } from "../../common/utils/scope.js";
+import { requirePermission } from "../../middleware/permissions.middleware.js";
 
 const body = z.object({
   type: z.enum(["CALL", "EMAIL", "MEETING", "TASK", "NOTE", "WHATSAPP", "VISIT", "DEMO"]),
@@ -36,7 +37,7 @@ const idSchema = z.object({ body: z.any(), query: z.any(), params });
 export const activitiesRouter = Router();
 activitiesRouter.use(authenticate, requireTenant);
 
-activitiesRouter.get("/", async (q: Request, r: Response) => {
+activitiesRouter.get("/", requirePermission("activities:view"), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const p = pagination(q.query);
   const where: Record<string, unknown> = { tenantId: t, deletedAt: null };
@@ -52,6 +53,7 @@ activitiesRouter.get("/", async (q: Request, r: Response) => {
   }
   if (q.query.contactId) where.contactId = String(q.query.contactId);
   if (q.query.dealId) where.dealId = String(q.query.dealId);
+  if (q.query.leadId) where.leadId = String(q.query.leadId);
 
   const [items, total] = await Promise.all([
     prisma.activity.findMany({
@@ -106,7 +108,7 @@ activitiesRouter.get("/", async (q: Request, r: Response) => {
   );
 });
 
-activitiesRouter.post("/", validate(createSchema), async (q: Request, r: Response) => {
+activitiesRouter.post("/", requirePermission("activities:write"), validate(createSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const d = q.body as z.infer<typeof body>;
   if (d.assignedToId) {
@@ -127,6 +129,7 @@ activitiesRouter.post("/", validate(createSchema), async (q: Request, r: Respons
     });
     if (!deal) throw notFound("Deal");
   }
+  const assigneeId = d.assignedToId ?? q.auth!.userId;
   const row = await prisma.activity.create({
     data: {
       id: newId(),
@@ -142,14 +145,67 @@ activitiesRouter.post("/", validate(createSchema), async (q: Request, r: Respons
       contactId: d.contactId,
       dealId: d.dealId,
       accountId: d.accountId,
-      assignedToId: d.assignedToId ?? q.auth!.userId,
+      assignedToId: assigneeId,
       customFields: (d.customFields as object | undefined) ?? undefined,
     },
   });
+
+  // Keep sale follow-up date in sync so Workqueue → Follow-ups lists this lead
+  if (d.leadId && d.scheduledAt) {
+    try {
+      const lead = await prisma.lead.findFirst({
+        where: { id: d.leadId, tenantId: t, deletedAt: null },
+      });
+      if (lead) {
+        const prev =
+          lead.customFields && typeof lead.customFields === "object" && !Array.isArray(lead.customFields)
+            ? (lead.customFields as Record<string, unknown>)
+            : {};
+        const day = d.scheduledAt.toISOString().slice(0, 10);
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: {
+            customFields: {
+              ...prev,
+              follow_up_date: day,
+              reminder_at: d.scheduledAt.toISOString(),
+              lastTouchedAt: new Date().toISOString(),
+            } as object,
+          },
+        });
+        const start = new Date();
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(start);
+        end.setDate(end.getDate() + 1);
+        const dueToday = d.scheduledAt >= start && d.scheduledAt < end;
+        const overdue = d.scheduledAt < start;
+        if (dueToday || overdue) {
+          const { createNotifications } = await import("../notifications/notify.service.js");
+          await createNotifications(
+            [
+              {
+                tenantId: t,
+                userId: assigneeId!,
+                title: overdue ? "Follow-up overdue" : "Follow-up due today",
+                message: `${lead.name} · ${d.title.trim()}`,
+                type: "LEAD_FOLLOWUP_DUE",
+                entityType: "Lead",
+                entityId: lead.id,
+              },
+            ],
+            q,
+          );
+        }
+      }
+    } catch {
+      /* non-fatal */
+    }
+  }
+
   return success(r, row, "Activity created", 201);
 });
 
-activitiesRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Response) => {
+activitiesRouter.patch("/:id", requirePermission("activities:write"), validate(updateSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const d = q.body as Partial<z.infer<typeof body>>;
@@ -157,16 +213,37 @@ activitiesRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Res
   if (d.status === "COMPLETED" && !("completedAt" in d)) {
     data.completedAt = new Date();
   }
+  const existing = await prisma.activity.findFirst({
+    where: { id, tenantId: t, deletedAt: null },
+  });
+  if (!existing) throw notFound("Activity");
   const updated = await prisma.activity.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data,
   });
   if (!updated.count) throw notFound("Activity");
+  if (d.status === "COMPLETED" && existing.leadId) {
+    try {
+      const { expireEntityNotifications } = await import("../notifications/notify.service.js");
+      await expireEntityNotifications(
+        {
+          tenantId: t,
+          entityType: "lead",
+          entityId: existing.leadId,
+          types: ["LEAD_FOLLOWUP", "LEAD_FOLLOWUP_DUE", "activity_overdue"],
+          mode: "remove",
+        },
+        q,
+      );
+    } catch {
+      /* non-fatal */
+    }
+  }
   const row = await prisma.activity.findFirst({ where: { id, tenantId: t } });
   return success(r, row);
 });
 
-activitiesRouter.post("/:id/complete", validate(idSchema), async (q: Request, r: Response) => {
+activitiesRouter.post("/:id/complete", requirePermission("activities:write"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const existing = await prisma.activity.findFirst({
@@ -185,10 +262,30 @@ activitiesRouter.post("/:id/complete", validate(idSchema), async (q: Request, r:
     data: { status: "COMPLETED", completedAt: new Date() },
   });
   if (!updated.count) throw notFound("Activity");
+
+  // Follow-up bell alerts expire when the task is done
+  if (existing.leadId) {
+    try {
+      const { expireEntityNotifications } = await import("../notifications/notify.service.js");
+      await expireEntityNotifications(
+        {
+          tenantId: t,
+          entityType: "lead",
+          entityId: existing.leadId,
+          types: ["LEAD_FOLLOWUP", "LEAD_FOLLOWUP_DUE", "activity_overdue"],
+          mode: "remove",
+        },
+        q,
+      );
+    } catch {
+      /* non-fatal */
+    }
+  }
+
   return success(r, await prisma.activity.findFirst({ where: { id, tenantId: t } }), "Completed");
 });
 
-activitiesRouter.delete("/:id", validate(idSchema), async (q: Request, r: Response) => {
+activitiesRouter.delete("/:id", requirePermission("activities:delete"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const updated = await prisma.activity.updateMany({

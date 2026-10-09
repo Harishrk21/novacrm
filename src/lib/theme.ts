@@ -100,38 +100,38 @@ export const PALETTES: Record<ColorPalette, PaletteDef> = {
     },
   },
   violet: {
-    label: 'Violet',
-    description: 'Modern purple — soft lilac canvas, sharp accents',
-    accent: '#7C3AED',
-    accentHover: '#6D28D9',
-    chart: ['#7C3AED', '#A78BFA', '#6366F1', '#EC4899', '#10B981', '#F59E0B'],
+    label: 'Zoho CRM',
+    description: 'Zoho-style dark/light CRM — charcoal panels, violet accents',
+    accent: '#9B6DFF',
+    accentHover: '#8A57F5',
+    chart: ['#9B6DFF', '#60A5FA', '#34D399', '#F472B6', '#FBBF24', '#38BDF8'],
     light: {
-      surface: '#F3EEFF',
+      surface: '#F0F0F0',
       card: '#FFFFFF',
-      muted: '#E8DEFF',
-      border: '#D4C4F7',
-      textPrimary: '#1A0B33',
-      textSecondary: '#5B4A7A',
-      sidebarBg: '#1E1035',
-      sidebarText: '#C4B5E8',
-      wash: 'linear-gradient(165deg, #F3EEFF 0%, #FAF7FF 45%, #F5F0FF 100%)',
-      accentSoft: 'rgba(124, 58, 237, 0.12)',
-      panelFrom: '#EDE9FE',
-      panelTo: '#F5F3FF',
+      muted: '#F5F5F5',
+      border: '#E2E2E2',
+      textPrimary: '#1A1A1A',
+      textSecondary: '#6B6B6B',
+      sidebarBg: '#1B2435',
+      sidebarText: '#C5CDD8',
+      wash: 'linear-gradient(180deg, #F0F0F0 0%, #F5F5F5 100%)',
+      accentSoft: 'rgba(155, 109, 255, 0.12)',
+      panelFrom: '#EEEEF5',
+      panelTo: '#F7F7FB',
     },
     dark: {
-      surface: '#10081C',
-      card: '#1A102C',
-      muted: '#25183C',
-      border: '#3A2858',
-      textPrimary: '#F3ECFF',
-      textSecondary: '#B2A0D4',
-      sidebarBg: '#0C0616',
-      sidebarText: '#B2A0D4',
-      wash: 'linear-gradient(165deg, #10081C 0%, #160E26 50%, #1A102C 100%)',
-      accentSoft: 'rgba(167, 139, 250, 0.16)',
-      panelFrom: '#25183C',
-      panelTo: '#1A102C',
+      surface: '#121212',
+      card: '#1C1C1E',
+      muted: '#242426',
+      border: '#2E2E32',
+      textPrimary: '#F2F2F2',
+      textSecondary: '#A0A0A8',
+      sidebarBg: '#0E0E10',
+      sidebarText: '#9A9AA3',
+      wash: 'linear-gradient(180deg, #121212 0%, #161618 100%)',
+      accentSoft: 'rgba(155, 109, 255, 0.18)',
+      panelFrom: '#1C1C1E',
+      panelTo: '#161618',
     },
   },
   amber: {
@@ -241,16 +241,27 @@ export const PALETTES: Record<ColorPalette, PaletteDef> = {
   },
 }
 
-export function applyTheme(mode: ThemeMode, palette: ColorPalette) {
+export function applyTheme(
+  mode: ThemeMode,
+  palette: ColorPalette,
+  overrides?: {
+    accent?: string
+    accentHover?: string
+    sidebarBg?: string
+  },
+) {
   const root = document.documentElement
   root.dataset.theme = mode
   root.dataset.palette = palette
-  const def = PALETTES[palette]
+  const def = PALETTES[palette] ?? PALETTES.violet
   const t = mode === 'dark' ? def.dark : def.light
+  const accent = overrides?.accent ?? def.accent
+  const accentHover = overrides?.accentHover ?? def.accentHover
+  const sidebarBg = overrides?.sidebarBg ?? t.sidebarBg
 
-  root.style.setProperty('--color-accent-blue', def.accent)
-  root.style.setProperty('--color-sidebar-active', def.accent)
-  root.style.setProperty('--accent-hover', def.accentHover)
+  root.style.setProperty('--color-accent-blue', accent)
+  root.style.setProperty('--color-sidebar-active', accent)
+  root.style.setProperty('--accent-hover', accentHover)
   root.style.setProperty('--color-accent-soft', t.accentSoft)
   root.style.setProperty('--color-panel-from', t.panelFrom)
   root.style.setProperty('--color-panel-to', t.panelTo)
@@ -260,9 +271,10 @@ export function applyTheme(mode: ThemeMode, palette: ColorPalette) {
   root.style.setProperty('--color-border', t.border)
   root.style.setProperty('--color-text-primary', t.textPrimary)
   root.style.setProperty('--color-text-secondary', t.textSecondary)
-  root.style.setProperty('--color-sidebar-bg', t.sidebarBg)
+  root.style.setProperty('--color-sidebar-bg', sidebarBg)
   root.style.setProperty('--color-sidebar-text', t.sidebarText)
   root.style.setProperty('--app-wash', t.wash)
 
   def.chart.forEach((c, i) => root.style.setProperty(`--chart-${i + 1}`, c))
 }
+

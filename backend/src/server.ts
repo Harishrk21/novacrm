@@ -7,12 +7,16 @@ import { logger } from "./config/logger.js";
 import { prisma } from "./config/database.js";
 import { redis } from "./config/redis.js";
 import { runServiceReminders } from "./modules/assets/reminder.service.js";
+import { runAutomationPass } from "./modules/automation/automation.service.js";
 
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: env.CLIENT_URL.split(",").map((v) => v.trim()), credentials: true },
 });
 app.set("io", io);
+void import("./modules/notifications/notify.service.js").then(({ bindNotificationIo }) => {
+  bindNotificationIo(io);
+});
 
 io.use((socket, next) => {
   try {
@@ -39,22 +43,36 @@ io.on("connection", (socket) => {
 });
 
 server.listen(env.PORT, () =>
-  logger.info("HMS Enterprises API started", { port: env.PORT, environment: env.NODE_ENV }),
+  logger.info("NovaCRM Platform API started", { port: env.PORT, environment: env.NODE_ENV }),
 );
 
-/** Hourly: WhatsApp reminders ~1 week before maintenance due / AMC end. */
+/** Hourly: AMC/maintenance WhatsApp + sales automation pass. */
 const REMINDER_MS = 60 * 60 * 1000;
-setTimeout(() => {
-  void runServiceReminders().catch((err) => logger.warn("Service reminders failed", { err }));
-}, 20_000);
-const reminderTimer = setInterval(() => {
-  void runServiceReminders().catch((err) => logger.warn("Service reminders failed", { err }));
-}, REMINDER_MS);
-reminderTimer.unref?.();
+const hourlyJobsEnabled =
+  process.env.ENABLE_HOURLY_JOBS === "1" ||
+  (env.NODE_ENV === "production" && process.env.ENABLE_HOURLY_JOBS !== "0");
+
+async function hourlyJobs() {
+  await runServiceReminders().catch((err) => logger.warn("Service reminders failed", { err }));
+  await runAutomationPass().catch((err) => logger.warn("Automation pass failed", { err }));
+}
+
+let reminderTimer: ReturnType<typeof setInterval> | undefined;
+if (hourlyJobsEnabled) {
+  setTimeout(() => {
+    void hourlyJobs();
+  }, 60_000);
+  reminderTimer = setInterval(() => {
+    void hourlyJobs();
+  }, REMINDER_MS);
+  reminderTimer.unref?.();
+} else {
+  logger.info("Hourly reminder/automation jobs disabled in development (set ENABLE_HOURLY_JOBS=1 to force)");
+}
 
 async function shutdown(signal: string) {
   logger.info("Shutting down", { signal });
-  clearInterval(reminderTimer);
+  if (reminderTimer) clearInterval(reminderTimer);
   io.close();
   server.close(async () => {
     await Promise.allSettled([prisma.$disconnect(), redis ? redis.quit() : Promise.resolve()]);

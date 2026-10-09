@@ -169,7 +169,85 @@ export async function create(t: string, user: string, d: any) {
         where: { id: String(line.stockUnitId), tenantId: t, deletedAt: null },
       });
       if (!unit) throw new AppError("Selected stock serial was not found", 404);
-      if (unit.status !== "IN_STOCK" && unit.status !== "DEMO") {
+      // Inventory may have already reduced stock — sales can still raise PI against that serial
+      if (unit.status === "SOLD") {
+        const cfReqId =
+          d.requisitionId
+            ? String(d.requisitionId)
+            : d._requisitionId
+              ? String(d._requisitionId)
+              : d.customFields && typeof d.customFields === "object"
+                ? String((d.customFields as Record<string, unknown>).salesRequisitionId ?? "")
+                : "";
+        let linkedOk = false;
+        if (cfReqId) {
+          const byId = await prisma.salesRequisition.findFirst({
+            where: {
+              id: cfReqId,
+              tenantId: t,
+              deletedAt: null,
+              status: { in: ["APPROVED", "FULFILLED"] },
+            },
+            select: { id: true, stockUnitId: true, customFields: true },
+          });
+          if (byId) {
+            if (byId.stockUnitId === unit.id) linkedOk = true;
+            else {
+              const cf =
+                byId.customFields && typeof byId.customFields === "object" && !Array.isArray(byId.customFields)
+                  ? (byId.customFields as Record<string, unknown>)
+                  : {};
+              const lines = Array.isArray(cf.releaseLines)
+                ? (cf.releaseLines as Array<Record<string, unknown>>)
+                : [];
+              linkedOk = lines.some((rl) => String(rl.stockUnitId ?? "") === unit.id);
+              // Explicit PI from that sale still OK even if unit list is incomplete
+              if (!linkedOk) linkedOk = true;
+            }
+          }
+        }
+        if (!linkedOk) {
+          const byUnit = await prisma.salesRequisition.findFirst({
+            where: {
+              tenantId: t,
+              deletedAt: null,
+              stockUnitId: unit.id,
+              status: { in: ["APPROVED", "FULFILLED"] },
+            },
+            select: { id: true },
+          });
+          linkedOk = Boolean(byUnit);
+        }
+        if (!linkedOk) {
+          const candidates = await prisma.salesRequisition.findMany({
+            where: {
+              tenantId: t,
+              deletedAt: null,
+              status: { in: ["APPROVED", "FULFILLED"] },
+            },
+            orderBy: { updatedAt: "desc" },
+            take: 50,
+            select: { id: true, customFields: true, stockUnitId: true },
+          });
+          linkedOk = candidates.some((row) => {
+            if (row.stockUnitId === unit.id) return true;
+            const cf =
+              row.customFields && typeof row.customFields === "object" && !Array.isArray(row.customFields)
+                ? (row.customFields as Record<string, unknown>)
+                : {};
+            const lines = Array.isArray(cf.releaseLines)
+              ? (cf.releaseLines as Array<Record<string, unknown>>)
+              : [];
+            return lines.some((rl) => String(rl.stockUnitId ?? "") === unit.id);
+          });
+        }
+        if (!linkedOk) {
+          throw new AppError(
+            `Serial ${unit.serialNo} is already sold and is not linked to an open sale requisition. Open Create proforma from the lead after stock reduce.`,
+            409,
+          );
+        }
+      } else if (unit.status !== "IN_STOCK" && unit.status !== "DEMO") {
         throw new AppError(`Serial ${unit.serialNo} is not available (${unit.status})`, 409);
       }
       if (unit.productId !== line.productId) {
@@ -177,6 +255,22 @@ export async function create(t: string, user: string, d: any) {
       }
       if (Number(line.quantity) !== 1) {
         throw new AppError(`Serial ${unit.serialNo} must be sold as quantity 1`, 400);
+      }
+      if (unit.status !== "SOLD") {
+        const { assertSerialSaleAllowed } = await import("../requisitions/requisitions.service.js");
+        const reqId =
+          d.requisitionId
+            ? String(d.requisitionId)
+            : d._requisitionId
+              ? String(d._requisitionId)
+              : d.customFields && typeof d.customFields === "object"
+                ? String((d.customFields as Record<string, unknown>).salesRequisitionId ?? "") ||
+                  undefined
+                : undefined;
+        await assertSerialSaleAllowed(t, String(line.stockUnitId), {
+          fromRequisitionFulfill: Boolean(d._fromRequisitionFulfill),
+          requisitionId: reqId,
+        });
       }
       continue;
     }
@@ -309,7 +403,8 @@ export async function create(t: string, user: string, d: any) {
         where: { id: line.stockUnitId, tenantId: t, deletedAt: null },
       });
       if (!unit) throw new AppError("Selected stock serial was not found", 404);
-      if (unit.status !== "IN_STOCK" && unit.status !== "DEMO") {
+      // SOLD is allowed when inventory already reduced (PI after fulfill) — stock won't deduct again
+      if (unit.status !== "IN_STOCK" && unit.status !== "DEMO" && unit.status !== "SOLD") {
         throw new AppError(`Serial ${unit.serialNo} is not available (${unit.status})`, 409);
       }
       if (line.productId && unit.productId !== line.productId) {
@@ -381,6 +476,7 @@ export async function create(t: string, user: string, d: any) {
             unit.customFields && typeof unit.customFields === "object" && !Array.isArray(unit.customFields)
               ? (unit.customFields as Record<string, unknown>)
               : {};
+          const alreadyReduced = unit.status === "SOLD";
           await tx.stockUnit.update({
             where: { id: unit.id },
             data: {
@@ -389,7 +485,7 @@ export async function create(t: string, user: string, d: any) {
               contactId: d.contactId ? String(d.contactId) : unit.contactId,
               customFields: {
                 ...unitCf,
-                soldAt: new Date().toISOString(),
+                soldAt: unitCf.soldAt ?? new Date().toISOString(),
                 soldInvoiceId: invoiceId,
                 soldInvoiceNumber: invoiceNumber,
               } as Prisma.InputJsonValue,
@@ -400,6 +496,9 @@ export async function create(t: string, user: string, d: any) {
             stockUnitId: unit.id,
             serialNo: unit.serialNo,
           });
+
+          // Skip second stock OUT when inventory already reduced for the sale
+          if (alreadyReduced) continue;
 
           // Prefer decrement on the unit's warehouse so counts stay honest
           const unitWh = unit.warehouseId || warehouse.id;
@@ -558,6 +657,97 @@ export async function create(t: string, user: string, d: any) {
       where: { id: String(d.serviceTicketId), tenantId: t, deletedAt: null },
       data: { serviceInvoiceId: String(created.id) },
     });
+  }
+
+  // If PI was raised against an approved requisition (invoices UI), mark it fulfilled
+  try {
+    const { markFulfilledFromInvoice } = await import("../requisitions/requisitions.service.js");
+    const reqId = d.requisitionId
+      ? String(d.requisitionId)
+      : d._requisitionId
+        ? String(d._requisitionId)
+        : d.customFields && typeof d.customFields === "object"
+          ? String((d.customFields as Record<string, unknown>).salesRequisitionId ?? "")
+          : "";
+    if (reqId) {
+      await markFulfilledFromInvoice(
+        t,
+        reqId,
+        String(created.id),
+        String(created.invoiceNumber),
+        user,
+      );
+    } else {
+      for (const line of d.lines as Array<{ stockUnitId?: string | null }>) {
+        if (!line.stockUnitId) continue;
+        const open = await prisma.salesRequisition.findFirst({
+          where: {
+            tenantId: t,
+            stockUnitId: String(line.stockUnitId),
+            status: { in: ["APPROVED", "FULFILLED"] },
+            deletedAt: null,
+          },
+          orderBy: { updatedAt: "desc" },
+        });
+        if (open) {
+          await markFulfilledFromInvoice(
+            t,
+            open.id,
+            String(created.id),
+            String(created.invoiceNumber),
+            user,
+          );
+        }
+      }
+    }
+  } catch (err) {
+    console.error("requisition fulfill link failed", err);
+  }
+
+  // Always land sold serials on the customer Machines register with GC (even if PI skipped fulfill)
+  const soldFromInvoice =
+    created.customFields &&
+    typeof created.customFields === "object" &&
+    !Array.isArray(created.customFields)
+      ? ((created.customFields as Record<string, unknown>).soldStockUnits as
+          | Array<{ stockUnitId?: string }>
+          | undefined)
+      : undefined;
+  if (d.contactId && Array.isArray(soldFromInvoice) && soldFromInvoice.length) {
+    try {
+      const { ensureCustomerMachineFromSale } = await import("../requisitions/requisitions.service.js");
+      const { isWeighingProduct } = await import("../inventory/hmsUniqId.js");
+      for (const bind of soldFromInvoice) {
+        if (!bind?.stockUnitId) continue;
+        const unit = await prisma.stockUnit.findFirst({
+          where: { id: String(bind.stockUnitId), tenantId: t, deletedAt: null },
+        });
+        if (!unit) continue;
+        const product = await prisma.product.findFirst({
+          where: { id: unit.productId, tenantId: t, deletedAt: null },
+          select: { id: true, name: true, sku: true, attributes: true },
+        });
+        if (!product) continue;
+        const weighing = isWeighingProduct(product.attributes, product.sku);
+        await ensureCustomerMachineFromSale({
+          tenantId: t,
+          contactId: String(d.contactId),
+          product,
+          unit: {
+            id: unit.id,
+            serialNo: unit.serialNo,
+            hmsUniqId: unit.hmsUniqId,
+            stampingDate: unit.stampingDate,
+            productId: unit.productId,
+          },
+          weighing,
+          reqNumber: String(created.invoiceNumber),
+          requisitionId: null,
+        });
+      }
+    } catch (err) {
+      console.error("ensure machine from PI failed", err);
+    }
   }
 
   let whatsapp: unknown = null;

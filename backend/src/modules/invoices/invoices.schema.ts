@@ -15,6 +15,10 @@ export const createSchema = z.object({
     contactId: z.string().min(1).max(36).nullable().optional(),
     salesOrderId: z.string().min(1).max(36).nullable().optional(),
     serviceTicketId: z.string().min(1).max(36).nullable().optional(),
+    /** Link PI to a finished sale (stock already reduced). */
+    requisitionId: z.string().min(1).max(36).nullable().optional(),
+    /** @deprecated prefer requisitionId — kept for older clients */
+    _requisitionId: z.string().min(1).max(36).nullable().optional(),
     invoiceDate: z.coerce.date(),
     dueDate: z.coerce.date().nullable().optional(),
     currency: z.string().length(3).optional(),

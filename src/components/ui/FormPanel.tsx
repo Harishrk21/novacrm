@@ -1,162 +1,134 @@
-import type { ReactNode } from 'react'
-import { X } from 'lucide-react'
+import { createContext, useCallback, useContext, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from './Button'
+import { Drawer } from './Drawer'
+import { useConfirmLeave, useDiscardGuard } from '@/hooks/useDiscardGuard'
 
 type Accent = 'theme' | 'sky' | 'emerald' | 'violet' | 'amber'
-
-/** theme = follows active Color palette (recommended) */
-const accents: Record<Accent, { bar: string; blob: string; chip: string; chipText: string; border: string }> = {
-  theme: {
-    bar: '',
-    blob: '',
-    chip: '',
-    chipText: '',
-    border: 'border-[color:var(--color-border)]',
-  },
-  sky: {
-    bar: 'from-sky-100 via-cyan-50 to-white dark:from-sky-950/70 dark:via-[var(--color-card)] dark:to-[var(--color-muted)]',
-    blob: 'bg-sky-300/50 dark:bg-sky-400/20',
-    chip: 'bg-sky-600/10 dark:bg-sky-400/15',
-    chipText: 'text-sky-700 dark:text-sky-200',
-    border: 'border-sky-200/80 dark:border-sky-800/60',
-  },
-  emerald: {
-    bar: 'from-emerald-100 via-teal-50 to-white dark:from-emerald-950/70 dark:via-[var(--color-card)] dark:to-[var(--color-muted)]',
-    blob: 'bg-emerald-300/45 dark:bg-emerald-400/20',
-    chip: 'bg-emerald-600/10 dark:bg-emerald-400/15',
-    chipText: 'text-emerald-700 dark:text-emerald-200',
-    border: 'border-emerald-200/80 dark:border-emerald-800/60',
-  },
-  violet: {
-    bar: 'from-violet-100 via-fuchsia-50 to-white dark:from-violet-950/70 dark:via-[var(--color-card)] dark:to-[var(--color-muted)]',
-    blob: 'bg-violet-300/45 dark:bg-violet-400/20',
-    chip: 'bg-violet-600/10 dark:bg-violet-400/15',
-    chipText: 'text-violet-700 dark:text-violet-200',
-    border: 'border-violet-200/80 dark:border-violet-800/60',
-  },
-  amber: {
-    bar: 'from-amber-100 via-orange-50 to-white dark:from-amber-950/70 dark:via-[var(--color-card)] dark:to-[var(--color-muted)]',
-    blob: 'bg-amber-300/45 dark:bg-amber-400/20',
-    chip: 'bg-amber-600/10 dark:bg-amber-400/15',
-    chipText: 'text-amber-800 dark:text-amber-200',
-    border: 'border-amber-200/80 dark:border-amber-800/60',
-  },
-}
 
 interface FormPanelProps {
   open: boolean
   title: string
   subtitle?: string
   eyebrow?: string
+  /** Kept for API compatibility — drawer uses theme chrome */
   accent?: Accent
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
   className?: string
   bodyClassName?: string
+  /** Drawer width (px). User can drag the left edge to resize. */
+  width?: number
+  minWidth?: number
+  maxWidth?: number
+  /** Persist resized width (default shared form-panel key) */
+  storageKey?: string
+  /**
+   * When true (default), sidebar/route navigation and drawer close ask to discard.
+   * Set false for read-only drawers.
+   */
+  guardUnsaved?: boolean
+  /** Message shown in the discard dialog */
+  unsavedReason?: string
 }
 
-/** Inline page form — follows active palette when accent="theme". */
+const FormPanelCloseCtx = createContext<(() => void) | null>(null)
+
+/**
+ * Right-side drawer form.
+ * While open, blocks sidebar / route changes with a Discard changes? dialog.
+ */
 export function FormPanel({
   open,
   title,
   subtitle,
   eyebrow = 'HMS Enterprises',
-  accent = 'theme',
   onClose,
   children,
   footer,
-  className,
   bodyClassName,
+  width = 640,
+  minWidth = 400,
+  maxWidth = 960,
+  storageKey = 'nova.drawer.formPanel',
+  guardUnsaved = true,
+  unsavedReason = 'You have a form open. Leaving will discard your changes.',
 }: FormPanelProps) {
-  if (!open) return null
-  const a = accents[accent]
-  const themed = accent === 'theme'
+  const guardActive = guardUnsaved && open
+  useDiscardGuard(guardActive, unsavedReason)
+  const { requestLeave, dialog } = useConfirmLeave(guardActive, unsavedReason)
+
+  const guardedClose = useCallback(() => {
+    requestLeave(onClose)
+  }, [requestLeave, onClose])
 
   return (
-    <section
-      className={cn(
-        'mb-5 overflow-hidden rounded-[16px] border bg-card shadow-[var(--shadow-hover)]',
-        a.border,
-        className,
-      )}
-    >
-      <header
-        className={cn(
-          'relative overflow-hidden border-b border-border px-5 py-4',
-          themed ? '' : cn('bg-gradient-to-br', a.bar),
-        )}
-        style={
-          themed
-            ? {
-                background: `linear-gradient(135deg, var(--color-panel-from) 0%, var(--color-card) 55%, var(--color-panel-to) 100%)`,
-              }
-            : undefined
+    <FormPanelCloseCtx.Provider value={guardedClose}>
+      <Drawer
+        open={open}
+        onClose={guardedClose}
+        width={width}
+        minWidth={minWidth}
+        maxWidth={maxWidth}
+        storageKey={storageKey}
+        resizable
+        title={
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
+              {eyebrow}
+            </div>
+            <div className="text-lg font-semibold tracking-tight text-text-primary">{title}</div>
+            {subtitle ? (
+              <p className="mt-0.5 text-sm font-normal text-text-secondary">{subtitle}</p>
+            ) : null}
+          </div>
+        }
+        footer={
+          footer ? (
+            <div className="flex flex-wrap items-center justify-end gap-2">{footer}</div>
+          ) : undefined
         }
       >
-        <div
-          className={cn(
-            'pointer-events-none absolute -left-6 -top-8 h-28 w-28 rounded-full blur-2xl',
-            themed ? '' : a.blob,
-          )}
-          style={themed ? { background: 'var(--color-accent-soft)' } : undefined}
-        />
-        <div
-          className={cn(
-            'pointer-events-none absolute -bottom-10 right-4 h-32 w-32 rounded-full blur-2xl',
-            themed ? '' : a.blob,
-          )}
-          style={themed ? { background: 'var(--color-accent-soft)' } : undefined}
-        />
-        <div className="relative flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <span
-              className={cn(
-                'mb-1.5 inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-[0.12em]',
-                themed ? '' : cn(a.chip, a.chipText),
-              )}
-              style={
-                themed
-                  ? { background: 'var(--color-accent-soft)', color: 'var(--color-accent-blue)' }
-                  : undefined
-              }
-            >
-              {eyebrow}
-            </span>
-            <h2 className="text-xl font-semibold tracking-tight text-text-primary">{title}</h2>
-            {subtitle ? <p className="mt-1 max-w-2xl text-sm text-text-secondary">{subtitle}</p> : null}
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full border border-border bg-card p-2 text-text-secondary shadow-sm transition hover:bg-muted hover:text-text-primary"
-            aria-label="Close form"
-          >
-            <X size={16} />
-          </button>
-        </div>
-      </header>
-
-      <div className={cn('px-5 py-5', bodyClassName)}>{children}</div>
-
-      {footer ? (
-        <footer
-          className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-5 py-4"
-          style={{
-            background: `linear-gradient(90deg, var(--color-panel-from), var(--color-card) 50%, var(--color-panel-to))`,
-          }}
-        >
-          {footer}
-        </footer>
-      ) : null}
-    </section>
+        <div className={cn('p-5', bodyClassName)}>{children}</div>
+      </Drawer>
+      {dialog}
+    </FormPanelCloseCtx.Provider>
   )
 }
 
-export function FormPanelCancel({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
+/**
+ * Cancel in a FormPanel footer.
+ * Uses the panel discard confirm unless `skipConfirm` (e.g. wizard step back).
+ */
+export function FormPanelCancel({
+  onClick,
+  disabled,
+  skipConfirm = false,
+}: {
+  onClick?: () => void
+  disabled?: boolean
+  /** Run onClick immediately without discard confirm (wizard back, etc.) */
+  skipConfirm?: boolean
+}) {
+  const panelClose = useContext(FormPanelCloseCtx)
   return (
-    <Button type="button" variant="outline" onClick={onClick} disabled={disabled}>
+    <Button
+      type="button"
+      variant="outline"
+      disabled={disabled}
+      onClick={() => {
+        if (skipConfirm) {
+          onClick?.()
+          return
+        }
+        if (panelClose) {
+          panelClose()
+          return
+        }
+        onClick?.()
+      }}
+    >
       Cancel
     </Button>
   )

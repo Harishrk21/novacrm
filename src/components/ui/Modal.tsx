@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from './Button'
@@ -10,7 +11,7 @@ interface ModalProps {
   subtitle?: ReactNode
   children: ReactNode
   footer?: ReactNode
-  size?: 'sm' | 'md' | 'lg' | 'xl'
+  size?: 'sm' | 'md' | 'lg' | 'xl' | '2xl'
   /** Optional leading icon in the header (e.g. WhatsApp) */
   icon?: ReactNode
   /** Color theme for confirm / small dialogs */
@@ -22,6 +23,7 @@ const sizes = {
   md: 'max-w-lg',
   lg: 'max-w-2xl',
   xl: 'max-w-3xl',
+  '2xl': 'max-w-5xl',
 }
 
 const accents = {
@@ -88,11 +90,13 @@ export function Modal({
   }, [open, onClose])
 
   if (!open) return null
+  if (typeof document === 'undefined') return null
   const a = accents[accent]
   const themed = accent === 'theme'
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4">
+  // Portal above drawers (z-180/190) so discard / confirm dialogs stay clickable
+  return createPortal(
+    <div className="fixed inset-0 z-[220] flex items-end justify-center p-0 sm:items-center sm:p-4">
       <div
         className="absolute inset-0 bg-[var(--color-overlay)] backdrop-blur-[2px]"
         onClick={onClose}
@@ -178,7 +182,8 @@ export function Modal({
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -189,6 +194,11 @@ interface ConfirmModalProps {
   title: string
   body: string
   confirmLabel?: string
+  /**
+   * When true (default), Cancel-style onClose also runs after confirm (closes delete dialogs).
+   * Set false when onClose undoes the confirm action (e.g. navigation discard: proceed vs reset).
+   */
+  closeOnConfirm?: boolean
 }
 
 export function ConfirmModal({
@@ -198,6 +208,7 @@ export function ConfirmModal({
   title,
   body,
   confirmLabel = 'Delete',
+  closeOnConfirm = true,
 }: ConfirmModalProps) {
   return (
     <Modal
@@ -215,7 +226,7 @@ export function ConfirmModal({
             variant="danger"
             onClick={() => {
               onConfirm()
-              onClose()
+              if (closeOnConfirm) onClose()
             }}
           >
             {confirmLabel}

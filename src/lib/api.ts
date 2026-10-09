@@ -202,6 +202,13 @@ export const api = {
         tenantId: string
         tenantSlug?: string
         tenantName?: string
+        branding?: {
+          palette?: string
+          locked?: boolean
+          accent?: string
+          accentHover?: string
+          sidebarBg?: string
+        } | null
         kind: string
       }
     }>('/auth/login', { method: 'POST', body: JSON.stringify(payload), skipAuth: true }),
@@ -375,6 +382,7 @@ export const api = {
   aiMapCustomerImport: (body: {
     headers: string[]
     sampleRows?: Array<Record<string, unknown>>
+    kind?: 'sales' | 'service'
   }) =>
     apiFetch<{
       mapping: Record<string, string | null>
@@ -384,6 +392,30 @@ export const api = {
       fields?: string[]
     }>('/ai/map-customer-import', { method: 'POST', body: JSON.stringify(body) }),
 
+  aiMapStockImport: (body: {
+    kind: 'machines' | 'sparesBilling' | 'sparesWeighing'
+    headers: string[]
+    sampleRows?: Array<Record<string, unknown>>
+  }) =>
+    apiFetch<{
+      mapping: Record<string, string | null>
+      usedAi?: boolean
+      model?: string | null
+      notes?: string
+      fields?: string[]
+      kind?: string
+    }>('/ai/map-stock-import', { method: 'POST', body: JSON.stringify(body) }),
+
+  importStock: (body: {
+    kind: 'machines' | 'sparesBilling' | 'sparesWeighing'
+    rows: Array<Record<string, unknown>>
+  }) =>
+    apiFetch<{
+      created: number
+      skipped: number
+      errors: Array<{ row: number; message: string }>
+    }>('/inventory/import', { method: 'POST', body: JSON.stringify(body) }),
+
   platformStats: () => apiFetch<Record<string, unknown>>('/platform/dashboard/stats'),
   listTenants: () => apiFetch<unknown[]>('/platform/tenants'),
   createTenant: (body: Record<string, unknown>) =>
@@ -392,8 +424,139 @@ export const api = {
     apiFetch<unknown>(`/platform/tenants/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   suspendTenant: (id: string) =>
     apiFetch<unknown>(`/platform/tenants/${id}/suspend`, { method: 'POST', body: '{}' }),
+  reactivateTenant: (id: string) =>
+    apiFetch<unknown>(`/platform/tenants/${id}/reactivate`, { method: 'POST', body: '{}' }),
+  resetTenantAdminPassword: (id: string, password: string) =>
+    apiFetch<{ adminEmail: string; temporaryPassword: string }>(
+      `/platform/tenants/${id}/reset-admin-password`,
+      { method: 'POST', body: JSON.stringify({ password }) },
+    ),
+  listTenantUsers: (id: string) =>
+    apiFetch<{
+      tenant: { id: string; name: string; slug: string }
+      loginPath: string
+      users: Array<{
+        id: string
+        name: string
+        email: string
+        phone?: string | null
+        status: string
+        roleCode: string
+        roleName: string
+        temporaryPassword?: string | null
+        lastLoginAt?: string | null
+        createdAt: string
+        inventoryAreas?: {
+          machines: boolean
+          sparesBilling: boolean
+          sparesWeighing: boolean
+        }
+      }>
+    }>(`/platform/tenants/${id}/users`),
+  setTenantUserPassword: (tenantId: string, userId: string, password: string) =>
+    apiFetch<{ id: string; email: string; temporaryPassword: string; roleCode: string }>(
+      `/platform/tenants/${tenantId}/users/${userId}/password`,
+      { method: 'POST', body: JSON.stringify({ password }) },
+    ),
+  setTenantUserInventoryAreas: (
+    tenantId: string,
+    userId: string,
+    inventoryAreas: {
+      machines: boolean
+      sparesBilling: boolean
+      sparesWeighing: boolean
+    },
+  ) =>
+    apiFetch<{
+      id: string
+      email: string
+      inventoryAreas: {
+        machines: boolean
+        sparesBilling: boolean
+        sparesWeighing: boolean
+      }
+    }>(`/platform/tenants/${tenantId}/users/${userId}/inventory-areas`, {
+      method: 'PATCH',
+      body: JSON.stringify({ inventoryAreas }),
+    }),
+  setTenantModules: (id: string, modulesEnabled: Record<string, boolean>) =>
+    apiFetch<unknown[]>(`/platform/tenants/${id}/modules`, {
+      method: 'POST',
+      body: JSON.stringify({ modulesEnabled }),
+    }),
+  listPlans: () =>
+    apiFetch<{
+      plans: Array<{
+        code: string
+        label: string
+        maxUsers: number
+        modules: Record<string, boolean>
+        features: Record<string, boolean>
+      }>
+      subscriptionPacks: Array<{
+        code: string
+        label: string
+        description: string
+        defaultMaxUsers: number
+        modules: Record<string, boolean>
+      }>
+    }>('/platform/plans'),
+  applyTenantPack: (id: string, subscriptionPack: 'SALES' | 'SALES_INVENTORY' | 'HMS_FULL') =>
+    apiFetch<unknown>(`/platform/tenants/${id}/apply-pack`, {
+      method: 'POST',
+      body: JSON.stringify({ subscriptionPack }),
+    }),
   listCategories: () => apiFetch<unknown[]>('/platform/business-categories'),
-  listPlatformTips: () => apiFetch<unknown[]>('/platform/tips'),
+  createCategory: (body: Record<string, unknown>) =>
+    apiFetch<unknown>('/platform/business-categories', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateCategory: (id: string, body: Record<string, unknown>) =>
+    apiFetch<unknown>(`/platform/business-categories/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteCategory: (id: string) =>
+    apiFetch<unknown>(`/platform/business-categories/${id}`, { method: 'DELETE' }),
+  listPlatformTips: (all = false) =>
+    apiFetch<
+      Array<{
+        id: string
+        moduleKey: string
+        sectionKey: string
+        title: string
+        body: string
+        tipType: string
+        sortOrder: number
+        isActive: boolean
+      }>
+    >(`/platform/tips${all ? '?all=1' : ''}`),
+  createPlatformTip: (body: Record<string, unknown>) =>
+    apiFetch<unknown>('/platform/tips', { method: 'POST', body: JSON.stringify(body) }),
+  updatePlatformTip: (id: string, body: Record<string, unknown>) =>
+    apiFetch<unknown>(`/platform/tips/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deletePlatformTip: (id: string) =>
+    apiFetch<unknown>(`/platform/tips/${id}`, { method: 'DELETE' }),
+
+  /** Public workspace branding for /login/:slug (no auth). */
+  publicWorkspace: (slug: string) =>
+    apiFetch<{
+      name: string
+      slug: string
+      code: string
+      status: string
+      logoUrl?: string | null
+      city?: string | null
+      branding: {
+        palette: string
+        locked: boolean
+        accent?: string
+        accentHover?: string
+        sidebarBg?: string
+        loginTagline?: string
+      }
+    }>(`/public/workspace/${encodeURIComponent(slug)}`, { skipAuth: true }),
 
   tips: (moduleKey: string) =>
     apiFetch<Array<{ title: string; body: string; tipType?: string; type?: string }>>(
@@ -447,6 +610,22 @@ export const api = {
     apiFetch<Record<string, unknown>>('/leads', { method: 'POST', body: JSON.stringify(body) }),
   updateLead: (id: string, body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>(`/leads/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  verifyLead: (
+    id: string,
+    body?: {
+      verified?: boolean
+      serviceType?: 'SALES' | 'SERVICE' | 'STAMPING' | 'RENTAL'
+      area?: string | null
+      enquiryValue?: number | string | null
+      requirement?: string | null
+      name?: string
+      phone?: string | null
+    },
+  ) =>
+    apiFetch<Record<string, unknown>>(`/leads/${id}/verify`, {
+      method: 'POST',
+      body: JSON.stringify(body ?? { verified: true }),
+    }),
   deleteLead: (id: string) => apiFetch<null>(`/leads/${id}`, { method: 'DELETE' }),
   convertLead: (id: string, body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>(`/leads/${id}/convert`, {
@@ -470,6 +649,123 @@ export const api = {
     apiFetch<Record<string, unknown>>(`/leads/${id}/demo-update`, {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+  statusLead: (id: string, status: string) =>
+    apiFetch<Record<string, unknown>>(`/leads/${id}/status`, {
+      method: 'POST',
+      body: JSON.stringify({ status }),
+    }),
+
+  // Sales requisitions (admin sign-off before stock release)
+  requisitions: (params?: Record<string, string | number | undefined>) =>
+    apiFetch<Page<Record<string, unknown>>>(`/requisitions${qs(params)}`),
+  getRequisition: (id: string) => apiFetch<Record<string, unknown>>(`/requisitions/${id}`),
+  getRequisitionByLead: (leadId: string) =>
+    apiFetch<Record<string, unknown> | null>(`/requisitions/by-lead/${leadId}`),
+  submitRequisition: (body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>('/requisitions', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  approveRequisition: (id: string) =>
+    apiFetch<Record<string, unknown>>(`/requisitions/${id}/approve`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  rejectRequisition: (id: string, reason: string) =>
+    apiFetch<Record<string, unknown>>(`/requisitions/${id}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  fulfillRequisition: (
+    id: string,
+    body?: {
+      unitPrice?: number
+      taxPercent?: number
+      notes?: string
+      markShipped?: boolean
+      stockUnitId?: string
+    },
+  ) =>
+    apiFetch<Record<string, unknown>>(`/requisitions/${id}/fulfill`, {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+  shipRequisition: (id: string) =>
+    apiFetch<Record<string, unknown>>(`/requisitions/${id}/ship`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  createRequisitionDeliveryChallan: (id: string, body?: { notes?: string | null }) =>
+    apiFetch<Record<string, unknown>>(`/requisitions/${id}/delivery-challan`, {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+  notifyRequisitionInventory: (id: string) =>
+    apiFetch<Record<string, unknown>>(`/requisitions/${id}/notify-inventory`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  recordRequisitionStamping: (
+    id: string,
+    body: {
+      stockUnitId?: string | null
+      stampingRequired?: boolean
+      stampingDate?: string | null
+      nextDueDate?: string | null
+      vcNumber?: string | null
+      plateNo?: string | null
+      lines?: Array<{
+        label: string
+        stampingRequired: boolean
+        stampingDate?: string | null
+        nextDueDate?: string | null
+      }>
+    },
+  ) =>
+    apiFetch<Record<string, unknown>>(`/requisitions/${id}/stamping`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  requisitionPaymentNote: (id: string, body: { note: string; amount?: number }) =>
+    apiFetch<Record<string, unknown>>(`/requisitions/${id}/payment-note`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  createLeadTicket: (
+    id: string,
+    body?: {
+      category?: string
+      subject?: string
+      description?: string
+      priority?: string
+      area?: string | null
+      assetId?: string | null
+    },
+  ) =>
+    apiFetch<{ ticket: Record<string, unknown>; lead: Record<string, unknown>; enquiryId?: string }>(
+      `/leads/${id}/create-ticket`,
+      { method: 'POST', body: JSON.stringify(body ?? {}) },
+    ),
+  prepareLeadHandoff: (id: string, body?: { area?: string | null }) =>
+    apiFetch<{
+      serviceType: string
+      contactId: string | null
+      leadId: string
+      enquiryId?: string
+      alreadyLinked?: boolean
+      href: string
+      serviceTicketId?: string
+      rentalAgreementId?: string
+      lead?: Record<string, unknown>
+    }>(`/leads/${id}/prepare-handoff`, {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+  linkLeadTicket: (id: string, ticketId: string) =>
+    apiFetch<Record<string, unknown>>(`/leads/${id}/link-ticket`, {
+      method: 'POST',
+      body: JSON.stringify({ ticketId }),
     }),
 
   // Contacts
@@ -498,11 +794,15 @@ export const api = {
     }),
   deleteContactNote: (id: string, noteId: string) =>
     apiFetch<null>(`/contacts/${id}/notes/${noteId}`, { method: 'DELETE' }),
-  importContacts: (body: { rows: Array<Record<string, unknown>> }) =>
+  importContacts: (body: {
+    rows: Array<Record<string, unknown>>
+    source?: 'SALES' | 'SERVICE'
+  }) =>
     apiFetch<{
       created: number
       merged: number
       machinesAdded: number
+      machinesSkippedDuplicate?: number
       skipped: number
       errors: Array<{ row: number; message: string }>
     }>('/contacts/import', { method: 'POST', body: JSON.stringify(body) }),
@@ -585,6 +885,8 @@ export const api = {
   getTicket: (id: string) => apiFetch<Record<string, unknown>>(`/tickets/${id}`),
   createTicket: (body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>('/tickets', { method: 'POST', body: JSON.stringify(body) }),
+  claimTicket: (id: string) =>
+    apiFetch<Record<string, unknown>>(`/tickets/${id}/claim`, { method: 'POST', body: '{}' }),
   updateTicket: (id: string, body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown> & { whatsapp?: { notified: boolean; reason?: string; fallbackWaLink?: string | null } }>(
       `/tickets/${id}`,
@@ -655,6 +957,59 @@ export const api = {
     }),
   deleteSparePart: (id: string) => apiFetch<null>(`/spare-parts/${id}`, { method: 'DELETE' }),
 
+  /** Quantity stock for weighing/billing spare parts (separate from machine serial stock). */
+  spareStockItems: (params?: Record<string, string | number | undefined>) =>
+    apiFetch<Array<Record<string, unknown>>>(`/spare-stock/items${qs(params)}`),
+  createSpareStockItem: (body: {
+    machineFamily: 'WEIGHING' | 'BILLING'
+    name: string
+    partCode?: string | null
+    unit?: string
+  }) =>
+    apiFetch<Record<string, unknown>>('/spare-stock/items', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateSpareStockItem: (
+    id: string,
+    body: {
+      machineFamily?: 'WEIGHING' | 'BILLING'
+      name?: string
+      partCode?: string | null
+      unit?: string
+      isActive?: boolean
+    },
+  ) =>
+    apiFetch<Record<string, unknown>>(`/spare-stock/items/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  receiveSpareStock: (body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>('/spare-stock/receive', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  issueSpareStock: (body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>('/spare-stock/issue', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  spareStockHistory: (params?: Record<string, string | number | undefined>) =>
+    apiFetch<Array<Record<string, unknown>>>(`/spare-stock/history${qs(params)}`),
+  spareStockMonthly: (params: {
+    year?: number
+    month?: number
+    machineFamily?: 'WEIGHING' | 'BILLING'
+    sparePartId?: string
+  }) =>
+    apiFetch<{
+      year: number
+      month: number
+      machineFamily: string | null
+      items: Array<Record<string, unknown>>
+      totals: { opening: number; received: number; issued: number; closing: number }
+    }>(`/spare-stock/monthly${qs(params)}`),
+
   // Products / inventory / invoices / POs
   products: (params?: Record<string, string | number | undefined>) =>
     apiFetch<Page<Record<string, unknown>>>(`/products${qs(params)}`),
@@ -668,6 +1023,17 @@ export const api = {
     }),
   deleteProduct: (id: string) => apiFetch<null>(`/products/${id}`, { method: 'DELETE' }),
   inventory: () => apiFetch<Array<Record<string, unknown>>>('/inventory/levels'),
+  /** Fast stock page bootstrap — one request instead of products+units+vendors+brands+lookups+users */
+  inventoryWorkspace: () =>
+    apiFetch<{
+      products: Array<Record<string, unknown>>
+      units: Array<Record<string, unknown>>
+      vendors: Array<Record<string, unknown>>
+      brands: Array<Record<string, unknown>>
+      warehouses: Array<{ id: string; name: string; code?: string }>
+      spares: Array<Record<string, unknown>>
+      users: Array<Record<string, unknown>>
+    }>('/inventory/workspace'),
   adjustStock: (body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>('/inventory/adjust', {
       method: 'POST',
@@ -675,16 +1041,105 @@ export const api = {
     }),
   stockUnits: (params?: Record<string, string | number | undefined>) =>
     apiFetch<Array<Record<string, unknown>>>(`/inventory/units${qs(params)}`),
+  /** Sale + demo delivery challans archive */
+  deliveryChallans: () =>
+    apiFetch<
+      Array<{
+        purpose: 'SALE' | 'DEMO'
+        number: string
+        date: string
+        customerName: string
+        company?: string | null
+        phone?: string | null
+        productName?: string | null
+        reqNumber?: string | null
+        leadId?: string | null
+        requisitionId?: string | null
+        stockUnitId?: string | null
+        challan: Record<string, unknown>
+      }>
+    >('/inventory/delivery-challans'),
+  /** Units added + receipt headers for a date range (Excel / PDF) */
+  inventoryExport: (params: {
+    from: string
+    to: string
+    warehouseId?: string
+    productId?: string
+  }) =>
+    apiFetch<{
+      from: string
+      to: string
+      generatedAt: string
+      truncated: boolean
+      summary: {
+        unitsAdded: number
+        unitsInExport: number
+        receipts: number
+        totalValue: number
+      }
+      units: Array<Record<string, unknown>>
+      receipts: Array<Record<string, unknown>>
+    }>(`/inventory/export${qs(params)}`),
   getStockUnit: (id: string) => apiFetch<Record<string, unknown>>(`/inventory/units/${id}`),
   addStockUnit: (body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>('/inventory/units', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  receiveStockBatch: (body: Record<string, unknown>) =>
+    apiFetch<{ receiptId: string; quantity: number; units: Array<Record<string, unknown>> }>(
+      '/inventory/receipts',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  previewHmsUniqIds: (body: { productId: string; quantity: number }) =>
+    apiFetch<string[]>('/inventory/uniq-ids/preview', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  inventoryBrands: (params?: { all?: boolean }) =>
+    apiFetch<Array<Record<string, unknown>>>(
+      `/inventory/brands${params?.all ? '?all=1' : ''}`,
+    ),
+  createInventoryBrand: (body: { name: string; code?: string | null }) =>
+    apiFetch<Record<string, unknown>>('/inventory/brands', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateInventoryBrand: (
+    id: string,
+    body: { name?: string; code?: string | null; isActive?: boolean },
+  ) =>
+    apiFetch<Record<string, unknown>>(`/inventory/brands/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteInventoryBrand: (id: string) =>
+    apiFetch<null>(`/inventory/brands/${id}`, { method: 'DELETE' }),
   updateStockUnit: (id: string, body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>(`/inventory/units/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(body),
+    }),
+  reduceStockUnit: (
+    id: string,
+    notesOrBody?:
+      | string
+      | null
+      | {
+          notes?: string | null
+          reason?: string | null
+          purpose?: 'SALE' | 'DEMO' | null
+          issuedToUserId?: string | null
+          contactId?: string | null
+        },
+  ) =>
+    apiFetch<Record<string, unknown>>(`/inventory/units/${id}/reduce`, {
+      method: 'POST',
+      body: JSON.stringify(
+        typeof notesOrBody === 'object' && notesOrBody !== null
+          ? notesOrBody
+          : { notes: notesOrBody ?? null },
+      ),
     }),
   returnDemoUnit: (
     id: string,
@@ -710,6 +1165,19 @@ export const api = {
     }),
   inventoryHistory: (params?: Record<string, string | number | undefined>) =>
     apiFetch<Array<Record<string, unknown>>>(`/inventory/history${qs(params)}`),
+
+  rentals: (params?: Record<string, string | number | undefined>) =>
+    apiFetch<Array<Record<string, unknown>>>(`/rentals${qs(params)}`),
+  rentalSummary: () =>
+    apiFetch<{ active: number; overdue: number; returnedThisMonth: number }>('/rentals/summary'),
+  issueRental: (body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>('/rentals', { method: 'POST', body: JSON.stringify(body) }),
+  returnRental: (id: string, notes?: string) =>
+    apiFetch<Record<string, unknown>>(`/rentals/${id}/return`, {
+      method: 'POST',
+      body: JSON.stringify({ notes: notes ?? null }),
+    }),
+
   invoices: (params?: Record<string, string | number | undefined>) =>
     apiFetch<Page<Record<string, unknown>>>(`/invoices${qs(params)}`),
   getInvoice: (id: string) => apiFetch<Record<string, unknown>>(`/invoices/${id}`),
@@ -738,6 +1206,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  updateVendor: (id: string, body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>(`/purchase-orders/vendors/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  deleteVendor: (id: string) =>
+    apiFetch<null>(`/purchase-orders/vendors/${id}`, { method: 'DELETE' }),
   vendors: () => apiFetch<Array<Record<string, unknown>>>('/purchase-orders/vendors'),
 
   listUsers: () =>
@@ -808,6 +1283,101 @@ export const api = {
   clearAllNotifications: () =>
     apiFetch<{ deleted: number }>('/notifications/clear-all', { method: 'POST' }),
 
+  teamChatChannels: () =>
+    apiFetch<{
+      items: Array<{
+        id: string
+        type: 'CHANNEL' | 'DM'
+        name: string
+        slug: string
+        description?: string | null
+        isDefault?: boolean
+        pinnedAt?: string | null
+        unread: number
+        lastMessageAt?: string | null
+        lastMessage?: { id: string; body: string; senderId: string; createdAt: string } | null
+        peer?: { id: string; name: string; avatarUrl?: string | null; status?: string } | null
+      }>
+      unreadTotal: number
+    }>('/team-chat/channels'),
+  teamChatCreateChannel: (body: { name: string; description?: string }) =>
+    apiFetch<Record<string, unknown>>('/team-chat/channels', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  teamChatOpenDm: (userId: string) =>
+    apiFetch<{
+      id: string
+      type: string
+      name: string
+      slug: string
+      peer?: { id: string; name: string; avatarUrl?: string | null }
+    }>('/team-chat/dms', { method: 'POST', body: JSON.stringify({ userId }) }),
+  teamChatMessages: (
+    channelId: string,
+    params?: { limit?: number; before?: string; parentId?: string },
+  ) => {
+    const q = new URLSearchParams()
+    if (params?.limit) q.set('limit', String(params.limit))
+    if (params?.before) q.set('before', params.before)
+    if (params?.parentId) q.set('parentId', params.parentId)
+    const qs = q.toString()
+    return apiFetch<{
+      items: Array<{
+        id: string
+        body: string
+        parentId?: string | null
+        createdAt: string
+        sender: { id: string; name: string; avatarUrl?: string | null }
+        replyCount: number
+      }>
+    }>(`/team-chat/channels/${channelId}/messages${qs ? `?${qs}` : ''}`)
+  },
+  teamChatSend: (channelId: string, body: string, parentId?: string | null) =>
+    apiFetch<{
+      id: string
+      body: string
+      parentId?: string | null
+      createdAt: string
+      sender: { id: string; name: string; avatarUrl?: string | null }
+      replyCount: number
+    }>(`/team-chat/channels/${channelId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body, parentId: parentId ?? null }),
+    }),
+  teamChatPin: (channelId: string) =>
+    apiFetch<{ id: string; pinned: boolean }>(`/team-chat/channels/${channelId}/pin`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  teamChatThreads: () =>
+    apiFetch<{
+      items: Array<{
+        id: string
+        channelId: string
+        channelName: string
+        body: string
+        createdAt: string
+        lastReplyAt: string
+        sender: { id: string; name: string; avatarUrl?: string | null }
+        lastReply: {
+          body: string
+          sender: { id: string; name: string; avatarUrl?: string | null }
+          createdAt: string
+        }
+      }>
+    }>('/team-chat/threads'),
+  teamChatTeammates: () =>
+    apiFetch<{
+      items: Array<{
+        id: string
+        name: string
+        email: string
+        avatarUrl?: string | null
+        status: string
+      }>
+    }>('/team-chat/teammates'),
+
   whatsappCloudStatus: () =>
     apiFetch<{
       configured: boolean
@@ -821,7 +1391,23 @@ export const api = {
       webhookPath: string
       webhookUrlHint?: string
       note?: string
+      source?: 'tenant' | 'env'
+      environment?: string
+      publicApiUrl?: string | null
     }>('/integrations/whatsapp/cloud/status'),
+  saveWhatsAppCloudConfig: (body: {
+    token: string
+    phoneNumberId: string
+    verifyToken?: string
+    businessAccountId?: string
+    appId?: string
+    appSecret?: string
+    apiVersion?: string
+  }) =>
+    apiFetch<Record<string, unknown>>('/integrations/whatsapp/cloud/config', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   testWhatsAppCloud: (to: string) =>
     apiFetch<{ ok: boolean; messageId?: string; provider: string }>(
       '/integrations/whatsapp/cloud/test',
@@ -888,12 +1474,81 @@ export const api = {
       website?: string | null
       settings?: Record<string, unknown> | null
     }>('/tenants/me'),
+  tenantModules: () =>
+    apiFetch<
+      Array<{
+        id: string
+        moduleKey: string
+        moduleGroup: string
+        label: string
+        isEnabled: boolean
+        sortOrder: number
+      }>
+    >('/tenants/modules'),
   updateMyTenant: (body: Record<string, unknown>) =>
     apiFetch<{
       id: string
       name: string
       settings?: Record<string, unknown> | null
     }>('/tenants/me', { method: 'PATCH', body: JSON.stringify(body) }),
+
+  demoDataStatus: () =>
+    apiFetch<{
+      loaded: boolean
+      pack: string
+      counts: {
+        accounts: number
+        contacts: number
+        customerAssets: number
+        leads: number
+        tickets: number
+        activities: number
+        vendors: number
+        sparePartItems: number
+        spareStockTxns: number
+        stockUnits: number
+        teamMessages: number
+      }
+    }>('/tenants/demo-data'),
+
+  loadDemoData: () =>
+    apiFetch<{
+      loaded: boolean
+      pack: string
+      alreadyLoaded: boolean
+      counts: {
+        accounts: number
+        contacts: number
+        customerAssets: number
+        leads: number
+        tickets: number
+        activities: number
+        vendors: number
+        sparePartItems: number
+        spareStockTxns: number
+        stockUnits: number
+        teamMessages: number
+      }
+    }>('/tenants/demo-data/load', { method: 'POST', body: '{}' }),
+
+  removeDemoData: () =>
+    apiFetch<{
+      loaded: boolean
+      pack: string
+      counts: {
+        accounts: number
+        contacts: number
+        customerAssets: number
+        leads: number
+        tickets: number
+        activities: number
+        vendors: number
+        sparePartItems: number
+        spareStockTxns: number
+        stockUnits: number
+        teamMessages: number
+      }
+    }>('/tenants/demo-data/remove', { method: 'POST', body: '{}' }),
 
   createStage: (body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>('/meta/stages', { method: 'POST', body: JSON.stringify(body) }),

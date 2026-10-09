@@ -39,6 +39,7 @@ import { PALETTES, type ColorPalette } from '@/lib/theme'
 import { isCompanyAdmin } from '@/lib/roles'
 import { WhatsAppCloudPanel } from '@/components/whatsapp/WhatsAppCloudPanel'
 import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
+import { BlockSkeleton, TableSkeleton } from '@/components/ui/Skeleton'
 
 const adminTabs = [
   'Appearance',
@@ -75,6 +76,14 @@ export function SettingsPage() {
   const isAdmin = isCompanyAdmin(role)
   const tabs = isAdmin ? adminTabs : employeeTabs
   const [active, setActive] = useState<Tab>('Profile')
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const tab = params.get('tab')
+    if (tab && (tabs as readonly string[]).includes(tab)) {
+      setActive(tab as Tab)
+    }
+  }, [tabs])
 
   useEffect(() => {
     if (!(tabs as readonly string[]).includes(active)) {
@@ -131,6 +140,62 @@ function Appearance() {
   const setPalette = useUIStore((s) => s.setPalette)
   const addToast = useUIStore((s) => s.addToast)
   const resetDemoData = useCrmStore((s) => s.resetDemoData)
+  const brandingLocked = useAuthStore((s) => s.user?.branding?.locked === true)
+  const role = useAuthStore((s) => s.user?.role)
+  const isAdmin = isCompanyAdmin(role)
+  const [demoBusy, setDemoBusy] = useState(false)
+  const [demoStatus, setDemoStatus] = useState<{
+    loaded: boolean
+    counts: Record<string, number>
+  } | null>(null)
+
+  useEffect(() => {
+    if (!isAdmin) return
+    void api
+      .demoDataStatus()
+      .then((r) => setDemoStatus({ loaded: r.loaded, counts: r.counts }))
+      .catch(() => setDemoStatus(null))
+  }, [isAdmin])
+
+  async function loadDemoPack() {
+    setDemoBusy(true)
+    try {
+      const r = await api.loadDemoData()
+      setDemoStatus({ loaded: r.loaded, counts: r.counts })
+      addToast({
+        type: 'success',
+        message: r.alreadyLoaded
+          ? 'Demo pack already loaded'
+          : 'Demo data loaded — 10 Chennai customers with machines, tickets, leads & billing',
+      })
+    } catch (e) {
+      addToast({
+        type: 'error',
+        message: e instanceof ApiClientError ? e.message : 'Could not load demo data',
+      })
+    } finally {
+      setDemoBusy(false)
+    }
+  }
+
+  async function removeDemoPack() {
+    if (!window.confirm('Remove all demo-tagged data (customers, tickets, stock, chat messages)?')) {
+      return
+    }
+    setDemoBusy(true)
+    try {
+      const r = await api.removeDemoData()
+      setDemoStatus({ loaded: r.loaded, counts: r.counts })
+      addToast({ type: 'success', message: 'Demo data removed' })
+    } catch (e) {
+      addToast({
+        type: 'error',
+        message: e instanceof ApiClientError ? e.message : 'Could not remove demo data',
+      })
+    } finally {
+      setDemoBusy(false)
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -173,61 +238,110 @@ function Appearance() {
       <Card>
         <Heading
           title="Workspace color palette"
-          subtitle="Accent, charts, page background, cards and sidebar all switch together"
+          subtitle={
+            brandingLocked
+              ? 'Color theme is set by your platform administrator and cannot be changed here'
+              : 'Accent, charts, page background, cards and sidebar all switch together'
+          }
         />
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {(Object.keys(PALETTES) as ColorPalette[]).map((key) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => {
-                setPalette(key)
-                addToast({ type: 'success', message: `${PALETTES[key].label} palette applied` })
-              }}
-              className={cn(
-                'rounded-[12px] border p-4 text-left transition-all',
-                palette === key
-                  ? 'border-accent-blue ring-2 ring-accent-blue/20'
-                  : 'border-border hover:border-accent-blue/40',
-              )}
-            >
-              <div
-                className="mb-3 h-14 overflow-hidden rounded-[10px] border border-border"
-                style={{ background: PALETTES[key].light.wash }}
+        {brandingLocked ? (
+          <p className="text-sm text-text-secondary">
+            Active kit:{' '}
+            <span className="font-semibold text-text-primary">
+              {PALETTES[palette]?.label ?? palette}
+            </span>
+          </p>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {(Object.keys(PALETTES) as ColorPalette[]).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => {
+                  setPalette(key)
+                  addToast({ type: 'success', message: `${PALETTES[key].label} palette applied` })
+                }}
+                className={cn(
+                  'rounded-[12px] border p-4 text-left transition-all',
+                  palette === key
+                    ? 'border-accent-blue ring-2 ring-accent-blue/20'
+                    : 'border-border hover:border-accent-blue/40',
+                )}
               >
-                <div className="flex h-full">
-                  <div className="w-1/4" style={{ background: PALETTES[key].light.sidebarBg }} />
-                  <div className="flex flex-1 items-end gap-1 p-2">
-                    <div
-                      className="h-6 flex-1 rounded-md shadow-sm"
-                      style={{ background: PALETTES[key].light.card }}
-                    />
-                    <div className="h-6 w-8 rounded-md" style={{ background: PALETTES[key].accent }} />
+                <div
+                  className="mb-3 h-14 overflow-hidden rounded-[10px] border border-border"
+                  style={{ background: PALETTES[key].light.wash }}
+                >
+                  <div className="flex h-full">
+                    <div className="w-1/4" style={{ background: PALETTES[key].light.sidebarBg }} />
+                    <div className="flex flex-1 items-end gap-1 p-2">
+                      <div
+                        className="h-6 flex-1 rounded-md shadow-sm"
+                        style={{ background: PALETTES[key].light.card }}
+                      />
+                      <div className="h-6 w-8 rounded-md" style={{ background: PALETTES[key].accent }} />
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div className="mb-2 flex gap-1.5">
-                {PALETTES[key].chart.slice(0, 5).map((c) => (
-                  <span key={c} className="h-3 flex-1 rounded-full" style={{ background: c }} />
-                ))}
-              </div>
-              <div className="font-semibold">{PALETTES[key].label}</div>
-              <div className="mt-1 text-xs text-text-secondary">{PALETTES[key].description}</div>
-            </button>
-          ))}
-        </div>
+                <div className="mb-2 flex gap-1.5">
+                  {PALETTES[key].chart.slice(0, 5).map((c) => (
+                    <span key={c} className="h-3 flex-1 rounded-full" style={{ background: c }} />
+                  ))}
+                </div>
+                <div className="font-semibold">{PALETTES[key].label}</div>
+                <div className="mt-1 text-xs text-text-secondary">{PALETTES[key].description}</div>
+              </button>
+            ))}
+          </div>
+        )}
       </Card>
 
+      {isAdmin ? (
+        <Card>
+          <Heading
+            title="Workspace demo data"
+            subtitle="Load sample customers, machines, service tickets, stock & team chat so you can test every area. Tagged as demo — safe to remove."
+          />
+          {demoStatus ? (
+            <p className="mb-3 text-sm text-text-secondary">
+              Status:{' '}
+              <span className="font-semibold text-text-primary">
+                {demoStatus.loaded ? 'Loaded' : 'Not loaded'}
+              </span>
+              {demoStatus.loaded ? (
+                <span className="mt-1 block text-xs">
+                  Contacts {demoStatus.counts.contacts ?? 0} · Assets{' '}
+                  {demoStatus.counts.customerAssets ?? 0} · Leads {demoStatus.counts.leads ?? 0} ·
+                  Tickets {demoStatus.counts.tickets ?? 0} · Stock units{' '}
+                  {demoStatus.counts.stockUnits ?? 0}
+                </span>
+              ) : null}
+            </p>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => void loadDemoPack()} disabled={demoBusy}>
+              {demoBusy ? 'Working…' : 'Load demo data'}
+            </Button>
+            <Button variant="outline" onClick={() => void removeDemoPack()} disabled={demoBusy}>
+              Remove demo data
+            </Button>
+          </div>
+        </Card>
+      ) : null}
+
       <Card>
-        <Heading title="Demo data" subtitle="Reset local CRM cache used when offline / demo mode" />
+        <Heading
+          title="Offline cache"
+          subtitle="Reset the browser’s local CRM cache used when offline"
+        />
         <Button
           variant="outline"
           onClick={() => {
             resetDemoData()
-            addToast({ type: 'success', message: 'Demo data restored' })
+            addToast({ type: 'success', message: 'Local cache restored' })
           }}
         >
-          Reset demo data
+          Reset local cache
         </Button>
       </Card>
     </div>
@@ -434,7 +548,7 @@ function Profile() {
   if (loading) {
     return (
       <Card>
-        <p className="text-sm text-text-secondary">Loading profile…</p>
+        <BlockSkeleton lines={6} />
       </Card>
     )
   }
@@ -617,7 +731,7 @@ function Company() {
     <Card>
       <Heading title="Company" subtitle="Organization profile for invoices and workspace branding" />
       {loading ? (
-        <p className="text-sm text-text-secondary">Loading…</p>
+        <BlockSkeleton lines={5} />
       ) : (
         <form className="grid gap-4 sm:grid-cols-2" onSubmit={(e) => void save(e)}>
           <Input label="Company name" value={name} disabled />
@@ -707,7 +821,7 @@ function SalesTargets() {
         subtitle="Set the revenue goal used by the home dashboard gauge and progress %. Stored in tenant settings."
       />
       {loading ? (
-        <p className="text-sm text-text-secondary">Loading…</p>
+        <BlockSkeleton lines={5} />
       ) : (
         <form className="grid max-w-xl gap-4 sm:grid-cols-2" onSubmit={(e) => void save(e)}>
           <Input
@@ -908,7 +1022,7 @@ function Pipeline() {
           }
         />
         {loading ? (
-          <p className="text-sm text-text-secondary">Loading…</p>
+          <BlockSkeleton lines={5} />
         ) : items.length === 0 ? (
           <p className="text-sm text-text-secondary">No stages yet.</p>
         ) : (
@@ -1065,7 +1179,7 @@ function Sources() {
           }
         />
         {loading ? (
-          <p className="text-sm text-text-secondary">Loading…</p>
+          <BlockSkeleton lines={5} />
         ) : items.length === 0 ? (
           <p className="text-sm text-text-secondary">No sources yet.</p>
         ) : (
@@ -1256,7 +1370,7 @@ export function UsersSettings() {
           />
         </div>
         {loading ? (
-          <p className="px-5 pb-5 text-sm text-text-secondary">Loading…</p>
+          <TableSkeleton rows={5} className="px-5 pb-5" />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] text-left text-sm">
@@ -1413,7 +1527,7 @@ function EmailTemplates() {
           }
         />
         {loading ? (
-          <p className="text-sm text-text-secondary">Loading…</p>
+          <BlockSkeleton lines={5} />
         ) : (
           <div className="divide-y divide-border">
             {templates.map((t) => (
@@ -1566,7 +1680,7 @@ function Integrations() {
         <WhatsAppCloudPanel compact />
       </div>
       {!loaded ? (
-        <p className="text-sm text-text-secondary">Loading…</p>
+        <BlockSkeleton lines={5} />
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           {cards.map((item) => {
@@ -1754,7 +1868,7 @@ function Automation() {
         }
       />
       {loading ? (
-        <p className="text-sm text-text-secondary">Loading…</p>
+        <BlockSkeleton lines={5} />
       ) : (
         <div className="divide-y divide-border">
           {rules.map((rule) => (

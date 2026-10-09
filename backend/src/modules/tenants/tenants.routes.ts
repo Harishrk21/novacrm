@@ -1,1 +1,16 @@
-import{Router}from"express";import{authenticate}from"../../middleware/auth.middleware.js";import{requireTenant,requireTenantAdmin}from"../../middleware/tenant.middleware.js";import{validate}from"../../middleware/validate.middleware.js";import * as c from"./tenants.controller.js";import{updateSchema}from"./tenants.schema.js";export const tenantsRouter=Router();tenantsRouter.use(authenticate,requireTenant);tenantsRouter.get("/me",c.get);tenantsRouter.get("/modules",c.modules);tenantsRouter.patch("/me",requireTenantAdmin,validate(updateSchema),c.update);
+import { Router } from "express";
+import { authenticate } from "../../middleware/auth.middleware.js";
+import { requireTenant, requireTenantAdmin } from "../../middleware/tenant.middleware.js";
+import { validate } from "../../middleware/validate.middleware.js";
+import * as c from "./tenants.controller.js";
+import { updateSchema } from "./tenants.schema.js";
+
+export const tenantsRouter = Router();
+tenantsRouter.use(authenticate, requireTenant);
+tenantsRouter.get("/me", c.get);
+tenantsRouter.get("/modules", c.modules);
+tenantsRouter.patch("/me", requireTenantAdmin, validate(updateSchema), c.update);
+
+tenantsRouter.get("/demo-data", requireTenantAdmin, c.demoDataStatus);
+tenantsRouter.post("/demo-data/load", requireTenantAdmin, c.loadDemoData);
+tenantsRouter.post("/demo-data/remove", requireTenantAdmin, c.removeDemoData);

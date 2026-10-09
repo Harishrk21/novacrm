@@ -13,9 +13,9 @@ import {
   Phone,
   CalendarClock,
   ImagePlus,
-  Check,
 } from 'lucide-react'
-import { Badge, ticketStatusColor } from '@/components/ui/Badge'
+import { Badge } from '@/components/ui/Badge'
+import { TicketStatusPill } from '@/components/ui/TicketStatusProgress'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -24,12 +24,17 @@ import { Modal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { assetOriginShort, isThirdPartyOrigin } from '@/lib/assetOrigin'
+import { coverageChargeHints } from '@/lib/hmsCoverage'
 import { openPrintableInvoice } from '@/lib/invoicePrint'
 import { openPrintableJobSheet } from '@/lib/jobSheetPrint'
-import { formatCurrency, formatDate, formatDateTime, formatPhone } from '@/lib/utils'
+import { cn, formatCurrency, formatDate, formatDateTime, formatPhone } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { SparePartsPanel } from '@/components/contacts/SparePartsPanel'
+import {
+  ServiceReportModal,
+  type ServiceReportTicket,
+} from '@/components/tickets/ServiceReportModal'
 import { formatServiceId } from '@/lib/serviceId'
 import { MissingBanner, focusFirstMissing, sectionErrorClass } from '@/components/ui/MissingField'
 import { WhatsAppSendConfirm, type WhatsAppConfirmPayload } from '@/components/whatsapp/WhatsAppSendConfirm'
@@ -44,6 +49,8 @@ import {
   type LookupUser,
 } from '@/lib/roles'
 import { AiAssistCard } from '@/components/ai/AiAssistCard'
+import { DetailSkeleton } from '@/components/ui/Skeleton'
+import { useFieldShell } from '@/hooks/useFieldShell'
 
 const labelize = (value: string) =>
   value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
@@ -74,16 +81,18 @@ export function TicketDetailPage() {
   const addToast = useUIStore((s) => s.addToast)
   const tenantName = useAuthStore((s) => s.user?.tenantName)
   const authUser = useAuthStore((s) => s.user)
+  const fieldShell = useFieldShell()
   const role = authUser?.role
   const isAdmin = isCompanyAdmin(role) || canAssignTickets(role)
   const isDesk = isServiceDesk(role)
   const isEngineer = isServiceEngineer(role)
-  /** Advance / total / balance — engineer + admin */
-  const showPayment = isAdmin || isEngineer
-  /** Invoice, mark paid, WhatsApp docs — admin only */
-  const showPaymentAdminTools = isAdmin
   const showAssign = canAssignTickets(role)
+  /** Admin, manager, or service desk — mark paid + approve & close */
   const showApprove = canApproveTickets(role)
+  /** Advance / total / balance — engineer + anyone who can close */
+  const showPayment = isAdmin || isEngineer || isDesk || showApprove
+  /** Mark paid + invoices — desk + admin/manager (engineers can edit amounts/method) */
+  const showPaymentAdminTools = showApprove
   const [ticket, setTicket] = useState<Record<string, unknown> | null>(null)
   const [users, setUsers] = useState<LookupUser[]>([])
   const [message, setMessage] = useState('')
@@ -94,6 +103,9 @@ export function TicketDetailPage() {
   const [busy, setBusy] = useState(false)
   const [completeOpen, setCompleteOpen] = useState(false)
   const [completeStatus, setCompleteStatus] = useState<'RESOLVED' | 'CLOSED'>('RESOLVED')
+  const [serviceReportOpen, setServiceReportOpen] = useState(false)
+  /** After Approve & close — closing the report may continue to invoice / contact */
+  const [serviceReportAfterClose, setServiceReportAfterClose] = useState(false)
   const [waPending, setWaPending] = useState<{
     payload: WhatsAppConfirmPayload
     execute: (sendWhatsApp: boolean) => Promise<void>
@@ -269,11 +281,37 @@ export function TicketDetailPage() {
   }
 
   function askComplete(nextStatus: 'RESOLVED' | 'CLOSED' = 'RESOLVED') {
+    const cfEarly = (ticket?.customFields as Record<string, unknown> | undefined) ?? {}
+    const catEarly = String(cfEarly.category ?? editDraft.category ?? '')
+    const wtEarly = String(cfEarly.workType ?? '')
+    const stampingEarly =
+      catEarly === 'Stamping' ||
+      wtEarly === 'Stamping' ||
+      String(cfEarly.visitPurpose ?? '') === 'STAMPING'
     if (nextStatus === 'RESOLVED' && !ticket?.assignedToId) {
-      addToast({ type: 'error', message: 'Assign an engineer before marking complete' })
+      addToast({
+        type: 'error',
+        message: stampingEarly
+          ? 'Take & start this stamping job (or assign an engineer) before marking complete'
+          : 'Assign an engineer before marking complete',
+      })
       return
     }
-    if (nextStatus === 'RESOLVED' && isEngineer && !isAdmin) {
+    const cat = catEarly
+    const wt = wtEarly
+    const needsStampResult = stampingEarly
+    if (nextStatus === 'RESOLVED' && needsStampResult && !editDraft.stampingDate.trim()) {
+      addToast({
+        type: 'error',
+        message: 'Enter today’s stamping date (and next due / valid till) before marking complete',
+      })
+      document.getElementById('section-stamp-result')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      })
+      return
+    }
+    if (nextStatus === 'RESOLVED' && isEngineer && !isAdmin && !needsStampResult) {
       const notes = Array.isArray(
         (ticket?.customFields as Record<string, unknown> | undefined)?.dayNotes,
       )
@@ -285,26 +323,6 @@ export function TicketDetailPage() {
           message: 'Add at least one daily tracking note before marking complete',
         })
         document.getElementById('section-day-notes')?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'center',
-        })
-        return
-      }
-      const cat = String(
-        (ticket?.customFields as Record<string, unknown> | undefined)?.category ??
-          editDraft.category ??
-          '',
-      )
-      const wt = String(
-        (ticket?.customFields as Record<string, unknown> | undefined)?.workType ?? '',
-      )
-      const needsStampResult = cat === 'Stamping' || wt === 'Stamping'
-      if (needsStampResult && !editDraft.stampingDate.trim()) {
-        addToast({
-          type: 'error',
-          message: 'Enter today’s stamping date (and next due) before marking complete',
-        })
-        document.getElementById('section-stamp-result')?.scrollIntoView({
           behavior: 'smooth',
           block: 'center',
         })
@@ -339,63 +357,64 @@ export function TicketDetailPage() {
   async function confirmComplete() {
     setCompleteOpen(false)
     if (completeStatus === 'CLOSED') {
-      setWaPending({
-        payload: {
-          title: 'Close ticket & WhatsApp customer?',
-          lines: [
-            'Template ticket_completed_customer → customer',
-            `Ticket ${formatServiceId(ticket?.ticketNo != null ? String(ticket.ticketNo) : undefined)} · summary + amount due`,
-          ],
-          note: 'Uses customer name, ticket no, work summary, and amount from this ticket.',
-        },
-        execute: (send) => approveCompleted(send),
-      })
+      // WhatsApp off for now — close directly
+      await approveCompleted(false)
       return
     }
-    setWaPending({
-      payload: {
-        title: 'Mark complete & WhatsApp status?',
-        lines: [
-          'Template ticket_status_update → customer',
-          `Status → Resolved · ticket ${formatServiceId(ticket?.ticketNo != null ? String(ticket.ticketNo) : undefined)}`,
-        ],
+    // Lifecycle: OPEN cannot jump to RESOLVED — start work first if needed
+    if (String(ticket?.status) === 'OPEN') {
+      if (!id) return
+      setBusy(true)
+      try {
+        const started = await api.updateTicket(id, {
+          status: 'IN_PROGRESS',
+          sendWhatsApp: false,
+        })
+        setTicket((prev) => ({ ...(prev ?? {}), ...started }))
+      } catch (err) {
+        addToast({
+          type: 'error',
+          message: err instanceof ApiClientError ? err.message : 'Could not start job before complete',
+        })
+        setBusy(false)
+        return
+      } finally {
+        setBusy(false)
+      }
+    }
+    const needsStampResult =
+      String(cf.category ?? editDraft.category ?? '') === 'Stamping' ||
+      String(cf.workType ?? '') === 'Stamping' ||
+      String(cf.visitPurpose ?? '') === 'STAMPING'
+    const stamp = editDraft.stampingDate.trim()
+    const due = editDraft.nextDueDate.trim() || (stamp ? addOneYearIso(stamp) : '')
+    const legal = {
+      ...((cf.stampingLegal as Record<string, unknown> | undefined) ?? {}),
+      vcNumber: editDraft.vcNumber.trim() || null,
+      stampingQuarter: editDraft.stampingQuarter.trim() || null,
+      plateNo: editDraft.plateNo.trim() || null,
+      verificationClass: editDraft.verificationClass.trim() || null,
+    }
+    await patchTicket(
+      {
+        status: 'RESOLVED',
+        sendWhatsApp: false,
+        ...(needsStampResult && stamp
+          ? {
+              stampingDate: stamp,
+              nextDueDate: due || null,
+              customFields: {
+                ...cf,
+                stampingLegal: legal,
+                stampedCompletedAt: new Date().toISOString(),
+              },
+            }
+          : {}),
       },
-      execute: (send) => {
-        const cat = String(cf.category ?? editDraft.category ?? '')
-        const wt = String(cf.workType ?? '')
-        const needsStampResult = cat === 'Stamping' || wt === 'Stamping'
-        const stamp = editDraft.stampingDate.trim()
-        const due = editDraft.nextDueDate.trim() || (stamp ? addOneYearIso(stamp) : '')
-        const legal = {
-          ...((cf.stampingLegal as Record<string, unknown> | undefined) ?? {}),
-          vcNumber: editDraft.vcNumber.trim() || null,
-          stampingQuarter: editDraft.stampingQuarter.trim() || null,
-          plateNo: editDraft.plateNo.trim() || null,
-          verificationClass: editDraft.verificationClass.trim() || null,
-        }
-        return patchTicket(
-          {
-            status: 'RESOLVED',
-            sendWhatsApp: send,
-            whatsappNote: 'Service marked complete — pending admin approval',
-            ...(needsStampResult && stamp
-              ? {
-                  stampingDate: stamp,
-                  nextDueDate: due || null,
-                  customFields: {
-                    ...cf,
-                    stampingLegal: legal,
-                    stampedCompletedAt: new Date().toISOString(),
-                  },
-                }
-              : {}),
-          },
-          needsStampResult && stamp
-            ? 'Stamping recorded · service marked complete'
-            : 'Service marked complete',
-        )
-      },
-    })
+      needsStampResult && stamp
+        ? 'Stamping recorded · service marked complete'
+        : 'Service marked complete',
+    )
   }
 
   async function markPaidFully() {
@@ -863,6 +882,29 @@ export function TicketDetailPage() {
     setDayNote('')
   }
 
+  async function claimJob() {
+    if (!id) return
+    setBusy(true)
+    try {
+      const updated = await api.claimTicket(id)
+      setTicket(updated)
+      addToast({ type: 'success', message: 'Job accepted — assigned to you' })
+    } catch (e) {
+      addToast({
+        type: 'error',
+        message: e instanceof ApiClientError ? e.message : 'Could not accept — maybe already taken',
+      })
+      try {
+        const fresh = await api.getTicket(id)
+        setTicket(fresh)
+      } catch {
+        /* ignore */
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function assignAndStart(userId: string) {
     if (!userId) return
     const prevId = ticket?.assignedToId ? String(ticket.assignedToId) : ''
@@ -961,18 +1003,14 @@ export function TicketDetailPage() {
     try {
       const updated = await api.updateTicket(id, { status: 'CLOSED', sendWhatsApp })
       if (sendWhatsApp) handleWhatsappResult(updated.whatsapp, 'complete')
-      const contactId = ticket?.contactId ? String(ticket.contactId) : ''
-      const params = new URLSearchParams({
-        open: 'create',
-        type: 'service',
-        ticketId: String(id),
-      })
-      if (contactId) params.set('contactId', contactId)
+      setTicket((prev) => ({ ...(prev ?? {}), ...updated }))
       addToast({
         type: 'success',
-        message: 'Ticket closed — opening service invoice…',
+        message: 'Ticket closed — fill the service report (spare parts go on the customer machine)',
       })
-      navigate(`/erp/invoices?${params.toString()}`)
+      setServiceReportAfterClose(true)
+      setServiceReportOpen(true)
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -983,11 +1021,78 @@ export function TicketDetailPage() {
     }
   }
 
+  function openServiceReport() {
+    setServiceReportAfterClose(false)
+    setServiceReportOpen(true)
+  }
+
+  function finishServiceReport() {
+    setServiceReportOpen(false)
+    const continueAfter = serviceReportAfterClose
+    setServiceReportAfterClose(false)
+    if (!continueAfter) {
+      void load({ silent: true })
+      return
+    }
+    const contactId = ticket?.contactId ? String(ticket.contactId) : ''
+    const assetId = ticket?.assetId ? String(ticket.assetId) : ''
+    // Admin/manager can continue to service invoice; desk stays on ticket / contact
+    if (isAdmin && id) {
+      const params = new URLSearchParams({
+        open: 'create',
+        type: 'service',
+        ticketId: String(id),
+      })
+      if (contactId) params.set('contactId', contactId)
+      navigate(`/erp/invoices?${params.toString()}`)
+      return
+    }
+    if (contactId) {
+      const q = new URLSearchParams()
+      q.set('tab', 'service')
+      if (assetId) q.set('assetId', assetId)
+      navigate(`/contacts/${contactId}?${q.toString()}`)
+      return
+    }
+    void load()
+  }
+
   const balancePreview = useMemo(() => {
     const pay = Number(payDraft.paymentTotal) || 0
     const adv = Number(payDraft.advanceAmount) || 0
     return Math.max(0, pay - adv)
   }, [payDraft.paymentTotal, payDraft.advanceAmount])
+
+  async function savePaymentDraft() {
+    if (!id) return
+    if (String(ticket?.paymentStatus ?? '') === 'PAID') {
+      addToast({ type: 'error', message: 'Payment is already marked paid' })
+      return
+    }
+    const total = Number(payDraft.paymentTotal) || 0
+    const advance = Number(payDraft.advanceAmount) || 0
+    if (advance > total && total > 0) {
+      addToast({ type: 'error', message: 'Advance cannot be more than total payment' })
+      return
+    }
+    await patchTicket(
+      {
+        paymentTotal: total,
+        advanceAmount: advance,
+        paymentMethod: (payDraft.paymentMethod || 'CASH') as
+          | 'CASH'
+          | 'UPI'
+          | 'NEFT'
+          | 'RTGS'
+          | 'CHEQUE'
+          | 'CARD'
+          | 'OTHER',
+        paymentReference: payDraft.paymentReference.trim() || null,
+        paymentProofUrl: payDraft.paymentProofUrl.trim() || null,
+      },
+      'Payment updated',
+    )
+  }
 
   const visitLog = useMemo(() => {
     const ticketCf = (ticket?.customFields as Record<string, unknown>) ?? {}
@@ -1074,7 +1179,7 @@ export function TicketDetailPage() {
   void sendPaymentDue
   void addVisitEntry
 
-  if (loading) return <Card className="p-6 text-sm text-text-secondary">Loading ticket…</Card>
+  if (loading) return <DetailSkeleton />
   if (!ticket) {
     return (
       <EmptyState
@@ -1101,6 +1206,7 @@ export function TicketDetailPage() {
   const isOpen = ['OPEN', 'IN_PROGRESS', 'PENDING'].includes(status)
   const isDone = status === 'RESOLVED' || status === 'CLOSED'
   const isPaid = paymentStatus === 'PAID'
+  const canEditPayment = showPayment && !isPaid
   const canDownloadDocs = isDone || isPaid
   const breached = Boolean(ticket.slaBreached)
   const ticketLabel = formatServiceId(ticket.ticketNo != null ? String(ticket.ticketNo) : undefined)
@@ -1111,53 +1217,41 @@ export function TicketDetailPage() {
 
   const outsideMachine = isThirdPartyOrigin(asset?.origin ? String(asset.origin) : null)
   const isStampingJob =
-    String(cf.category ?? '') === 'Stamping' || String(cf.workType ?? '') === 'Stamping'
+    String(cf.category ?? '') === 'Stamping' ||
+    String(cf.workType ?? '') === 'Stamping' ||
+    String(cf.visitPurpose ?? '') === 'STAMPING'
   const cameOnlyForStamping = Boolean(cf.cameOnlyForStamping) || outsideMachine
   const waitingAssign = status === 'OPEN' && !ticket.assignedToId
   const workType = String(cf.workType ?? '')
+  const hasServiceReport = Boolean(
+    cf.serviceReport && typeof cf.serviceReport === 'object',
+  )
   const hasInvoice = Boolean(ticket.serviceInvoiceId)
-  const stepDoneFlags = [
-    true, // 1 Created
-    Boolean(ticket.assignedToId) || ['IN_PROGRESS', 'PENDING', 'RESOLVED', 'CLOSED'].includes(status),
-    ['IN_PROGRESS', 'PENDING', 'RESOLVED', 'CLOSED'].includes(status),
-    dayNotes.length > 0 || ['RESOLVED', 'CLOSED'].includes(status),
-    ['RESOLVED', 'CLOSED'].includes(status),
-    hasInvoice || status === 'CLOSED',
-  ]
-  let activeStep = 0
-  for (let i = 0; i < stepDoneFlags.length; i++) {
-    if (stepDoneFlags[i]) activeStep = i
-    else {
-      activeStep = i
-      break
-    }
-  }
-  if (stepDoneFlags.every(Boolean)) activeStep = 5
-
-  const flowSteps = isStampingJob
-    ? ([
-        { key: 'created', label: 'Created', hint: 'Desk: stamping job' },
-        { key: 'assigned', label: 'Assigned', hint: 'Admin picks engineer' },
-        { key: 'onsite', label: 'On site', hint: 'Verification visit' },
-        { key: 'tracking', label: 'Daily tracking', hint: 'Day notes / VC' },
-        { key: 'close', label: 'Admin close', hint: 'Pay stamp fee' },
-        { key: 'invoice', label: 'Invoice', hint: 'Service proforma' },
-      ] as const)
-    : ([
-        { key: 'created', label: 'Created', hint: 'Desk opens ticket' },
-        { key: 'assigned', label: 'Assigned', hint: 'Admin picks engineer' },
-        { key: 'onsite', label: 'On site', hint: 'Engineer starts work' },
-        { key: 'tracking', label: 'Daily tracking', hint: 'Day notes for admin' },
-        { key: 'close', label: 'Admin close', hint: 'Pay & approve' },
-        { key: 'invoice', label: 'Invoice', hint: 'Service proforma' },
-      ] as const)
-
   const nextAction = (() => {
     if (isDesk && !isAdmin) {
-      if (waitingAssign || status === 'OPEN') {
-        return 'Waiting for admin to assign an engineer. You can update the issue log if needed.'
+      if (isStampingJob && (waitingAssign || (status === 'OPEN' && !ticket.assignedToId))) {
+        return 'Stamping walk-in — click Take & start, then after verification enter stamp date + next due and Mark complete.'
       }
-      return 'Ticket is with the service team — tracking continues on admin / engineer side.'
+      if (waitingAssign || (status === 'OPEN' && !ticket.assignedToId)) {
+        return 'Job is in the open pool — engineer Accepts, or admin assigns. Update the issue log if needed.'
+      }
+      if (isStampingJob && (status === 'IN_PROGRESS' || status === 'PENDING')) {
+        return editDraft.stampingDate.trim()
+          ? 'Stamp dates entered — Mark complete to update the machine register, then collect payment and close.'
+          : 'Enter stamping date + next due / valid till (defaults +1 year), then Mark complete.'
+      }
+      if (status === 'IN_PROGRESS' || status === 'PENDING') {
+        return 'Engineer is on site. You can Mark complete when work is done, then collect payment and close.'
+      }
+      if (status === 'RESOLVED') {
+        return 'Step 5 — Mark paid (method + proof if online) if charged, then Approve & close.'
+      }
+      if (status === 'CLOSED') {
+        return hasInvoice
+          ? 'Service complete — invoice linked.'
+          : 'Closed. Raise service proforma from admin ERP if needed.'
+      }
+      return 'Track the job — Mark complete, collect payment, and close when ready.'
     }
     if (isEngineer) {
       if (status === 'OPEN' && ticket.assignedToId) return 'Click Start, then add day notes and spare parts as you work.'
@@ -1166,22 +1260,22 @@ export function TicketDetailPage() {
           ? 'Keep daily tracking updated, log spare parts if needed, then Mark complete when done.'
           : 'Required: add today’s Day note (Step 4) — Mark complete stays locked until then.'
       }
-      if (status === 'RESOLVED') return 'Waiting for admin to verify payment and close the job.'
-      if (status === 'CLOSED') return 'Job closed. Admin will raise the service invoice.'
+      if (status === 'RESOLVED') return 'Waiting for service desk / admin to verify payment and close the job.'
+      if (status === 'CLOSED') return 'Job closed. Desk or admin will raise the service invoice if needed.'
       return 'Review customer history, then start work when ready.'
     }
     if (status === 'OPEN' && !ticket.assignedToId) {
-      return 'Step 2 — Assign a service engineer (WhatsApp notifies customer + engineer).'
+      return 'Step 2 — Job is in the open pool. Engineers Accept it, or admin can assign.'
     }
     if (status === 'RESOLVED') {
-      return 'Step 5 — Verify work, mark paid if charged, then Approve & close (opens service invoice).'
+      return 'Step 5 — Verify work, mark paid if charged, then Approve & close.'
     }
     if (status === 'CLOSED' && !hasInvoice) {
       return 'Step 6 — Create the service proforma (prefilled from this ticket).'
     }
     if (status === 'CLOSED') return 'Service complete — invoice linked. Download job sheet if needed.'
     if (status === 'IN_PROGRESS' || status === 'PENDING') {
-      return 'Engineer is working. Day notes appear in the progress timeline below.'
+      return 'Engineer is working. Desk can Mark complete, then collect payment and close.'
     }
     return 'Monitor progress and reassign if needed.'
   })()
@@ -1198,15 +1292,31 @@ export function TicketDetailPage() {
       label: 'Origin',
       value: asset?.origin ? (outsideMachine ? 'Outside / repair' : 'Sold by us') : '—',
     },
-    // AMC / Non-AMC only for machines sold by us — not outside repair
+    // Coverage for machines sold by us — GC / NGC / AMC
     ...(!outsideMachine
       ? [
           {
-            label: 'Service plan',
-            value: asset?.servicePlan === 'AMC' ? 'AMC' : asset?.servicePlan ? 'Non-AMC' : '—',
+            label: 'Coverage',
+            value: asset?.servicePlan
+              ? coverageChargeHints({
+                  servicePlan: String(asset.servicePlan),
+                  warrantyEndDate: asset.warrantyEndDate ? String(asset.warrantyEndDate) : null,
+                  amcEndDate: asset.amcEndDate ? String(asset.amcEndDate) : null,
+                }).label
+              : '—',
           },
           {
-            label: 'AMC period',
+            label: 'Charge rule',
+            value: asset?.servicePlan
+              ? coverageChargeHints({
+                  servicePlan: String(asset.servicePlan),
+                  warrantyEndDate: asset.warrantyEndDate ? String(asset.warrantyEndDate) : null,
+                  amcEndDate: asset.amcEndDate ? String(asset.amcEndDate) : null,
+                }).summary
+              : '—',
+          },
+          {
+            label: 'Coverage dates',
             value:
               asset?.servicePlan === 'AMC'
                 ? [
@@ -1215,7 +1325,9 @@ export function TicketDetailPage() {
                   ]
                     .filter(Boolean)
                     .join(' → ') || '—'
-                : '—',
+                : asset?.servicePlan === 'GC' && asset.warrantyEndDate
+                  ? `GC until ${formatDate(String(asset.warrantyEndDate))}`
+                  : '—',
           },
         ]
       : []),
@@ -1254,8 +1366,8 @@ export function TicketDetailPage() {
             <h1 className="font-mono text-xl font-semibold tracking-tight text-text-primary sm:text-2xl">
               {ticketLabel}
             </h1>
-            <Badge color={breached ? 'red' : ticketStatusColor[status] ?? 'gray'}>{labelize(status)}</Badge>
-            {isAdmin && showPayment ? (
+            <TicketStatusPill status={status} />
+            {showPayment ? (
               <Badge color={isPaid ? 'green' : paymentStatus === 'PARTIAL' ? 'amber' : 'gray'}>
                 {labelize(paymentStatus)}
               </Badge>
@@ -1281,77 +1393,24 @@ export function TicketDetailPage() {
       </div>
 
       <Card className="p-4">
-        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-secondary">
-          {isStampingJob ? 'Stamping job progress' : 'Service progress'}
-        </div>
-        <div className="mt-3 flex items-start gap-0 overflow-x-auto pb-1">
-          {flowSteps.map((s, i) => {
-            const done = stepDoneFlags[i]
-            const current = i === activeStep && !stepDoneFlags.every(Boolean)
-            return (
-              <div key={s.key} className="flex min-w-0 flex-1 items-start">
-                <div className="flex w-full min-w-[4.5rem] flex-col items-center text-center">
-                  <span
-                    className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold ${
-                      done && !current
-                        ? 'bg-emerald-600 text-white'
-                        : current
-                          ? 'bg-accent-blue text-white ring-4 ring-accent-blue/20'
-                          : 'bg-surface text-text-secondary ring-1 ring-border'
-                    }`}
-                  >
-                    {done && !current ? <Check size={14} strokeWidth={3} /> : i + 1}
-                  </span>
-                  <span
-                    className={`mt-1.5 text-[11px] leading-tight sm:text-xs ${
-                      done || current ? 'font-semibold text-text-primary' : 'text-text-secondary'
-                    }`}
-                  >
-                    {s.label}
-                  </span>
-                  <span className="mt-0.5 hidden text-[10px] text-text-secondary sm:block">{s.hint}</span>
-                </div>
-                {i < flowSteps.length - 1 ? (
-                  <div
-                    className={`mt-4 h-0.5 w-full min-w-[8px] shrink ${
-                      stepDoneFlags[i] ? 'bg-emerald-500/70' : 'bg-border'
-                    }`}
-                    aria-hidden
-                  />
-                ) : null}
-              </div>
-            )
-          })}
-        </div>
-
-        <div
-          className={`mt-4 rounded-[10px] border px-3 py-3 ${
-            waitingAssign
-              ? 'border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100'
-              : status === 'RESOLVED'
-                ? 'border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100'
-                : status === 'CLOSED'
-                  ? 'border-emerald-200 bg-emerald-50 text-emerald-950 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-100'
-                  : 'border-sky-200 bg-sky-50 text-sky-950 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-100'
-          }`}
-        >
-          <div className="text-xs font-semibold uppercase tracking-wide opacity-80">Your next action</div>
-          <p className="mt-1 text-sm font-medium">{nextAction}</p>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs opacity-90">
-            <span>
-              Engineer:{' '}
-              <strong>{waitingAssign ? 'Not assigned' : (assigneeName ?? '—')}</strong>
-            </span>
-            <span>·</span>
-            <span>Status: {labelize(status)}</span>
-            {workType ? (
-              <>
-                <span>·</span>
-                <span>Work: {workType}</span>
-              </>
-            ) : null}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-text-secondary">Status</div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <TicketStatusPill status={status} />
+              {workType ? (
+                <span className="text-xs text-text-secondary">{workType}</span>
+              ) : null}
+            </div>
+          </div>
+          <div className="min-w-0 text-right text-sm text-text-secondary">
+            <div className="text-xs text-text-secondary">Engineer</div>
+            <div className="mt-0.5 font-medium text-text-primary">
+              {waitingAssign ? 'Unassigned' : (assigneeName ?? '—')}
+            </div>
           </div>
         </div>
+        <p className="mt-3 border-t border-border pt-3 text-sm text-text-primary">{nextAction}</p>
       </Card>
 
       {isStampingJob ? (
@@ -1365,8 +1424,8 @@ export function TicketDetailPage() {
               : 'Sold by us — renewal / re-stamp on an HMS machine.'}
           </p>
           <p className="mt-1 text-xs text-text-secondary">
-            Desk opened the job. Engineer records stamp date + valid till after verification, then
-            marks complete.
+            Desk can Take &amp; start (or assign an engineer). After verification, enter stamp date +
+            next due / valid till, then Mark complete — machine register updates automatically.
             {!outsideMachine && asset?.nextDueDate
               ? ` Current valid till on file: ${formatDate(String(asset.nextDueDate))}.`
               : ''}
@@ -1432,8 +1491,28 @@ export function TicketDetailPage() {
                   </Badge>
                 ) : null}
                 {!outsideMachine && asset?.servicePlan ? (
-                  <Badge color={asset.servicePlan === 'AMC' ? 'green' : 'gray'}>
-                    {asset.servicePlan === 'AMC' ? 'AMC' : 'Non-AMC'}
+                  <Badge
+                    color={
+                      coverageChargeHints({
+                        servicePlan: String(asset.servicePlan),
+                        warrantyEndDate: asset.warrantyEndDate
+                          ? String(asset.warrantyEndDate)
+                          : null,
+                        amcEndDate: asset.amcEndDate ? String(asset.amcEndDate) : null,
+                      }).serviceFree
+                        ? 'green'
+                        : 'gray'
+                    }
+                  >
+                    {
+                      coverageChargeHints({
+                        servicePlan: String(asset.servicePlan),
+                        warrantyEndDate: asset.warrantyEndDate
+                          ? String(asset.warrantyEndDate)
+                          : null,
+                        amcEndDate: asset.amcEndDate ? String(asset.amcEndDate) : null,
+                      }).label
+                    }
                   </Badge>
                 ) : null}
               </div>
@@ -1650,11 +1729,6 @@ export function TicketDetailPage() {
     </>
   )
 
-  // Service desk — overview + issue tools only
-  if (isDesk && !isAdmin) {
-    return <div className="w-full space-y-4">{ticketOverview}</div>
-  }
-
   const ticketDialogs = (
     <>
       <Modal
@@ -1678,10 +1752,10 @@ export function TicketDetailPage() {
       >
         <p className="text-sm leading-relaxed text-text-secondary">
           {completeStatus === 'RESOLVED' && isEngineer
-            ? 'Marks service done and sends for admin approval. Status becomes Resolved until an admin approves as Completed.'
+            ? 'Marks service done and sends for desk/admin approval. Status becomes Resolved until Approve & close.'
             : completeStatus === 'CLOSED'
-              ? 'Approves the completed service and closes this ticket.'
-              : 'Completes the job and WhatsApps the customer when possible. Admin can then handle payment and documents.'}
+              ? 'Approves the completed service and closes this ticket — then opens the service report.'
+              : 'Marks the job complete. Desk/admin then handle final payment and close.'}
         </p>
         {contact ? (
           <div className="mt-4 rounded-[10px] border border-border bg-surface px-3 py-3 text-sm">
@@ -1713,14 +1787,24 @@ export function TicketDetailPage() {
           if (run) void run(false)
         }}
       />
+
+      <ServiceReportModal
+        open={serviceReportOpen}
+        ticket={ticket as ServiceReportTicket | null}
+        onClose={() => finishServiceReport()}
+        onSaved={() => finishServiceReport()}
+      />
     </>
   )
 
-  // Field engineer — full width, AI + Mark complete on top, full ticket details
+  // Field engineer — full width, Mark complete on top, full ticket details
   if (isEngineer && !isAdmin) {
-    const canMarkComplete = dayNotes.length > 0
-    const markCompleteHint =
-      'Enter at least one daily tracking note (Step 4) before marking complete'
+    const canMarkComplete = isStampingJob
+      ? Boolean(editDraft.stampingDate.trim())
+      : dayNotes.length > 0
+    const markCompleteHint = isStampingJob
+      ? 'Enter stamping date + next due before marking complete'
+      : 'Enter at least one daily tracking note (Step 4) before marking complete'
 
     const markCompleteBtn = (
       <span
@@ -1736,9 +1820,79 @@ export function TicketDetailPage() {
       </span>
     )
 
+    const startBtn = status === 'OPEN' ? (
+      <Button
+        variant={fieldShell ? 'primary' : 'outline'}
+        disabled={busy}
+        className={fieldShell ? 'min-h-12 w-full text-base' : undefined}
+        onClick={() =>
+          setWaPending({
+            payload: {
+              title: 'Start work & WhatsApp customer?',
+              lines: ['Template ticket_status_update → customer (In progress)'],
+            },
+            execute: (send) =>
+              patchTicket(
+                {
+                  status: 'IN_PROGRESS',
+                  sendWhatsApp: send,
+                  whatsappNote: 'Engineer started work',
+                },
+                'Work started',
+              ),
+          })
+        }
+      >
+        <Play size={18} /> Start work
+      </Button>
+    ) : null
+
+    const fieldMarkComplete = (
+      <span
+        className={cn('inline-flex', fieldShell && 'w-full')}
+        title={!canMarkComplete ? markCompleteHint : undefined}
+      >
+        <Button
+          disabled={busy || !canMarkComplete}
+          onClick={() => askComplete('RESOLVED')}
+          className={fieldShell ? 'min-h-12 w-full text-base' : undefined}
+        >
+          <CheckCircle2 size={18} /> Mark complete
+        </Button>
+      </span>
+    )
+
     return (
-      <div className="w-full space-y-4">
-        {isOpen ? (
+      <div className={cn('w-full space-y-4', fieldShell && 'pb-28')}>
+        {fieldShell && isOpen ? (
+          <div className="fixed inset-x-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-border bg-card/95 px-3 py-2.5 shadow-[0_-8px_24px_rgba(0,0,0,0.12)] backdrop-blur md:hidden">
+            <p className="mb-2 line-clamp-1 text-xs text-text-secondary">
+              {waitingAssign
+                ? 'Accept this job to start'
+                : status === 'OPEN'
+                  ? 'Tap Start work, then add a day note'
+                  : !canMarkComplete
+                    ? 'Add a day note to unlock Mark complete'
+                    : nextAction}
+            </p>
+            <div className="flex flex-col gap-2">
+              {waitingAssign ? (
+                <Button
+                  disabled={busy}
+                  className="min-h-12 w-full text-base"
+                  onClick={() => void claimJob()}
+                >
+                  Accept this job
+                </Button>
+              ) : null}
+              {/* OPEN → must Start first; Mark complete only after IN_PROGRESS / PENDING */}
+              {!waitingAssign && status === 'OPEN' ? startBtn : null}
+              {!waitingAssign && status !== 'OPEN' ? fieldMarkComplete : null}
+            </div>
+          </div>
+        ) : null}
+
+        {isOpen && !fieldShell ? (
           <Card className="sticky top-2 z-10 border-accent-blue/40 bg-card/95 p-3 shadow-md backdrop-blur sm:p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="min-w-0 flex-1">
@@ -1746,9 +1900,11 @@ export function TicketDetailPage() {
                   Your actions
                 </div>
                 <p className="mt-0.5 text-sm text-text-primary">
-                  {!canMarkComplete
-                    ? 'Step 4 — add a daily tracking note, then Mark complete unlocks.'
-                    : nextAction}
+                  {status === 'OPEN'
+                    ? 'Tap Start work first, then add a day note and Mark complete.'
+                    : !canMarkComplete
+                      ? 'Step 4 — add a daily tracking note, then Mark complete unlocks.'
+                      : nextAction}
                 </p>
                 {!canMarkComplete ? (
                   <button
@@ -1766,36 +1922,40 @@ export function TicketDetailPage() {
                 ) : null}
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {status === 'OPEN' ? (
-                  <Button
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() =>
-                      setWaPending({
-                        payload: {
-                          title: 'Start work & WhatsApp customer?',
-                          lines: ['Template ticket_status_update → customer (In progress)'],
-                        },
-                        execute: (send) =>
-                          patchTicket(
-                            {
-                              status: 'IN_PROGRESS',
-                              sendWhatsApp: send,
-                              whatsappNote: 'Engineer started work',
-                            },
-                            'Work started',
-                          ),
-                      })
-                    }
-                  >
-                    <Play size={16} /> Start
-                  </Button>
-                ) : null}
-                {markCompleteBtn}
+                {status === 'OPEN' ? startBtn : null}
+                {status !== 'OPEN' ? markCompleteBtn : null}
               </div>
             </div>
           </Card>
-        ) : (
+        ) : null}
+
+        {isOpen && fieldShell ? (
+          <Card className="border-accent-blue/30 p-3">
+            <p className="text-sm text-text-primary">
+              {!canMarkComplete
+                ? waitingAssign
+                  ? 'Accept from the bar below, then Start and add day notes.'
+                  : 'Step 4 — add a daily tracking note, then Mark complete unlocks.'
+                : nextAction}
+            </p>
+            {!canMarkComplete && !waitingAssign ? (
+              <button
+                type="button"
+                className="mt-1 text-xs font-medium text-accent-blue hover:underline"
+                onClick={() =>
+                  document.getElementById('section-day-notes')?.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center',
+                  })
+                }
+              >
+                Go to daily tracking →
+              </button>
+            ) : null}
+          </Card>
+        ) : null}
+
+        {!isOpen ? (
           <Card className="border-emerald-300/50 bg-emerald-50/40 p-4 dark:border-emerald-800/40 dark:bg-emerald-950/25">
             <div className="font-semibold text-text-primary">
               {status === 'RESOLVED' ? 'Waiting for admin approval' : 'Job closed'}
@@ -1805,44 +1965,11 @@ export function TicketDetailPage() {
                 ? 'You marked this complete. Admin will collect payment and close.'
                 : 'This ticket is closed. Open My tickets for the next job.'}
             </p>
-          </Card>
-        )}
-
-        {contact ? (
-          <Card className="overflow-hidden border-indigo-200/70 p-0 dark:border-indigo-900/40">
-            <div className="border-b border-indigo-200/60 bg-gradient-to-r from-indigo-50/90 to-card px-4 py-3 dark:border-indigo-900/40 dark:from-indigo-950/40 dark:to-card sm:px-5">
-              <h2 className="text-sm font-semibold text-indigo-900 dark:text-indigo-100">
-                AI overview
-              </h2>
-              <p className="mt-0.5 text-xs text-text-secondary">
-                Customer history & site prep before you work. Soft-fails if Gemini is not configured.
-              </p>
-            </div>
-            <div className="p-4 sm:p-5">
-              <AiAssistCard
-                title="Prepare this visit"
-                subtitle="Summarize past jobs, machines due, or questions to ask on site."
-                actions={[
-                  {
-                    id: 'summarize',
-                    label: 'Summarize history',
-                    run: () => api.aiCustomerAssist({ contactId: contact.id, action: 'summarize' }),
-                  },
-                  {
-                    id: 'machines_due',
-                    label: 'Machines due',
-                    run: () =>
-                      api.aiCustomerAssist({ contactId: contact.id, action: 'machines_due' }),
-                  },
-                  {
-                    id: 'visit_questions',
-                    label: 'Visit questions',
-                    run: () =>
-                      api.aiCustomerAssist({ contactId: contact.id, action: 'visit_questions' }),
-                  },
-                ]}
-              />
-            </div>
+            {fieldShell ? (
+              <Link to="/workqueue" className="mt-3 inline-flex">
+                <Button className="min-h-11">Back to queue</Button>
+              </Link>
+            ) : null}
           </Card>
         ) : null}
 
@@ -1883,7 +2010,8 @@ export function TicketDetailPage() {
                   setEditDraft((d) => ({
                     ...d,
                     stampingDate,
-                    nextDueDate: d.nextDueDate || (stampingDate ? addOneYearIso(stampingDate) : ''),
+                    // Always refresh valid-till from stamp date (+1 year); user can override after
+                    nextDueDate: stampingDate ? addOneYearIso(stampingDate) : '',
                   }))
                 }}
               />
@@ -1909,10 +2037,10 @@ export function TicketDetailPage() {
                 onChange={(e) => setEditDraft((d) => ({ ...d, stampingQuarter: e.target.value }))}
                 options={[
                   { value: '', label: '—' },
-                  { value: 'A', label: 'Quarter A' },
-                  { value: 'B', label: 'Quarter B' },
-                  { value: 'C', label: 'Quarter C' },
-                  { value: 'D', label: 'Quarter D' },
+                  { value: 'A', label: 'Quarter A · Jan–Mar' },
+                  { value: 'B', label: 'Quarter B · Apr–Jun' },
+                  { value: 'C', label: 'Quarter C · Jul–Sep' },
+                  { value: 'D', label: 'Quarter D · Oct–Dec' },
                 ]}
               />
               <Input
@@ -2054,6 +2182,15 @@ export function TicketDetailPage() {
               collapsible
               defaultOpen={false}
               canEdit={isAdmin || isEngineer}
+              defaultUnderWarranty={
+                coverageChargeHints({
+                  servicePlan: asset?.servicePlan ? String(asset.servicePlan) : null,
+                  warrantyEndDate: asset?.warrantyEndDate
+                    ? String(asset.warrantyEndDate)
+                    : null,
+                  amcEndDate: asset?.amcEndDate ? String(asset.amcEndDate) : null,
+                }).underWarrantyDefault
+              }
             />
           </div>
         ) : null}
@@ -2093,40 +2230,75 @@ export function TicketDetailPage() {
           </Card>
 
           {showPayment ? (
-            <Card className="overflow-hidden p-0">
+            <Card id="section-payment" className="scroll-mt-24 overflow-hidden p-0">
               <div className="flex items-center justify-between border-b border-border bg-surface/70 px-4 py-2.5">
                 <h2 className="text-sm font-semibold text-text-primary">Payment</h2>
                 <Badge color={isPaid ? 'green' : paymentStatus === 'PARTIAL' ? 'amber' : 'gray'}>
                   {labelize(paymentStatus)}
                 </Badge>
               </div>
-              <div className="grid gap-3 p-4 sm:grid-cols-3">
-                <div>
-                  <div className="text-[10px] font-semibold uppercase text-text-secondary">Total</div>
-                  <div className="text-sm font-medium">
-                    {formatCurrency(num(ticket.paymentTotal))}
+              <div className="space-y-3 p-4">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Input
+                    label="Total payment ₹"
+                    type="number"
+                    value={payDraft.paymentTotal}
+                    disabled={!canEditPayment || busy}
+                    onChange={(e) => setPayDraft({ ...payDraft, paymentTotal: e.target.value })}
+                  />
+                  <Input
+                    label="Advance ₹"
+                    type="number"
+                    value={payDraft.advanceAmount}
+                    disabled={!canEditPayment || busy}
+                    onChange={(e) => setPayDraft({ ...payDraft, advanceAmount: e.target.value })}
+                  />
+                  <div className="rounded-[8px] border border-border bg-surface px-3 py-2">
+                    <div className="text-xs text-text-secondary">Balance (auto)</div>
+                    <div className="text-lg font-bold text-accent-amber">
+                      {formatCurrency(balancePreview)}
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <div className="text-[10px] font-semibold uppercase text-text-secondary">
-                    Advance
-                  </div>
-                  <div className="text-sm font-medium">
-                    {formatCurrency(num(ticket.advanceAmount))}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[10px] font-semibold uppercase text-text-secondary">
-                    Balance
-                  </div>
-                  <div className="text-sm font-medium text-accent-amber">
-                    {formatCurrency(balancePreview)}
-                  </div>
-                </div>
+                {canEditPayment ? (
+                  <>
+                    <Select
+                      label="Payment method"
+                      value={payDraft.paymentMethod}
+                      onChange={(e) => setPayDraft({ ...payDraft, paymentMethod: e.target.value })}
+                      options={[...PAYMENT_METHODS]}
+                    />
+                    <Input
+                      label={
+                        ONLINE_PAY.has(payDraft.paymentMethod)
+                          ? 'UTR / txn ref'
+                          : 'Reference (optional)'
+                      }
+                      value={payDraft.paymentReference}
+                      onChange={(e) =>
+                        setPayDraft({ ...payDraft, paymentReference: e.target.value })
+                      }
+                      placeholder={
+                        ONLINE_PAY.has(payDraft.paymentMethod) ? 'UPI / bank UTR' : 'Cheque no. etc.'
+                      }
+                    />
+                    <Button disabled={busy} onClick={() => void savePaymentDraft()}>
+                      <Wallet size={16} /> Save payment
+                    </Button>
+                    <p className="text-xs text-text-secondary">
+                      Update charge / advance collected on site. Desk or admin marks paid and closes.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-xs text-text-secondary">
+                    Payment marked paid
+                    {ticket.paymentMethod
+                      ? ` via ${labelize(String(ticket.paymentMethod))}`
+                      : ''}
+                    .
+                  </p>
+                )}
               </div>
-              <p className="border-t border-border px-4 py-2 text-xs text-text-secondary">
-                Read-only for engineers — admin marks paid and closes.
-              </p>
             </Card>
           ) : null}
         </div>
@@ -2206,10 +2378,10 @@ export function TicketDetailPage() {
 
       <Card className="border-border/80 p-3 sm:p-4">
         <div className="flex flex-wrap items-end gap-3">
-          {showAssign && status === 'OPEN' ? (
+          {(showAssign || (isDesk && isStampingJob)) && status === 'OPEN' ? (
             <div className="min-w-[14rem] flex-1 sm:max-w-xs">
               <Select
-                label="Assign engineer"
+                label={isStampingJob && isDesk ? 'Assign engineer (optional)' : 'Assign engineer'}
                 value={String(ticket.assignedToId ?? '')}
                 onChange={(e) => {
                   if (e.target.value) void assignAndStart(e.target.value)
@@ -2224,7 +2396,17 @@ export function TicketDetailPage() {
               />
             </div>
           ) : null}
-          {isEngineer && isOpen && status === 'OPEN' ? (
+          {isDesk && isStampingJob && waitingAssign ? (
+            <Button disabled={busy} onClick={() => void claimJob()}>
+              Take & start (desk)
+            </Button>
+          ) : null}
+          {isEngineer && waitingAssign ? (
+            <Button disabled={busy} onClick={() => void claimJob()}>
+              Accept this job
+            </Button>
+          ) : null}
+          {isEngineer && isOpen && status === 'OPEN' && ticket.assignedToId ? (
             <Button
               disabled={busy}
               onClick={() =>
@@ -2272,8 +2454,24 @@ export function TicketDetailPage() {
               <Play size={16} /> Start
             </Button>
           ) : null}
-          {isEngineer && isOpen ? (
-            <Button disabled={busy} onClick={() => askComplete('RESOLVED')}>
+          {(isEngineer || isDesk || isAdmin) &&
+          (status === 'IN_PROGRESS' || status === 'PENDING') ? (
+            <Button
+              disabled={
+                busy ||
+                (isStampingJob
+                  ? !editDraft.stampingDate.trim()
+                  : isEngineer && dayNotes.length === 0)
+              }
+              onClick={() => askComplete('RESOLVED')}
+              title={
+                isStampingJob && !editDraft.stampingDate.trim()
+                  ? 'Enter stamping date + next due before Mark complete'
+                  : isEngineer && dayNotes.length === 0
+                    ? 'Add at least one day note before Mark complete'
+                    : undefined
+              }
+            >
               <CheckCircle2 size={16} /> Mark complete
             </Button>
           ) : null}
@@ -2292,12 +2490,13 @@ export function TicketDetailPage() {
                   : undefined
               }
             >
-              <CheckCircle2 size={16} /> Approve — service completed
+              <CheckCircle2 size={16} /> Approve & close
             </Button>
           ) : null}
-          {isAdmin && isOpen && !isEngineer ? (
-            <Button disabled={busy} onClick={() => askComplete('RESOLVED')}>
-              <CheckCircle2 size={16} /> Complete
+          {showApprove && status === 'CLOSED' ? (
+            <Button variant="outline" disabled={busy} onClick={() => openServiceReport()}>
+              <FileText size={16} />
+              {hasServiceReport ? 'Edit service report' : 'Create service report'}
             </Button>
           ) : null}
           {isAdmin && status === 'CLOSED' ? (
@@ -2355,14 +2554,98 @@ export function TicketDetailPage() {
         </div>
       </Card>
 
-      {isAdmin && status === 'RESOLVED' ? (
+      {isStampingJob && isOpen ? (
+        <Card
+          id="section-stamp-result"
+          className="scroll-mt-24 border-2 border-violet-400/60 bg-violet-50/40 p-4 sm:p-5 dark:border-violet-700/50 dark:bg-violet-950/20"
+        >
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <Badge color="purple">Stamping result</Badge>
+            <h2 className="text-base font-semibold text-text-primary">
+              Record stamp after verification
+            </h2>
+          </div>
+          {cameOnlyForStamping || outsideMachine ? (
+            <p className="mb-3 rounded-[8px] border border-amber-300/80 bg-amber-50 px-3 py-2 text-xs text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100">
+              <strong>Outside machine</strong> — customer came only for stamping / verification. Enter
+              the stamp date HMS completed today; next due usually +1 year. Saves on ticket + customer
+              machine.
+            </p>
+          ) : (
+            <p className="mb-3 text-sm text-text-secondary">
+              Sold-by-us renewal. Previous valid till:{' '}
+              <strong>
+                {asset?.nextDueDate ? formatDate(String(asset.nextDueDate)) : 'not on file'}
+              </strong>
+              . Enter the new stamp date after verification — Mark complete updates the machine
+              register.
+            </p>
+          )}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <Input
+              label="Stamping date *"
+              type="date"
+              value={editDraft.stampingDate}
+              onChange={(e) => {
+                const stampingDate = e.target.value
+                setEditDraft((d) => ({
+                  ...d,
+                  stampingDate,
+                  // Always refresh valid-till from stamp date (+1 year); user can override after
+                  nextDueDate: stampingDate ? addOneYearIso(stampingDate) : '',
+                }))
+              }}
+            />
+            <Input
+              label="Next due / valid till *"
+              type="date"
+              value={editDraft.nextDueDate}
+              onChange={(e) => setEditDraft((d) => ({ ...d, nextDueDate: e.target.value }))}
+            />
+            <Input
+              label="VC number"
+              value={editDraft.vcNumber}
+              onChange={(e) => setEditDraft((d) => ({ ...d, vcNumber: e.target.value }))}
+            />
+            <Input
+              label="Plate no."
+              value={editDraft.plateNo}
+              onChange={(e) => setEditDraft((d) => ({ ...d, plateNo: e.target.value }))}
+            />
+            <Select
+              label="Stamping quarter"
+              value={editDraft.stampingQuarter}
+              onChange={(e) => setEditDraft((d) => ({ ...d, stampingQuarter: e.target.value }))}
+              options={[
+                { value: '', label: '—' },
+                { value: 'A', label: 'Quarter A · Jan–Mar' },
+                { value: 'B', label: 'Quarter B · Apr–Jun' },
+                { value: 'C', label: 'Quarter C · Jul–Sep' },
+                { value: 'D', label: 'Quarter D · Oct–Dec' },
+              ]}
+            />
+            <Input
+              label="Verification class"
+              value={editDraft.verificationClass}
+              onChange={(e) => setEditDraft((d) => ({ ...d, verificationClass: e.target.value }))}
+              placeholder="e.g. III"
+            />
+          </div>
+          <p className="mt-2 text-xs text-text-secondary">
+            Required before Mark complete. Updates machine <strong>stamping date</strong> and{' '}
+            <strong>next due / valid till</strong>.
+          </p>
+        </Card>
+      ) : null}
+
+      {showApprove && status === 'RESOLVED' ? (
         <Card className="border-amber-300/60 bg-amber-50/50 p-4 dark:border-amber-800/50 dark:bg-amber-950/30">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="font-semibold text-text-primary">Step 5 — Pending your approval</div>
+              <div className="font-semibold text-text-primary">Pending your approval</div>
               <p className="mt-0.5 text-sm text-text-secondary">
-                Engineer marked complete. Mark paid (method + proof if online) if there is a charge, then approve &
-                close. Customer WhatsApp completion sends on close — then Step 6 opens the service invoice.
+                Engineer marked complete. Mark paid if there is a charge, then Approve & close — the
+                service report opens next (issues, work done, spare parts on the machine).
                 {openDurationLabel ? ` · Open for ${openDurationLabel}` : ''}
               </p>
             </div>
@@ -2374,7 +2657,28 @@ export function TicketDetailPage() {
               }
               onClick={() => void approveCompleted()}
             >
-              <CheckCircle2 size={16} /> Approve & close → invoice
+              <CheckCircle2 size={16} /> Approve & close → service report
+            </Button>
+          </div>
+        </Card>
+      ) : null}
+
+      {showApprove && status === 'CLOSED' ? (
+        <Card className="border-sky-300/50 bg-sky-50/40 p-4 dark:border-sky-800/40 dark:bg-sky-950/25">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="font-semibold text-text-primary">
+                {hasServiceReport ? 'Service report saved' : 'Service report'}
+              </div>
+              <p className="mt-0.5 text-sm text-text-secondary">
+                {hasServiceReport
+                  ? 'Report is on this ticket. Open again to update notes or add spare part changes on the customer machine.'
+                  : 'Create the service report now — customer/machine are autofilled; spare parts save on the machine.'}
+              </p>
+            </div>
+            <Button disabled={busy} onClick={() => openServiceReport()}>
+              <FileText size={16} />
+              {hasServiceReport ? 'Edit service report' : 'Create service report'}
             </Button>
           </div>
         </Card>
@@ -2384,7 +2688,7 @@ export function TicketDetailPage() {
         <Card className="border-emerald-300/50 bg-emerald-50/40 p-4 dark:border-emerald-800/40 dark:bg-emerald-950/25">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="font-semibold text-text-primary">Step 6 — Service completed</div>
+              <div className="font-semibold text-text-primary">Billing</div>
               <p className="mt-0.5 text-sm text-text-secondary">
                 Raise or open the service proforma (prefilled). Download job sheet if needed.
               </p>
@@ -2413,35 +2717,6 @@ export function TicketDetailPage() {
               </Button>
             </div>
           </div>
-        </Card>
-      ) : null}
-
-      {(isAdmin || isEngineer) && contact ? (
-        <Card className="p-4 sm:p-5">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-text-primary">Customer history</h2>
-              <p className="text-xs text-text-secondary">
-                Prior tickets and machines for this customer — use AI to summarize before you visit.
-              </p>
-            </div>
-          </div>
-          <AiAssistCard
-            title="AI customer summary"
-            subtitle="Draft only — check the CRM history yourself. Needs Gemini key on the API."
-            actions={[
-              {
-                id: 'summarize',
-                label: 'Summarize history',
-                run: () => api.aiCustomerAssist({ contactId: contact.id, action: 'summarize' }),
-              },
-              {
-                id: 'machines_due',
-                label: 'Machines due',
-                run: () => api.aiCustomerAssist({ contactId: contact.id, action: 'machines_due' }),
-              },
-            ]}
-          />
         </Card>
       ) : null}
 
@@ -2751,6 +3026,7 @@ export function TicketDetailPage() {
               type="number"
               value={payDraft.paymentTotal}
               error={fieldErrors.paymentTotal}
+              disabled={!canEditPayment || busy}
               onChange={(e) => {
                 setPayDraft({ ...payDraft, paymentTotal: e.target.value })
                 setFieldErrors((prev) => {
@@ -2764,6 +3040,7 @@ export function TicketDetailPage() {
               label="Advance ₹"
               type="number"
               value={payDraft.advanceAmount}
+              disabled={!canEditPayment || busy}
               onChange={(e) => setPayDraft({ ...payDraft, advanceAmount: e.target.value })}
             />
             <div className="rounded-[8px] border border-border bg-surface px-3 py-2">
@@ -2855,9 +3132,26 @@ export function TicketDetailPage() {
             ) : null}
               </>
             ) : (
-              <p className="sm:col-span-2 text-xs text-text-secondary">
-                Enter total charge and advance. Admin finalizes paid status and invoices.
-              </p>
+              <div className="sm:col-span-2 space-y-2">
+                {canEditPayment ? (
+                  <>
+                    <Select
+                      label="Payment method"
+                      value={payDraft.paymentMethod}
+                      onChange={(e) => setPayDraft({ ...payDraft, paymentMethod: e.target.value })}
+                      options={[...PAYMENT_METHODS]}
+                    />
+                    <Button disabled={busy} onClick={() => void savePaymentDraft()}>
+                      <Wallet size={16} /> Save payment
+                    </Button>
+                  </>
+                ) : null}
+                <p className="text-xs text-text-secondary">
+                  {canEditPayment
+                    ? 'Save total / advance / method. Admin or desk marks paid and invoices.'
+                    : 'Payment locked after marked paid.'}
+                </p>
+              </div>
             )}
           </div>
           {showPaymentAdminTools ? (
@@ -2909,6 +3203,15 @@ export function TicketDetailPage() {
             collapsible
             defaultOpen={false}
             canEdit
+            defaultUnderWarranty={
+              coverageChargeHints({
+                servicePlan: asset?.servicePlan ? String(asset.servicePlan) : null,
+                warrantyEndDate: asset?.warrantyEndDate
+                  ? String(asset.warrantyEndDate)
+                  : null,
+                amcEndDate: asset?.amcEndDate ? String(asset.amcEndDate) : null,
+              }).underWarrantyDefault
+            }
           />
         </div>
       ) : null}

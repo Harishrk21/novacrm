@@ -41,6 +41,7 @@ export const removeNote = async (q: Request, r: Response) => {
 
 export const importBulk = async (q: Request, r: Response) => {
   const rows = (q.body?.rows ?? []) as ImportRowInput[];
-  const summary = await importCustomers(t(q), rows);
+  const source = q.body?.source === "SERVICE" ? "SERVICE" : q.body?.source === "SALES" ? "SALES" : undefined;
+  const summary = await importCustomers(t(q), rows, { source });
   return success(r, summary, "Import finished");
 };

@@ -7,6 +7,8 @@ import {
   allocateCustomerIdentity,
   assertContactIdentityAvailable,
 } from "./customerIdentity.js";
+import { effectiveServicePlan } from "../../common/hmsCoverage.js";
+import { persistLapsedGc } from "../assets/coverageLapse.js";
 
 function num(v: unknown) {
   const n = Number(v);
@@ -31,8 +33,10 @@ function withTicketBalance<T extends { odAmount?: unknown; paymentTotal?: unknow
 function serializeAsset(asset: {
   stampingDate?: Date | string | null;
   nextDueDate?: Date | string | null;
+  warrantyEndDate?: Date | string | null;
   amcStartDate?: Date | string | null;
   amcEndDate?: Date | string | null;
+  nextServiceDueDate?: Date | string | null;
   [key: string]: unknown;
 }) {
   const slice = (v: Date | string | null | undefined) => {
@@ -42,10 +46,16 @@ function serializeAsset(asset: {
   };
   return {
     ...asset,
+    servicePlan: effectiveServicePlan({
+      servicePlan: asset.servicePlan as string | null | undefined,
+      warrantyEndDate: asset.warrantyEndDate,
+    }),
     stampingDate: slice(asset.stampingDate),
     nextDueDate: slice(asset.nextDueDate),
+    warrantyEndDate: slice(asset.warrantyEndDate),
     amcStartDate: slice(asset.amcStartDate),
     amcEndDate: slice(asset.amcEndDate),
+    nextServiceDueDate: slice(asset.nextServiceDueDate),
   };
 }
 
@@ -90,6 +100,28 @@ export async function list(t: string, q: Record<string, unknown>) {
       skip: p.skip,
       take: p.take,
       orderBy: [{ customerNo: "asc" }, { createdAt: "desc" }],
+      // List UI only needs summary fields — skip shipping full notes/custom blobs when unused.
+      select: {
+        id: true,
+        tenantId: true,
+        accountId: true,
+        ownerUserId: true,
+        customerCode: true,
+        customerNo: true,
+        name: true,
+        email: true,
+        phone: true,
+        mobile: true,
+        phoneNormalized: true,
+        title: true,
+        area: true,
+        city: true,
+        state: true,
+        pincode: true,
+        customFields: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     }),
     prisma.contact.count({ where }),
   ]);
@@ -238,6 +270,7 @@ export async function get(t: string, id: string) {
       take: 100,
     }),
   ]);
+  await persistLapsedGc(assets);
 
   const invoiceIds = invoices.map((inv) => inv.id);
   const lines = invoiceIds.length

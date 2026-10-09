@@ -23,6 +23,13 @@ const body = z.object({
   customFields: z.record(z.unknown()).optional(),
   demoStockUnitId: z.string().min(1).max(36).optional(),
   sendWhatsApp: z.boolean().optional(),
+  /** SALES | SERVICE | STAMPING | RENTAL */
+  serviceType: z.enum(["SALES", "SERVICE", "STAMPING", "RENTAL", "RENEWAL"]).optional(),
+  /** If true, mark as verified immediately; spam sources default false */
+  verified: z.boolean().optional(),
+  area: z.string().max(120).optional().nullable(),
+  enquiryValue: z.union([z.number(), z.string()]).optional().nullable(),
+  requirement: z.string().max(2000).optional().nullable(),
 });
 const params = z.object({ id: z.string().min(1).max(36) });
 export const createSchema = z.object({ body, query: z.any(), params: z.any() });
@@ -71,6 +78,53 @@ export const returnDemoSchema = z.object({
 });
 export const demoUpdateSchema = z.object({
   body: z.object({ note: z.string().min(1).max(2000), updateDate: z.string().optional() }),
+  query: z.any(),
+  params,
+});
+export const verifySchema = z.object({
+  body: z.object({
+    verified: z.boolean().default(true),
+    area: z.string().max(120).optional().nullable(),
+    enquiryValue: z.union([z.number(), z.string()]).optional().nullable(),
+    requirement: z.string().max(2000).optional().nullable(),
+    serviceType: z.enum(["SALES", "SERVICE", "STAMPING", "RENTAL", "RENEWAL"]).optional(),
+    name: z.string().min(1).optional(),
+    phone: z.string().optional().nullable(),
+  }),
+  query: z.any(),
+  params,
+});
+export const createTicketSchema = z.object({
+  body: z
+    .object({
+      category: z.string().max(80).optional(),
+      subject: z.string().max(255).optional(),
+      description: z.string().max(4000).optional(),
+      priority: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).optional(),
+      area: z.string().max(120).optional().nullable(),
+      /** Optional machine — required for STAMPING when creating ticket directly */
+      assetId: z.string().min(1).max(36).optional().nullable(),
+    })
+    .default({}),
+  query: z.any(),
+  params,
+});
+
+/** Ensure customer exists + return routing for SERVICE / STAMPING / RENTAL (no ticket yet). */
+export const prepareHandoffSchema = z.object({
+  body: z
+    .object({
+      area: z.string().max(120).optional().nullable(),
+    })
+    .default({}),
+  query: z.any(),
+  params,
+});
+
+export const linkTicketSchema = z.object({
+  body: z.object({
+    ticketId: z.string().min(1).max(36),
+  }),
   query: z.any(),
   params,
 });

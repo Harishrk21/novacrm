@@ -26,9 +26,16 @@ import {
   isValidIndianMobile,
   toStoredIndianMobile,
 } from '@/lib/phoneIndia'
+import {
+  EMPLOYEE_MODULE_OPTIONS,
+  defaultAllowedModules,
+  resolveAllowedModules,
+  type AllowedModules,
+} from '@/lib/userModules'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 
 type EmployeeProfile = {
   id: string
@@ -51,6 +58,12 @@ type TeamUser = {
   lastLoginAt?: string | null
   createdAt?: string
   role?: { id?: string; code: string; name: string } | null
+  inventoryAreas?: {
+    machines: boolean
+    sparesBilling: boolean
+    sparesWeighing: boolean
+  }
+  allowedModules?: AllowedModules
   employee?: EmployeeProfile | null
 }
 
@@ -59,6 +72,7 @@ type UsersPayload = {
   used: number
   remaining: number | null
   unlimited?: boolean
+  tenantModules?: string[]
   items: TeamUser[]
 }
 
@@ -76,17 +90,37 @@ type FormState = {
   joinDate: string
   salary: string
   notes: string
+  invMachines: boolean
+  invSparesBilling: boolean
+  invSparesWeighing: boolean
+  allowedModules: AllowedModules
 }
 
 const ROLE_OPTIONS = TENANT_ROLE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))
 
-const emptyForm = (): FormState => ({
+function defaultAreasForRole(roleCode: string) {
+  if (roleCode === 'ADMIN' || roleCode === 'MANAGER' || roleCode === 'WAREHOUSE') {
+    return { invMachines: true, invSparesBilling: true, invSparesWeighing: true }
+  }
+  // Desk / sales / engineers need product catalog + serial stock for demos, tickets, PIs.
+  if (
+    roleCode === 'SALES_EXECUTIVE' ||
+    roleCode === 'AGENT' ||
+    roleCode === 'SERVICE_DESK' ||
+    roleCode === 'SERVICE_ENGINEER'
+  ) {
+    return { invMachines: true, invSparesBilling: false, invSparesWeighing: false }
+  }
+  return { invMachines: false, invSparesBilling: false, invSparesWeighing: false }
+}
+
+const emptyForm = (tenantKeys: string[] = []): FormState => ({
   name: '',
   email: '',
   password: 'Demo@12345',
   phone: '',
   avatarUrl: '',
-  roleCode: 'SERVICE_ENGINEER',
+  roleCode: 'WAREHOUSE',
   status: 'ACTIVE',
   employeeCode: '',
   department: '',
@@ -94,17 +128,21 @@ const emptyForm = (): FormState => ({
   joinDate: '',
   salary: '',
   notes: '',
+  ...defaultAreasForRole('WAREHOUSE'),
+  allowedModules: defaultAllowedModules(tenantKeys),
 })
 
-function formFromUser(u: TeamUser): FormState {
+function formFromUser(u: TeamUser, tenantKeys: string[]): FormState {
   const join = u.employee?.joinDate
+  const areas = u.inventoryAreas
+  const roleCode = u.role?.code ?? 'SERVICE_ENGINEER'
   return {
     name: u.name,
     email: u.email,
     password: '',
     phone: indianMobileLocal(u.phone),
     avatarUrl: u.avatarUrl ?? '',
-    roleCode: u.role?.code ?? 'SERVICE_ENGINEER',
+    roleCode,
     status: u.status || 'ACTIVE',
     employeeCode: u.employee?.employeeCode ?? '',
     department: u.employee?.department ?? '',
@@ -112,6 +150,15 @@ function formFromUser(u: TeamUser): FormState {
     joinDate: join ? String(join).slice(0, 10) : '',
     salary: u.employee?.salary != null ? String(u.employee.salary) : '',
     notes: u.employee?.notes ?? '',
+    ...(() => {
+      const fallback = defaultAreasForRole(roleCode)
+      return {
+        invMachines: areas?.machines ?? fallback.invMachines,
+        invSparesBilling: areas?.sparesBilling ?? fallback.invSparesBilling,
+        invSparesWeighing: areas?.sparesWeighing ?? fallback.invSparesWeighing,
+      }
+    })(),
+    allowedModules: resolveAllowedModules(u.allowedModules, roleCode, tenantKeys),
   }
 }
 
@@ -145,6 +192,11 @@ export function UsersPage() {
   const [filterQ, setFilterQ] = useState('')
 
   const items = data?.items ?? []
+  const tenantModuleKeys = data?.tenantModules ?? []
+  const assignableModuleOptions = useMemo(
+    () => EMPLOYEE_MODULE_OPTIONS.filter((o) => tenantModuleKeys.includes(o.key)),
+    [tenantModuleKeys],
+  )
   const filtered = useMemo(() => {
     const q = filterQ.trim().toLowerCase()
     return items.filter((u) => {
@@ -190,7 +242,7 @@ export function UsersPage() {
   function openCreate() {
     setFormMode('create')
     setEditingId(null)
-    setForm(emptyForm())
+    setForm(emptyForm(tenantModuleKeys))
     setViewUser(null)
     setFormOpen(true)
   }
@@ -198,7 +250,7 @@ export function UsersPage() {
   function openEdit(u: TeamUser) {
     setFormMode('edit')
     setEditingId(u.id)
-    setForm(formFromUser(u))
+    setForm(formFromUser(u, tenantModuleKeys))
     setViewUser(null)
     setFormOpen(true)
   }
@@ -254,6 +306,15 @@ export function UsersPage() {
         joinDate: form.joinDate || null,
         salary: form.salary.trim() ? Number(form.salary) : null,
         notes: form.notes.trim() || null,
+        inventoryAreas: {
+          machines: form.invMachines,
+          sparesBilling: form.invSparesBilling,
+          sparesWeighing: form.invSparesWeighing,
+        },
+        allowedModules:
+          form.roleCode === 'ADMIN'
+            ? defaultAllowedModules(tenantModuleKeys)
+            : form.allowedModules,
       }
       if (formMode === 'create') {
         body.email = form.email.trim().toLowerCase()
@@ -273,13 +334,27 @@ export function UsersPage() {
         }
       } else if (editingId) {
         if (form.password.trim()) body.password = form.password.trim()
-        const updated = (await api.updateUser(editingId, body)) as { avatarUrl?: string | null }
+        const updated = (await api.updateUser(editingId, body)) as {
+          avatarUrl?: string | null
+          inventoryAreas?: {
+            machines: boolean
+            sparesBilling: boolean
+            sparesWeighing: boolean
+          }
+          allowedModules?: AllowedModules
+        }
         addToast({ type: 'success', message: 'Employee updated' })
         if (authUser?.id === editingId) {
           patchUser({
             avatarUrl: (updated.avatarUrl ?? form.avatarUrl.trim()) || null,
             name: form.name.trim(),
             phone: toStoredIndianMobile(form.phone),
+            inventoryAreas: updated.inventoryAreas ?? {
+              machines: form.invMachines,
+              sparesBilling: form.invSparesBilling,
+              sparesWeighing: form.invSparesWeighing,
+            },
+            allowedModules: updated.allowedModules ?? form.allowedModules,
           })
         }
       }
@@ -402,7 +477,17 @@ export function UsersPage() {
       <Select
         label="Role *"
         value={form.roleCode}
-        onChange={(e) => setForm((f) => ({ ...f, roleCode: e.target.value }))}
+        onChange={(e) => {
+          const roleCode = e.target.value
+          setForm((f) => ({
+            ...f,
+            roleCode,
+            ...(formMode === 'create' ? defaultAreasForRole(roleCode) : {}),
+            ...(roleCode === 'ADMIN'
+              ? { allowedModules: defaultAllowedModules(tenantModuleKeys) }
+              : {}),
+          }))
+        }}
         options={ROLE_OPTIONS}
       />
       <Select
@@ -415,6 +500,142 @@ export function UsersPage() {
           { value: 'LOCKED', label: 'Locked' },
         ]}
       />
+
+      <div className="sm:col-span-2 rounded-[10px] border border-border bg-muted/20 p-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+              App access — what they can see
+            </div>
+            <p className="mt-1 text-xs text-text-secondary">
+              Only modules your platform admin enabled for this company. Tick to show in their
+              sidebar; untick to hide.
+            </p>
+          </div>
+          {form.roleCode !== 'ADMIN' && assignableModuleOptions.length > 0 ? (
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="text-xs font-medium text-accent-blue hover:underline"
+                onClick={() =>
+                  setForm((f) => ({
+                    ...f,
+                    allowedModules: defaultAllowedModules(tenantModuleKeys),
+                  }))
+                }
+              >
+                Select all
+              </button>
+              <button
+                type="button"
+                className="text-xs font-medium text-text-secondary hover:underline"
+                onClick={() => {
+                  const off: AllowedModules = {}
+                  for (const key of tenantModuleKeys) off[key] = false
+                  setForm((f) => ({ ...f, allowedModules: off }))
+                }}
+              >
+                Clear all
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        {form.roleCode === 'ADMIN' ? (
+          <p className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-200">
+            Company admins always get every module enabled for this workspace. Switch role to
+            assign a custom subset.
+          </p>
+        ) : assignableModuleOptions.length === 0 ? (
+          <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
+            No modules enabled by platform yet. Ask platform admin to turn on modules for this
+            company first.
+          </p>
+        ) : (
+          <div className="mt-3 space-y-4">
+            {Array.from(new Set(assignableModuleOptions.map((o) => o.group))).map((group) => (
+              <div key={group}>
+                <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+                  {group}
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {assignableModuleOptions
+                    .filter((o) => o.group === group)
+                    .map((opt) => (
+                      <label
+                        key={opt.key}
+                        className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/80 bg-card px-3 py-2 text-sm"
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={Boolean(form.allowedModules[opt.key])}
+                          onChange={(e) =>
+                            setForm((f) => ({
+                              ...f,
+                              allowedModules: {
+                                ...f.allowedModules,
+                                [opt.key]: e.target.checked,
+                              },
+                            }))
+                          }
+                        />
+                        <span className="font-medium text-text-primary">{opt.label}</span>
+                      </label>
+                    ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="sm:col-span-2 rounded-[10px] border border-border bg-muted/20 p-3">
+        <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
+          Inventory visibility
+        </div>
+        <p className="mt-1 text-xs text-text-secondary">
+          Within stock access — which lists this person can see. Fine-tune after enabling Stock /
+          Inventory above.
+        </p>
+        <div className="mt-3 space-y-2">
+          {(
+            [
+              {
+                key: 'invMachines' as const,
+                label: 'Machines & product stock',
+                hint: 'Serial machines, Touch POS units, products catalog',
+              },
+              {
+                key: 'invSparesBilling' as const,
+                label: 'Billing / Touch POS spares',
+                hint: 'Paper rolls, labels, billing machine spare quantity',
+              },
+              {
+                key: 'invSparesWeighing' as const,
+                label: 'Weighing machine spares',
+                hint: 'Weighing spare quantity stock only',
+              },
+            ] as const
+          ).map((opt) => (
+            <label
+              key={opt.key}
+              className="flex cursor-pointer items-start gap-2 rounded-lg border border-border/80 bg-card px-3 py-2 text-sm"
+            >
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={form[opt.key]}
+                onChange={(e) => setForm((f) => ({ ...f, [opt.key]: e.target.checked }))}
+              />
+              <span>
+                <span className="font-medium text-text-primary">{opt.label}</span>
+                <span className="mt-0.5 block text-xs text-text-secondary">{opt.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
       <div className="sm:col-span-2 mt-1 text-xs font-semibold uppercase tracking-wide text-text-secondary">
         Employee profile
       </div>
@@ -467,7 +688,15 @@ export function UsersPage() {
         count={items.length}
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Users & Roles' }]}
         actions={
-          <Button onClick={openCreate}>
+          <Button
+            onClick={openCreate}
+            disabled={data?.remaining != null && data.remaining <= 0}
+            title={
+              data?.remaining != null && data.remaining <= 0
+                ? 'Employee seat limit reached — ask platform admin to raise seats'
+                : undefined
+            }
+          >
             <UserPlus size={16} /> Add employee
           </Button>
         }
@@ -477,8 +706,16 @@ export function UsersPage() {
       <Card className="mb-4 border-sky-200/80 bg-sky-50/50 p-4 text-sm text-text-secondary dark:border-sky-900/40 dark:bg-sky-950/20">
         <strong className="text-text-primary">Where employees live:</strong> create every team login here
         (Admin → Users &amp; Roles). Set <strong>role</strong> and a required{' '}
-        <strong>WhatsApp / mobile</strong> for every person. No seat limit — add as many employees as you
-        need. Assignee dropdowns only list the matching role; WhatsApp alerts use that number.
+        <strong>WhatsApp / mobile</strong> for every person. Seat limit comes from your platform
+        subscription
+        {data?.maxUsers != null
+          ? ` (${data.used ?? 0}/${data.maxUsers} used${
+              data.remaining != null ? `, ${data.remaining} left` : ''
+            })`
+          : data
+            ? ' (unlimited)'
+            : ''}
+        . Assignee dropdowns only list the matching role; WhatsApp alerts use that number.
       </Card>
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -494,7 +731,7 @@ export function UsersPage() {
           </div>
         </Card>
         <Card className="py-4">
-          <div className="text-xs text-text-secondary">Sales executives</div>
+          <div className="text-xs text-text-secondary">Sales desk</div>
           <div className="text-lg font-semibold text-text-primary">
             {(roleCounts.get('SALES_EXECUTIVE') ?? 0) + (roleCounts.get('AGENT') ?? 0)}
           </div>
@@ -557,6 +794,9 @@ export function UsersPage() {
               onDelete={() => setConfirm({ ids: selection.selectedIds })}
             />
           ) : null}
+          {loading ? (
+            <TableSkeleton rows={8} className="p-4" />
+          ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[960px] text-left text-sm">
               <thead className="bg-surface text-xs text-text-secondary">
@@ -650,6 +890,7 @@ export function UsersPage() {
               </tbody>
             </table>
           </div>
+          )}
         </div>
       </Card>
 
@@ -745,6 +986,26 @@ export function UsersPage() {
                   <div className="mt-0.5 font-medium text-text-primary">{value}</div>
                 </div>
               ))}
+              <div className="sm:col-span-2">
+                <div className="text-xs text-text-secondary">App access (from company pack)</div>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {viewUser.role?.code === 'ADMIN' ? (
+                    <Badge color="green">All enabled modules</Badge>
+                  ) : assignableModuleOptions.length === 0 ? (
+                    <span className="text-sm text-text-secondary">—</span>
+                  ) : (
+                    assignableModuleOptions.map((opt) => {
+                      const on = Boolean(viewUser.allowedModules?.[opt.key])
+                      return (
+                        <Badge key={opt.key} color={on ? 'green' : 'gray'}>
+                          {opt.label}
+                          {on ? '' : ' (hidden)'}
+                        </Badge>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </Modal>

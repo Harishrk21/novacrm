@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { CalendarClock, Package, Shield, ShieldOff, Wrench } from 'lucide-react'
+import { CalendarClock, Package, Shield, ShieldOff, UserPlus, Wrench } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -18,11 +18,19 @@ import { useRowSelection } from '@/hooks/useRowSelection'
 import { api, ApiClientError } from '@/lib/api'
 import { assetOriginShort, isThirdPartyOrigin } from '@/lib/assetOrigin'
 import { formatDate, formatPhone } from '@/lib/utils'
+import {
+  canEnrollAmc,
+  defaultAmcEndFromStart,
+  defaultNextAmcService,
+  effectiveServicePlan,
+  isWeighingMachine,
+} from '@/lib/hmsCoverage'
 import { isCompanyAdmin } from '@/lib/roles'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 
-type PlanTab = 'AMC' | 'NON_AMC' | 'UPCOMING_SERVICE' | 'UPCOMING_AMC_RENEWAL'
+type PlanTab = 'AMC' | 'ELIGIBLE' | 'NON_AMC' | 'UPCOMING_SERVICE' | 'UPCOMING_AMC_RENEWAL'
 type OriginFilter = 'ALL' | 'SOLD_BY_US' | 'THIRD_PARTY'
 
 const SERVICE_WINDOW_DAYS = 30
@@ -97,12 +105,14 @@ export function AmcPage() {
   const [rows, setRows] = useState<AssetRow[]>([])
   const [loading, setLoading] = useState(true)
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
+  const [convertId, setConvertId] = useState<string | null>(null)
   const [busyDelete, setBusyDelete] = useState(false)
+  const [busyConvert, setBusyConvert] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await api.assets({ limit: 500 })
+      const res = await api.assets({ limit: 200 })
       setRows(res.items ?? [])
     } catch (err) {
       setRows([])
@@ -133,7 +143,26 @@ export function AmcPage() {
     [rows],
   )
 
-  const amcRows = useMemo(() => byOrigin.filter((r) => String(r.servicePlan) === 'AMC'), [byOrigin])
+  const amcRows = useMemo(
+    () =>
+      byOrigin.filter(
+        (r) => String(r.servicePlan) === 'AMC' && isWeighingMachine(r.machineType ? String(r.machineType) : null),
+      ),
+    [byOrigin],
+  )
+  const eligibleRows = useMemo(
+    () =>
+      byOrigin.filter(
+        (r) =>
+          canEnrollAmc({
+            machineType: r.machineType ? String(r.machineType) : null,
+            servicePlan: r.servicePlan ? String(r.servicePlan) : null,
+            warrantyEndDate: r.warrantyEndDate ? String(r.warrantyEndDate) : null,
+            amcEndDate: r.amcEndDate ? String(r.amcEndDate) : null,
+          }).ok,
+      ),
+    [byOrigin],
+  )
   const nonAmcRows = useMemo(() => byOrigin.filter((r) => String(r.servicePlan) !== 'AMC'), [byOrigin])
 
   const upcomingServiceRows = useMemo(() => {
@@ -154,11 +183,13 @@ export function AmcPage() {
   const list: AssetRow[] =
     tab === 'AMC'
       ? amcRows
-      : tab === 'NON_AMC'
-        ? nonAmcRows
-        : tab === 'UPCOMING_SERVICE'
-          ? upcomingServiceRows.map((x) => x.row)
-          : upcomingAmcRenewalRows.map((x) => x.row)
+      : tab === 'ELIGIBLE'
+        ? eligibleRows
+        : tab === 'NON_AMC'
+          ? nonAmcRows
+          : tab === 'UPCOMING_SERVICE'
+            ? upcomingServiceRows.map((x) => x.row)
+            : upcomingAmcRenewalRows.map((x) => x.row)
 
   const ids = useMemo(() => list.map((i) => String(i.id)), [list])
   const selection = useRowSelection(ids)
@@ -166,11 +197,36 @@ export function AmcPage() {
   const tableHeaders =
     tab === 'AMC'
       ? ['Customer', 'Machine', 'Origin', 'AMC start', 'AMC end', 'Next service', 'Actions']
-      : tab === 'NON_AMC'
-        ? ['Customer', 'Machine', 'Origin', 'Stamping', 'Next due', 'Plan notes', 'Actions']
-        : tab === 'UPCOMING_SERVICE'
-          ? ['Customer', 'Machine', 'Service due', 'Days left', 'Plan', 'Stamping', 'Phone', 'Actions']
-          : ['Customer', 'Machine', 'AMC ends', 'Days left', 'AMC period', 'Next service', 'Actions']
+      : tab === 'ELIGIBLE'
+        ? ['Customer', 'Machine', 'Origin', 'Coverage', 'GC / stamp till', 'Why eligible', 'Actions']
+        : tab === 'NON_AMC'
+          ? ['Customer', 'Machine', 'Origin', 'Stamping', 'Next due', 'Plan', 'Actions']
+          : tab === 'UPCOMING_SERVICE'
+            ? ['Customer', 'Machine', 'Service due', 'Days left', 'Plan', 'Stamping', 'Phone', 'Actions']
+            : ['Customer', 'Machine', 'AMC ends', 'Days left', 'AMC period', 'Next service', 'Actions']
+
+  async function convertToAmc(assetId: string) {
+    const start = new Date().toISOString().slice(0, 10)
+    setBusyConvert(true)
+    try {
+      await api.updateAsset(assetId, {
+        servicePlan: 'AMC',
+        amcStartDate: start,
+        amcEndDate: defaultAmcEndFromStart(start),
+        nextServiceDueDate: defaultNextAmcService(start),
+      })
+      addToast({ type: 'success', message: 'Converted to AMC (1 year)' })
+      setConvertId(null)
+      await load()
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not convert to AMC',
+      })
+    } finally {
+      setBusyConvert(false)
+    }
+  }
 
   async function runDelete(deleteIds: string[]) {
     setBusyDelete(true)
@@ -198,7 +254,16 @@ export function AmcPage() {
     const due = daysUntil(a.nextDueDate ? String(a.nextDueDate) : null)
     const amcEnd = daysUntil(a.amcEndDate ? String(a.amcEndDate) : null)
     const outside = isThirdPartyOrigin(a.origin ? String(a.origin) : null)
-    const plan = String(a.servicePlan) === 'AMC' ? 'AMC' : 'Non-AMC'
+    const plan = effectiveServicePlan({
+      servicePlan: a.servicePlan ? String(a.servicePlan) : null,
+      warrantyEndDate: a.warrantyEndDate ? String(a.warrantyEndDate) : null,
+    })
+    const enroll = canEnrollAmc({
+      machineType: a.machineType ? String(a.machineType) : null,
+      servicePlan: a.servicePlan ? String(a.servicePlan) : null,
+      warrantyEndDate: a.warrantyEndDate ? String(a.warrantyEndDate) : null,
+      amcEndDate: a.amcEndDate ? String(a.amcEndDate) : null,
+    })
 
     if (tab === 'AMC') {
       return (
@@ -223,6 +288,28 @@ export function AmcPage() {
       )
     }
 
+    if (tab === 'ELIGIBLE') {
+      return (
+        <>
+          <td className="px-4 py-3">{contactCell(a)}</td>
+          <td className="px-4 py-3">{machineCell(a)}</td>
+          <td className="px-4 py-3">
+            <Badge color={outside ? 'amber' : 'blue'}>{assetOriginShort(a.origin ? String(a.origin) : null)}</Badge>
+          </td>
+          <td className="px-4 py-3">
+            <Badge color={plan === 'NGC' ? 'gray' : 'green'}>{plan}</Badge>
+          </td>
+          <td className="px-4 py-3 text-xs">
+            <div>GC {a.warrantyEndDate ? formatDate(String(a.warrantyEndDate)) : '—'}</div>
+            <div className="text-text-secondary">
+              Stamp {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
+            </div>
+          </td>
+          <td className="max-w-[220px] px-4 py-3 text-xs text-text-secondary">{enroll.reason}</td>
+        </>
+      )
+    }
+
     if (tab === 'NON_AMC') {
       return (
         <>
@@ -236,7 +323,9 @@ export function AmcPage() {
             {a.nextDueDate ? formatDate(String(a.nextDueDate)) : '—'}
             {due != null ? <div className={`text-xs ${daysClass(due)}`}>{daysLabel(due)}</div> : null}
           </td>
-          <td className="max-w-[200px] truncate px-4 py-3 text-text-secondary">{String(a.notes ?? '—')}</td>
+          <td className="px-4 py-3">
+            <Badge color={plan === 'GC' ? 'green' : 'gray'}>{plan === 'AMC' ? 'Non-AMC' : plan}</Badge>
+          </td>
         </>
       )
     }
@@ -255,7 +344,9 @@ export function AmcPage() {
             </Badge>
           </td>
           <td className="px-4 py-3">
-            <Badge color={plan === 'AMC' ? 'green' : 'gray'}>{plan}</Badge>
+            <Badge color={plan === 'AMC' ? 'green' : plan === 'GC' ? 'green' : 'gray'}>
+              {plan}
+            </Badge>
           </td>
           <td className="px-4 py-3">{a.stampingDate ? formatDate(String(a.stampingDate)) : '—'}</td>
           <td className="px-4 py-3">{contact?.phone ? formatPhone(String(contact.phone)) : '—'}</td>
@@ -291,9 +382,11 @@ export function AmcPage() {
       ? `No services due in ${SERVICE_WINDOW_DAYS} days`
       : tab === 'UPCOMING_AMC_RENEWAL'
         ? `No AMC renewals in ${AMC_RENEWAL_WINDOW_DAYS} days`
-        : tab === 'NON_AMC'
-          ? 'No Non-AMC machines'
-          : 'No AMC machines'
+        : tab === 'ELIGIBLE'
+          ? 'No weighing machines ready for AMC'
+          : tab === 'NON_AMC'
+            ? 'No Non-AMC machines'
+            : 'No AMC machines'
 
   return (
     <div>
@@ -306,16 +399,17 @@ export function AmcPage() {
       <Card className="mb-3 border-emerald-200/60 bg-emerald-50/40 p-4 dark:border-emerald-900/40 dark:bg-emerald-950/20">
         <p className="text-sm font-medium text-text-primary">AMC flow</p>
         <p className="mt-1 text-xs text-text-secondary">
-          Customer asks for AMC → open an <strong>Inspect for AMC</strong> / AMC visit ticket on the
-          machine → after inspection, on the customer Products tab use <strong>Enroll AMC</strong> with
-          start + end dates. Stamping is separate (engineer records stamp date on the stamping ticket).
+          AMC is <strong>weighing only</strong>. After the 1-year GC (or any existing weighing
+          customer) contact them from <strong>Convert to AMC</strong>. Other machines stay GC → NGC
+          with no AMC. Stamping is separate (1 year on weighing, quarters A–D).
         </p>
       </Card>
 
       <div className="mb-3 flex flex-wrap gap-2">
         {[
           { label: 'AMC', value: amcRows.length, icon: Shield },
-          { label: 'Non-AMC', value: nonAmcRows.length, icon: ShieldOff },
+          { label: 'Convert to AMC', value: eligibleRows.length, icon: UserPlus },
+          { label: 'Non-AMC / NGC', value: nonAmcRows.length, icon: ShieldOff },
           { label: 'Upcoming service', value: upcomingServiceRows.length, icon: Wrench },
           { label: 'AMC renewal', value: upcomingAmcRenewalRows.length, icon: CalendarClock },
         ].map((card) => (
@@ -356,7 +450,8 @@ export function AmcPage() {
       <PageTabs
         tabs={[
           { id: 'AMC', label: 'AMC', count: amcRows.length },
-          { id: 'NON_AMC', label: 'Non-AMC', count: nonAmcRows.length },
+          { id: 'ELIGIBLE', label: 'Convert to AMC', count: eligibleRows.length },
+          { id: 'NON_AMC', label: 'NGC / other', count: nonAmcRows.length },
           { id: 'UPCOMING_SERVICE', label: 'Upcoming services', count: upcomingServiceRows.length },
           { id: 'UPCOMING_AMC_RENEWAL', label: 'Upcoming AMC renewal', count: upcomingAmcRenewalRows.length },
         ]}
@@ -365,7 +460,7 @@ export function AmcPage() {
       />
 
       {loading ? (
-        <Card className="mt-4 p-6 text-sm text-text-secondary">Loading machines…</Card>
+        <div className="mt-4"><TableSkeleton rows={7} /></div>
       ) : list.length === 0 ? (
         <Card className="mt-4">
           <EmptyState
@@ -431,6 +526,15 @@ export function AmcPage() {
                               disabled={busyDelete}
                               onClick={() => setConfirm({ ids: [id] })}
                             />
+                            {tab === 'ELIGIBLE' ? (
+                              <Button
+                                size="sm"
+                                disabled={busyConvert}
+                                onClick={() => setConvertId(id)}
+                              >
+                                Convert to AMC
+                              </Button>
+                            ) : null}
                             <Button
                               size="sm"
                               variant="outline"
@@ -466,6 +570,16 @@ export function AmcPage() {
             ? 'This machine will be permanently removed.'
             : 'Selected machines will be permanently removed.'
         }
+      />
+      <ConfirmModal
+        open={Boolean(convertId)}
+        onClose={() => !busyConvert && setConvertId(null)}
+        onConfirm={() => {
+          if (convertId) void convertToAmc(convertId)
+        }}
+        title="Convert to AMC?"
+        body="Starts a 1-year AMC on this weighing machine (service every 6 months; parts charged). Existing customers can be converted after GC or if they already have a weighing unit."
+        confirmLabel={busyConvert ? 'Saving…' : 'Convert to AMC'}
       />
     </div>
   )

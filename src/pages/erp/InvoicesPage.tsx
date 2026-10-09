@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useSearchParams } from 'react-router-dom'
 import { Download, Eye, Plus, Trash2 } from 'lucide-react'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -18,6 +18,9 @@ import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { AiAssistCard } from '@/components/ai/AiAssistCard'
 import { WhatsAppSendConfirm, type WhatsAppConfirmPayload } from '@/components/whatsapp/WhatsAppSendConfirm'
+import { RequisitionsPanel } from '@/components/sales/RequisitionsPanel'
+import { can } from '@/lib/permissions'
+import { useAuthStore } from '@/store/authStore'
 import {
   HMS_FAMILY_OPTIONS,
   familyByCode,
@@ -52,8 +55,17 @@ type StockUnitOption = {
   productId: string
   serialNo: string
   status: string
+  hmsUniqId?: string | null
   stampingDate?: string | null
   warehouse?: { name?: string } | null
+}
+
+type SaleUnitSummary = {
+  productId: string
+  productName: string
+  stockUnitId: string
+  serialNo: string
+  hmsUniqId: string | null
 }
 
 type InvoiceDetail = Record<string, unknown> & {
@@ -300,10 +312,13 @@ export function InvoicesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const t = DEFAULT_TIPS['erp.invoices'] ?? {
     title: 'Proforma invoices',
-    body: 'CRM proforma only — final GST bills live in Tally. Pick customer → product → serial; create marks serial sold.',
+    body: 'CRM proforma only — final GST in Tally. After stock reduce, open Create proforma from the lead — serials are already locked.',
     tipType: 'TIP' as const,
   }
   const addToast = useUIStore((s) => s.addToast)
+  const authUser = useAuthStore((s) => s.user)
+  const canFulfillRequisitions = can(authUser?.role, 'requisitions:fulfill')
+  const releaseFocus = searchParams.get('queue') === 'release'
   const [items, setItems] = useState<Record<string, unknown>[]>([])
   const [accounts, setAccounts] = useState<
     Array<{ id: string; name: string; city?: string; state?: string; phone?: string; email?: string; gstin?: string }>
@@ -360,6 +375,15 @@ export function InvoicesPage() {
     poNumber: '',
     billingAddress: '',
   })
+  /** Linked finished sale — locks serials (already reduced); only price/notes editable */
+  const [saleLink, setSaleLink] = useState<{
+    leadId: string
+    requisitionId: string | null
+    reqNumber: string | null
+    customerName: string | null
+    units: SaleUnitSummary[]
+    saleDcNo: string | null
+  } | null>(null)
   const [lines, setLines] = useState<LineDraft[]>([newLine()])
 
   async function ensureAccountForContact(contact: ContactPick): Promise<string> {
@@ -610,8 +634,8 @@ export function InvoicesPage() {
         api.lookups(),
         api.accounts({ limit: 100 }),
         api.myTenant(),
-        api.stockUnits({ status: 'IN_STOCK', limit: 500 }),
-        api.stockUnits({ status: 'DEMO', limit: 500 }),
+        api.stockUnits({ status: 'IN_STOCK', limit: 200 }),
+        api.stockUnits({ status: 'DEMO', limit: 200 }),
       ])
       setItems(inv.items ?? [])
       setAccounts(
@@ -641,6 +665,7 @@ export function InvoicesPage() {
         productId: String(u.productId),
         serialNo: String(u.serialNo),
         status: String(u.status),
+        hmsUniqId: u.hmsUniqId ? String(u.hmsUniqId) : null,
         stampingDate: (u.stampingDate as string | null) ?? null,
         warehouse: (u.warehouse as { name?: string } | null) ?? null,
       })
@@ -714,12 +739,26 @@ export function InvoicesPage() {
     const contactId = searchParams.get('contactId') || ''
     const productId = searchParams.get('productId') || ''
     const serialNo = searchParams.get('serialNo') || ''
+    const stockUnitId = searchParams.get('stockUnitId') || ''
     const unitPrice = searchParams.get('unitPrice') || ''
     const taxPercent = searchParams.get('taxPercent') || ''
     const open = searchParams.get('open')
     const type = searchParams.get('type') || ''
     const ticketId = searchParams.get('ticketId') || ''
-    if (!open && !accountId && !contactId && !productId && !ticketId) return
+    const leadId = searchParams.get('leadId') || ''
+    const requisitionId = searchParams.get('requisitionId') || ''
+    const fromSale = searchParams.get('fromSale') === '1'
+    if (
+      !open &&
+      !accountId &&
+      !contactId &&
+      !productId &&
+      !ticketId &&
+      !leadId &&
+      !requisitionId
+    ) {
+      return
+    }
 
     if (open === 'upload') {
       setTab('upload')
@@ -744,7 +783,215 @@ export function InvoicesPage() {
     const shouldOpen = open === '1' || open === 'create'
     if (type === 'service' || ticketId) {
       setInvoiceKind('SERVICE')
+    } else {
+      setInvoiceKind('SALES')
     }
+
+    /** Prefill from finished sale (lead + requisition release lines) */
+    if (fromSale || leadId || requisitionId) {
+      void (async () => {
+        try {
+          setTab('create')
+          setInvoiceKind('SALES')
+          let req: Record<string, unknown> | null = null
+          if (requisitionId) {
+            req = await api.getRequisition(requisitionId)
+          } else if (leadId) {
+            req = await api.getRequisitionByLead(leadId)
+          }
+          const lead = leadId ? await api.getLead(leadId) : null
+          const lcf =
+            lead?.customFields && typeof lead.customFields === 'object'
+              ? (lead.customFields as Record<string, unknown>)
+              : {}
+          const reqCf =
+            req?.customFields && typeof req.customFields === 'object'
+              ? (req.customFields as Record<string, unknown>)
+              : {}
+          const releaseLines = Array.isArray(reqCf.releaseLines)
+            ? (reqCf.releaseLines as Array<Record<string, unknown>>)
+            : []
+
+          const resolvedContactId =
+            contactId ||
+            String(lead?.convertedContactId ?? lcf.contact_id ?? req?.contactId ?? '')
+          let customerName: string | null = lead?.name ? String(lead.name) : null
+          if (resolvedContactId) {
+            const row = await api.getContact(resolvedContactId)
+            customerName = String(row.name)
+            const pick: ContactPick = {
+              id: String(row.id),
+              name: String(row.name),
+              customerCode: row.customerCode ? String(row.customerCode) : null,
+              phone: row.phone ? String(row.phone) : null,
+              mobile: row.mobile ? String(row.mobile) : null,
+              accountId: row.accountId ? String(row.accountId) : accountId || null,
+              email: row.email ? String(row.email) : null,
+            }
+            await onPickInvoiceContact(pick)
+          }
+
+          const reqNumber = req?.reqNumber ? String(req.reqNumber) : null
+          const saleTotal = Number(lcf.salePaymentTotal ?? lcf.budget ?? 0)
+          const advance = Number(req?.advanceAmount ?? lcf.saleAdvanceAmount ?? 0)
+          const noteBits = [
+            reqNumber ? `Sale ${reqNumber}` : 'Sale proforma',
+            lead?.name ? String(lead.name) : null,
+            saleTotal > 0 ? `Agreed ₹${saleTotal.toLocaleString('en-IN')}` : null,
+            advance > 0 ? `Advance ₹${advance.toLocaleString('en-IN')}` : null,
+            req?.paymentNotes ? String(req.paymentNotes) : null,
+          ].filter(Boolean)
+          setForm((f) => ({
+            ...f,
+            notes: noteBits.join(' · '),
+            poNumber: reqNumber || f.poNumber,
+          }))
+
+          // Load already-SOLD units from this sale into a local pool (state would be stale mid-effect)
+          const unitIds = [
+            ...releaseLines.map((r) => String(r.stockUnitId ?? '')).filter(Boolean),
+            stockUnitId,
+            req?.stockUnitId ? String(req.stockUnitId) : '',
+          ].filter(Boolean)
+          const localUnits: StockUnitOption[] = [...stockUnits]
+          for (const id of [...new Set(unitIds)]) {
+            if (localUnits.some((u) => u.id === id)) continue
+            try {
+              const u = await api.getStockUnit(id)
+              localUnits.push({
+                id: String(u.id),
+                productId: String(u.productId),
+                serialNo: String(u.serialNo ?? ''),
+                status: String(u.status ?? 'SOLD'),
+                hmsUniqId: u.hmsUniqId ? String(u.hmsUniqId) : null,
+                stampingDate: u.stampingDate ? String(u.stampingDate) : null,
+                warehouse: u.warehouse
+                  ? { name: String((u.warehouse as { name?: string }).name ?? '') }
+                  : null,
+              })
+            } catch {
+              /* skip */
+            }
+          }
+          setStockUnits((prev) => {
+            const seen = new Set(prev.map((p) => p.id))
+            return [...prev, ...localUnits.filter((s) => !seen.has(s.id))]
+          })
+
+          const buildLine = (
+            pid: string,
+            serial: string,
+            unitId: string,
+            priceHint?: string,
+            label?: string,
+            hmsUniqId?: string | null,
+          ): LineDraft => {
+            const p = products.find((x) => x.id === pid)
+            const meta = productCatalogMeta(p?.attributes)
+            const match =
+              (unitId && localUnits.find((u) => u.id === unitId)) ||
+              (serial &&
+                localUnits.find(
+                  (u) =>
+                    (!pid || u.productId === pid) &&
+                    u.serialNo.toUpperCase() === serial.toUpperCase(),
+                ))
+            const sn = match?.serialNo ?? serial
+            const uniq = hmsUniqId || match?.hmsUniqId || null
+            const line = newLine()
+            line.familyCode = meta.familyCode
+            line.industryCode = meta.industryCode
+            line.productId = pid || match?.productId || ''
+            line.stockUnitId = match?.id ?? unitId
+            line.serialNo = sn
+            const name = label || p?.name || 'Product'
+            const sku = p?.sku ? `${p.sku} — ` : ''
+            line.description = [
+              `${sku}${name}`.trim(),
+              sn ? `S/N ${sn}` : null,
+              uniq ? `Uniq ${uniq}` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')
+            const perUnit =
+              priceHint ||
+              (saleTotal > 0 && releaseLines.length
+                ? String(Math.round((saleTotal / Math.max(1, releaseLines.length)) * 100) / 100)
+                : '') ||
+              (p ? String(p.salePrice) : '')
+            line.unitPrice = perUnit
+            line.taxPercent = taxPercent || (p ? String(p.taxPercent) : '18')
+            line.quantity = '1'
+            return line
+          }
+
+          const unitSummaries: SaleUnitSummary[] = []
+          let nextLines: LineDraft[] = []
+          if (releaseLines.length) {
+            nextLines = releaseLines.map((r) => {
+              const pid = String(r.productId ?? req?.productId ?? productId ?? '')
+              const sn = String(r.serialNo ?? '')
+              const uid = String(r.stockUnitId ?? '')
+              const uniq = r.hmsUniqId ? String(r.hmsUniqId) : null
+              const label = String(r.label ?? '')
+              unitSummaries.push({
+                productId: pid,
+                productName: label || products.find((p) => p.id === pid)?.name || 'Machine',
+                stockUnitId: uid,
+                serialNo: sn,
+                hmsUniqId: uniq,
+              })
+              return buildLine(pid, sn, uid, unitPrice || undefined, label, uniq)
+            })
+          } else if (productId || stockUnitId || serialNo || req?.productId) {
+            const pid = productId || String(req?.productId ?? '')
+            const sn = serialNo || String(req?.serialNo ?? '')
+            const uid = stockUnitId || String(req?.stockUnitId ?? '')
+            const uniq =
+              localUnits.find((u) => u.id === uid)?.hmsUniqId ??
+              (reqCf.hmsUniqId ? String(reqCf.hmsUniqId) : null)
+            unitSummaries.push({
+              productId: pid,
+              productName:
+                products.find((p) => p.id === pid)?.name || String(req?.productName ?? 'Machine'),
+              stockUnitId: uid,
+              serialNo: sn,
+              hmsUniqId: uniq,
+            })
+            nextLines = [buildLine(pid, sn, uid, unitPrice || undefined, undefined, uniq)]
+          }
+          if (nextLines.length) setLines(nextLines)
+
+          setSaleLink({
+            leadId: leadId || String(req?.leadId ?? ''),
+            requisitionId: req?.id ? String(req.id) : requisitionId || null,
+            reqNumber,
+            customerName,
+            units: unitSummaries,
+            saleDcNo:
+              (reqCf.saleDcNo ? String(reqCf.saleDcNo) : null) ||
+              (lcf.saleDcNo ? String(lcf.saleDcNo) : null) ||
+              null,
+          })
+
+          addToast({
+            type: 'info',
+            title: 'Sale loaded',
+            message:
+              'Units already reduced from stock — review price & create proforma (serials are locked)',
+          })
+        } catch (err) {
+          addToast({
+            type: 'error',
+            message: err instanceof ApiClientError ? err.message : 'Could not load sale for proforma',
+          })
+        } finally {
+          setSearchParams({}, { replace: true })
+        }
+      })()
+      return
+    }
+
     setForm((f) => ({
       ...f,
       accountId: accountId || f.accountId,
@@ -770,14 +1017,15 @@ export function InvoicesPage() {
       const p = products.find((x) => x.id === productId)
       const meta = productCatalogMeta(p?.attributes)
       const matchUnit =
-        serialNo && stockUnits.length
+        (stockUnitId && stockUnits.find((u) => u.id === stockUnitId)) ||
+        (serialNo && stockUnits.length
           ? stockUnits.find((u) => u.productId === productId && u.serialNo === serialNo)
-          : undefined
+          : undefined)
       const line = newLine()
       line.familyCode = meta.familyCode
       line.industryCode = meta.industryCode
       line.productId = productId
-      line.stockUnitId = matchUnit?.id ?? ''
+      line.stockUnitId = matchUnit?.id ?? stockUnitId
       line.serialNo = matchUnit?.serialNo ?? serialNo
       line.description = line.serialNo
         ? `${p?.sku ?? ''} — ${p?.name ?? 'Product'} · S/N ${line.serialNo}`.trim()
@@ -812,12 +1060,19 @@ export function InvoicesPage() {
   function serialOptionsForLine(line: LineDraft) {
     return stockUnits
       .filter((u) => u.productId === line.productId)
-      .filter((u) => u.id === line.stockUnitId || !usedSerialIds.has(u.id))
+      .filter((u) => {
+        // Allow already-SOLD units when this line is linked from a finished sale
+        if (u.id === line.stockUnitId) return true
+        if (usedSerialIds.has(u.id)) return false
+        return u.status === 'IN_STOCK' || u.status === 'DEMO' || Boolean(saleLink)
+      })
       .map((u) => ({
         value: u.id,
         label: `${u.serialNo}${u.status === 'DEMO' ? ' · demo' : ''}${
-          u.warehouse?.name ? ` · ${u.warehouse.name}` : ''
-        }${u.stampingDate ? ` · stamped ${formatDate(String(u.stampingDate))}` : ''}`,
+          u.status === 'SOLD' ? ' · sold' : ''
+        }${u.warehouse?.name ? ` · ${u.warehouse.name}` : ''}${
+          u.stampingDate ? ` · stamped ${formatDate(String(u.stampingDate))}` : ''
+        }`,
       }))
   }
 
@@ -936,6 +1191,17 @@ export function InvoicesPage() {
         if (Number(line.unitPrice) < 0 || line.unitPrice === '')
           next[`line-${idx}-price`] = `Line ${idx + 1}: unit price required`
       })
+    } else if (saleLink) {
+      // From finished sale — serials already reduced; only require product + locked unit + price
+      lines.forEach((line, idx) => {
+        if (!line.productId) next[`line-${idx}-product`] = `Line ${idx + 1}: missing product from sale`
+        if (!line.stockUnitId) next[`line-${idx}-serial`] = `Line ${idx + 1}: missing sold serial from sale`
+        if (!(Number(line.quantity) > 0)) next[`line-${idx}-qty`] = `Line ${idx + 1}: quantity must be > 0`
+        if (Number(line.unitPrice) < 0 || line.unitPrice === '')
+          next[`line-${idx}-price`] = `Line ${idx + 1}: unit price required`
+        const tax = Number(line.taxPercent)
+        if (Number.isNaN(tax) || tax < 0 || tax > 100) next[`line-${idx}-tax`] = `Line ${idx + 1}: tax 0–100`
+      })
     } else {
       lines.forEach((line, idx) => {
         if (!line.familyCode) next[`line-${idx}-family`] = `Line ${idx + 1}: select a product family`
@@ -1042,6 +1308,11 @@ export function InvoicesPage() {
       addToast({ type: 'error', message: Object.values(next)[0] })
       return
     }
+    // From finished sale: create immediately (serials already reduced). Optional WA after.
+    if (saleLink) {
+      await doCreateInvoice(false)
+      return
+    }
     if (invoiceKind === 'SALES' && form.contactId) {
       setWaPending({
         payload: {
@@ -1083,7 +1354,16 @@ export function InvoicesPage() {
               ticketId: serviceTicketId,
               ticketNo: ticketMeta?.ticketNo ?? null,
             }
-          : { source: 'SALES_PROFORMA' }),
+          : {
+              source: 'SALES_PROFORMA',
+              ...(saleLink
+                ? {
+                    salesRequisitionId: saleLink.requisitionId,
+                    salesReqNumber: saleLink.reqNumber,
+                    saleLeadId: saleLink.leadId,
+                  }
+                : {}),
+            }),
       }
       const created = (await api.createInvoice({
         accountId: form.accountId,
@@ -1095,6 +1375,9 @@ export function InvoicesPage() {
         notes: form.notes || null,
         discountTotal: Number(form.discountTotal) || 0,
         customFields,
+        ...(saleLink?.requisitionId
+          ? { requisitionId: saleLink.requisitionId, _requisitionId: saleLink.requisitionId }
+          : {}),
         sendWhatsApp,
         lines: lines.map((l) => ({
           productId: invoiceKind === 'SERVICE' ? null : l.productId || null,
@@ -1109,6 +1392,7 @@ export function InvoicesPage() {
       setLines([newLine()])
       setServiceTicketId('')
       setInvoiceKind('SALES')
+      setSaleLink(null)
       setForm((f) => ({
         ...f,
         accountId: '',
@@ -1126,7 +1410,9 @@ export function InvoicesPage() {
         message:
           invoiceKind === 'SERVICE'
             ? 'Service invoice created and linked to the ticket'
-            : 'Proforma created — serial marked sold & stock updated',
+            : saleLink
+              ? 'Proforma created for this sale — linked to stock release'
+              : 'Proforma created',
       })
       await load()
       setDetail(created)
@@ -1244,6 +1530,11 @@ export function InvoicesPage() {
     })
   }
 
+  // Warehouse release queue is a separate page (no accounts:view required)
+  if (releaseFocus) {
+    return <Navigate to="/erp/releases" replace />
+  }
+
   return (
     <div>
       <PageHeader
@@ -1252,6 +1543,20 @@ export function InvoicesPage() {
         breadcrumbs={[{ label: 'ERP' }, { label: 'Proforma invoices' }]}
       />
       <FeatureTip title={t.title} body={t.body} tipType={t.tipType} />
+
+      {canFulfillRequisitions ? (
+        <Card className="mb-4 flex flex-wrap items-center justify-between gap-3 border-accent-purple/30 bg-accent-purple/5 p-4">
+          <div>
+            <p className="text-sm font-semibold text-text-primary">Sales waiting for stock release?</p>
+            <p className="mt-0.5 text-xs text-text-secondary">
+              Open Approved releases to stamp and reduce stock. Proformas stay with the sales team.
+            </p>
+          </div>
+          <Link to="/erp/releases">
+            <Button size="sm">Open Approved releases</Button>
+          </Link>
+        </Card>
+      ) : null}
 
       <PageTabs
         accent="theme"
@@ -1634,10 +1939,14 @@ export function InvoicesPage() {
           accent="sky"
           eyebrow="Billing"
           title={invoiceKind === 'SERVICE' ? 'New service invoice' : 'New sales proforma'}
+          width={760}
+          storageKey="nova.drawer.invoices.create"
           subtitle={
             invoiceKind === 'SERVICE'
               ? 'Pick customer → select closed/resolved service ticket → lines autofill from ticket amounts. Final GST still goes in Tally.'
-              : 'Select a customer and products. This is a CRM proforma — final GST invoice is raised in Tally.'
+              : saleLink
+                ? 'From finished sale — serials already reduced at stock-out. Review rates and create proforma (GST bill stays in Tally).'
+                : 'Select a customer and products. This is a CRM proforma — final GST invoice is raised in Tally.'
           }
           onClose={() => setTab('list')}
           footer={
@@ -1702,24 +2011,66 @@ export function InvoicesPage() {
             />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <Select
-              label="Invoice type *"
-              value={invoiceKind}
-              onChange={(e) => {
-                const kind = e.target.value as 'SALES' | 'SERVICE'
-                setInvoiceKind(kind)
-                setServiceTicketId('')
-                setLines([newLine()])
-                if (kind === 'SERVICE' && form.contactId) {
-                  void loadServiceTicketsForContact(form.contactId)
-                }
-              }}
-              options={[
-                { value: 'SALES', label: 'Sales — new machine / product proforma' },
-                { value: 'SERVICE', label: 'Service — from service ticket' },
-              ]}
-              className="sm:col-span-2"
-            />
+            {saleLink ? (
+              <div className="sm:col-span-2 rounded-lg border border-emerald-200/80 bg-emerald-50/50 px-4 py-3 dark:border-emerald-900/50 dark:bg-emerald-950/30">
+                <div className="text-sm font-semibold text-emerald-950 dark:text-emerald-100">
+                  Creating proforma from finished sale
+                  {saleLink.reqNumber ? ` · ${saleLink.reqNumber}` : ''}
+                </div>
+                <p className="mt-0.5 text-xs text-emerald-900/80 dark:text-emerald-200/80">
+                  Stock was already reduced and{saleLink.saleDcNo ? ` DC ${saleLink.saleDcNo} issued` : ' delivery challan recorded'}.
+                  Serials below are locked — do not pick stock again.
+                </p>
+                {saleLink.customerName ? (
+                  <p className="mt-1 text-xs font-medium text-emerald-950 dark:text-emerald-100">
+                    Customer: {saleLink.customerName}
+                  </p>
+                ) : null}
+                {saleLink.units.length ? (
+                  <ul className="mt-2 space-y-1 text-xs text-emerald-950 dark:text-emerald-100">
+                    {saleLink.units.map((u) => (
+                      <li
+                        key={u.stockUnitId || u.serialNo}
+                        className="flex flex-wrap gap-x-3 gap-y-0.5 rounded-md bg-white/60 px-2 py-1.5 font-mono dark:bg-black/20"
+                      >
+                        <span className="font-sans font-semibold">{u.productName}</span>
+                        {u.serialNo ? <span>S/N {u.serialNo}</span> : null}
+                        {u.hmsUniqId ? <span>Uniq {u.hmsUniqId}</span> : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {saleLink.leadId ? (
+                  <p className="mt-2 text-xs">
+                    <Link
+                      to={`/sale-tracking/${saleLink.leadId}`}
+                      className="font-semibold text-accent-blue hover:underline"
+                    >
+                      Open lead overview
+                    </Link>
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <Select
+                label="Invoice type *"
+                value={invoiceKind}
+                onChange={(e) => {
+                  const kind = e.target.value as 'SALES' | 'SERVICE'
+                  setInvoiceKind(kind)
+                  setServiceTicketId('')
+                  setLines([newLine()])
+                  if (kind === 'SERVICE' && form.contactId) {
+                    void loadServiceTicketsForContact(form.contactId)
+                  }
+                }}
+                options={[
+                  { value: 'SALES', label: 'Sales — new machine / product proforma' },
+                  { value: 'SERVICE', label: 'Service — from service ticket' },
+                ]}
+                className="sm:col-span-2"
+              />
+            )}
             <div className="sm:col-span-2">
               <ContactPicker
                 label="Customer / shop *"
@@ -1732,6 +2083,11 @@ export function InvoicesPage() {
               {form.accountId ? (
                 <p className="mt-1 text-xs text-text-secondary">
                   Billing account: {accountName[form.accountId] ?? form.accountId}
+                </p>
+              ) : null}
+              {saleLink ? (
+                <p className="mt-1 text-xs text-text-secondary">
+                  Customer locked from the sale — change only if billing entity must differ.
                 </p>
               ) : null}
             </div>
@@ -1750,7 +2106,7 @@ export function InvoicesPage() {
                     {
                       value: '',
                       label: loadingTickets
-                        ? 'Loading tickets…'
+                        ? 'Loading…'
                         : !form.contactId
                           ? 'Pick a customer first'
                           : serviceTickets.length === 0
@@ -1837,22 +2193,82 @@ export function InvoicesPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-semibold">
-                    {invoiceKind === 'SERVICE' ? 'Service charge lines' : 'Product lines'}
+                    {invoiceKind === 'SERVICE'
+                      ? 'Service charge lines'
+                      : saleLink
+                        ? 'Sold units (from stock reduce)'
+                        : 'Product lines'}
                   </h3>
                   <p className="text-xs text-text-secondary">
                     {invoiceKind === 'SERVICE'
                       ? 'Autofilled from the selected ticket (service + OD). You can adjust amounts before create.'
-                      : 'Product family → industry (if weighing) → machine → stock serial. Rate & GST fill from catalog.'}
+                      : saleLink
+                        ? 'Serial / Uniq ID already picked at reduce-stock. Edit rate & GST only.'
+                        : 'Product family → industry (if weighing) → machine → stock serial. Rate & GST fill from catalog.'}
                   </p>
                 </div>
-                <Button type="button" variant="outline" size="sm" onClick={() => setLines((prev) => [...prev, newLine()])}>
-                  <Plus size={14} /> {invoiceKind === 'SERVICE' ? 'Add line' : 'Add product'}
-                </Button>
+                {!saleLink ? (
+                  <Button type="button" variant="outline" size="sm" onClick={() => setLines((prev) => [...prev, newLine()])}>
+                    <Plus size={14} /> {invoiceKind === 'SERVICE' ? 'Add line' : 'Add product'}
+                  </Button>
+                ) : null}
               </div>
               {lines.map((line, idx) => {
                 const serialOpts = serialOptionsForLine(line)
                 const machineOpts = productsForLine(line)
                 const needsIndustry = lineNeedsIndustry(line)
+                if (saleLink && invoiceKind === 'SALES') {
+                  const summary = saleLink.units[idx]
+                  return (
+                    <div key={line.key} className="space-y-2 rounded-md border border-emerald-100 bg-card p-3 dark:border-emerald-900/40">
+                      <div className="text-sm font-semibold text-text-primary">
+                        {summary?.productName || line.description || `Unit ${idx + 1}`}
+                      </div>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs text-text-secondary">
+                        {(summary?.serialNo || line.serialNo) ? (
+                          <span>S/N {summary?.serialNo || line.serialNo}</span>
+                        ) : null}
+                        {summary?.hmsUniqId ? <span>Uniq {summary.hmsUniqId}</span> : null}
+                        <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-sans text-[10px] font-semibold uppercase tracking-wide text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
+                          Already reduced
+                        </span>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-12">
+                        <div className="sm:col-span-2">
+                          <Input label="Qty" type="number" value={line.quantity} disabled />
+                        </div>
+                        <div className="sm:col-span-3">
+                          <Input
+                            label="Rate ₹ *"
+                            type="number"
+                            value={line.unitPrice}
+                            error={errors[`line-${idx}-price`]}
+                            onChange={(e) => updateLine(line.key, { unitPrice: e.target.value })}
+                          />
+                        </div>
+                        <div className="sm:col-span-2">
+                          <Input
+                            label="GST %"
+                            type="number"
+                            value={line.taxPercent}
+                            error={errors[`line-${idx}-tax`]}
+                            onChange={(e) => updateLine(line.key, { taxPercent: e.target.value })}
+                          />
+                        </div>
+                        <div className="flex items-end sm:col-span-5">
+                          <div className="pb-2 text-xs font-medium tabular-nums">
+                            Line {formatCurrency(lineAmount(line).total)}
+                          </div>
+                        </div>
+                      </div>
+                      {errors[`line-${idx}-serial`] || errors[`line-${idx}-product`] ? (
+                        <p className="text-xs text-accent-red">
+                          {errors[`line-${idx}-serial`] || errors[`line-${idx}-product`]}
+                        </p>
+                      ) : null}
+                    </div>
+                  )
+                }
                 if (invoiceKind === 'SERVICE') {
                   return (
                     <div key={line.key} className="grid gap-2 rounded-md bg-card p-3 sm:grid-cols-12">

@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils'
+import { PLATFORM_LOGO_URL, PRODUCT_NAME } from '@/lib/branding'
 
 type BrandLogoProps = {
   className?: string
@@ -14,10 +15,10 @@ const heights = {
   hero: 'h-20 sm:h-24',
 } as const
 
-export function BrandLogo({ className, size = 'md', alt = 'HMS Enterprises' }: BrandLogoProps) {
+export function BrandLogo({ className, size = 'md', alt = PRODUCT_NAME }: BrandLogoProps) {
   return (
     <img
-      src="/nova-logo.png"
+      src={PLATFORM_LOGO_URL}
       alt={alt}
       className={cn('w-auto object-contain', heights[size], className)}
       draggable={false}

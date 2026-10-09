@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Download, Eye, Package, Plus, Truck, Warehouse } from 'lucide-react'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -9,13 +9,11 @@ import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Input } from '@/components/ui/Input'
-import { PhoneInput } from '@/components/ui/PhoneInput'
 import { Modal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { toStoredIndianMobile } from '@/lib/phoneIndia'
 import { useUIStore } from '@/store/uiStore'
 
 type LineDraft = {
@@ -167,7 +165,8 @@ export function PurchaseOrdersPage() {
     tipType: 'TIP' as const,
   }
   const addToast = useUIStore((s) => s.addToast)
-  const [tab, setTab] = useState<'orders' | 'vendors' | 'create'>('orders')
+  const navigate = useNavigate()
+  const [tab, setTab] = useState<'orders' | 'create'>('orders')
   const [statusFilter, setStatusFilter] = useState('')
   const [items, setItems] = useState<Record<string, unknown>[]>([])
   const [vendors, setVendors] = useState<Vendor[]>([])
@@ -177,17 +176,6 @@ export function PurchaseOrdersPage() {
   const [warehouses, setWarehouses] = useState<Array<{ id: string; name: string }>>([])
   const [detail, setDetail] = useState<Record<string, unknown> | null>(null)
   const [detailOpen, setDetailOpen] = useState(false)
-  const [vendorForm, setVendorForm] = useState({
-    name: '',
-    phone: '',
-    email: '',
-    gstin: '',
-    paymentTerms: 'Net 30',
-    line1: '',
-    city: '',
-    state: '',
-    pincode: '',
-  })
   const [form, setForm] = useState({
     vendorId: '',
     warehouseId: '',
@@ -246,48 +234,6 @@ export function PurchaseOrdersPage() {
     }
     return { subtotal, taxTotal, grandTotal: subtotal + taxTotal }
   }, [lines])
-
-  async function saveVendor() {
-    if (!vendorForm.name.trim()) {
-      addToast({ type: 'error', message: 'Vendor name is required' })
-      return
-    }
-    setSaving(true)
-    try {
-      const row = (await api.createVendor({
-        name: vendorForm.name.trim(),
-        phone: toStoredIndianMobile(vendorForm.phone),
-        email: vendorForm.email || null,
-        gstin: vendorForm.gstin || null,
-        paymentTerms: vendorForm.paymentTerms || null,
-        address: {
-          line1: vendorForm.line1 || null,
-          city: vendorForm.city || null,
-          state: vendorForm.state || null,
-          pincode: vendorForm.pincode || null,
-        },
-      })) as Vendor
-      addToast({ type: 'success', message: 'Vendor saved' })
-      setVendorForm({
-        name: '',
-        phone: '',
-        email: '',
-        gstin: '',
-        paymentTerms: 'Net 30',
-        line1: '',
-        city: '',
-        state: '',
-        pincode: '',
-      })
-      await load()
-      setForm((f) => ({ ...f, vendorId: row.id }))
-      setTab('create')
-    } catch (err) {
-      addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Vendor failed' })
-    } finally {
-      setSaving(false)
-    }
-  }
 
   async function createPo() {
     if (!form.vendorId) {
@@ -386,9 +332,11 @@ export function PurchaseOrdersPage() {
                 <Warehouse size={16} /> Inventory
               </Button>
             </Link>
-            <Button variant="outline" onClick={() => setTab('vendors')}>
-              <Truck size={16} /> Vendors ({vendors.length})
-            </Button>
+            <Link to="/erp/suppliers">
+              <Button variant="outline">
+                <Truck size={16} /> Suppliers ({vendors.length})
+              </Button>
+            </Link>
             <Button onClick={() => setTab('create')}>
               <Plus size={16} /> New PO
             </Button>
@@ -400,10 +348,9 @@ export function PurchaseOrdersPage() {
       <PageTabs
         accent="emerald"
         active={tab}
-        onChange={(id) => setTab(id as 'orders' | 'vendors' | 'create')}
+        onChange={(id) => setTab(id as 'orders' | 'create')}
         tabs={[
           { id: 'orders', label: 'All POs', count: items.length },
-          { id: 'vendors', label: 'Vendors', count: vendors.length },
           { id: 'create', label: 'Create PO' },
         ]}
       />
@@ -438,7 +385,7 @@ export function PurchaseOrdersPage() {
               title="No purchase orders"
               subtitle="Add a vendor, then create a multi-line PO."
               actionLabel="Create PO"
-              onAction={() => setTab(vendors.length ? 'create' : 'vendors')}
+              onAction={() => setTab('create')}
             />
           ) : (
             <div className="overflow-x-auto">
@@ -514,66 +461,6 @@ export function PurchaseOrdersPage() {
         </Card>
       )}
 
-      {tab === 'vendors' && (
-        <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-          <Card padding={false}>
-            <div className="border-b border-border px-4 py-3 font-semibold">Vendor directory</div>
-            {vendors.length === 0 ? (
-              <EmptyState title="No vendors yet" subtitle="Add your first supplier on the right." />
-            ) : (
-              <table className="w-full text-left text-sm">
-                <thead className="bg-muted text-xs text-text-secondary">
-                  <tr>
-                    {['Name', 'Phone', 'GSTIN', 'Terms'].map((h) => (
-                      <th key={h} className="px-4 py-3 font-medium">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {vendors.map((v) => (
-                    <tr key={v.id} className="border-t border-border">
-                      <td className="px-4 py-3">
-                        <div className="font-medium">{v.name}</div>
-                        <div className="text-xs text-text-secondary">{v.email || '—'}</div>
-                      </td>
-                      <td className="px-4 py-3">{v.phone || '—'}</td>
-                      <td className="px-4 py-3 font-mono text-xs">{v.gstin || '—'}</td>
-                      <td className="px-4 py-3">{v.paymentTerms || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </Card>
-          <Card>
-            <h2 className="mb-3 font-semibold">Add vendor</h2>
-            <div className="grid gap-3">
-              <Input label="Vendor name *" value={vendorForm.name} onChange={(e) => setVendorForm({ ...vendorForm, name: e.target.value })} />
-              <PhoneInput
-                label="Phone"
-                value={vendorForm.phone}
-                onChange={(phone) => setVendorForm({ ...vendorForm, phone })}
-                hint="India (+91) — 10 digits"
-              />
-              <Input label="Email" value={vendorForm.email} onChange={(e) => setVendorForm({ ...vendorForm, email: e.target.value })} />
-              <Input label="GSTIN" value={vendorForm.gstin} onChange={(e) => setVendorForm({ ...vendorForm, gstin: e.target.value })} />
-              <Input label="Payment terms" value={vendorForm.paymentTerms} onChange={(e) => setVendorForm({ ...vendorForm, paymentTerms: e.target.value })} />
-              <Input label="Address" value={vendorForm.line1} onChange={(e) => setVendorForm({ ...vendorForm, line1: e.target.value })} />
-              <div className="grid grid-cols-3 gap-2">
-                <Input label="City" value={vendorForm.city} onChange={(e) => setVendorForm({ ...vendorForm, city: e.target.value })} />
-                <Input label="State" value={vendorForm.state} onChange={(e) => setVendorForm({ ...vendorForm, state: e.target.value })} />
-                <Input label="PIN" value={vendorForm.pincode} onChange={(e) => setVendorForm({ ...vendorForm, pincode: e.target.value })} />
-              </div>
-              <Button onClick={() => void saveVendor()} disabled={saving}>
-                {saving ? 'Saving…' : 'Save vendor'}
-              </Button>
-            </div>
-          </Card>
-        </div>
-      )}
-
       {tab === 'create' && (
         <FormPanel
           open
@@ -581,6 +468,8 @@ export function PurchaseOrdersPage() {
           eyebrow="Purchasing"
           title="Create purchase order"
           subtitle="Full-page PO with multiple products. After save you can print a professional PO document."
+          width={760}
+          storageKey="nova.drawer.po.create"
           onClose={() => setTab('orders')}
           footer={
             vendors.length ? (
@@ -595,10 +484,10 @@ export function PurchaseOrdersPage() {
         >
           {!vendors.length ? (
             <EmptyState
-              title="Add a vendor first"
-              subtitle="Vendors appear here after you create them."
-              actionLabel="Go to vendors"
-              onAction={() => setTab('vendors')}
+              title="Add a supplier first"
+              subtitle="Create suppliers under Inventory → Suppliers, then raise a PO."
+              actionLabel="Go to suppliers"
+              onAction={() => navigate('/erp/suppliers')}
             />
           ) : (
             <div className="space-y-4">

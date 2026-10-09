@@ -14,6 +14,8 @@ import {
   verifyMetaWebhookChallenge,
   isWhatsAppCloudConfigured,
   sendCloudText,
+  resolveTenantCloudCfg,
+  upsertTenantWhatsAppCloud,
 } from '../whatsapp/cloudApi.js'
 
 export const integrationsRouter = Router()
@@ -42,7 +44,8 @@ const webhookSchema = z.object({
 integrationsRouter.get('/whatsapp/cloud/status', authenticate, requireTenant, async (req, res, next) => {
   try {
     const tenantId = req.auth!.tenantId!
-    const status = whatsappCloudStatus()
+    const cloud = await resolveTenantCloudCfg(tenantId)
+    const status = whatsappCloudStatus(cloud)
     if (status.configured) {
       await prisma.integration.upsert({
         where: { tenantId_provider: { tenantId, provider: 'META_CLOUD' } },
@@ -52,18 +55,20 @@ integrationsRouter.get('/whatsapp/cloud/status', authenticate, requireTenant, as
           provider: 'META_CLOUD',
           status: 'CONNECTED',
           config: {
-            phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID ?? null,
-            businessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID ?? null,
-            apiVersion: process.env.WHATSAPP_API_VERSION ?? 'v21.0',
+            phoneNumberId: cloud.phoneNumberId || null,
+            businessAccountId: cloud.businessAccountId || null,
+            apiVersion: cloud.apiVersion,
+            source: cloud.source,
           },
           lastSyncedAt: new Date(),
         },
         update: {
           status: 'CONNECTED',
           config: {
-            phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID ?? null,
-            businessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID ?? null,
-            apiVersion: process.env.WHATSAPP_API_VERSION ?? 'v21.0',
+            phoneNumberId: cloud.phoneNumberId || null,
+            businessAccountId: cloud.businessAccountId || null,
+            apiVersion: cloud.apiVersion,
+            source: cloud.source,
           },
           lastSyncedAt: new Date(),
         },
@@ -78,9 +83,9 @@ integrationsRouter.get('/whatsapp/cloud/status', authenticate, requireTenant, as
       : `${proto}://${host}/api/integrations/whatsapp/cloud/webhook`
     const note = isProd
       ? publicBase
-        ? 'Production: paste this HTTPS callback in Meta WhatsApp → Configuration → Webhook, verify token must match WHATSAPP_VERIFY_TOKEN, subscribe to messages. Do not use ngrok/nginx tunnel URLs in live Meta config.'
+        ? 'Production: paste this HTTPS callback in Meta WhatsApp → Configuration → Webhook, verify token must match WHATSAPP_VERIFY_TOKEN (or your tenant verify token), subscribe to messages. Prefer per-tenant tokens via Setup → Integrations.'
         : 'Production: set PUBLIC_API_URL=https://YOUR-API.onrender.com on Render so this panel shows the correct live webhook URL for Meta.'
-      : 'Local: Meta cannot call localhost — expose HTTPS via ngrok/nginx and set PUBLIC_API_URL to that tunnel, or paste the tunnel URL into Meta. For live, use your Render API host instead.'
+      : 'Local: Meta cannot call localhost — expose HTTPS via ngrok/nginx and set PUBLIC_API_URL to that tunnel. Each tenant can store its own Cloud API token under Setup.'
     return success(res, {
       ...status,
       environment: isProd ? 'production' : 'development',
@@ -93,6 +98,40 @@ integrationsRouter.get('/whatsapp/cloud/status', authenticate, requireTenant, as
     next(e)
   }
 })
+
+const cloudConfigSchema = z.object({
+  body: z.object({
+    token: z.string().min(20),
+    phoneNumberId: z.string().min(5),
+    verifyToken: z.string().optional(),
+    businessAccountId: z.string().optional(),
+    appId: z.string().optional(),
+    appSecret: z.string().optional(),
+    apiVersion: z.string().optional(),
+  }),
+})
+
+/** Company admin: store per-tenant Meta Cloud credentials (does not share across tenants). */
+integrationsRouter.post(
+  '/whatsapp/cloud/config',
+  authenticate,
+  requireTenant,
+  validate(cloudConfigSchema),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.auth!.tenantId!
+      const row = await upsertTenantWhatsAppCloud(tenantId, req.body)
+      const cloud = await resolveTenantCloudCfg(tenantId)
+      return success(res, {
+        id: row.id,
+        status: row.status,
+        ...whatsappCloudStatus(cloud),
+      }, 'WhatsApp Cloud credentials saved for this company')
+    } catch (e) {
+      next(e)
+    }
+  },
+)
 
 /** Meta webhook verification (subscribe) */
 integrationsRouter.get('/whatsapp/cloud/webhook', (req, res) => {
@@ -206,14 +245,20 @@ integrationsRouter.post(
   requireTenant,
   async (req, res, next) => {
     try {
-      if (!isWhatsAppCloudConfigured()) {
-        throw new AppError('WhatsApp Cloud API is not configured in server .env', 400)
+      const tenantId = req.auth!.tenantId!
+      const cloud = await resolveTenantCloudCfg(tenantId)
+      if (!isWhatsAppCloudConfigured(cloud)) {
+        throw new AppError(
+          'WhatsApp Cloud API is not configured — save credentials under Setup or set server .env',
+          400,
+        )
       }
       const to = String((req.body as { to?: string })?.to ?? '').trim()
       if (!to) throw new AppError('Provide { "to": "91XXXXXXXXXX" }', 400)
       const result = await sendCloudText(
         to,
         'HMS CRM test: WhatsApp Cloud API is connected. You can create Utility templates in Meta next.',
+        { tenantId },
       )
       if (!result.ok) throw new AppError(result.error || 'Send failed', 502)
       return success(res, result, 'Test message sent')

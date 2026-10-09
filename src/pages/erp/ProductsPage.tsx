@@ -30,7 +30,8 @@ import {
   machineOptions,
   productCatalogMeta,
 } from '@/lib/hmsCatalog'
-import { productAttrs, truncateProductName, WARRANTY_MONTH_OPTIONS } from '@/lib/productCatalog'
+import { productAttrs, truncateProductName } from '@/lib/productCatalog'
+import { GC_MONTH_OPTIONS } from '@/lib/hmsCoverage'
 import { formatCurrency } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
@@ -39,12 +40,12 @@ type ProductForm = {
   industryCode: string
   machineSku: string
   customMachineName: string
+  brandName: string
+  gcApplicable: boolean
   warrantyMonths: string
+  amcApplicable: boolean
   requiresStamping: boolean
-  mrp: string
-  salePrice: string
-  purchasePrice: string
-  taxPercent: string
+  hsnCode: string
   capacity: string
   accuracy: string
   platform: string
@@ -58,12 +59,12 @@ const emptyForm = (): ProductForm => ({
   industryCode: '',
   machineSku: '',
   customMachineName: '',
+  brandName: '',
+  gcApplicable: false,
   warrantyMonths: '',
+  amcApplicable: false,
   requiresStamping: false,
-  mrp: '',
-  salePrice: '',
-  purchasePrice: '',
-  taxPercent: '18',
+  hsnCode: '',
   capacity: '',
   accuracy: '',
   platform: '',
@@ -89,20 +90,22 @@ function productToForm(p: Record<string, unknown>): ProductForm {
   const a = productAttrs(p)
   const meta = productCatalogMeta(a)
   const family = familyByCode(meta.familyCode) ? meta.familyCode : ''
+  const gcOn = Boolean(a.gcApplicable) || Boolean(a.warrantyMonths)
+  const amcOn = Boolean(a.amcApplicable)
   return {
     familyCode: family,
     industryCode: meta.industryCode || '',
     machineSku: 'CUSTOM',
     customMachineName: String(p.name ?? a.model ?? ''),
+    brandName: a.brand ? String(a.brand) : '',
+    gcApplicable: gcOn,
     warrantyMonths: a.warrantyMonths != null ? String(a.warrantyMonths) : '',
+    amcApplicable: amcOn,
     requiresStamping:
       typeof a.requiresStamping === 'boolean'
         ? Boolean(a.requiresStamping)
         : meta.catalogKind === 'WEIGHING',
-    mrp: p.mrp != null ? String(num(p.mrp)) : '',
-    salePrice: p.salePrice != null ? String(num(p.salePrice)) : '',
-    purchasePrice: p.purchasePrice != null ? String(num(p.purchasePrice)) : '',
-    taxPercent: p.taxPercent != null ? String(num(p.taxPercent)) : '18',
+    hsnCode: p.hsnSac != null ? String(p.hsnSac) : '',
     capacity: String(a.capacity ?? ''),
     accuracy: String(a.accuracy ?? ''),
     platform: String(a.platform ?? ''),
@@ -132,14 +135,18 @@ export function ProductsPage() {
   const [viewProduct, setViewProduct] = useState<Record<string, unknown> | null>(null)
   const [editProduct, setEditProduct] = useState<Record<string, unknown> | null>(null)
   const [editForm, setEditForm] = useState<ProductForm>(emptyForm)
-
+  const [brands, setBrands] = useState<Array<{ id: string; name: string }>>([])
   const [filterQ, setFilterQ] = useState('')
   const [filterFamily, setFilterFamily] = useState('')
   const [filterIndustry, setFilterIndustry] = useState('')
 
   const load = useCallback(async () => {
     try {
-      const [products, lookups] = await Promise.all([api.products({ limit: 500 }), api.lookups()])
+      const [products, lookups, brandRows] = await Promise.all([
+        api.products({ limit: 200 }),
+        api.lookups(),
+        api.inventoryBrands().catch(() => [] as Array<Record<string, unknown>>),
+      ])
       setItems(products.items ?? [])
       setCategories(
         (lookups.categories ?? []).map((c) => ({
@@ -147,6 +154,12 @@ export function ProductsPage() {
           name: String(c.name),
           code: c.code != null ? String(c.code) : null,
           parentId: (c as { parentId?: string | null }).parentId ?? null,
+        })),
+      )
+      setBrands(
+        (Array.isArray(brandRows) ? brandRows : []).map((b) => ({
+          id: String(b.id),
+          name: String(b.name ?? ''),
         })),
       )
     } catch (err) {
@@ -300,6 +313,10 @@ export function ProductsPage() {
       addToast({ type: 'error', message: 'Select a machine or enter a custom machine name' })
       return
     }
+    if (form.gcApplicable && !form.warrantyMonths) {
+      addToast({ type: 'error', message: 'Select GC duration (3 / 6 / 9 / 12 months)' })
+      return
+    }
     setSaving(true)
     try {
       const attrs = {
@@ -312,8 +329,19 @@ export function ProductsPage() {
           catalogKind: machine.catalogKind,
           requiresStamping: form.requiresStamping,
         }),
-        warrantyMonths: form.warrantyMonths ? Number(form.warrantyMonths) : null,
-        warranty: form.warrantyMonths ? `${form.warrantyMonths} months` : null,
+        brand: form.brandName.trim() || null,
+        model: machine.name,
+        gcApplicable: form.gcApplicable,
+        warrantyMonths: form.gcApplicable && form.warrantyMonths ? Number(form.warrantyMonths) : null,
+        warranty:
+          form.gcApplicable && form.warrantyMonths ? `${form.warrantyMonths} months` : null,
+        amcApplicable: form.amcApplicable,
+        amcVisitsPerYear: form.amcApplicable ? 2 : null,
+        amcServiceMonths: form.amcApplicable ? 6 : null,
+        amcCovers: form.amcApplicable ? 'SERVICE_ONLY' : null,
+        amcNote: form.amcApplicable
+          ? '2 visits per year (every 6 months). Covers service only — spare parts charged to customer.'
+          : null,
         capacity: form.capacity.trim() || null,
         accuracy: form.accuracy.trim() || null,
         platform: form.platform.trim() || null,
@@ -325,10 +353,11 @@ export function ProductsPage() {
         productType: machine.productType,
         unit: 'NOS',
         categoryId: categoryIdFor(form.familyCode, form.industryCode),
-        salePrice: Number(form.salePrice) || 0,
-        purchasePrice: Number(form.purchasePrice) || 0,
-        mrp: form.mrp ? Number(form.mrp) : null,
-        taxPercent: Number(form.taxPercent) || 18,
+        hsnSac: form.hsnCode.trim() || null,
+        salePrice: 0,
+        purchasePrice: 0,
+        mrp: null,
+        taxPercent: 0,
         trackInventory: machine.trackInventory,
         imageUrl: form.imageUrl || null,
         attributes: attrs,
@@ -362,6 +391,10 @@ export function ProductsPage() {
       addToast({ type: 'error', message: 'Enter machine name' })
       return
     }
+    if (editForm.gcApplicable && !editForm.warrantyMonths) {
+      addToast({ type: 'error', message: 'Select GC duration (3 / 6 / 9 / 12 months)' })
+      return
+    }
     setSaving(true)
     try {
       const attrs = {
@@ -374,8 +407,22 @@ export function ProductsPage() {
           catalogKind: machine.catalogKind,
           requiresStamping: editForm.requiresStamping,
         }),
-        warrantyMonths: editForm.warrantyMonths ? Number(editForm.warrantyMonths) : null,
-        warranty: editForm.warrantyMonths ? `${editForm.warrantyMonths} months` : null,
+        brand: editForm.brandName.trim() || null,
+        model: machine.name,
+        gcApplicable: editForm.gcApplicable,
+        warrantyMonths:
+          editForm.gcApplicable && editForm.warrantyMonths ? Number(editForm.warrantyMonths) : null,
+        warranty:
+          editForm.gcApplicable && editForm.warrantyMonths
+            ? `${editForm.warrantyMonths} months`
+            : null,
+        amcApplicable: editForm.amcApplicable,
+        amcVisitsPerYear: editForm.amcApplicable ? 2 : null,
+        amcServiceMonths: editForm.amcApplicable ? 6 : null,
+        amcCovers: editForm.amcApplicable ? 'SERVICE_ONLY' : null,
+        amcNote: editForm.amcApplicable
+          ? '2 visits per year (every 6 months). Covers service only — spare parts charged to customer.'
+          : null,
         capacity: editForm.capacity.trim() || null,
         accuracy: editForm.accuracy.trim() || null,
         platform: editForm.platform.trim() || null,
@@ -384,10 +431,11 @@ export function ProductsPage() {
         name: truncateProductName(machine.name),
         description: editForm.description.trim() || null,
         categoryId: categoryIdFor(editForm.familyCode, editForm.industryCode),
-        salePrice: Number(editForm.salePrice) || 0,
-        purchasePrice: Number(editForm.purchasePrice) || 0,
-        mrp: editForm.mrp ? Number(editForm.mrp) : null,
-        taxPercent: Number(editForm.taxPercent) || 18,
+        hsnSac: editForm.hsnCode.trim() || null,
+        salePrice: 0,
+        purchasePrice: 0,
+        mrp: null,
+        taxPercent: 0,
         imageUrl: editForm.imageUrl || null,
         attributes: attrs,
       })
@@ -493,40 +541,98 @@ export function ProductsPage() {
 
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <h3 className="sm:col-span-2 lg:col-span-3 text-sm font-semibold text-text-primary">
-            2. Pricing & details
+            2. Brand, model &amp; coverage
           </h3>
           <Select
-            label="Warranty"
-            value={state.warrantyMonths}
-            onChange={(e) => setState((f) => ({ ...f, warrantyMonths: e.target.value }))}
+            label="Brand name"
+            value={state.brandName}
+            onChange={(e) => setState((f) => ({ ...f, brandName: e.target.value }))}
             options={[
-              { value: '', label: '—' },
-              ...WARRANTY_MONTH_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+              { value: '', label: 'Select brand…' },
+              ...brands.map((b) => ({ value: b.name, label: b.name })),
+              ...(state.brandName && !brands.some((b) => b.name === state.brandName)
+                ? [{ value: state.brandName, label: state.brandName }]
+                : []),
             ]}
           />
           <Input
-            label="Sale price ₹"
-            type="number"
-            value={state.salePrice}
-            onChange={(e) => setState((f) => ({ ...f, salePrice: e.target.value }))}
+            label="Model name"
+            value={state.customMachineName}
+            onChange={(e) =>
+              setState((f) => ({
+                ...f,
+                customMachineName: e.target.value,
+                machineSku: f.machineSku || 'CUSTOM',
+              }))
+            }
+            placeholder="Same as machine or override"
+            className="sm:col-span-2"
           />
+
+          <div className="sm:col-span-2 lg:col-span-3 rounded-lg border border-border bg-muted/30 px-3 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">GC applicable</div>
+                <p className="text-xs text-text-secondary">
+                  Leave off if guarantee does not apply. If on — pick duration.
+                </p>
+              </div>
+              <Switch
+                label="GC applicable"
+                checked={state.gcApplicable}
+                onChange={(on) =>
+                  setState((f) => ({
+                    ...f,
+                    gcApplicable: on,
+                    warrantyMonths: on ? f.warrantyMonths || '12' : '',
+                  }))
+                }
+              />
+            </div>
+            {state.gcApplicable ? (
+              <div className="mt-3 max-w-xs">
+                <Select
+                  label="GC duration *"
+                  value={state.warrantyMonths}
+                  onChange={(e) => setState((f) => ({ ...f, warrantyMonths: e.target.value }))}
+                  options={[
+                    { value: '', label: 'Select months…' },
+                    ...GC_MONTH_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+                  ]}
+                />
+              </div>
+            ) : null}
+          </div>
+
+          <div className="sm:col-span-2 lg:col-span-3 rounded-lg border border-border bg-muted/30 px-3 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">AMC</div>
+                <p className="text-xs text-text-secondary">
+                  2 visits per year (every 6 months). Covers service only — spare parts charged to
+                  customer.
+                </p>
+              </div>
+              <Switch
+                label="AMC"
+                checked={state.amcApplicable}
+                onChange={(on) => setState((f) => ({ ...f, amcApplicable: on }))}
+              />
+            </div>
+            {state.amcApplicable ? (
+              <ul className="mt-2 list-disc space-y-0.5 pl-4 text-xs text-text-secondary">
+                <li>2 service visits / year (once every 6 months)</li>
+                <li>Service labour covered under AMC</li>
+                <li>Spare parts / replacements — customer pays</li>
+              </ul>
+            ) : null}
+          </div>
+
           <Input
-            label="Purchase price ₹"
-            type="number"
-            value={state.purchasePrice}
-            onChange={(e) => setState((f) => ({ ...f, purchasePrice: e.target.value }))}
-          />
-          <Input
-            label="MRP ₹"
-            type="number"
-            value={state.mrp}
-            onChange={(e) => setState((f) => ({ ...f, mrp: e.target.value }))}
-          />
-          <Input
-            label="GST %"
-            type="number"
-            value={state.taxPercent}
-            onChange={(e) => setState((f) => ({ ...f, taxPercent: e.target.value }))}
+            label="HSN code"
+            placeholder="e.g. 8423"
+            value={state.hsnCode}
+            onChange={(e) => setState((f) => ({ ...f, hsnCode: e.target.value }))}
           />
           <div className="flex items-end pb-1">
             <label className="flex items-center gap-2 text-sm">
@@ -714,7 +820,7 @@ export function ProductsPage() {
                     <th className="px-3 py-2">Product</th>
                     <th className="px-3 py-2">Industry</th>
                     <th className="px-3 py-2">SKU</th>
-                    <th className="px-3 py-2">Sale ₹</th>
+                    <th className="px-3 py-2">HSN</th>
                     <th className="px-3 py-2">Actions</th>
                   </tr>
                 </thead>
@@ -757,7 +863,9 @@ export function ProductsPage() {
                         </td>
                         <td className="px-3 py-2 text-text-secondary">{meta.industryName || '—'}</td>
                         <td className="px-3 py-2 font-mono text-xs">{String(p.sku)}</td>
-                        <td className="px-3 py-2">{formatCurrency(num(p.salePrice))}</td>
+                        <td className="px-3 py-2 font-mono text-xs text-text-secondary">
+                          {p.hsnSac ? String(p.hsnSac) : '—'}
+                        </td>
                         <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center gap-0.5">
                             <ViewIconButton
@@ -849,14 +957,22 @@ export function ProductsPage() {
               ['Industry', meta.industryName || '—'],
               ['Machine', String(viewProduct.name)],
               ['SKU', String(viewProduct.sku)],
-              ['Sale price', formatCurrency(num(viewProduct.salePrice))],
-              ['Purchase price', formatCurrency(num(viewProduct.purchasePrice))],
-              ['MRP', viewProduct.mrp != null ? formatCurrency(num(viewProduct.mrp)) : '—'],
-              ['Tax %', String(viewProduct.taxPercent ?? '—')],
+              ['HSN code', viewProduct.hsnSac ? String(viewProduct.hsnSac) : '—'],
               ['Unit', String(viewProduct.unit ?? 'NOS')],
               ['Type', String(viewProduct.productType ?? 'GOODS')],
               ['Stamping', a.requiresStamping ? 'Required' : 'Not required'],
-              ['Warranty', a.warrantyMonths ? `${String(a.warrantyMonths)} months` : '—'],
+              [
+                'GC',
+                a.gcApplicable
+                  ? `Yes · ${a.warrantyMonths ? `${String(a.warrantyMonths)} months` : '—'}`
+                  : 'Not applicable',
+              ],
+              [
+                'AMC',
+                a.amcApplicable
+                  ? 'Yes · 2 visits/yr · service only (parts charged)'
+                  : 'Off',
+              ],
               ['Capacity', a.capacity ? String(a.capacity) : '—'],
               ['Accuracy', a.accuracy ? String(a.accuracy) : '—'],
               ['Platform', a.platform ? String(a.platform) : '—'],

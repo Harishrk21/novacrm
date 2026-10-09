@@ -19,6 +19,7 @@ import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
+import { DetailSkeleton } from '@/components/ui/Skeleton'
 import {
   AccountFormFields,
   accountToForm,
@@ -104,7 +105,7 @@ export function AccountDetailPage() {
     }
   }
 
-  if (loading) return <Card className="p-6 text-sm text-text-secondary">Loading account…</Card>
+  if (loading) return <DetailSkeleton />
   if (!account) {
     return (
       <EmptyState

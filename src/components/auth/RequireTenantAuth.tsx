@@ -2,6 +2,7 @@ import { useEffect, type ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { getAuth } from '@/lib/api'
+import { SessionSkeleton } from '@/components/ui/Skeleton'
 
 /** Ensures tenant CRM routes only load when a valid JWT session exists */
 export function RequireTenantAuth({ children }: { children: ReactNode }) {
@@ -9,25 +10,41 @@ export function RequireTenantAuth({ children }: { children: ReactNode }) {
   const kind = useAuthStore((s) => s.kind)
   const bootstrapped = useAuthStore((s) => s.bootstrapped)
   const hydrateFromStorage = useAuthStore((s) => s.hydrateFromStorage)
+  const refreshSession = useAuthStore((s) => s.refreshSession)
   const logout = useAuthStore((s) => s.logout)
 
   useEffect(() => {
     void hydrateFromStorage()
   }, [hydrateFromStorage])
 
+  // Light refresh only — avoid hammering /auth/me on every focus (slow on distant RDS)
   useEffect(() => {
-    // Persisted user without tokens → force clean login
+    let last = 0
+    const maybeRefresh = () => {
+      const now = Date.now()
+      if (now - last < 120_000) return
+      last = now
+      void refreshSession()
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') maybeRefresh()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    const tick = window.setInterval(() => void refreshSession(), 5 * 60_000)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.clearInterval(tick)
+    }
+  }, [refreshSession])
+
+  useEffect(() => {
     if (bootstrapped && kind === 'tenant' && !getAuth()?.accessToken) {
       void logout()
     }
   }, [bootstrapped, kind, logout])
 
   if (!bootstrapped) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-600">
-        Checking session…
-      </div>
-    )
+    return <SessionSkeleton variant="tenant" />
   }
 
   if (kind !== 'tenant' || !getAuth()?.accessToken) {

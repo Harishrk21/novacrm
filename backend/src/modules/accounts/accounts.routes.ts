@@ -10,6 +10,7 @@ import { pagination, pageResult } from "../../common/utils/pagination.js";
 import { notFound } from "../../common/errors.js";
 import { z } from "zod";
 import type { Request, Response } from "express";
+import { requirePermission } from "../../middleware/permissions.middleware.js";
 
 const body = z.object({
   name: z.string().min(1),
@@ -70,23 +71,23 @@ async function get(t: string, id: string) {
 
 export const accountsRouter = Router();
 accountsRouter.use(authenticate, requireTenant);
-accountsRouter.get("/", async (q: Request, r: Response) => success(r, await list(q.auth!.tenantId!, q.query)));
-accountsRouter.post("/", validate(createSchema), async (q: Request, r: Response) => {
+accountsRouter.get("/", requirePermission("accounts:view"), async (q: Request, r: Response) => success(r, await list(q.auth!.tenantId!, q.query)));
+accountsRouter.post("/", requirePermission("accounts:write"), validate(createSchema), async (q: Request, r: Response) => {
   const d = q.body;
   const row = await prisma.account.create({ data: { ...d, id: newId(), tenantId: q.auth!.tenantId! } });
   return success(r, row, "Account created", 201);
 });
-accountsRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) =>
+accountsRouter.get("/:id", requirePermission("accounts:view"), validate(idSchema), async (q: Request, r: Response) =>
   success(r, await get(q.auth!.tenantId!, paramId(q))),
 );
-accountsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Response) => {
+accountsRouter.patch("/:id", requirePermission("accounts:write"), validate(updateSchema), async (q: Request, r: Response) => {
   const id = paramId(q);
   const t = q.auth!.tenantId!;
   const updated = await prisma.account.updateMany({ where: { id, tenantId: t, deletedAt: null }, data: q.body });
   if (!updated.count) throw notFound("Account");
   return success(r, await get(t, id));
 });
-accountsRouter.delete("/:id", validate(idSchema), async (q: Request, r: Response) => {
+accountsRouter.delete("/:id", requirePermission("accounts:delete"), validate(idSchema), async (q: Request, r: Response) => {
   const updated = await prisma.account.updateMany({
     where: { id: paramId(q), tenantId: q.auth!.tenantId!, deletedAt: null },
     data: { deletedAt: new Date() },

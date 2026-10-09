@@ -36,7 +36,9 @@ export function Select({ label, options, placeholder, className, id, error, ...p
           </option>
         ))}
       </select>
-      {error ? <p className="text-xs text-red-600">{error}</p> : null}
+      {error ? (
+        <p className="text-xs font-medium text-red-600 dark:text-red-400">Missing — {error}</p>
+      ) : null}
     </div>
   )
 }

@@ -15,25 +15,20 @@ export function formatCustomerCode(customerNo: number, prefix = PREFIX, padding 
 
 /** Allocate next customer number + display code for this workspace (atomic sequence). */
 export async function allocateCustomerIdentity(tenantId: string, db: Db = prisma) {
-  let seq = await db.numberSequence.findUnique({
+  // Single round-trip: upsert + increment (critical on high-latency RDS)
+  const seq = await db.numberSequence.upsert({
     where: { tenantId_sequenceKey: { tenantId, sequenceKey: SEQ_KEY } },
+    create: {
+      tenantId,
+      sequenceKey: SEQ_KEY,
+      prefix: PREFIX,
+      nextValue: 2,
+      padding: PADDING,
+    },
+    update: { nextValue: { increment: 1 } },
   });
-  if (!seq) {
-    seq = await db.numberSequence.create({
-      data: {
-        tenantId,
-        sequenceKey: SEQ_KEY,
-        prefix: PREFIX,
-        nextValue: 1,
-        padding: PADDING,
-      },
-    });
-  }
-  await db.numberSequence.update({
-    where: { tenantId_sequenceKey: { tenantId, sequenceKey: SEQ_KEY } },
-    data: { nextValue: { increment: 1 } },
-  });
-  const customerNo = seq.nextValue;
+  // create path: nextValue=2 → allocated 1; update path: nextValue is post-increment → allocated nextValue-1
+  const customerNo = seq.nextValue - 1;
   return {
     customerNo,
     customerCode: formatCustomerCode(customerNo, seq.prefix || PREFIX, seq.padding || PADDING),

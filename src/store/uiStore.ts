@@ -21,6 +21,20 @@ interface UIState {
   setThemeMode: (mode: ThemeMode) => void
   setPalette: (palette: ColorPalette) => void
   toggleThemeMode: () => void
+  teamChatOpen: boolean
+  teamChatTab: 'pins' | 'chats' | 'channels' | 'threads' | 'people'
+  teamChatListTab: 'all' | 'people' | 'channels' | 'messages'
+  teamChatChannelId: string | null
+  teamChatUnread: number
+  teamChatMinimized: boolean
+  openTeamChat: (tab?: UIState['teamChatTab'], channelId?: string | null) => void
+  closeTeamChat: () => void
+  closeChatWindow: () => void
+  setTeamChatTab: (tab: UIState['teamChatTab']) => void
+  setTeamChatListTab: (tab: UIState['teamChatListTab']) => void
+  setTeamChatChannelId: (id: string | null) => void
+  setTeamChatUnread: (n: number) => void
+  setTeamChatMinimized: (v: boolean) => void
 }
 
 export const useUIStore = create<UIState>()(
@@ -44,8 +58,8 @@ export const useUIStore = create<UIState>()(
       setHowItWorksOpen: (v) => set({ howItWorksOpen: v }),
       openHowItWorks: () => set({ howItWorksOpen: true }),
       currentUserId: 'user-1',
-      themeMode: 'light',
-      palette: 'ocean',
+      themeMode: 'dark',
+      palette: 'violet',
       setThemeMode: (mode) => {
         set({ themeMode: mode })
         applyTheme(mode, get().palette)
@@ -59,9 +73,68 @@ export const useUIStore = create<UIState>()(
         set({ themeMode: next })
         applyTheme(next, get().palette)
       },
+      teamChatOpen: false,
+      teamChatTab: 'chats',
+      teamChatListTab: 'all',
+      teamChatChannelId: null,
+      teamChatUnread: 0,
+      teamChatMinimized: false,
+      openTeamChat: (tab = 'chats', channelId?: string | null) =>
+        set({
+          teamChatOpen: true,
+          teamChatTab: tab,
+          // Only change active channel when caller passes an explicit id/null
+          teamChatChannelId: channelId === undefined ? get().teamChatChannelId : channelId,
+          teamChatMinimized: false,
+          teamChatListTab:
+            tab === 'channels'
+              ? 'channels'
+              : tab === 'people'
+                ? 'people'
+                : tab === 'chats'
+                  ? 'all'
+                  : tab === 'threads'
+                    ? 'messages'
+                    : 'all',
+        }),
+      closeTeamChat: () => set({ teamChatOpen: false, teamChatMinimized: false }),
+      closeChatWindow: () => set({ teamChatChannelId: null, teamChatMinimized: false }),
+      setTeamChatTab: (tab) =>
+        set({
+          teamChatTab: tab,
+          teamChatOpen: true,
+          teamChatMinimized: false,
+          teamChatListTab:
+            tab === 'channels'
+              ? 'channels'
+              : tab === 'people'
+                ? 'people'
+                : tab === 'chats'
+                  ? 'all'
+                  : tab === 'threads'
+                    ? 'messages'
+                    : 'all',
+        }),
+      setTeamChatListTab: (tab) => set({ teamChatListTab: tab, teamChatOpen: true }),
+      setTeamChatChannelId: (id) =>
+        set({ teamChatChannelId: id, teamChatOpen: true, teamChatMinimized: false }),
+      setTeamChatUnread: (n) => set({ teamChatUnread: n }),
+      setTeamChatMinimized: (v) => set({ teamChatMinimized: v }),
     }),
     {
       name: 'novacrm-ui',
+      version: 2,
+      migrate: (persisted, version) => {
+        const s = (persisted ?? {}) as Partial<UIState>
+        if (version < 2) {
+          return {
+            ...s,
+            themeMode: 'dark' as ThemeMode,
+            palette: 'violet' as ColorPalette,
+          }
+        }
+        return s
+      },
       partialize: (s) => ({
         themeMode: s.themeMode,
         palette: s.palette,

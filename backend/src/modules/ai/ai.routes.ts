@@ -7,6 +7,7 @@ import { validate } from "../../middleware/validate.middleware.js";
 import { success } from "../../common/utils/response.js";
 import { AppError } from "../../common/errors.js";
 import { prisma } from "../../config/database.js";
+import { allPool } from "../../common/utils/concurrency.js";
 import {
   callGemini,
   cacheGet,
@@ -85,6 +86,7 @@ async function buildDashboardSnapshotFresh(tenantId: string, range: string) {
   const openStatuses = ["OPEN", "IN_PROGRESS", "PENDING"] as const;
   const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
 
+  // 23 parallel queries was exhausting Prisma's pool on shared RDS (P2024 on Leads etc.)
   const [
     leadTotal,
     leadsInRange,
@@ -109,100 +111,118 @@ async function buildDashboardSnapshotFresh(tenantId: string, range: string) {
     activities,
     recentTickets,
     ticketsForMonthly,
-  ] = await Promise.all([
-    prisma.lead.count({ where: { tenantId, deletedAt: null } }),
-    prisma.lead.count({ where: { tenantId, deletedAt: null, createdAt: { gte: from } } }),
-    prisma.lead.count({
-      where: { tenantId, deletedAt: null, createdAt: { gte: prevFrom, lt: prevTo } },
-    }),
-    prisma.lead.count({ where: { tenantId, deletedAt: null, status: "CONVERTED" } }),
-    prisma.ticket.count({ where: { tenantId, deletedAt: null } }),
-    prisma.ticket.count({ where: { tenantId, deletedAt: null, createdAt: { gte: from } } }),
-    prisma.ticket.count({
-      where: { tenantId, deletedAt: null, createdAt: { gte: prevFrom, lt: prevTo } },
-    }),
-    prisma.ticket.count({
-      where: { tenantId, deletedAt: null, status: { in: [...openStatuses] } },
-    }),
-    prisma.ticket.count({
-      where: {
-        tenantId,
-        deletedAt: null,
-        status: { in: [...openStatuses] },
-        slaBreached: true,
-      },
-    }),
-    prisma.ticket.count({
-      where: { tenantId, deletedAt: null, slaBreached: true, createdAt: { gte: from } },
-    }),
-    prisma.ticket.count({
-      where: {
-        tenantId,
-        deletedAt: null,
-        slaBreached: true,
-        createdAt: { gte: prevFrom, lt: prevTo },
-      },
-    }),
-    prisma.ticket.count({
-      where: {
-        tenantId,
-        deletedAt: null,
-        status: { in: [...openStatuses] },
-        assignedToId: null,
-      },
-    }),
-    prisma.ticket.findMany({
-      where: { tenantId, deletedAt: null, status: { in: [...openStatuses] } },
-      select: { paymentTotal: true, advanceAmount: true },
-      take: 2000,
-    }),
-    prisma.deal.findMany({
-      where: { tenantId, deletedAt: null },
-      select: { amount: true, probability: true, stageId: true, closedAt: true },
-      take: 500,
-    }),
-    prisma.pipelineStage.findMany({
-      where: { tenantId, isActive: true },
-      select: { id: true, code: true, isWon: true },
-    }),
-    prisma.invoice.aggregate({
-      where: { tenantId, deletedAt: null },
-      _sum: { grandTotal: true },
-      _count: true,
-    }),
-    prisma.product.count({ where: { tenantId, deletedAt: null } }),
-    prisma.stockLevel.aggregate({
-      where: { tenantId },
-      _sum: { quantityOnHand: true },
-    }),
-    prisma.contact.count({ where: { tenantId, deletedAt: null } }),
-    prisma.account.count({ where: { tenantId, deletedAt: null } }),
-    prisma.activity.count({
-      where: { tenantId, deletedAt: null, status: { in: ["PENDING", "OVERDUE"] } },
-    }),
-    prisma.ticket.findMany({
-      where: {
-        tenantId,
-        deletedAt: null,
-        status: { in: [...openStatuses] },
-      },
-      orderBy: [{ slaBreached: "desc" }, { slaDueAt: "asc" }],
-      take: 8,
-      select: {
-        ticketNo: true,
-        subject: true,
-        status: true,
-        priority: true,
-        slaBreached: true,
-        slaDueAt: true,
-      },
-    }),
-    prisma.ticket.findMany({
-      where: { tenantId, deletedAt: null, createdAt: { gte: sixMonthsAgo } },
-      select: { createdAt: true, resolvedAt: true, slaBreached: true },
-      take: 3000,
-    }),
-  ]);
+  ] = await allPool(
+    [
+      () => prisma.lead.count({ where: { tenantId, deletedAt: null } }),
+      () => prisma.lead.count({ where: { tenantId, deletedAt: null, createdAt: { gte: from } } }),
+      () =>
+        prisma.lead.count({
+          where: { tenantId, deletedAt: null, createdAt: { gte: prevFrom, lt: prevTo } },
+        }),
+      () => prisma.lead.count({ where: { tenantId, deletedAt: null, status: "CONVERTED" } }),
+      () => prisma.ticket.count({ where: { tenantId, deletedAt: null } }),
+      () => prisma.ticket.count({ where: { tenantId, deletedAt: null, createdAt: { gte: from } } }),
+      () =>
+        prisma.ticket.count({
+          where: { tenantId, deletedAt: null, createdAt: { gte: prevFrom, lt: prevTo } },
+        }),
+      () =>
+        prisma.ticket.count({
+          where: { tenantId, deletedAt: null, status: { in: [...openStatuses] } },
+        }),
+      () =>
+        prisma.ticket.count({
+          where: {
+            tenantId,
+            deletedAt: null,
+            status: { in: [...openStatuses] },
+            slaBreached: true,
+          },
+        }),
+      () =>
+        prisma.ticket.count({
+          where: { tenantId, deletedAt: null, slaBreached: true, createdAt: { gte: from } },
+        }),
+      () =>
+        prisma.ticket.count({
+          where: {
+            tenantId,
+            deletedAt: null,
+            slaBreached: true,
+            createdAt: { gte: prevFrom, lt: prevTo },
+          },
+        }),
+      () =>
+        prisma.ticket.count({
+          where: {
+            tenantId,
+            deletedAt: null,
+            status: { in: [...openStatuses] },
+            assignedToId: null,
+          },
+        }),
+      () =>
+        prisma.ticket.findMany({
+          where: { tenantId, deletedAt: null, status: { in: [...openStatuses] } },
+          select: { paymentTotal: true, advanceAmount: true },
+          take: 2000,
+        }),
+      () =>
+        prisma.deal.findMany({
+          where: { tenantId, deletedAt: null },
+          select: { amount: true, probability: true, stageId: true, closedAt: true },
+          take: 500,
+        }),
+      () =>
+        prisma.pipelineStage.findMany({
+          where: { tenantId, isActive: true },
+          select: { id: true, code: true, isWon: true },
+        }),
+      () =>
+        prisma.invoice.aggregate({
+          where: { tenantId, deletedAt: null },
+          _sum: { grandTotal: true },
+          _count: true,
+        }),
+      () => prisma.product.count({ where: { tenantId, deletedAt: null } }),
+      () =>
+        prisma.stockLevel.aggregate({
+          where: { tenantId },
+          _sum: { quantityOnHand: true },
+        }),
+      () => prisma.contact.count({ where: { tenantId, deletedAt: null } }),
+      () => prisma.account.count({ where: { tenantId, deletedAt: null } }),
+      () =>
+        prisma.activity.count({
+          where: { tenantId, deletedAt: null, status: { in: ["PENDING", "OVERDUE"] } },
+        }),
+      () =>
+        prisma.ticket.findMany({
+          where: {
+            tenantId,
+            deletedAt: null,
+            status: { in: [...openStatuses] },
+          },
+          orderBy: [{ slaBreached: "desc" }, { slaDueAt: "asc" }],
+          take: 8,
+          select: {
+            ticketNo: true,
+            subject: true,
+            status: true,
+            priority: true,
+            slaBreached: true,
+            slaDueAt: true,
+          },
+        }),
+      () =>
+        prisma.ticket.findMany({
+          where: { tenantId, deletedAt: null, createdAt: { gte: sixMonthsAgo } },
+          select: { createdAt: true, resolvedAt: true, slaBreached: true },
+          take: 3000,
+        }),
+    ],
+    3,
+  );
 
   const balanceOutstanding = openTicketPay.reduce((s, t) => {
     const pay = Number(t.paymentTotal ?? 0);
@@ -960,11 +980,16 @@ const IMPORT_FIELDS = [
   "machineType",
   "serialNo",
   "model",
+  "quantity",
   "capacity",
   "accuracy",
   "platformSize",
   "origin",
   "servicePlan",
+  "warrantyEndDate",
+  "amcStartDate",
+  "amcEndDate",
+  "nextServiceDueDate",
   "stampingDate",
   "nextDueDate",
   "machineNotes",
@@ -974,36 +999,54 @@ const mapImportSchema = z.object({
   body: z.object({
     headers: z.array(z.string().max(120)).min(1).max(80),
     sampleRows: z.array(z.record(z.unknown())).max(5).optional(),
+    kind: z.enum(["sales", "service"]).optional(),
   }),
 });
 
 async function mapCustomerImport(req: Request, res: Response) {
-  const { headers, sampleRows = [] } = req.body as {
+  const { headers, sampleRows = [], kind } = req.body as {
     headers: string[];
     sampleRows?: Array<Record<string, unknown>>;
+    kind?: "sales" | "service";
   };
 
   const heuristic: Record<string, string | null> = {};
   for (const h of headers) {
-    heuristic[h] = heuristicMapHeader(h);
+    heuristic[h] = heuristicMapHeader(h, kind);
   }
 
   let mapping = heuristic;
   let usedAi = false;
   let model: string | null = null;
   let note = "Mapped with column-name rules. Review before importing.";
+  const register =
+    kind === "service"
+      ? "SERVICE register (AMC, stamping, next service, outside/repair machines)"
+      : kind === "sales"
+        ? "SALES register (machines HMS sold, GC/warranty, sale serials)"
+        : "customer + machine import";
 
   try {
-    const prompt = `You map spreadsheet columns for HMS Enterprises CRM customer + machine import.
+    const prompt = `You map spreadsheet columns for HMS Enterprises CRM ${register}.
 Allowed target fields (use exact keys, or null if no match):
 ${IMPORT_FIELDS.join(", ")}
 
 Rules:
 - name = customer / shop / company name (required)
 - phone or mobile = primary phone (required). Prefer mobile for mobiles.
-- Machine fields map to one machine on the same row (machineName, machineType, serialNo, model, etc.)
+- CRITICAL: same phone number in a Sales file and a Service file = ONE customer. Map phone/mobile carefully so later imports club onto the existing record.
+- Machine identity: serialNo = one physical unit (re-import skips that serial). Same model + quantity without serial = multiple units, not a duplicate.
+- quantity = how many identical units when serial is blank. Ignore quantity when serialNo is present.
+- Machine fields map to machine(s) on the same row (machineName, machineType, serialNo, model, quantity, etc.)
+${
+  kind === "service"
+    ? `- This is a SERVICE file: prefer AMC / stamping / nextServiceDueDate / nextDueDate. origin may be THIRD_PARTY (outside) or SOLD_BY_US (HMS machine coming for service).
+- servicePlan: AMC | NGC | NON_AMC (GC is rare on service registers).`
+    : `- This is a SALES file: prefer sold machines, serialNo, warrantyEndDate, origin SOLD_BY_US, servicePlan GC / NGC.
+- stampingDate may still appear on weighing sales.`
+}
 - origin: SOLD_BY_US vs THIRD_PARTY / outside
-- servicePlan: AMC vs NON_AMC
+- servicePlan: GC | NGC | AMC | NON_AMC
 - Do not invent columns. Only map from the given headers.
 - Return JSON only: { "mapping": { "<header>": "<field|null>" }, "notes": "short tip" }
 
@@ -1034,10 +1077,10 @@ Sample rows: ${JSON.stringify(sampleRows.slice(0, 3))}
       "AI mapping unavailable — used column-name rules. Rename headers to match the sample template for best results.";
   }
 
-  return success(res, { mapping, usedAi, model, notes: note, fields: IMPORT_FIELDS });
+  return success(res, { mapping, usedAi, model, notes: note, fields: IMPORT_FIELDS, kind: kind ?? null });
 }
 
-function heuristicMapHeader(header: string): string | null {
+function heuristicMapHeader(header: string, kind?: "sales" | "service"): string | null {
   const h = header.trim().toLowerCase().replace(/[_\-]+/g, " ");
   if (/^(customer|shop|company|client)?\s*name$|^name$|customer name|shop name/.test(h)) return "name";
   if (/whatsapp|wa\b/.test(h)) return "whatsapp";
@@ -1052,19 +1095,27 @@ function heuristicMapHeader(header: string): string | null {
   if (/^state$/.test(h)) return "state";
   if (/pin|postal|zip/.test(h)) return "pincode";
   if (/landmark|near/.test(h)) return "landmark";
-  if (/description|remarks|notes$/.test(h) && !/machine/.test(h)) return "description";
-  if (/machine name|product name|equipment name|asset name/.test(h)) return "machineName";
+  if (/description|remarks|notes$/.test(h) && !/machine|service|sale/.test(h)) return "description";
+  if (/machine sold|machine name|product name|equipment name|asset name|^machine$/.test(h))
+    return "machineName";
   if (/machine type|product type|equipment type|category/.test(h)) return "machineType";
-  if (/serial|sr no|srno|s\/n/.test(h)) return "serialNo";
+  if (/serial|sr no|srno|s\/n|hms id/.test(h)) return "serialNo";
   if (/^model$|model no|model name/.test(h)) return "model";
+  if (/^qty$|^quantity$|no of units|no of machines|units|nos\b/.test(h)) return "quantity";
   if (/capacity|cap\b/.test(h)) return "capacity";
   if (/accuracy|class/.test(h)) return "accuracy";
   if (/platform|platter/.test(h)) return "platformSize";
   if (/origin|sold by|third party|outside/.test(h)) return "origin";
-  if (/amc|service plan|service type/.test(h)) return "servicePlan";
+  if (kind === "service" && /service type|amc|coverage|service plan/.test(h)) return "servicePlan";
+  if (kind === "sales" && /coverage|warranty type|gc|ngc|service plan/.test(h)) return "servicePlan";
+  if (/amc|service plan|service type|coverage/.test(h)) return "servicePlan";
+  if (/warranty|gc end|guarantee end/.test(h)) return "warrantyEndDate";
+  if (/amc start|amc from|amc begin/.test(h)) return "amcStartDate";
+  if (/amc end|amc to|amc till|amc expiry/.test(h)) return "amcEndDate";
+  if (/next service|service due/.test(h)) return "nextServiceDueDate";
   if (/stamping date|stamp date|last stamp/.test(h)) return "stampingDate";
-  if (/next due|due date|next stamp/.test(h)) return "nextDueDate";
-  if (/machine note|machine remark/.test(h)) return "machineNotes";
+  if (/next due|due date|next stamp|stamp valid|valid till/.test(h)) return "nextDueDate";
+  if (/machine note|machine remark|sale notes|service notes/.test(h)) return "machineNotes";
   if (/^address$/.test(h)) return "street";
   return null;
 }
@@ -1122,4 +1173,158 @@ aiRouter.post(
   requireRoles("ADMIN", "MANAGER", "SERVICE_DESK"),
   validate(mapImportSchema),
   mapCustomerImport,
+);
+
+/* ── Stock import column mapping (machines / billing spares / weighing spares) ── */
+
+const MACHINE_STOCK_FIELDS = [
+  "hmsUniqId",
+  "brand",
+  "model",
+  "spec",
+  "serialNo",
+  "supplierName",
+  "invoiceDate",
+  "invoiceNo",
+  "receivedDate",
+  "unitAmount",
+] as const;
+
+const SPARE_STOCK_FIELDS = [
+  "spareName",
+  "opening",
+  "newStock",
+  "given",
+  "balance",
+  "gc",
+  "ngc",
+  "supplierName",
+  "invoiceDate",
+  "invoiceNo",
+  "unit",
+] as const;
+
+const mapStockImportSchema = z.object({
+  body: z.object({
+    kind: z.enum(["machines", "sparesBilling", "sparesWeighing"]),
+    headers: z.array(z.string().max(120)).min(1).max(80),
+    sampleRows: z.array(z.record(z.unknown())).max(5).optional(),
+  }),
+});
+
+function heuristicStockHeader(
+  header: string,
+  kind: "machines" | "sparesBilling" | "sparesWeighing",
+): string | null {
+  const h = header.trim().toLowerCase().replace(/[_\-./]+/g, " ");
+  if (kind === "machines") {
+    if (/hms|uniq|unique id|uniq id/.test(h)) return "hmsUniqId";
+    if (/^brand$|retsol|smart|istha/.test(h)) return "brand";
+    if (/^model$|model name|model no/.test(h)) return "model";
+    if (/^spec$|specification|capacity/.test(h)) return "spec";
+    if (/^sno$|^s no$|serial|sr no|invoice serial/.test(h)) return "serialNo";
+    if (/supplier|vendor/.test(h)) return "supplierName";
+    if (/date of invoice|invoice date|inv date/.test(h)) return "invoiceDate";
+    if (/inv number|invoice no|invoice number|inv no/.test(h)) return "invoiceNo";
+    if (/received date|recv date|receipt date/.test(h)) return "receivedDate";
+    if (/per unit|unit amount|unit price|rate|amount/.test(h)) return "unitAmount";
+    return null;
+  }
+  if (/spare|part name|item name|^name$|particular/.test(h)) return "spareName";
+  if (/opening|open stock|prev.*clos|before month|last month/.test(h)) return "opening";
+  if (/new stock|received|arrival|qty in|quantity in/.test(h)) return "newStock";
+  if (/^given$|issued|issue|qty out|given to/.test(h)) return "given";
+  if (/^balance$|closing|remaining|on hand/.test(h)) return "balance";
+  if (/^gc$|guarantee/.test(h)) return "gc";
+  if (/^ngc$|non.?gc|non guarantee/.test(h)) return "ngc";
+  if (/supplier|vendor/.test(h)) return "supplierName";
+  if (/invoice date|date of invoice/.test(h)) return "invoiceDate";
+  if (/invoice no|inv number|inv no/.test(h)) return "invoiceNo";
+  if (/^unit$|uom|nos/.test(h)) return "unit";
+  return null;
+}
+
+async function mapStockImport(req: Request, res: Response) {
+  const { kind, headers, sampleRows = [] } = req.body as {
+    kind: "machines" | "sparesBilling" | "sparesWeighing";
+    headers: string[];
+    sampleRows?: Array<Record<string, unknown>>;
+  };
+  const fields =
+    kind === "machines"
+      ? (MACHINE_STOCK_FIELDS as unknown as string[])
+      : (SPARE_STOCK_FIELDS as unknown as string[]);
+
+  const heuristic: Record<string, string | null> = {};
+  for (const h of headers) heuristic[h] = heuristicStockHeader(h, kind);
+
+  let mapping = heuristic;
+  let usedAi = false;
+  let model: string | null = null;
+  let note = "Mapped with column-name rules. Review before importing.";
+
+  try {
+    const label =
+      kind === "machines"
+        ? "machine serial stock (HMS Unique ID, brand, model, supplier invoice)"
+        : kind === "sparesBilling"
+          ? "billing / Touch POS / paper rolls / labels spare quantity stock"
+          : "weighing machine spare quantity stock";
+    const prompt = `You map spreadsheet columns for HMS Enterprises ${label} import.
+Allowed target fields (exact keys, or null): ${fields.join(", ")}
+
+Rules:
+${
+  kind === "machines"
+    ? `- hmsUniqId = HMS Unique ID
+- brand = RETSOL / SMART / ISTHA etc.
+- model = product/model name (must exist in catalog)
+- serialNo = SNO under invoice / factory serial
+- supplierName, invoiceDate, invoiceNo, receivedDate, unitAmount, spec`
+    : `- spareName = spare part name (Battery, Paper roll, Labels…)
+- opening = previous month closing / opening stock
+- newStock = quantity newly received
+- given = quantity issued/given out
+- balance = remaining (optional check)
+- gc / ngc = guarantee flags or counts if present
+- supplierName, invoiceDate, invoiceNo, unit`
+}
+- Do not invent columns. Return JSON only: { "mapping": { "<header>": "<field|null>" }, "notes": "short tip" }
+
+Headers: ${JSON.stringify(headers)}
+Sample rows: ${JSON.stringify(sampleRows.slice(0, 3))}
+`;
+    const raw = await callGemini(prompt, { maxTokens: 1500 });
+    const parsed = parseJsonLoose<{
+      mapping?: Record<string, unknown>;
+      notes?: string;
+    }>(raw);
+    if (parsed.mapping && typeof parsed.mapping === "object") {
+      const allowed = new Set(fields);
+      const next: Record<string, string | null> = {};
+      for (const h of headers) {
+        const v = parsed.mapping[h];
+        const field = v == null || v === "" ? null : String(v);
+        next[h] = field && allowed.has(field) ? field : heuristic[h] ?? null;
+      }
+      mapping = next;
+      usedAi = true;
+      model = geminiModelName();
+      note = parsed.notes
+        ? String(parsed.notes)
+        : "AI mapped your columns. Review before importing.";
+    }
+  } catch {
+    note =
+      "AI mapping unavailable — used column-name rules. Check the mapping below before import.";
+  }
+
+  return success(res, { mapping, usedAi, model, notes: note, fields, kind });
+}
+
+aiRouter.post(
+  "/map-stock-import",
+  requireRoles("ADMIN", "MANAGER", "WAREHOUSE"),
+  validate(mapStockImportSchema),
+  mapStockImport,
 );

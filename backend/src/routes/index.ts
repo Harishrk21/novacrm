@@ -22,9 +22,15 @@ import { uploadsRouter } from '../modules/uploads/uploads.routes.js'
 import { analyticsRouter } from '../modules/analytics/analytics.routes.js'
 import { activitiesRouter } from '../modules/activities/activities.routes.js'
 import { sparePartsRouter } from '../modules/spareParts/spareParts.routes.js'
+import { spareStockRouter } from '../modules/spareStock/spareStock.routes.js'
 import { aiRouter } from '../modules/ai/ai.routes.js'
+import { publicRouter } from '../modules/public/public.routes.js'
+import { teamChatRouter } from '../modules/teamChat/teamChat.routes.js'
+import { rentalsRouter } from '../modules/rentals/rentals.routes.js'
+import { requisitionsRouter } from '../modules/requisitions/requisitions.routes.js'
 
 export const apiRouter = Router()
+apiRouter.use('/public', publicRouter)
 apiRouter.use('/auth', authRouter)
 apiRouter.use('/platform', platformRouter)
 apiRouter.use('/tenants', tenantsRouter)
@@ -42,10 +48,14 @@ apiRouter.use('/deals', dealsRouter)
 apiRouter.use('/tickets', ticketsRouter)
 apiRouter.use('/assets', assetsRouter)
 apiRouter.use('/spare-parts', sparePartsRouter)
+apiRouter.use('/spare-stock', spareStockRouter)
 apiRouter.use('/products', productsRouter)
 apiRouter.use('/inventory', inventoryRouter)
 apiRouter.use('/purchase-orders', purchaseOrdersRouter)
 apiRouter.use('/invoices', invoicesRouter)
+apiRouter.use('/requisitions', requisitionsRouter)
 apiRouter.use('/tips', tipsRouter)
 apiRouter.use('/search', searchRouter)
 apiRouter.use('/integrations', integrationsRouter)
+apiRouter.use('/team-chat', teamChatRouter)
+apiRouter.use('/rentals', rentalsRouter)

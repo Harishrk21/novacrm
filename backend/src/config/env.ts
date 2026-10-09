@@ -4,14 +4,22 @@ import { z } from "zod";
 /**
  * Harden DATABASE_URL for Prisma + managed MySQL (AWS RDS / Aiven):
  * - sslaccept: RDS cert chains often fail Prisma's strict CA check on Render
- * - connection_limit: keep pool small so one Render service doesn't exhaust RDS
+ * - connection_limit: keep pool modest so THIS service shares RDS with other apps
  * - pool_timeout / connect_timeout: fail fast instead of hanging forever
+ *
+ * Important: too many parallel Prisma queries (Promise.all of 6–8 findMany)
+ * exhausts a small pool and surfaces as P2024 on unrelated routes (e.g. leads).
  */
 function upsertQueryParam(url: string, key: string, value: string): string {
   const re = new RegExp(`([?&])${key}=[^&]*`, "i");
   if (re.test(url)) return url.replace(re, `$1${key}=${value}`);
   return url + (url.includes("?") ? "&" : "?") + `${key}=${value}`;
 }
+
+/** Shared RDS with other products: stay in a narrow band. */
+const POOL_MIN = 5;
+const POOL_DEFAULT = 8;
+const POOL_MAX = 12;
 
 function normalizeDatabaseUrl(url: string | undefined) {
   if (!url) return url;
@@ -21,20 +29,22 @@ function normalizeDatabaseUrl(url: string | undefined) {
   const isRds = /rds\.amazonaws\.com/i.test(next);
 
   if (isMysql || isRds) {
-    // Prefer encrypt without hard-failing on intermediary CAs (common on Render → RDS)
     if (/sslaccept=strict/i.test(next)) {
       next = next.replace(/sslaccept=strict/gi, "sslaccept=accept_invalid_certs");
     } else if (!/[?&]sslaccept=/i.test(next)) {
       next = upsertQueryParam(next, "sslaccept", "accept_invalid_certs");
     }
 
-    // Default Prisma pool is num_cpus*2+1 — too high for small RDS + multiple deploys
-    if (!/[?&]connection_limit=/i.test(next)) {
-      next = upsertQueryParam(next, "connection_limit", "5");
-    }
-    if (!/[?&]pool_timeout=/i.test(next)) {
-      next = upsertQueryParam(next, "pool_timeout", "20");
-    }
+    const limitMatch = next.match(/[?&]connection_limit=(\d+)/i);
+    const rawLimit = limitMatch ? Number(limitMatch[1]) : 0;
+    let limit = rawLimit || POOL_DEFAULT;
+    if (limit < POOL_MIN) limit = POOL_MIN;
+    if (limit > POOL_MAX) limit = POOL_MAX;
+    next = upsertQueryParam(next, "connection_limit", String(limit));
+
+    // Wait longer for a free slot than the old 10–20s — better UX than hard P2024
+    // under short bursts, while concurrency caps prevent permanent saturation.
+    next = upsertQueryParam(next, "pool_timeout", "60");
     if (!/[?&]connect_timeout=/i.test(next)) {
       next = upsertQueryParam(next, "connect_timeout", "15");
     }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { Bell, CheckCheck, Inbox, Trash2 } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/Badge'
@@ -11,6 +11,7 @@ import { timeAgo, cn } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useNotificationsStore } from '@/store/notificationsStore'
 import { useUIStore } from '@/store/uiStore'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 
 function typeColor(type: string) {
   if (type.includes('PENDING') || type.includes('CREATED')) return 'amber' as const
@@ -131,7 +132,7 @@ export function NotificationsPage() {
 
       <Card padding={false}>
         {loading && items.length === 0 ? (
-          <div className="p-6 text-center text-sm text-text-secondary">Loading notifications…</div>
+          <TableSkeleton rows={6} />
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={<Inbox size={22} />}
@@ -150,7 +151,7 @@ export function NotificationsPage() {
                   )}
                   onClick={() => {
                     void markRead(n.id, userId)
-                    if (n.href) navigate(n.href)
+                    navigate(n.href || '/notifications')
                   }}
                 >
                   <Bell
@@ -180,15 +181,9 @@ export function NotificationsPage() {
                     </div>
                     <p className="truncate text-xs text-text-secondary">{n.message}</p>
                   </div>
-                  {n.href ? (
-                    <Link
-                      to={n.href}
-                      className="shrink-0 text-[11px] font-medium text-accent"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      Open
-                    </Link>
-                  ) : null}
+                  <span className="shrink-0 text-[11px] font-semibold text-accent-blue">
+                    Open →
+                  </span>
                 </button>
                 <button
                   type="button"

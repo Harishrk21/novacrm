@@ -46,6 +46,7 @@ import { useUIStore } from '@/store/uiStore'
 import { APP_NAME } from '@/lib/branding'
 import { AskDashboardPanel } from '@/components/ai/AskDashboardPanel'
 import { formatServiceId } from '@/lib/serviceId'
+import { PageSkeleton } from '@/components/ui/Skeleton'
 
 type Analytics = Awaited<ReturnType<typeof api.analytics>>
 
@@ -143,6 +144,19 @@ export function AdminAnalyticsDashboard() {
   const [live, setLive] = useState(false)
   const [analytics, setAnalytics] = useState<Analytics | null>(null)
   const [recentTickets, setRecentTickets] = useState<Array<Record<string, unknown>>>([])
+  const [pendingRequisitions, setPendingRequisitions] = useState<Array<Record<string, unknown>>>([])
+  const [salesDayUpdates, setSalesDayUpdates] = useState<
+    Array<{
+      leadId: string
+      leadName: string
+      status: string
+      dayNumber: number
+      note: string
+      updateDate: string
+      authorName: string
+      at: string
+    }>
+  >([])
   const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
@@ -151,28 +165,56 @@ export function AdminAnalyticsDashboard() {
       setLive(false)
       setAnalytics(null)
       setRecentTickets([])
+      setPendingRequisitions([])
+      setSalesDayUpdates([])
       return
     }
     let cancelled = false
     ;(async () => {
       setLoading(true)
       try {
-        const [summary, tickets] = await Promise.all([
-          api.analytics({ range }),
-          api.tickets({ limit: 12, sort: 'sla' }),
-        ])
+        // Unblock skeleton as soon as the summary returns; secondary lists load after
+        const summary = await api.analytics({ range })
         if (cancelled) return
         setAnalytics(summary)
-        setRecentTickets(
-          (tickets.items ?? [])
-            .filter((t) => ['OPEN', 'IN_PROGRESS', 'PENDING'].includes(String(t.status)))
-            .slice(0, 8),
-        )
+        setRecentTickets((summary.attentionTickets ?? []) as Array<Record<string, unknown>>)
         setLive(true)
+        setLoading(false)
+
+        const [reqPage, leadPage] = await Promise.all([
+          api.requisitions({ limit: 50, status: 'PENDING_APPROVAL' }).catch(() => ({ items: [] })),
+          api.leads({ limit: 40 }).catch(() => ({ items: [] })),
+        ])
+        if (cancelled) return
+        setPendingRequisitions(reqPage.items ?? [])
+        const dayRows: typeof salesDayUpdates = []
+        for (const lead of leadPage.items ?? []) {
+          const cf = (lead.customFields as Record<string, unknown> | null) ?? {}
+          const updates = Array.isArray(cf.demoDailyUpdates)
+            ? (cf.demoDailyUpdates as Array<Record<string, unknown>>)
+            : []
+          for (const u of updates.slice(0, 3)) {
+            dayRows.push({
+              leadId: String(lead.id),
+              leadName: String(lead.name ?? 'Lead'),
+              status: String(lead.status ?? ''),
+              dayNumber: Number(u.dayNumber ?? 0) || 1,
+              note: String(u.note ?? ''),
+              updateDate: String(u.updateDate ?? '').slice(0, 10),
+              authorName: String(u.authorName ?? u.by ?? 'Sales'),
+              at: String(u.at ?? u.updateDate ?? ''),
+            })
+          }
+        }
+        dayRows.sort(
+          (a, b) => new Date(b.at || 0).getTime() - new Date(a.at || 0).getTime(),
+        )
+        setSalesDayUpdates(dayRows.slice(0, 12))
       } catch (e) {
         if (!cancelled) {
           setLive(false)
           setAnalytics(null)
+          setLoading(false)
           addToast({
             type: 'error',
             message: e instanceof ApiClientError ? e.message : 'Could not load analytics from database',
@@ -189,14 +231,14 @@ export function AdminAnalyticsDashboard() {
 
   useEffect(() => {
     if (!isTenantSession()) return
-    const id = window.setInterval(() => setReloadKey((k) => k + 1), 60_000)
+    const id = window.setInterval(() => setReloadKey((k) => k + 1), 5 * 60_000)
     return () => window.clearInterval(id)
   }, [])
 
   const k = analytics?.kpis
   const target = Number(analytics?.salesTargets?.revenueTarget ?? 0) || 0
   const progressRevenue =
-    kpiNum(k, 'serviceCollectedInRange') + kpiNum(k, 'invoiceRevenueInRange')
+    kpiNum(k, 'saleRevenueInRange') + kpiNum(k, 'serviceCollectedInRange') + kpiNum(k, 'invoiceRevenueInRange')
   const targetPct = target > 0 ? Math.min(100, Math.round((progressRevenue / target) * 100)) : 0
 
   const ticketStatusData = useMemo(
@@ -304,7 +346,7 @@ export function AdminAnalyticsDashboard() {
       </div>
 
       {loading && !analytics ? (
-        <Card className="py-16 text-center text-sm text-text-secondary">Loading analytics from database…</Card>
+        <PageSkeleton cards={4} rows={8} />
       ) : !live || !analytics ? (
         <Card className="py-16 text-center text-sm text-text-secondary">
           Sign in to a company workspace to see live analytics.
@@ -318,6 +360,8 @@ export function AdminAnalyticsDashboard() {
               ticketStatusData={ticketStatusData}
               target={target}
               targetPct={targetPct}
+              pendingRequisitions={pendingRequisitions}
+              salesDayUpdates={salesDayUpdates}
             />
           )}
           {pov === 'service' && (
@@ -491,12 +535,25 @@ function OverviewPov({
   ticketStatusData,
   target,
   targetPct,
+  pendingRequisitions,
+  salesDayUpdates,
 }: {
   analytics: Analytics
   chartColors: string[]
   ticketStatusData: Array<{ name: string; value: number; fill: string }>
   target: number
   targetPct: number
+  pendingRequisitions: Array<Record<string, unknown>>
+  salesDayUpdates: Array<{
+    leadId: string
+    leadName: string
+    status: string
+    dayNumber: number
+    note: string
+    updateDate: string
+    authorName: string
+    at: string
+  }>
 }) {
   const k = analytics.kpis
   const attention =
@@ -512,15 +569,191 @@ function OverviewPov({
     servicePaid?: number
     current?: number
   }>
+  const pendingReqCount = pendingRequisitions.length
 
   return (
     <>
       <SectionHead
+        title="Needs attention"
+        subtitle="Live queue — requisitions waiting approval, sales day updates, and urgent service jobs"
+        accent="rose"
+      />
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Panel
+          title="Waiting for approval"
+          subtitle="Sales requisitions pending your sign-off"
+          action={
+            <Link
+              to="/sale-tracking?queue=requisitions"
+              className="text-xs font-medium text-amber-700 hover:underline dark:text-amber-300"
+            >
+              Open queue →
+            </Link>
+          }
+        >
+          {pendingReqCount === 0 ? (
+            <EmptyHint>No requisitions waiting for approval</EmptyHint>
+          ) : (
+            <div className="space-y-2">
+              {pendingRequisitions.slice(0, 8).map((r) => {
+                const id = String(r.id)
+                const cf =
+                  r.customFields && typeof r.customFields === 'object'
+                    ? (r.customFields as Record<string, unknown>)
+                    : {}
+                const lead = (r.lead as Record<string, unknown> | null) ?? null
+                const product = (r.product as Record<string, unknown> | null) ?? null
+                const leadId = r.leadId ? String(r.leadId) : lead?.id ? String(lead.id) : ''
+                const customer =
+                  String(cf.customerName ?? lead?.name ?? r.customerName ?? 'Customer')
+                const productName = String(
+                  cf.productName ?? product?.name ?? '',
+                )
+                return (
+                  <Link
+                    key={id}
+                    to={
+                      leadId
+                        ? `/sale-tracking/${leadId}`
+                        : `/sale-tracking?queue=requisitions&reqId=${encodeURIComponent(id)}`
+                    }
+                    className="flex items-start justify-between gap-2 rounded-[8px] border border-amber-200/80 bg-amber-50/50 px-3 py-2 text-sm transition hover:border-amber-400 dark:border-amber-900/50 dark:bg-amber-950/30"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">
+                        {String(r.reqNumber ?? 'REQ')} · {customer}
+                      </div>
+                      <div className="mt-0.5 text-xs text-text-secondary">
+                        {[
+                          productName || null,
+                          cf.serialNo ? `S/No ${cf.serialNo}` : null,
+                          r.createdAt ? formatDate(String(r.createdAt)) : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                    </div>
+                    <Badge color="amber">Waiting</Badge>
+                  </Link>
+                )
+              })}
+            </div>
+          )}
+        </Panel>
+
+        <Panel
+          title="Sales day updates"
+          subtitle="Day 1, Day 2… from executives on open leads"
+          action={
+            <Link
+              to="/sale-tracking?queue=demo-updates"
+              className="text-xs font-medium text-accent-blue hover:underline"
+            >
+              All updates →
+            </Link>
+          }
+        >
+          {salesDayUpdates.length === 0 ? (
+            <EmptyHint>No day updates posted yet</EmptyHint>
+          ) : (
+            <div className="space-y-2">
+              {salesDayUpdates.slice(0, 8).map((u, i) => (
+                <Link
+                  key={`${u.leadId}-${u.at}-${i}`}
+                  to={`/sale-tracking/${u.leadId}`}
+                  className="block rounded-[8px] border border-border bg-surface/80 px-3 py-2 text-sm transition hover:border-accent-blue/40"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge color="blue">Day {u.dayNumber}</Badge>
+                    <span className="truncate font-medium">{u.leadName}</span>
+                    {u.status ? (
+                      <span className="text-[11px] text-text-secondary">{labelize(u.status)}</span>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-xs text-text-secondary">{u.note}</p>
+                  <div className="mt-1 text-[11px] text-text-secondary">
+                    {[u.authorName, u.updateDate || (u.at ? formatDate(u.at) : null)]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
+        </Panel>
+
+        <Panel
+          title="Service urgency"
+          subtitle="Open / in-progress jobs by SLA"
+          action={
+            <Link
+              to="/tickets?slaBreached=1"
+              className="text-xs font-medium text-rose-600 hover:underline"
+            >
+              SLA breaches →
+            </Link>
+          }
+        >
+          {attention.length === 0 ? (
+            <EmptyHint>No urgent open service tickets</EmptyHint>
+          ) : (
+            <div className="space-y-2">
+              {attention.slice(0, 8).map((t) => {
+                const id = String(t.id)
+                const breached = Boolean(t.slaBreached)
+                return (
+                  <Link
+                    key={id}
+                    to={`/tickets/${id}`}
+                    className="flex items-start justify-between gap-2 rounded-[8px] border border-border bg-surface/80 px-3 py-2 text-sm transition hover:border-accent-blue/40"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">
+                        {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} ·{' '}
+                        {String(t.subject)}
+                      </div>
+                      <div className="mt-0.5 text-xs text-text-secondary">
+                        {labelize(String(t.status))}
+                        {t.slaDueAt ? ` · due ${formatDate(String(t.slaDueAt))}` : ''}
+                        {Number(t.balanceDue) > 0
+                          ? ` · bal ${formatCurrency(Number(t.balanceDue))}`
+                          : ''}
+                      </div>
+                    </div>
+                    <Badge
+                      color={
+                        breached
+                          ? 'red'
+                          : String(t.priority) === 'HIGH' || String(t.priority) === 'CRITICAL'
+                            ? 'amber'
+                            : 'blue'
+                      }
+                    >
+                      {breached ? 'SLA' : String(t.priority)}
+                    </Badge>
+                  </Link>
+                )
+              })}
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      <SectionHead
         title="Operations snapshot"
-        subtitle="Live from service tickets, sale enquiries, proformas & serial stock — not demo deal amounts"
+        subtitle="Live counts from tickets, leads, proformas & serial stock"
         accent="sky"
       />
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricTile
+          to="/sale-tracking?queue=requisitions"
+          label="Requisitions waiting"
+          value={String(pendingReqCount)}
+          hint="Sales requisitions · waiting for approval"
+          tone="amber"
+          icon={<CheckSquare size={16} />}
+        />
         <MetricTile
           to="/tickets?unassigned=1"
           label="Awaiting assign"
@@ -531,7 +764,7 @@ function OverviewPov({
         />
         <MetricTile
           to="/tickets?status=RESOLVED"
-          label="Awaiting approval"
+          label="Service pay & close"
           value={String(kpiNum(k, 'awaitingApproval'))}
           hint="Engineer complete — admin pay & close"
           tone="amber"
@@ -546,22 +779,14 @@ function OverviewPov({
           icon={<CircleDollarSign size={16} />}
         />
         <MetricTile
-          to="/tickets"
-          label="Service collected"
-          value={formatCurrency(kpiNum(k, 'serviceCollected'))}
-          hint={`${formatCurrency(kpiNum(k, 'serviceCollectedInRange'))} in selected range`}
+          to="/sale-tracking?status=CONVERTED"
+          label="Sales closed — period"
+          value={String(kpiNum(k, 'salesTotalInRange'))}
+          hint={`${formatCurrency(kpiNum(k, 'saleRevenueInRange'))} rev · ${kpiNum(k, 'enquiriesPending')} pending · ${kpiNum(k, 'enquiriesDemo')} demo`}
           tone="emerald"
-          icon={<CircleDollarSign size={16} />}
-        />
-        <MetricTile
-          to="/sale-tracking"
-          label="Sale enquiries"
-          value={String(kpiNum(k, 'totalLeads'))}
-          hint={`${kpiNum(k, 'enquiriesPending')} pending · ${kpiNum(k, 'enquiriesDemo')} on demo · ${kpiNum(k, 'enquiriesConverted')} converted`}
-          tone="indigo"
-          icon={<Users size={16} />}
-          delta={growthLabel(k.leadGrowth)}
-          deltaUp={kpiNum(k, 'leadGrowth') >= 0}
+          icon={<TrendingUp size={16} />}
+          delta={kpiNum(k, 'salesTotalInRange') > 0 ? `${kpiNum(k, 'salesTotalInRange')} won` : undefined}
+          deltaUp
         />
         <MetricTile
           to="/erp/invoices"
@@ -590,7 +815,7 @@ function OverviewPov({
       </div>
 
       {target > 0 ? (
-        <Panel title="Revenue target" subtitle="Company setting · compared to service collections + proforma in range">
+        <Panel title="Revenue target" subtitle="Company setting · sale revenue + service collected + proforma in period">
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
             <span className="text-text-secondary">
               Target {formatCurrency(target)} · progress on paid service + proforma (range)
@@ -655,16 +880,16 @@ function OverviewPov({
         </Panel>
 
         <Panel
-          title="Sale enquiries"
+          title="Lead pipeline"
           subtitle="Pending · demo · converted · closed"
           action={
             <Link to="/sale-tracking" className="text-xs font-medium text-accent-blue hover:underline">
-              Sale tracking →
+              My leads →
             </Link>
           }
         >
           {enquiryByStatus.every((r) => r.value === 0) ? (
-            <EmptyHint>No sale enquiries yet</EmptyHint>
+            <EmptyHint>No leads yet</EmptyHint>
           ) : (
             <div className="space-y-3">
               {enquiryByStatus.map((row, i) => {
@@ -686,91 +911,39 @@ function OverviewPov({
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Panel
-          title="Needs attention"
-          subtitle="Open / in-progress jobs by SLA urgency"
-          action={
-            <Link to="/tickets?slaBreached=1" className="text-xs font-medium text-rose-600 hover:underline">
-              SLA breaches →
-            </Link>
-          }
-        >
-          <div className="space-y-2">
-            {attention.length === 0 ? (
-              <EmptyHint>No open service tickets</EmptyHint>
-            ) : (
-              attention.map((t) => {
-                const id = String(t.id)
-                const breached = Boolean(t.slaBreached)
-                return (
-                  <Link
-                    key={id}
-                    to={`/tickets/${id}`}
-                    className="flex items-start justify-between gap-2 rounded-[8px] border border-border bg-surface/80 px-3 py-2 text-sm transition hover:border-accent-blue/40"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate font-medium">
-                        {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} · {String(t.subject)}
-                      </div>
-                      <div className="mt-0.5 text-xs text-text-secondary">
-                        {labelize(String(t.status))}
-                        {t.slaDueAt ? ` · due ${formatDate(String(t.slaDueAt))}` : ''}
-                        {Number(t.balanceDue) > 0 ? ` · bal ${formatCurrency(Number(t.balanceDue))}` : ''}
-                      </div>
-                    </div>
-                    <Badge
-                      color={
-                        breached
-                          ? 'red'
-                          : String(t.priority) === 'HIGH' || String(t.priority) === 'CRITICAL'
-                            ? 'amber'
-                            : 'blue'
-                      }
-                    >
-                      {breached ? 'SLA' : String(t.priority)}
-                    </Badge>
-                  </Link>
-                )
-              })
-            )}
+        <Panel title="Tickets by status">
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={ticketStatusData} layout="vertical" margin={{ left: 8 }}>
+                <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10 }} />
+                <YAxis type="category" dataKey="name" width={88} tick={{ fontSize: 10 }} />
+                <Tooltip />
+                <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                  {ticketStatusData.map((d) => (
+                    <Cell key={d.name} fill={d.fill} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
           </div>
         </Panel>
-
-        <div className="space-y-4">
-          <Panel title="Tickets by status">
-            <div className="h-48">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={ticketStatusData} layout="vertical" margin={{ left: 8 }}>
-                  <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10 }} />
-                  <YAxis type="category" dataKey="name" width={88} tick={{ fontSize: 10 }} />
-                  <Tooltip />
-                  <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-                    {ticketStatusData.map((d) => (
-                      <Cell key={d.name} fill={d.fill} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+        <Panel title="Serial stock" subtitle="Units by status">
+          {stockByStatus.length === 0 ? (
+            <EmptyHint>No serial stock yet</EmptyHint>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {stockByStatus.map((s) => (
+                <div
+                  key={s.name}
+                  className="rounded-[8px] border border-border bg-surface px-3 py-2 text-sm"
+                >
+                  <div className="text-[11px] text-text-secondary">{labelize(s.name)}</div>
+                  <div className="text-lg font-semibold tabular-nums">{s.value}</div>
+                </div>
+              ))}
             </div>
-          </Panel>
-          <Panel title="Serial stock" subtitle="Units by status">
-            {stockByStatus.length === 0 ? (
-              <EmptyHint>No serial stock yet</EmptyHint>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {stockByStatus.map((s) => (
-                  <div
-                    key={s.name}
-                    className="rounded-[8px] border border-border bg-surface px-3 py-2 text-sm"
-                  >
-                    <div className="text-[11px] text-text-secondary">{labelize(s.name)}</div>
-                    <div className="text-lg font-semibold tabular-nums">{s.value}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </Panel>
-        </div>
+          )}
+        </Panel>
       </div>
     </>
   )
@@ -837,8 +1010,84 @@ function ServicePov({
         </Panel>
       </div>
 
+      <div className="grid gap-3 sm:grid-cols-3">
+        <MetricTile
+          to="/tickets?category=Stamping"
+          label="Stamping jobs — period"
+          value={String(kpiNum(k, 'stampingInRange'))}
+          tone="teal"
+          icon={<CheckSquare size={16} />}
+          hint="Government stamping visits"
+        />
+        <MetricTile
+          to="/tickets?category=AMC"
+          label="AMC visits — period"
+          value={String(kpiNum(k, 'amcInRange'))}
+          tone="cyan"
+          icon={<RefreshCw size={16} />}
+          hint="Annual maintenance visits"
+        />
+        <MetricTile
+          to="/tickets?category=Breakdown"
+          label="Breakdown calls — period"
+          value={String(kpiNum(k, 'breakdownInRange'))}
+          tone="rose"
+          icon={<AlertTriangle size={16} />}
+          hint="Breakdown / repair jobs"
+        />
+      </div>
+
+      {/* Service revenue by category */}
+      <Panel
+        title="Revenue by service type"
+        subtitle="Paid service jobs grouped by category (Breakdown · AMC · Stamping · Installation)"
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-border bg-muted/40 text-[11px] uppercase tracking-wide text-text-secondary">
+                <th className="px-3 py-2.5 font-semibold">Category</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Total jobs</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Open</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Resolved</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Revenue collected</th>
+                <th className="px-3 py-2.5 font-semibold">Volume</th>
+              </tr>
+            </thead>
+            <tbody>
+              {((analytics as Record<string, unknown>).serviceRevenueByCategory as Array<{ name: string; tickets: number; revenue: number; open: number; resolved: number }> ?? []).length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-3 py-8 text-center text-text-secondary">
+                    No service tickets yet — categories come from the ticket form (Breakdown, AMC, Stamping…)
+                  </td>
+                </tr>
+              ) : (
+                (() => {
+                  const rows = (analytics as Record<string, unknown>).serviceRevenueByCategory as Array<{ name: string; tickets: number; revenue: number; open: number; resolved: number }>
+                  const maxTickets = Math.max(...rows.map((r) => r.tickets), 1)
+                  return rows.map((row) => (
+                    <tr key={row.name} className="border-t border-border/70 hover:bg-surface">
+                      <td className="px-3 py-2.5 font-medium">{row.name}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">{row.tickets}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-rose-600">{row.open}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-emerald-600">{row.resolved}</td>
+                      <td className="px-3 py-2.5 text-right font-semibold tabular-nums">
+                        {row.revenue > 0 ? formatCurrency(row.revenue) : '—'}
+                      </td>
+                      <td className="w-40 px-3 py-2.5">
+                        <ProgressTrack pct={Math.round((row.tickets / maxTickets) * 100)} color="#2563EB" />
+                      </td>
+                    </tr>
+                  ))
+                })()
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
       <div className="grid gap-4 lg:grid-cols-2">
-        <Panel title="Created / resolved / breached" subtitle="Monthly ticket volume">
+        <Panel title="Tickets — monthly trend" subtitle="Created vs resolved vs SLA breach">
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={analytics.ticketMonthly ?? []}>
@@ -849,12 +1098,12 @@ function ServicePov({
                 <Legend />
                 <Area type="monotone" dataKey="created" stroke="#2563EB" fill="#2563EB33" name="Created" />
                 <Area type="monotone" dataKey="resolved" stroke="#10B981" fill="#10B98133" name="Resolved" />
-                <Area type="monotone" dataKey="breached" stroke="#EF4444" fill="#EF444433" name="Breached" />
+                <Area type="monotone" dataKey="breached" stroke="#EF4444" fill="#EF444433" name="SLA breach" />
               </AreaChart>
             </ResponsiveContainer>
           </div>
         </Panel>
-        <Panel title="By category">
+        <Panel title="Jobs by category (count)">
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={analytics.ticketsByCategory ?? []}>
@@ -862,42 +1111,42 @@ function ServicePov({
                 <XAxis dataKey="name" tick={{ fontSize: 10 }} />
                 <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
                 <Tooltip />
-                <Bar dataKey="value" fill={chartColors[2]} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="value" fill={chartColors[2] ?? '#2563EB'} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </Panel>
       </div>
 
-      <Panel title="Engineer workload" subtitle="From assigned tickets in DB">
+      <Panel title="Engineer workload" subtitle="Jobs assigned per engineer — open / resolved / SLA breach">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[640px] text-left text-sm">
             <thead>
-              <tr className="border-b border-border text-xs text-text-secondary">
-                <th className="pb-2 font-medium">Assignee</th>
-                <th className="pb-2 font-medium">Total</th>
-                <th className="pb-2 font-medium">Open</th>
-                <th className="pb-2 font-medium">Resolved</th>
-                <th className="pb-2 font-medium">Breached</th>
-                <th className="pb-2 font-medium">Load</th>
+              <tr className="border-b border-border bg-muted/40 text-[11px] uppercase tracking-wide text-text-secondary">
+                <th className="px-3 py-2.5 font-semibold">Engineer</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Total</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Open</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Resolved</th>
+                <th className="px-3 py-2.5 font-semibold text-right">SLA breach</th>
+                <th className="px-3 py-2.5 font-semibold">Open load</th>
               </tr>
             </thead>
             <tbody>
               {(analytics.ticketsByAssignee ?? []).map((row) => {
                 const max = Math.max(...(analytics.ticketsByAssignee ?? []).map((r) => r.open), 1)
                 return (
-                  <tr key={row.id} className="border-b border-border/70 last:border-0">
-                    <td className="py-2.5">
+                  <tr key={row.id} className="border-t border-border/70 hover:bg-surface">
+                    <td className="px-3 py-2.5">
                       <span className="flex items-center gap-2">
                         <Avatar name={row.name} size="sm" />
                         <span className="font-medium">{row.name}</span>
                       </span>
                     </td>
-                    <td className="py-2.5 tabular-nums">{row.total}</td>
-                    <td className="py-2.5 tabular-nums">{row.open}</td>
-                    <td className="py-2.5 tabular-nums">{row.resolved}</td>
-                    <td className="py-2.5 tabular-nums text-rose-600">{row.breached}</td>
-                    <td className="py-2.5 w-40">
+                    <td className="px-3 py-2.5 text-right tabular-nums">{row.total}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{row.open}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{row.resolved}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-rose-600">{row.breached}</td>
+                    <td className="w-40 px-3 py-2.5">
                       <ProgressTrack pct={(row.open / max) * 100} color="#2563EB" />
                     </td>
                   </tr>
@@ -932,6 +1181,7 @@ function ServicePov({
 
 function SalesPov({
   analytics,
+  chartColors,
   target,
   targetPct,
 }: {
@@ -941,40 +1191,50 @@ function SalesPov({
   targetPct: number
 }) {
   const k = analytics.kpis
+  const leadsByOwner = (analytics as Record<string, unknown>).leadsByOwner as Array<{
+    id: string; name: string; total: number; pending: number; demo: number;
+    converted: number; convertedInRange: number; saleRevenue: number; saleRevenueInRange: number; conversionRate: number
+  }> ?? []
+  const monthly = (analytics.monthlyRevenue ?? []) as Array<{ month: string; proforma?: number; servicePaid?: number }>
+
   return (
     <>
-      <SectionHead title="Sales & enquiries" subtitle="Sale tracking · demos · proforma (GST stays in Tally)" accent="emerald" />
+      <SectionHead title="Sales — this period" subtitle="Enquiries converted to sales · revenue by salesperson · open pipeline" accent="emerald" />
+
+      {/* Top row: what matters for HMS admin */}
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricTile
-          label="Pending enquiries"
-          value={String(kpiNum(k, 'enquiriesPending'))}
-          tone="indigo"
-          icon={<Users size={16} />}
-          hint={`${kpiNum(k, 'totalLeads')} total · ${kpiNum(k, 'conversionRate')}% converted`}
-          to="/sale-tracking?status=NEW"
+          label="Sales closed in period"
+          value={String(kpiNum(k, 'salesTotalInRange'))}
+          tone="emerald"
+          icon={<TrendingUp size={16} />}
+          hint={`${kpiNum(k, 'enquiriesConverted')} all-time · ${kpiNum(k, 'conversionRate')}% rate`}
+          to="/sale-tracking?status=CONVERTED"
+          delta={kpiNum(k, 'salesTotalInRange') > 0 ? `${kpiNum(k, 'salesTotalInRange')} won` : undefined}
+          deltaUp
+        />
+        <MetricTile
+          label="Sales revenue in period"
+          value={formatCurrency(kpiNum(k, 'saleRevenueInRange'))}
+          tone="emerald"
+          icon={<CircleDollarSign size={16} />}
+          hint={`All-time: ${formatCurrency(kpiNum(k, 'saleRevenueAllTime'))}`}
+          to="/sale-tracking?status=CONVERTED"
         />
         <MetricTile
           label="Active demos"
           value={String(kpiNum(k, 'enquiriesDemo'))}
           tone="amber"
           icon={<Package size={16} />}
-          hint={`${kpiNum(k, 'demoOut')} serials out on demo`}
+          hint={`${kpiNum(k, 'demoOut')} serial units out · ${kpiNum(k, 'enquiriesPending')} pending enquiries`}
           to="/sale-tracking?status=DEMO"
         />
         <MetricTile
-          label="Converted"
-          value={String(kpiNum(k, 'enquiriesConverted'))}
-          tone="emerald"
-          icon={<TrendingUp size={16} />}
-          hint="Ready for proforma / warehouse"
-          to="/sale-tracking?status=CONVERTED"
-        />
-        <MetricTile
-          label="Proforma total"
-          value={formatCurrency(kpiNum(k, 'invoiceRevenue'))}
+          label="Proforma / invoices"
+          value={formatCurrency(kpiNum(k, 'invoiceRevenueInRange'))}
           tone="cyan"
           icon={<FileText size={16} />}
-          hint={`${kpiNum(k, 'invoiceCount')} documents`}
+          hint={`${kpiNum(k, 'invoiceCount')} docs · all-time ${formatCurrency(kpiNum(k, 'invoiceRevenue'))}`}
           to="/erp/invoices"
         />
       </div>
@@ -984,10 +1244,10 @@ function SalesPov({
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-300">
-                Revenue target (service paid + proforma in range)
+                Revenue target · sales + service paid in period
               </div>
               <div className="mt-1 text-lg font-bold tabular-nums">
-                {formatCurrency(kpiNum(k, 'serviceCollectedInRange') + kpiNum(k, 'invoiceRevenueInRange'))}{' '}
+                {formatCurrency(kpiNum(k, 'saleRevenueInRange') + kpiNum(k, 'serviceCollectedInRange'))}{' '}
                 <span className="text-sm font-normal text-text-secondary">/ {formatCurrency(target)}</span>
               </div>
             </div>
@@ -999,44 +1259,124 @@ function SalesPov({
         </Card>
       ) : null}
 
+      {/* Salesperson leaderboard — who won deals this period */}
+      <Panel
+        title="Who closed sales — this period"
+        subtitle="Sorted by sales won in selected range. Revenue = amount entered when sale was marked complete."
+        action={
+          <Link to="/sale-tracking" className="text-xs font-medium text-emerald-700 hover:underline dark:text-emerald-300">
+            All enquiries →
+          </Link>
+        }
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-border bg-muted/40 text-[11px] uppercase tracking-wide text-text-secondary">
+                <th className="px-3 py-2.5 font-semibold">#</th>
+                <th className="px-3 py-2.5 font-semibold">Salesperson</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Won this period</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Revenue this period</th>
+                <th className="px-3 py-2.5 font-semibold text-right">All-time converted</th>
+                <th className="px-3 py-2.5 font-semibold text-right">All-time revenue</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Conv. rate</th>
+                <th className="px-3 py-2.5 font-semibold text-center">Demo</th>
+                <th className="px-3 py-2.5 font-semibold text-center">Pending</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leadsByOwner.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="px-3 py-8 text-center text-text-secondary">
+                    No leads assigned yet — assign enquiries to salespersons to track performance
+                  </td>
+                </tr>
+              ) : (
+                leadsByOwner.map((row, i) => (
+                  <tr key={row.id} className="border-t border-border/70 hover:bg-surface">
+                    <td className="px-3 py-2.5 tabular-nums text-text-secondary">{i + 1}</td>
+                    <td className="px-3 py-2.5">
+                      <span className="flex items-center gap-2">
+                        <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ${
+                          i === 0 ? 'bg-amber-500' : i === 1 ? 'bg-slate-400' : i === 2 ? 'bg-orange-400' : 'bg-muted text-text-secondary'
+                        }`}>
+                          {String(row.name ?? '').charAt(0).toUpperCase()}
+                        </span>
+                        <span className="font-medium">{row.name}</span>
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      <span className={`font-bold tabular-nums ${row.convertedInRange > 0 ? 'text-emerald-600' : 'text-text-secondary'}`}>
+                        {row.convertedInRange}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      <span className={`font-semibold tabular-nums ${row.saleRevenueInRange > 0 ? 'text-emerald-700 dark:text-emerald-400' : 'text-text-secondary'}`}>
+                        {row.saleRevenueInRange > 0 ? formatCurrency(row.saleRevenueInRange) : '—'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{row.converted}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
+                      {row.saleRevenue > 0 ? formatCurrency(row.saleRevenue) : '—'}
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      <span className={`text-xs font-semibold ${row.conversionRate >= 50 ? 'text-emerald-600' : row.conversionRate >= 25 ? 'text-amber-600' : 'text-rose-600'}`}>
+                        {row.conversionRate}%
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-center tabular-nums text-amber-600">{row.demo || '—'}</td>
+                    <td className="px-3 py-2.5 text-center tabular-nums text-text-secondary">{row.pending}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
       <div className="grid gap-4 lg:grid-cols-2">
-        <Panel title="Billing mix by month">
+        <Panel title="Monthly sales mix" subtitle="Proforma + service paid (last 7 months)">
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={analytics.monthlyRevenue ?? []}>
+              <BarChart data={monthly}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                 <XAxis dataKey="month" tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(Number(v) / 1000)}k`} />
                 <Tooltip formatter={(v) => formatCurrency(Number(v))} />
                 <Legend />
-                <Bar dataKey="proforma" name="Proforma" fill="#06B6D4" radius={[4, 4, 0, 0]} stackId="a" />
-                <Bar dataKey="servicePaid" name="Service paid" fill="#059669" radius={[4, 4, 0, 0]} stackId="a" />
+                <Bar dataKey="proforma" name="Proforma" fill={chartColors[0] ?? '#06B6D4'} radius={[4, 4, 0, 0]} stackId="a" />
+                <Bar dataKey="servicePaid" name="Service paid" fill={chartColors[1] ?? '#059669'} radius={[4, 4, 0, 0]} stackId="a" />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </Panel>
-        <Panel title="Recent enquiries">
-          <div className="space-y-2">
-            {(analytics.recentLeads ?? []).length === 0 ? (
-              <EmptyHint>No enquiries yet</EmptyHint>
-            ) : (
-              (analytics.recentLeads ?? []).map((l) => (
-                <Link
-                  key={String(l.id)}
-                  to={`/sale-tracking/${String(l.id)}`}
-                  className="flex items-center justify-between gap-2 rounded-[8px] border border-border px-3 py-2 text-sm hover:border-accent-blue/40"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate font-medium">{String(l.name ?? '')}</div>
-                    <div className="text-xs text-text-secondary">
-                      {[l.company, l.city].filter(Boolean).map(String).join(' · ') || '—'}
+
+        <Panel
+          title="Live enquiry pipeline"
+          subtitle="Pending · demo · converted · closed"
+          action={
+            <Link to="/sale-tracking" className="text-xs font-medium text-accent-blue hover:underline">All →</Link>
+          }
+        >
+          {(analytics.enquiryByStatus ?? []).every((r) => r.value === 0) ? (
+            <EmptyHint>No leads yet</EmptyHint>
+          ) : (
+            <div className="space-y-3">
+              {(analytics.enquiryByStatus ?? []).map((row, i) => {
+                const max = Math.max(...(analytics.enquiryByStatus ?? []).map((f) => f.value), 1)
+                const pct = Math.round((row.value / max) * 100)
+                return (
+                  <div key={row.name}>
+                    <div className="mb-1 flex items-center justify-between text-xs">
+                      <span className="font-medium text-text-primary">{row.name}</span>
+                      <span className="tabular-nums text-text-secondary">{row.value}</span>
                     </div>
+                    <ProgressTrack pct={pct} color={chartColors[i % chartColors.length]} />
                   </div>
-                  <Badge color="blue">{labelize(String(l.status ?? ''))}</Badge>
-                </Link>
-              ))
-            )}
-          </div>
+                )
+              })}
+            </div>
+          )}
         </Panel>
       </div>
     </>

@@ -23,6 +23,7 @@ import { cn, formatDateTime } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import type { ActivityType } from '@/types'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 
 const typeIcons: Record<string, typeof Phone> = {
   CALL: Phone,
@@ -407,7 +408,7 @@ export function ActivitiesPage() {
               </div>
             )
           })}
-          {loading && <p className="p-12 text-center text-text-secondary">Loading activities…</p>}
+          {loading && <TableSkeleton rows={8} className="p-6" />}
           {!loading && !filtered.length && (
             <p className="p-12 text-center text-text-secondary">No activities match these filters.</p>
           )}

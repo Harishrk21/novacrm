@@ -23,8 +23,16 @@ import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { api, ApiClientError, num } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS, assetOriginShort } from '@/lib/assetOrigin'
 import { assetRequiresStamping, productRequiresStamping } from '@/lib/productCatalog'
+import {
+  STAMP_QUARTERS,
+  stampQuarterFromDate,
+  stampQuarterLabel,
+  stampQuarterOf,
+  type StampQuarter,
+} from '@/lib/hmsCoverage'
 import { formatCurrency, formatDate, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 
 type StockRow = {
   id: string
@@ -164,7 +172,10 @@ export function StampingPage() {
   const [workflowTab, setWorkflowTab] = useState<WorkflowTab>('ALL')
   const [filter, setFilter] = useState<FilterTab>('ALL')
   const [originFilter, setOriginFilter] = useState<OriginFilter>('ALL')
+  const [quarterFilter, setQuarterFilter] = useState<StampQuarter | ''>('')
   const [search, setSearch] = useState('')
+  const currentQuarter = stampQuarterFromDate(new Date())
+  const currentQuarterYear = new Date().getFullYear()
   const [units, setUnits] = useState<StockRow[]>([])
   const [assets, setAssets] = useState<AssetRow[]>([])
   const [products, setProducts] = useState<Array<{ id: string; name: string; sku: string; attributes?: Record<string, unknown> | null }>>([])
@@ -198,9 +209,9 @@ export function StampingPage() {
     setLoading(true)
     try {
       const [unitRes, assetRes, productPage] = await Promise.all([
-        api.stockUnits({ limit: 500 }),
-        api.assets({ limit: 500 }),
-        api.products({ limit: 500 }),
+        api.stockUnits({ limit: 200 }),
+        api.assets({ limit: 200 }),
+        api.products({ limit: 200 }),
       ])
       setUnits((unitRes as StockRow[]) ?? [])
       setAssets((assetRes.items ?? []) as AssetRow[])
@@ -291,11 +302,12 @@ export function StampingPage() {
     return stampingUnits.filter((u) => {
       if (!workflowFilter(u, workflowTab)) return false
       if (!stampFilter(u, filter)) return false
+      if (quarterFilter && stampQuarterOf(u).code !== quarterFilter) return false
       if (!q) return true
       const hay = `${u.serialNo} ${u.product?.name ?? ''} ${u.product?.sku ?? ''}`.toLowerCase()
       return hay.includes(q)
     })
-  }, [stampingUnits, filter, search, workflowTab])
+  }, [stampingUnits, filter, search, workflowTab, quarterFilter])
 
   const filteredAssets = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -304,12 +316,13 @@ export function StampingPage() {
       if (!stampFilter(a, filter)) return false
       if (originFilter === 'SOLD_BY_US' && a.origin !== 'SOLD_BY_US') return false
       if (originFilter === 'THIRD_PARTY' && a.origin !== 'THIRD_PARTY') return false
+      if (quarterFilter && stampQuarterOf(a).code !== quarterFilter) return false
       if (!q) return true
       const c = a.contact as { name?: string } | undefined
       const hay = `${a.name} ${a.serialNo ?? ''} ${c?.name ?? ''}`.toLowerCase()
       return hay.includes(q)
     })
-  }, [stampingAssets, filter, originFilter, search, workflowTab])
+  }, [stampingAssets, filter, originFilter, search, workflowTab, quarterFilter])
 
   function openCreate(kind: 'warehouse' | 'customer') {
     setCreateKind(kind)
@@ -474,7 +487,7 @@ export function StampingPage() {
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Stamping' }]}
         actions={
           <div className="flex flex-wrap gap-2">
-            <Link to="/tickets?category=Stamping&open=1">
+            <Link to="/tickets?open=1&job=stamping&category=Stamping">
               <Button>
                 <Plus size={16} /> New stamping job
               </Button>
@@ -494,27 +507,47 @@ export function StampingPage() {
         }
       />
 
-      <Card className="mb-4 p-4">
-        <p className="text-sm font-medium text-text-primary">
-          Walk-in for stamping = a Service ticket (same 6 steps)
+      <Card className="mb-4 border-violet-200/80 bg-violet-50/50 p-4 dark:border-violet-900/40 dark:bg-violet-950/20">
+        <p className="text-sm font-semibold text-text-primary">
+          Now: {stampQuarterLabel(currentQuarter, currentQuarterYear)}
         </p>
-        <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-text-secondary">
+        <p className="mt-1 text-sm text-text-secondary">
+          HMS stamps by quarter — A Jan–Mar · B Apr–Jun · C Jul–Sep · D Oct–Dec. Machines sold in
+          this window are tagged {currentQuarter}. Reminders go out at the start of that quarter
+          (and ~1 week before each due date).
+        </p>
+      </Card>
+
+      <Card className="mb-4 border-violet-200/70 bg-violet-50/40 p-4 dark:border-violet-900/40 dark:bg-violet-950/20">
+        <p className="text-sm font-semibold text-text-primary">
+          Service-team stamping follow-up (walk-in)
+        </p>
+        <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-sm text-text-secondary">
           <li>
-            Desk clicks <strong>New stamping job</strong> — category first. Pick customer + machine.
-            Desk does <strong>not</strong> enter today’s stamp date.
+            Click <strong>New stamping job</strong> (or <strong>Start follow-up</strong> on a due row).
           </li>
           <li>
-            <strong>Sold by us</strong> shows <em>stamping valid till</em> on file.{' '}
-            <strong>Outside</strong> is marked clearly (came only for stamping).
+            Search the <strong>old customer</strong>. If not found, add customer first, then return.
           </li>
           <li>
-            Same pipeline: Created → Assigned → On site → Daily tracking → Admin close → Invoice.
+            Choose path:{' '}
+            <strong>Existing machine came</strong> → pick machine · or{' '}
+            <strong>New machine for stamping</strong> → add under customer (Outside + Stamping), then
+            continue.
           </li>
           <li>
-            After verification, <strong>engineer</strong> enters stamp date + valid till, then Mark
-            complete (updates machine register).
+            Create the job (no stamp date yet). Desk can <strong>Take &amp; start</strong> or an
+            engineer Accepts.
+          </li>
+          <li>
+            After verification: enter <strong>stamping date</strong> + <strong>next due / valid till</strong>{' '}
+            (defaults +1 year) → Mark complete → pay &amp; close. Machine register updates
+            automatically.
           </li>
         </ol>
+        <p className="mt-2 text-xs text-text-secondary">
+          Use <strong>Record dates only</strong> only to correct the register without a visit ticket.
+        </p>
       </Card>
 
       <div className="mb-3 flex flex-wrap gap-2">
@@ -585,11 +618,23 @@ export function StampingPage() {
             ]}
           />
         ) : null}
+        <Select
+          className="w-48"
+          value={quarterFilter}
+          onChange={(e) => setQuarterFilter(e.target.value as StampQuarter | '')}
+          options={[
+            { value: '', label: 'All quarters' },
+            ...STAMP_QUARTERS.map((q) => ({
+              value: q.code,
+              label: `Quarter ${q.code} · ${q.months}${q.code === currentQuarter ? ' (now)' : ''}`,
+            })),
+          ]}
+        />
       </div>
 
       <Card padding={false}>
         {loading ? (
-          <p className="p-6 text-sm text-text-secondary">Loading…</p>
+          <TableSkeleton rows={8} />
         ) : mainTab === 'warehouse' ? (
           filteredUnits.length === 0 ? (
             <EmptyState
@@ -620,6 +665,9 @@ export function StampingPage() {
                         <span className="font-mono font-medium text-text-primary">{u.serialNo}</span>
                         <span>{u.product?.sku}</span>
                         <span>{u.warehouse?.name}</span>
+                        <Badge color={stampQuarterOf(u).code === currentQuarter ? 'purple' : 'gray'}>
+                          {stampQuarterOf(u).label}
+                        </Badge>
                       </div>
                     </div>
                     <div className="hidden shrink-0 text-right sm:block">
@@ -661,46 +709,65 @@ export function StampingPage() {
           <div className="divide-y divide-border">
             {filteredAssets.map((a) => {
               const c = a.contact as AssetRow['contact']
+              const contactId = c?.id || a.contactId
               const renewal = a.nextDueDate
                 ? String(a.nextDueDate).slice(0, 10)
                 : renewalDueFromStamp(a.stampingDate ? String(a.stampingDate) : null)
+              const followUpTo =
+                contactId
+                  ? `/tickets?open=1&job=stamping&category=Stamping&machine=existing&contactId=${encodeURIComponent(String(contactId))}&assetId=${encodeURIComponent(String(a.id))}`
+                  : '/tickets?open=1&job=stamping&category=Stamping'
               return (
-                <button
+                <div
                   key={String(a.id)}
-                  type="button"
-                  className="flex w-full items-center gap-4 px-4 py-4 text-left transition hover:bg-muted/40"
-                  onClick={() => openDetailAsset(a)}
+                  className="flex w-full items-center gap-3 px-4 py-4 transition hover:bg-muted/40"
                 >
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-sky-100 text-sky-700">
-                    <Building2 size={18} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="font-semibold text-text-primary">{String(a.name)}</div>
-                    <div className="mt-0.5 text-xs text-text-secondary">
-                      {c?.customerCode ? `${c.customerCode} · ` : ''}{c?.name ?? '—'}
-                      {a.serialNo ? ` · ${String(a.serialNo)}` : ''}
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-4 text-left"
+                    onClick={() => openDetailAsset(a)}
+                  >
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-sky-100 text-sky-700">
+                      <Building2 size={18} />
                     </div>
-                  </div>
-                  <div className="hidden shrink-0 text-right sm:block">
-                    {a.stampingDate ? (
-                      <div className="text-sm font-medium">{formatDate(String(a.stampingDate))}</div>
-                    ) : (
-                      <Badge color="amber">Pending</Badge>
-                    )}
-                    {renewal ? (
-                      <div className="mt-0.5 text-xs text-text-secondary">Due {formatDate(renewal)}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold text-text-primary">{String(a.name)}</div>
+                      <div className="mt-0.5 text-xs text-text-secondary">
+                        {c?.customerCode ? `${c.customerCode} · ` : ''}{c?.name ?? '—'}
+                        {a.serialNo ? ` · ${String(a.serialNo)}` : ''}
+                        {' · '}
+                        {stampQuarterOf(a).label}
+                      </div>
+                    </div>
+                    <div className="hidden shrink-0 text-right sm:block">
+                      {a.stampingDate ? (
+                        <div className="text-sm font-medium">{formatDate(String(a.stampingDate))}</div>
+                      ) : (
+                        <Badge color="amber">Pending</Badge>
+                      )}
+                      {renewal ? (
+                        <div className="mt-0.5 text-xs text-text-secondary">Due {formatDate(renewal)}</div>
+                      ) : null}
+                    </div>
+                    <Badge color={a.origin === 'THIRD_PARTY' ? 'amber' : 'blue'}>
+                      {assetOriginShort(a.origin ? String(a.origin) : null)}
+                    </Badge>
+                    {isStampingDue(a) ? (
+                      <Badge color="red">Due</Badge>
+                    ) : isStampingInProgress(a) ? (
+                      <Badge color="blue">In progress</Badge>
                     ) : null}
-                  </div>
-                  <Badge color={a.origin === 'THIRD_PARTY' ? 'amber' : 'blue'}>
-                    {assetOriginShort(a.origin ? String(a.origin) : null)}
-                  </Badge>
-                  {isStampingDue(a) ? (
-                    <Badge color="red">Due</Badge>
-                  ) : isStampingInProgress(a) ? (
-                    <Badge color="blue">In progress</Badge>
-                  ) : null}
-                  <ChevronRight size={16} className="shrink-0 text-text-secondary" />
-                </button>
+                  </button>
+                  {isStampingDue(a) && contactId ? (
+                    <Link to={followUpTo} onClick={(e) => e.stopPropagation()}>
+                      <Button size="sm" variant="outline">
+                        Start follow-up
+                      </Button>
+                    </Link>
+                  ) : (
+                    <ChevronRight size={16} className="shrink-0 text-text-secondary" />
+                  )}
+                </div>
               )
             })}
           </div>
@@ -872,6 +939,7 @@ export function StampingPage() {
           setDetailAsset(null)
         }}
         width={560}
+        storageKey="nova.drawer.stamping.detail"
         title={
           detailUnit
             ? (
@@ -897,15 +965,15 @@ export function StampingPage() {
             ((detailAsset.contact as { id?: string })?.id || detailAsset.contactId) ? (
               <Link
                 className="flex-1"
-                to={`/tickets?contactId=${encodeURIComponent(
+                to={`/tickets?open=1&job=stamping&category=Stamping&machine=existing&contactId=${encodeURIComponent(
                   String((detailAsset.contact as { id?: string })?.id || detailAsset.contactId),
-                )}&assetId=${encodeURIComponent(String(detailAsset.id))}&category=Stamping&open=1`}
+                )}&assetId=${encodeURIComponent(String(detailAsset.id))}`}
                 onClick={() => {
                   setDetailAsset(null)
                 }}
               >
-                <Button className="w-full" variant="outline">
-                  Open stamping job
+                <Button className="w-full">
+                  Start stamping follow-up
                 </Button>
               </Link>
             ) : null}

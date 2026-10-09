@@ -4,12 +4,14 @@ import { z } from "zod";
 import type { Prisma } from "@prisma/client";
 import { authenticate } from "../../middleware/auth.middleware.js";
 import { requireTenant } from "../../middleware/tenant.middleware.js";
+import { requirePermission } from "../../middleware/permissions.middleware.js";
 import { validate } from "../../middleware/validate.middleware.js";
 import { success } from "../../common/utils/response.js";
 import { paramId } from "../../common/utils/params.js";
 import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { pagination, pageResult } from "../../common/utils/pagination.js";
+import { allPool } from "../../common/utils/concurrency.js";
 import { AppError, notFound } from "../../common/errors.js";
 import { isScopedEmployeeRole, canAssignTicketsRole, canApproveTicketsRole, canCreateTicketsRole, isServiceDeskRole } from "../../common/utils/scope.js";
 import { notifyTicketCompleted, notifyTicketPaidFully, notifyPaymentDue, notifyTicketCreatedCustomer, notifyTicketAssignedEngineer, notifyTicketStatusUpdate, refreshSlaBreached } from "./ticketNotify.service.js";
@@ -23,10 +25,14 @@ import {
 } from "./ticketLifecycle.js";
 import {
   createNotifications,
+  expireEntityNotifications,
   notifyAdmins,
+  notifyTicketApprovers,
+  notifyServiceEngineers,
   resolveEntityNotifications,
 } from "../notifications/notify.service.js";
 import { create as createInvoice } from "../invoices/invoices.service.js";
+import { defaultNextAmcService } from "../../common/hmsCoverage.js";
 import { updateStatus as updateInvoiceStatus } from "../invoices/invoices.service.js";
 
 const money = z.coerce.number().nonnegative().optional();
@@ -93,6 +99,22 @@ function parseDate(v: unknown): Date | null {
   if (v == null || v === "") return null;
   const d = new Date(String(v));
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function addOneYear(d: Date): Date {
+  const next = new Date(d.getTime());
+  next.setFullYear(next.getFullYear() + 1);
+  return next;
+}
+
+/** Stamping follow-up jobs (category / visitPurpose). */
+function isStampingTicket(row: { customFields?: unknown }): boolean {
+  const cf = ticketCf(row.customFields);
+  return (
+    String(cf.category ?? "") === "Stamping" ||
+    String(cf.workType ?? "") === "Stamping" ||
+    String(cf.visitPurpose ?? "") === "STAMPING"
+  );
 }
 
 function num(v: unknown) {
@@ -429,7 +451,7 @@ async function ensureServiceInvoice(
 export const ticketsRouter = Router();
 ticketsRouter.use(authenticate, requireTenant);
 
-ticketsRouter.get("/summary", async (q: Request, r: Response) => {
+ticketsRouter.get("/summary", requirePermission("tickets:view"), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   await refreshSlaBreached(t);
   const uid = q.auth!.userId;
@@ -454,48 +476,66 @@ ticketsRouter.get("/summary", async (q: Request, r: Response) => {
   const in30 = new Date();
   in30.setDate(in30.getDate() + 30);
 
-  const [open, overdue, unassigned, resolvedToday, byStatus, openJobs, assetsDue, onlyOpen] = await Promise.all([
-    prisma.ticket.count({ where: { ...base, status: { in: [...OPEN] } } }),
-    prisma.ticket.count({
-      where: {
-        ...base,
-        status: { in: [...OPEN] },
-        AND: [...scopeAnd, { OR: [{ slaBreached: true }, { slaDueAt: { lt: new Date() } }] }],
-      },
-    }),
-    isScopedEmployeeRole(q.auth?.role)
-      ? Promise.resolve(0)
-      : prisma.ticket.count({
-          where: { tenantId: t, deletedAt: null, status: { in: [...OPEN] }, assignedToId: null },
-        }),
-    prisma.ticket.count({
-      where: {
-        ...base,
-        status: { in: ["RESOLVED", "CLOSED"] },
-        AND: [...scopeAnd, { OR: [{ resolvedAt: { gte: start } }, { closedAt: { gte: start } }] }],
-      },
-    }),
-    prisma.ticket.groupBy({
-      by: ["status"],
-      where: { ...base },
-      _count: { _all: true },
-    }),
-    prisma.ticket.findMany({
-      where: { ...base, status: { in: [...OPEN] } },
-      select: { paymentTotal: true, advanceAmount: true },
-    }),
-    prisma.customerAsset.count({
-      where: {
-        tenantId: t,
-        deletedAt: null,
-        OR: [
-          { nextDueDate: { lte: in30, not: null } },
-          { amcEndDate: { lte: in30, not: null } },
-        ],
-      },
-    }),
-    prisma.ticket.count({ where: { ...base, status: "OPEN" } }),
-  ]);
+  const [open, overdue, unassigned, resolvedToday, byStatus, openJobs, assetsDue, onlyOpen] =
+    await allPool(
+      [
+        () => prisma.ticket.count({ where: { ...base, status: { in: [...OPEN] } } }),
+        () =>
+          prisma.ticket.count({
+            where: {
+              ...base,
+              status: { in: [...OPEN] },
+              AND: [...scopeAnd, { OR: [{ slaBreached: true }, { slaDueAt: { lt: new Date() } }] }],
+            },
+          }),
+        () =>
+          isScopedEmployeeRole(q.auth?.role)
+            ? Promise.resolve(0)
+            : prisma.ticket.count({
+                where: {
+                  tenantId: t,
+                  deletedAt: null,
+                  status: { in: [...OPEN] },
+                  assignedToId: null,
+                },
+              }),
+        () =>
+          prisma.ticket.count({
+            where: {
+              ...base,
+              status: { in: ["RESOLVED", "CLOSED"] },
+              AND: [
+                ...scopeAnd,
+                { OR: [{ resolvedAt: { gte: start } }, { closedAt: { gte: start } }] },
+              ],
+            },
+          }),
+        () =>
+          prisma.ticket.groupBy({
+            by: ["status"],
+            where: { ...base },
+            _count: { _all: true },
+          }),
+        () =>
+          prisma.ticket.findMany({
+            where: { ...base, status: { in: [...OPEN] } },
+            select: { paymentTotal: true, advanceAmount: true },
+          }),
+        () =>
+          prisma.customerAsset.count({
+            where: {
+              tenantId: t,
+              deletedAt: null,
+              OR: [
+                { nextDueDate: { lte: in30, not: null } },
+                { amcEndDate: { lte: in30, not: null } },
+              ],
+            },
+          }),
+        () => prisma.ticket.count({ where: { ...base, status: "OPEN" } }),
+      ],
+      3,
+    );
 
   const balanceOutstanding = openJobs.reduce(
     (s, j) => s + Math.max(0, num(j.paymentTotal) - num(j.advanceAmount)),
@@ -514,7 +554,7 @@ ticketsRouter.get("/summary", async (q: Request, r: Response) => {
   });
 });
 
-ticketsRouter.get("/", async (q: Request, r: Response) => {
+ticketsRouter.get("/", requirePermission("tickets:view"), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   await refreshSlaBreached(t);
   const p = pagination(q.query);
@@ -548,17 +588,40 @@ ticketsRouter.get("/", async (q: Request, r: Response) => {
     isScopedEmployeeRole(q.auth?.role);
 
   if (mine) {
+    // Engineers also see the open claim pool (unassigned OPEN) so they can Accept jobs
+    const includeClaimPool =
+      q.auth?.role === "SERVICE_ENGINEER" ||
+      q.query.claimable === "1" ||
+      q.query.claimable === "true";
     and.push({
       OR: [
         { assignedToId: uid },
         { receivedByUserId: uid },
         { deliveredByUserId: uid },
+        ...(includeClaimPool
+          ? [{ AND: [{ status: "OPEN" as const }, { assignedToId: null }] }]
+          : []),
       ],
     });
   } else if (q.query.assignedToId === "unassigned") {
     where.assignedToId = null;
   } else if (q.query.assignedToId) {
     where.assignedToId = String(q.query.assignedToId);
+  }
+
+  // Area filter — desk segregates jobs by customer area
+  if (q.query.area) {
+    const area = String(q.query.area).trim();
+    if (area) {
+      const areaContacts = await prisma.contact.findMany({
+        where: { tenantId: t, deletedAt: null, area: { contains: area } },
+        select: { id: true },
+        take: 2000,
+      });
+      and.push({
+        contactId: { in: areaContacts.map((c) => c.id) },
+      });
+    }
   }
 
   if (q.query.search) {
@@ -647,7 +710,7 @@ ticketsRouter.get("/", async (q: Request, r: Response) => {
   return success(r, pageResult(enriched, total, p.page, p.limit));
 });
 
-ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) => {
+ticketsRouter.post("/", requirePermission("tickets:create"), validate(createSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const role = q.auth?.role;
   if (!canCreateTicketsRole(role)) {
@@ -701,6 +764,19 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
 
   const paymentStatus =
     d.paymentStatus ?? derivePaymentStatus(paymentTotal, advanceAmount);
+
+  // Snapshot customer area onto ticket for desk segregation / engineer claim cards
+  let serviceArea: string | null = null;
+  if (d.contactId) {
+    const c = await prisma.contact.findFirst({
+      where: { id: d.contactId, tenantId: t, deletedAt: null },
+      select: { area: true, name: true },
+    });
+    serviceArea = c?.area?.trim() || null;
+  }
+  if (serviceArea) {
+    (customFields as Record<string, unknown>).serviceArea = serviceArea;
+  }
 
   const assignedToId = isServiceDeskRole(role) ? null : (d.assignedToId ?? d.receivedByUserId ?? null);
   const initialStatus = isServiceDeskRole(role)
@@ -790,12 +866,24 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
       console.error("ticket create whatsapp engineer failed", err);
     }
   } else {
+    const areaHint = serviceArea ? ` · Area: ${serviceArea}` : "";
     await notifyAdmins(
       t,
       {
-        title: "New ticket awaiting assignment",
-        message: `SVC-${String(row.ticketNo).padStart(5, "0")} ${row.subject} — assign a service engineer`,
+        title: "New ticket in open pool",
+        message: `SVC-${String(row.ticketNo).padStart(5, "0")} ${row.subject}${areaHint} — engineers can Accept`,
         type: "TICKET_CREATED",
+        entityType: "ticket",
+        entityId: row.id,
+      },
+      q,
+    );
+    await notifyServiceEngineers(
+      t,
+      {
+        title: "New service job — Accept to take it",
+        message: `SVC-${String(row.ticketNo).padStart(5, "0")} ${row.subject}${areaHint}. First engineer to Accept gets the job.`,
+        type: "TICKET_AVAILABLE",
         entityType: "ticket",
         entityId: row.id,
       },
@@ -829,7 +917,7 @@ ticketsRouter.post("/", validate(createSchema), async (q: Request, r: Response) 
   );
 });
 
-ticketsRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) => {
+ticketsRouter.get("/:id", requirePermission("tickets:view"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   await refreshSlaBreached(t, [id]);
@@ -930,7 +1018,7 @@ ticketsRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) =>
   });
 });
 
-ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Response) => {
+ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const role = q.auth?.role;
@@ -943,37 +1031,41 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
   const existing = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
   if (!existing) throw notFound("Ticket");
 
+  const stampingJob = isStampingTicket(existing);
   // Role gates
   if ("assignedToId" in d || "receivedByUserId" in d) {
-    if (!canAssignTicketsRole(role)) {
+    // Stamping follow-ups: desk may assign self or an engineer (A–Z walk-in flow).
+    const deskMayAssignStamping = isServiceDeskRole(role) && stampingJob;
+    if (!canAssignTicketsRole(role) && !deskMayAssignStamping) {
       throw new AppError("Only admin can assign tickets", 403);
     }
   }
   if (d.status === "CLOSED" && !canApproveTicketsRole(role)) {
-    throw new AppError("Only admin can approve and close completed service", 403);
+    throw new AppError("Only admin or service desk can approve and close completed service", 403);
   }
   if (isScopedEmployeeRole(role)) {
-    // Engineer may update payment amounts (advance / total / OD) but cannot reassign,
+    // Engineer may update payment amounts + method/proof on site, but cannot reassign,
     // mark PAID, or close the ticket.
     delete d.assignedToId;
     delete d.receivedByUserId;
     delete d.deliveredByUserId;
     delete d.paymentStatus;
-    delete d.paymentMethod;
-    delete d.paymentReference;
-    delete d.paymentProofUrl;
     if (d.status && !["IN_PROGRESS", "PENDING", "RESOLVED"].includes(String(d.status))) {
       throw new AppError("Engineers can set In progress, Waiting, or Mark complete only", 403);
     }
   }
-  if (isServiceDeskRole(role)) {
+  if (isServiceDeskRole(role) && !stampingJob) {
+    // Desk cannot assign engineers on normal service, but can mark complete, collect payment, and close.
     delete d.assignedToId;
     delete d.receivedByUserId;
     delete d.deliveredByUserId;
-    delete d.paymentStatus;
-    delete d.paymentMethod;
-    if (d.status === "CLOSED" || d.status === "RESOLVED") {
-      throw new AppError("Service desk cannot complete or close tickets", 403);
+    if (d.status && !["IN_PROGRESS", "PENDING", "RESOLVED", "CLOSED", "OPEN"].includes(String(d.status))) {
+      throw new AppError("Invalid status for service desk", 403);
+    }
+  }
+  if (isServiceDeskRole(role) && stampingJob) {
+    if (d.status && !["IN_PROGRESS", "PENDING", "RESOLVED", "CLOSED", "OPEN"].includes(String(d.status))) {
+      throw new AppError("Invalid status for service desk", 403);
     }
   }
 
@@ -1007,9 +1099,11 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
   const prevStatus = existing.status;
   let nextStatus = typeof d.status === "string" ? d.status : prevStatus;
 
-  // Admin assign → move to IN_PROGRESS when assigning from OPEN
+  // Admin (or desk on stamping) assign → move to IN_PROGRESS when assigning from OPEN
+  const mayAssign =
+    canAssignTicketsRole(role) || (isServiceDeskRole(role) && stampingJob);
   if (
-    canAssignTicketsRole(role) &&
+    mayAssign &&
     "assignedToId" in d &&
     d.assignedToId &&
     !("status" in d) &&
@@ -1058,6 +1152,27 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
   }
   if ("stampingDate" in d) data.stampingDate = parseDate(d.stampingDate);
   if ("nextDueDate" in d) data.nextDueDate = parseDate(d.nextDueDate);
+
+  // Stamping complete: stamp date required; next due defaults to +1 year and syncs to machine.
+  if (stampingJob && (String(nextStatus) === "RESOLVED" || String(nextStatus) === "CLOSED")) {
+    const stamp =
+      ("stampingDate" in data ? (data.stampingDate as Date | null) : null) ??
+      existing.stampingDate;
+    const becomingDone =
+      prevStatus === "OPEN" || prevStatus === "IN_PROGRESS" || prevStatus === "PENDING";
+    if (becomingDone && !stamp) {
+      throw new AppError(
+        "Enter the stamping date (and next due) before marking this stamping job complete",
+        400,
+      );
+    }
+    const due =
+      ("nextDueDate" in data ? (data.nextDueDate as Date | null) : null) ??
+      existing.nextDueDate;
+    if (stamp && !due) {
+      data.nextDueDate = addOneYear(stamp);
+    }
+  }
 
   const existingCf = ticketCf(existing.customFields);
   if ("category" in d || "channel" in d || "customFields" in d || "paymentTotal" in d) {
@@ -1196,6 +1311,17 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
       select: { name: true },
     });
     const svcLabel = `SVC-${String(ticket.ticketNo).padStart(5, "0")}`;
+    // Engineer pool alerts — gone once someone is assigned
+    await expireEntityNotifications(
+      {
+        tenantId: t,
+        entityType: "ticket",
+        entityId: ticket.id,
+        types: ["TICKET_AVAILABLE"],
+        mode: "remove",
+      },
+      q,
+    );
     await resolveEntityNotifications(
       {
         tenantId: t,
@@ -1251,7 +1377,7 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
   }
 
   if (ticket.status === "RESOLVED" && prevStatus !== "RESOLVED" && prevStatus !== "CLOSED") {
-    await notifyAdmins(
+    await notifyTicketApprovers(
       t,
       {
         title: "Pending approval",
@@ -1272,8 +1398,17 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
         tenantId: t,
         entityType: "ticket",
         entityId: ticket.id,
-        types: ["TICKET_PENDING_APPROVAL", "TICKET_PROGRESS"],
-        title: "Ticket approved",
+        types: [
+          "TICKET_PENDING_APPROVAL",
+          "TICKET_PROGRESS",
+          "TICKET_ASSIGNED",
+          "TICKET_REASSIGNED",
+          "TICKET_CLAIMED",
+          "TICKET_TAKEN",
+          "TICKET_CREATED",
+          "TICKET_AVAILABLE",
+        ],
+        title: "Ticket closed",
         message: `${svcLabel} ${ticket.subject} — approved & closed`,
         nextType: "TICKET_APPROVED",
         markRead: true,
@@ -1309,13 +1444,61 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
     if (closeNotifs.length) await createNotifications(closeNotifs, q);
   }
 
-  const stamp = "stampingDate" in d ? parseDate(d.stampingDate) : ticket.stampingDate;
-  const due = "nextDueDate" in d ? parseDate(d.nextDueDate) : ticket.nextDueDate;
+  const stamp =
+    ("stampingDate" in data ? (data.stampingDate as Date | null) : null) ??
+    ("stampingDate" in d ? parseDate(d.stampingDate) : ticket.stampingDate);
+  let due =
+    ("nextDueDate" in data ? (data.nextDueDate as Date | null) : null) ??
+    ("nextDueDate" in d ? parseDate(d.nextDueDate) : ticket.nextDueDate);
+  if (stampingJob && stamp && !due) {
+    due = addOneYear(stamp);
+  }
   const becameResolved =
     ticket.status === "RESOLVED" && prevStatus !== "RESOLVED" && prevStatus !== "CLOSED";
   const becameClosed = ticket.status === "CLOSED" && prevStatus !== "CLOSED";
   if (becameResolved || becameClosed || "stampingDate" in d || "nextDueDate" in d) {
     await syncAssetDates(t, ticket.assetId, stamp, due);
+  }
+
+  // Close out intake lead when the service/stamping ticket finishes
+  if (becameResolved || becameClosed) {
+    const tcfDone = ticketCf(ticket.customFields);
+    const fromLeadId =
+      typeof tcfDone.fromLeadId === "string" ? String(tcfDone.fromLeadId) : null;
+    if (fromLeadId) {
+      const intake = await prisma.lead.findFirst({
+        where: { id: fromLeadId, tenantId: t, deletedAt: null },
+      });
+      if (intake) {
+        const lcf = ticketCf(intake.customFields);
+        await prisma.lead.update({
+          where: { id: intake.id },
+          data: {
+            customFields: {
+              ...lcf,
+              serviceTicketId: ticket.id,
+              serviceTicketNo: ticket.ticketNo,
+              serviceCompletedAt: new Date().toISOString(),
+              serviceTicketStatus: ticket.status,
+            },
+          },
+        });
+      }
+    }
+  }
+
+  // After AMC service job completes, schedule next free visit in 4 months
+  if (becameResolved && ticket.assetId) {
+    const asset = await prisma.customerAsset.findFirst({
+      where: { id: ticket.assetId, tenantId: t, deletedAt: null },
+      select: { id: true, servicePlan: true },
+    });
+    if (asset?.servicePlan === "AMC") {
+      await prisma.customerAsset.update({
+        where: { id: asset.id },
+        data: { nextServiceDueDate: defaultNextAmcService(new Date()) },
+      });
+    }
   }
 
   // Customer WhatsApp — only when UI confirmed sendWhatsApp
@@ -1360,7 +1543,7 @@ ticketsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respon
   });
 });
 
-ticketsRouter.post("/:id/mark-paid", validate(markPaidSchema), async (q: Request, r: Response) => {
+ticketsRouter.post("/:id/mark-paid", requirePermission("tickets:approve"), validate(markPaidSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   if (!canApproveTicketsRole(q.auth?.role)) {
@@ -1478,7 +1661,7 @@ ticketsRouter.post("/:id/mark-paid", validate(markPaidSchema), async (q: Request
   );
 });
 
-ticketsRouter.post("/:id/payment-due", validate(idSchema), async (q: Request, r: Response) => {
+ticketsRouter.post("/:id/payment-due", requirePermission("tickets:write"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   if (!canApproveTicketsRole(q.auth?.role)) {
@@ -1495,7 +1678,7 @@ ticketsRouter.post("/:id/payment-due", validate(idSchema), async (q: Request, r:
   );
 });
 
-ticketsRouter.post("/:id/invoice", validate(idSchema), async (q: Request, r: Response) => {
+ticketsRouter.post("/:id/invoice", requirePermission("tickets:approve"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   if (!canApproveTicketsRole(q.auth?.role)) {
@@ -1534,7 +1717,188 @@ ticketsRouter.post("/:id/invoice", validate(idSchema), async (q: Request, r: Res
   );
 });
 
-ticketsRouter.post("/:id/messages", validate(messageSchema), async (q: Request, r: Response) => {
+ticketsRouter.post("/:id/claim", requirePermission("tickets:write"), validate(idSchema), async (q: Request, r: Response) => {
+  const t = q.auth!.tenantId!;
+  const id = paramId(q);
+  const userId = q.auth!.userId!;
+  const role = q.auth?.role;
+
+  const existing = await prisma.ticket.findFirst({
+    where: { id, tenantId: t, deletedAt: null },
+  });
+  if (!existing) throw notFound("Ticket");
+
+  const deskClaimsStamping = isServiceDeskRole(role) && isStampingTicket(existing);
+  if (role !== "SERVICE_ENGINEER" && !canAssignTicketsRole(role) && !deskClaimsStamping) {
+    throw new AppError("Only service engineers (or admin) can accept open jobs", 403);
+  }
+
+  if (existing.assignedToId) {
+    if (existing.assignedToId === userId) {
+      return success(r, serializeTicket(existing as unknown as Record<string, unknown>), "Already assigned to you");
+    }
+    throw new AppError("This job was already taken by another engineer", 409);
+  }
+  if (existing.status !== "OPEN") {
+    throw new AppError("Only open / unassigned jobs can be accepted", 409);
+  }
+
+  // Atomic claim — only one engineer wins
+  const claimed = await prisma.ticket.updateMany({
+    where: {
+      id,
+      tenantId: t,
+      deletedAt: null,
+      assignedToId: null,
+      status: "OPEN",
+    },
+    data: {
+      assignedToId: userId,
+      receivedByUserId: userId,
+      status: "IN_PROGRESS",
+    },
+  });
+  if (!claimed.count) {
+    throw new AppError("This job was already taken by another engineer", 409);
+  }
+
+  const row = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
+  if (!row) throw notFound("Ticket");
+
+  const cf =
+    row.customFields && typeof row.customFields === "object" && !Array.isArray(row.customFields)
+      ? (row.customFields as Record<string, unknown>)
+      : {};
+  await prisma.ticket.update({
+    where: { id },
+    data: {
+      customFields: {
+        ...cf,
+        claimedAt: new Date().toISOString(),
+        claimedById: userId,
+        claimMode: deskClaimsStamping ? "DESK_STAMPING" : "ENGINEER_ACCEPT",
+      },
+    },
+  });
+
+  await prisma.activity.create({
+    data: {
+      id: newId(),
+      tenantId: t,
+      type: "TASK",
+      title: `Service SVC-${String(row.ticketNo).padStart(5, "0")} — ${row.subject}`,
+      description: deskClaimsStamping
+        ? "Desk took this stamping job — record stamp date + next due when verification is done."
+        : "You accepted this job — add day notes as you work. Desk owns payment until closed.",
+      status: "PENDING",
+      scheduledAt: row.slaDueAt ?? new Date(),
+      assignedToId: userId,
+      contactId: row.contactId,
+      customFields: {
+        auto_from: "ticket_claim",
+        ticketId: row.id,
+        claimed_by: userId,
+      },
+    },
+  });
+
+  await createNotifications(
+    [
+      {
+        tenantId: t,
+        userId,
+        title: "Job accepted — you own it",
+        message: `SVC-${String(row.ticketNo).padStart(5, "0")} ${row.subject}`,
+        type: "TICKET_ASSIGNED",
+        entityType: "ticket",
+        entityId: row.id,
+      },
+    ],
+    q,
+  );
+
+  // Pool alerts expire for everyone else; desk "awaiting assign" becomes done
+  await expireEntityNotifications(
+    {
+      tenantId: t,
+      entityType: "ticket",
+      entityId: row.id,
+      types: ["TICKET_AVAILABLE"],
+      mode: "remove",
+    },
+    q,
+  );
+  await resolveEntityNotifications(
+    {
+      tenantId: t,
+      entityType: "ticket",
+      entityId: row.id,
+      types: ["TICKET_CREATED"],
+      title: "Job claimed by engineer",
+      message: `SVC-${String(row.ticketNo).padStart(5, "0")} was accepted`,
+      nextType: "TICKET_CLAIMED_DONE",
+      markRead: true,
+    },
+    q,
+  );
+
+  const engineer = await prisma.user.findFirst({
+    where: { id: userId, tenantId: t },
+    select: { name: true },
+  });
+  await notifyAdmins(
+    t,
+    {
+      title: "Engineer accepted a job",
+      message: `${engineer?.name ?? "Engineer"} took SVC-${String(row.ticketNo).padStart(5, "0")} ${row.subject}`,
+      type: "TICKET_CLAIMED",
+      entityType: "ticket",
+      entityId: row.id,
+    },
+    q,
+  );
+
+  // Tell other engineers this one is gone (exclude the winner)
+  const engRole = await prisma.role.findFirst({
+    where: { tenantId: t, code: "SERVICE_ENGINEER", deletedAt: null },
+    select: { id: true },
+  });
+  if (engRole) {
+    const otherEngs = await prisma.user.findMany({
+      where: {
+        tenantId: t,
+        deletedAt: null,
+        status: "ACTIVE",
+        roleId: engRole.id,
+        NOT: { id: userId },
+      },
+      select: { id: true },
+    });
+    if (otherEngs.length) {
+      await createNotifications(
+        otherEngs.map((u) => ({
+          tenantId: t,
+          userId: u.id,
+          title: "Job already taken",
+          message: `SVC-${String(row.ticketNo).padStart(5, "0")} was accepted by ${engineer?.name ?? "another engineer"}`,
+          type: "TICKET_TAKEN",
+          entityType: "ticket",
+          entityId: row.id,
+        })),
+        q,
+      );
+    }
+  }
+
+  const fresh = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
+  return success(
+    r,
+    serializeTicket((fresh ?? row) as unknown as Record<string, unknown>),
+    "Job accepted — assigned to you",
+  );
+});
+
+ticketsRouter.post("/:id/messages", requirePermission("tickets:write"), validate(messageSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const ticket = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
@@ -1555,7 +1919,7 @@ ticketsRouter.post("/:id/messages", validate(messageSchema), async (q: Request, 
   return success(r, msg, "Message added", 201);
 });
 
-ticketsRouter.delete("/:id", validate(idSchema), async (q: Request, r: Response) => {
+ticketsRouter.delete("/:id", requirePermission("tickets:delete"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   if (!canApproveTicketsRole(q.auth?.role)) {

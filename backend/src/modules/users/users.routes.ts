@@ -7,9 +7,23 @@ import { requireTenant } from "../../middleware/tenant.middleware.js";
 import { validate } from "../../middleware/validate.middleware.js";
 import { success } from "../../common/utils/response.js";
 import { paramId } from "../../common/utils/params.js";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { AppError, notFound } from "../../common/errors.js";
+import { requirePermission } from "../../middleware/permissions.middleware.js";
+import {
+  mergePreferencesWithInventoryAreas,
+  resolveInventoryAreas,
+  type InventoryAreas,
+} from "../../common/inventoryAreas.js";
+import {
+  clampAllowedModules,
+  loadTenantEnabledModuleKeys,
+  mergePreferencesWithAllowedModules,
+  resolveAllowedModules,
+  type AllowedModules,
+} from "../../common/userModules.js";
 
 const roleEnum = z.enum([
   "ADMIN",
@@ -45,6 +59,14 @@ const avatarUrlField = z
     "Avatar must be an uploaded path or URL",
   );
 
+const inventoryAreasBody = z.object({
+  machines: z.boolean(),
+  sparesBilling: z.boolean(),
+  sparesWeighing: z.boolean(),
+});
+
+const allowedModulesBody = z.record(z.boolean());
+
 const createBody = z.object({
   name: z.string().min(2),
   email: z.string().email(),
@@ -53,6 +75,9 @@ const createBody = z.object({
   avatarUrl: avatarUrlField,
   roleCode: roleEnum.default("SERVICE_ENGINEER"),
   status: z.enum(["ACTIVE", "INACTIVE", "LOCKED"]).optional(),
+  inventoryAreas: inventoryAreasBody.optional(),
+  /** Subset of platform-enabled modules this employee can see in the app. */
+  allowedModules: allowedModulesBody.optional(),
   ...employeeFields,
 });
 
@@ -63,6 +88,8 @@ const updateBody = z.object({
   status: z.enum(["ACTIVE", "INACTIVE", "LOCKED"]).optional(),
   roleCode: roleEnum.optional(),
   password: z.string().min(8).optional(),
+  inventoryAreas: inventoryAreasBody.optional(),
+  allowedModules: allowedModulesBody.optional(),
   ...employeeFields,
 });
 
@@ -79,11 +106,11 @@ async function ensureRole(tenantId: string, code: string) {
   const names: Record<string, string> = {
     ADMIN: "Administrator",
     MANAGER: "Manager",
-    AGENT: "Sales Executive",
+    AGENT: "Sales Desk",
     READ_ONLY: "Read only",
     SERVICE_DESK: "Service Desk",
     SERVICE_ENGINEER: "Service Engineer",
-    SALES_EXECUTIVE: "Sales Executive",
+    SALES_EXECUTIVE: "Sales Desk",
     WAREHOUSE: "Warehouse Team",
   };
   const permissions =
@@ -265,9 +292,9 @@ function serializeEmployee(emp: {
 export const usersRouter = Router();
 usersRouter.use(authenticate, requireTenant);
 
-usersRouter.get("/", async (q: Request, r: Response) => {
+usersRouter.get("/", requirePermission("users:view"), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
-  const [users, employees] = await Promise.all([
+  const [users, employees, tenant, tenantModuleKeys] = await Promise.all([
     prisma.user.findMany({
       where: { tenantId: t, deletedAt: null },
       orderBy: { createdAt: "asc" },
@@ -279,6 +306,7 @@ usersRouter.get("/", async (q: Request, r: Response) => {
         avatarUrl: true,
         status: true,
         roleId: true,
+        preferences: true,
         lastLoginAt: true,
         createdAt: true,
       },
@@ -286,6 +314,11 @@ usersRouter.get("/", async (q: Request, r: Response) => {
     prisma.employee.findMany({
       where: { tenantId: t, deletedAt: null, userId: { not: null } },
     }),
+    prisma.tenant.findFirst({
+      where: { id: t, deletedAt: null },
+      select: { maxUsers: true },
+    }),
+    loadTenantEnabledModuleKeys(t),
   ]);
   const roles = await prisma.role.findMany({
     where: { tenantId: t, deletedAt: null },
@@ -296,20 +329,29 @@ usersRouter.get("/", async (q: Request, r: Response) => {
     employees.filter((e) => e.userId).map((e) => [e.userId!, e]),
   );
   return success(r, {
-    /** HMS has no seat cap — keep fields for older clients; remaining is effectively unlimited. */
-    maxUsers: null,
+    /** Seat cap set by platform when the client was onboarded (null = unlimited). */
+    maxUsers: tenant?.maxUsers ?? null,
     used: users.length,
-    remaining: null,
-    unlimited: true,
-    items: users.map((u) => ({
-      ...u,
-      role: roleMap[u.roleId] ?? null,
-      employee: serializeEmployee(empByUser[u.id] ?? null),
-    })),
+    remaining:
+      tenant?.maxUsers != null ? Math.max(0, tenant.maxUsers - users.length) : null,
+    unlimited: tenant?.maxUsers == null,
+    /** Platform-enabled modules this company may assign to employees. */
+    tenantModules: tenantModuleKeys,
+    items: users.map((u) => {
+      const role = roleMap[u.roleId] ?? null;
+      const { preferences, ...rest } = u;
+      return {
+        ...rest,
+        role,
+        inventoryAreas: resolveInventoryAreas(preferences, role?.code),
+        allowedModules: resolveAllowedModules(preferences, role?.code, tenantModuleKeys),
+        employee: serializeEmployee(empByUser[u.id] ?? null),
+      };
+    }),
   });
 });
 
-usersRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) => {
+usersRouter.get("/:id", requirePermission("users:view"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const user = await prisma.user.findFirst({
@@ -341,12 +383,22 @@ usersRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) => {
   });
 });
 
-usersRouter.post("/", validate(createSchema), async (q: Request, r: Response) => {
+usersRouter.post("/", requirePermission("users:write"), validate(createSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const d = q.body as z.infer<typeof createBody>;
   const tenant = await prisma.tenant.findFirst({ where: { id: t, deletedAt: null } });
   if (!tenant) throw notFound("Tenant");
   const email = d.email.toLowerCase().trim();
+
+  if (tenant.maxUsers != null && tenant.maxUsers > 0) {
+    const used = await prisma.user.count({ where: { tenantId: t, deletedAt: null } });
+    if (used >= tenant.maxUsers) {
+      throw new AppError(
+        `Employee limit reached (${used}/${tenant.maxUsers}). Ask your platform admin to raise the seat allowance.`,
+        403,
+      );
+    }
+  }
 
   const activeSameEmail = await prisma.user.findFirst({
     where: { tenantId: t, email, deletedAt: null },
@@ -382,7 +434,7 @@ usersRouter.post("/", validate(createSchema), async (q: Request, r: Response) =>
       400,
     );
   }
-  const passwordHash = await bcrypt.hash(d.password, 12);
+  const passwordHash = await bcrypt.hash(d.password, 10);
 
   let user: {
     id: string;
@@ -391,9 +443,30 @@ usersRouter.post("/", validate(createSchema), async (q: Request, r: Response) =>
     phone: string | null;
     avatarUrl?: string | null;
     status: string;
+    preferences?: unknown;
     createdAt: Date;
   };
   let restored = false;
+
+  const tenantModuleKeys = await loadTenantEnabledModuleKeys(t);
+  let prefsBase: Record<string, unknown> | null = null;
+  if (d.inventoryAreas != null) {
+    prefsBase = mergePreferencesWithInventoryAreas(null, d.inventoryAreas as InventoryAreas);
+  }
+  if (d.allowedModules != null || d.roleCode === "ADMIN") {
+    const modules =
+      d.roleCode === "ADMIN"
+        ? clampAllowedModules(null, tenantModuleKeys)
+        : clampAllowedModules(d.allowedModules as AllowedModules, tenantModuleKeys);
+    prefsBase = mergePreferencesWithAllowedModules(prefsBase, modules);
+  } else if (prefsBase == null) {
+    // Default new employees to all platform-enabled modules
+    prefsBase = mergePreferencesWithAllowedModules(
+      null,
+      clampAllowedModules(null, tenantModuleKeys),
+    );
+  }
+  const prefsJson = prefsBase != null ? (prefsBase as Prisma.InputJsonValue) : undefined;
 
   if (removed) {
     await prisma.user.update({
@@ -403,8 +476,10 @@ usersRouter.post("/", validate(createSchema), async (q: Request, r: Response) =>
         name: d.name.trim(),
         phone: d.phone,
         passwordHash,
+        tempPassword: d.password,
         status: d.status ?? "ACTIVE",
         deletedAt: null,
+        ...(prefsJson != null ? { preferences: prefsJson } : {}),
         ...("avatarUrl" in d
           ? { avatarUrl: d.avatarUrl?.trim() || null }
           : {}),
@@ -419,6 +494,7 @@ usersRouter.post("/", validate(createSchema), async (q: Request, r: Response) =>
         phone: true,
         avatarUrl: true,
         status: true,
+        preferences: true,
         createdAt: true,
       },
     });
@@ -436,7 +512,9 @@ usersRouter.post("/", validate(createSchema), async (q: Request, r: Response) =>
         phone: d.phone,
         avatarUrl: d.avatarUrl?.trim() || null,
         passwordHash,
+        tempPassword: d.password,
         status: d.status ?? "ACTIVE",
+        ...(prefsJson != null ? { preferences: prefsJson } : {}),
       },
       select: {
         id: true,
@@ -445,6 +523,7 @@ usersRouter.post("/", validate(createSchema), async (q: Request, r: Response) =>
         phone: true,
         avatarUrl: true,
         status: true,
+        preferences: true,
         createdAt: true,
       },
     });
@@ -456,15 +535,23 @@ usersRouter.post("/", validate(createSchema), async (q: Request, r: Response) =>
     { name: user.name, email: user.email, phone: user.phone },
     d,
   );
+  const { preferences, ...userRest } = user;
   return success(
     r,
-    { ...user, role, employee: serializeEmployee(employee), restored },
+    {
+      ...userRest,
+      role,
+      inventoryAreas: resolveInventoryAreas(preferences, role.code),
+      allowedModules: resolveAllowedModules(preferences, role.code, tenantModuleKeys),
+      employee: serializeEmployee(employee),
+      restored,
+    },
     restored ? "Employee restored (was previously removed)" : "Employee created",
     restored ? 200 : 201,
   );
 });
 
-usersRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Response) => {
+usersRouter.patch("/:id", requirePermission("users:write"), validate(updateSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const d = q.body as z.infer<typeof updateBody>;
@@ -478,11 +565,40 @@ usersRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Response
   if ("phone" in d) data.phone = d.phone;
   if ("avatarUrl" in d) data.avatarUrl = d.avatarUrl?.trim() || null;
   if (d.status) data.status = d.status;
-  if (d.password) data.passwordHash = await bcrypt.hash(d.password, 12);
+  if (d.password) {
+    data.passwordHash = await bcrypt.hash(d.password, 10);
+    data.tempPassword = d.password;
+  }
   if (d.roleCode) {
     const role = await ensureRole(t, d.roleCode);
     data.roleId = role.id;
   }
+  const tenantModuleKeys = await loadTenantEnabledModuleKeys(t);
+  const nextRoleCode = d.roleCode ?? (
+    await prisma.role.findFirst({ where: { id: existing.roleId }, select: { code: true } })
+  )?.code;
+
+  let prefs: unknown = existing.preferences;
+  let prefsChanged = false;
+  if (d.inventoryAreas) {
+    prefs = mergePreferencesWithInventoryAreas(
+      prefs,
+      d.inventoryAreas as InventoryAreas,
+    );
+    prefsChanged = true;
+  }
+  if (d.allowedModules != null || nextRoleCode === "ADMIN") {
+    const modules =
+      nextRoleCode === "ADMIN"
+        ? clampAllowedModules(null, tenantModuleKeys)
+        : clampAllowedModules(d.allowedModules as AllowedModules, tenantModuleKeys);
+    prefs = mergePreferencesWithAllowedModules(prefs, modules);
+    prefsChanged = true;
+  }
+  if (prefsChanged) {
+    data.preferences = prefs as Prisma.InputJsonValue;
+  }
+
   const nextPhone = "phone" in d ? d.phone : existing.phone;
   const phoneDigits = String(nextPhone ?? "").replace(/\D/g, "");
   if (phoneDigits.length < 10) {
@@ -507,6 +623,7 @@ usersRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Response
       avatarUrl: true,
       status: true,
       roleId: true,
+      preferences: true,
       lastLoginAt: true,
       createdAt: true,
     },
@@ -522,10 +639,17 @@ usersRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Response
     { name: user.name, email: user.email, phone: user.phone },
     d,
   );
-  return success(r, { ...user, role, employee: serializeEmployee(employee) });
+  const { preferences, ...userRest } = user;
+  return success(r, {
+    ...userRest,
+    role,
+    inventoryAreas: resolveInventoryAreas(preferences, role?.code),
+    allowedModules: resolveAllowedModules(preferences, role?.code, tenantModuleKeys),
+    employee: serializeEmployee(employee),
+  });
 });
 
-usersRouter.delete("/:id", validate(idSchema), async (q: Request, r: Response) => {
+usersRouter.delete("/:id", requirePermission("users:delete"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   if (id === q.auth!.userId) throw new AppError("You cannot delete your own login", 400);

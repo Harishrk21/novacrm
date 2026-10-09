@@ -20,6 +20,7 @@ import { api, ApiClientError, num } from '@/lib/api'
 import { assetUrl } from '@/lib/formValidation'
 import { formatCurrency, formatDate, formatDateTime } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
+import { DetailSkeleton } from '@/components/ui/Skeleton'
 
 function labelize(value: string) {
   return value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
@@ -88,7 +89,7 @@ export function ProductDetailPage() {
     }
   }
 
-  if (loading) return <Card className="p-6 text-sm text-text-secondary">Loading product…</Card>
+  if (loading) return <DetailSkeleton />
   if (!product) {
     return (
       <EmptyState
@@ -218,12 +219,10 @@ export function ProductDetailPage() {
             ) : null}
             <div className="mt-4 flex flex-wrap gap-4 text-sm">
               <div>
-                <div className="text-xs text-text-secondary">Sale price</div>
-                <div className="text-lg font-semibold">{formatCurrency(num(product.salePrice))}</div>
-              </div>
-              <div>
-                <div className="text-xs text-text-secondary">Purchase</div>
-                <div className="text-lg font-semibold">{formatCurrency(num(product.purchasePrice))}</div>
+                <div className="text-xs text-text-secondary">HSN code</div>
+                <div className="text-lg font-semibold font-mono">
+                  {product.hsnSac ? String(product.hsnSac) : '—'}
+                </div>
               </div>
               <div>
                 <div className="text-xs text-text-secondary">On hand</div>
@@ -245,9 +244,7 @@ export function ProductDetailPage() {
             {[
               ['Category', category?.name],
               ['Unit', product.unit],
-              ['HSN / SAC', product.hsnSac],
-              ['Tax %', `${num(product.taxPercent)}%`],
-              ['MRP', product.mrp != null ? formatCurrency(num(product.mrp)) : null],
+              ['HSN code', product.hsnSac],
               ['Reorder level', product.reorderLevel],
               ['Track inventory', product.trackInventory ? 'Yes' : 'No'],
               ['Brand', attrs.brand],

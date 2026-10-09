@@ -95,9 +95,15 @@ const importMachine = z
     platformSize: z.string().nullable().optional(),
     origin: z.string().nullable().optional(),
     servicePlan: z.string().nullable().optional(),
+    warrantyEndDate: z.string().nullable().optional(),
+    amcStartDate: z.string().nullable().optional(),
+    amcEndDate: z.string().nullable().optional(),
+    nextServiceDueDate: z.string().nullable().optional(),
     stampingDate: z.string().nullable().optional(),
     nextDueDate: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
+    /** Units of same model when serial is blank. Ignored when serialNo is set. */
+    quantity: z.union([z.number(), z.string()]).nullable().optional(),
   })
   .nullable()
   .optional();
@@ -123,6 +129,8 @@ const importRow = z.object({
 export const importSchema = z.object({
   body: z.object({
     rows: z.array(importRow).min(1).max(500),
+    /** Sales register vs service register — same phone still clubs into one customer. */
+    source: z.enum(["SALES", "SERVICE"]).optional(),
   }),
   query: z.any(),
   params: z.any(),

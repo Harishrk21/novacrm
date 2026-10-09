@@ -9,6 +9,14 @@ function downloadBlob(filename: string, blob: Blob) {
   URL.revokeObjectURL(url)
 }
 
+function escapeHtml(v: unknown) {
+  return String(v ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+}
+
 export function downloadCsv(filename: string, rows: Array<Record<string, unknown>>) {
   if (!rows.length) {
     downloadBlob(filename, new Blob([''], { type: 'text/csv;charset=utf-8' }))
@@ -39,28 +47,82 @@ export function downloadXlsx(
   XLSX.writeFile(wb, filename)
 }
 
-export function printReportHtml(title: string, sections: Array<{ heading: string; html: string }>) {
-  const win = window.open('', '_blank', 'noopener,noreferrer,width=960,height=720')
-  if (!win) return
-  win.document.write(`<!doctype html><html><head><title>${title}</title>
-    <style>
-      body{font-family:ui-sans-serif,system-ui,sans-serif;color:#0f172a;margin:24px;line-height:1.45}
-      h1{font-size:22px;margin:0 0 8px} h2{font-size:15px;margin:20px 0 8px;border-bottom:1px solid #e2e8f0;padding-bottom:4px}
-      table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
-      th,td{border:1px solid #e2e8f0;padding:6px 8px;text-align:left}
-      th{background:#f8fafc} .meta{color:#64748b;font-size:12px;margin-bottom:16px}
-      @media print{body{margin:12px}}
-    </style></head><body>
-    <h1>${title}</h1>
-    <div class="meta">Generated ${new Date().toLocaleString('en-IN')} · HMS Enterprises</div>
-    ${sections.map((s) => `<h2>${s.heading}</h2>${s.html}`).join('')}
-    <script>window.onload=()=>{window.print()}</script>
-    </body></html>`)
-  win.document.close()
+/**
+ * Open a print-ready HTML report. Returns false if writing failed.
+ * Pass an existing `target` window opened in the same click gesture (avoids blank tabs after async fetch).
+ */
+export function printReportHtml(
+  title: string,
+  sections: Array<{ heading: string; html: string }>,
+  target?: Window | null,
+): boolean {
+  const safeTitle = escapeHtml(title)
+  const body = sections
+    .map((s) => `<h2>${escapeHtml(s.heading)}</h2>${s.html}`)
+    .join('')
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${safeTitle}</title>
+  <style>
+    body{font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;color:#0f172a;margin:24px;line-height:1.45;background:#fff}
+    h1{font-size:22px;margin:0 0 8px}
+    h2{font-size:15px;margin:20px 0 8px;border-bottom:1px solid #e2e8f0;padding-bottom:4px}
+    table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+    th,td{border:1px solid #e2e8f0;padding:6px 8px;text-align:left;vertical-align:top}
+    th{background:#f8fafc}
+    .meta{color:#64748b;font-size:12px;margin-bottom:16px}
+    .toolbar{position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;margin:-24px -24px 16px;padding:12px 24px;background:#f8fafc;border-bottom:1px solid #e2e8f0}
+    .toolbar button{font:inherit;font-size:13px;padding:8px 14px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;cursor:pointer}
+    .toolbar button.primary{background:#0f172a;color:#fff;border-color:#0f172a}
+    @media print{
+      body{margin:12px}
+      .toolbar{display:none !important}
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <strong style="flex:1">${safeTitle}</strong>
+    <button type="button" class="primary" onclick="window.print()">Print / Save PDF</button>
+  </div>
+  <h1>${safeTitle}</h1>
+  <div class="meta">Generated ${escapeHtml(new Date().toLocaleString('en-IN'))} · HMS Enterprises</div>
+  ${body}
+  <script>
+    function triggerPrint(){ setTimeout(function(){ window.print(); }, 300); }
+    if (document.readyState === 'complete') triggerPrint();
+    else window.addEventListener('load', triggerPrint);
+  </script>
+</body>
+</html>`
+
+  try {
+    if (target && !target.closed) {
+      target.document.open()
+      target.document.write(html)
+      target.document.close()
+      target.focus()
+      return true
+    }
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const win = window.open(url, '_blank')
+    if (!win) {
+      URL.revokeObjectURL(url)
+      return false
+    }
+    window.setTimeout(() => URL.revokeObjectURL(url), 120_000)
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function tableHtml(headers: string[], rows: Array<Array<string | number>>) {
-  return `<table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows
-    .map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`)
+  return `<table><thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead><tbody>${rows
+    .map((r) => `<tr>${r.map((c) => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`)
     .join('')}</tbody></table>`
 }

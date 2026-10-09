@@ -60,7 +60,7 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
   },
   'crm.contacts': {
     title: 'Customers + bulk import',
-    body: 'Directory holds buyers and machines. Use the Import tab to upload CSV/Excel — AI maps columns, then creates customers (and machines) in bulk. Download the sample first.',
+    body: 'Import Sales and Service as separate files (download a sample for each). Same mobile becomes one customer — machines from both files attach. AI maps columns; review Field mapping before import.',
     tipType: 'TIP',
   },
   'crm.deals': {

@@ -18,10 +18,7 @@ type FormState = {
   model: string
   brand: string
   warranty: string
-  mrp: string
-  salePrice: string
-  purchasePrice: string
-  taxPercent: string
+  hsnCode: string
   capacity: string
   accuracy: string
   platform: string
@@ -57,10 +54,7 @@ const empty = (): FormState => ({
   model: '',
   brand: '',
   warranty: '',
-  mrp: '',
-  salePrice: '',
-  purchasePrice: '',
-  taxPercent: '18',
+  hsnCode: '',
   capacity: '',
   accuracy: '',
   platform: '',
@@ -121,10 +115,11 @@ export function ProductCreatePage() {
         name: buildName(kind, form.brand, form.model),
         productType: 'GOODS',
         unit: 'NOS',
-        salePrice: Number(form.salePrice) || 0,
-        purchasePrice: Number(form.purchasePrice) || 0,
-        mrp: form.mrp ? Number(form.mrp) : null,
-        taxPercent: Number(form.taxPercent) || 0,
+        hsnSac: form.hsnCode.trim() || null,
+        salePrice: 0,
+        purchasePrice: 0,
+        mrp: null,
+        taxPercent: 0,
         trackInventory: true,
         reorderLevel: 5,
         description: form.description.trim() || null,
@@ -217,30 +212,12 @@ export function ProductCreatePage() {
                 />
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid gap-3 sm:grid-cols-2">
                 <Input
-                  label="MRP ₹"
-                  type="number"
-                  value={form.mrp}
-                  onChange={(e) => setForm({ ...form, mrp: e.target.value })}
-                />
-                <Input
-                  label="Sale price ₹"
-                  type="number"
-                  value={form.salePrice}
-                  onChange={(e) => setForm({ ...form, salePrice: e.target.value })}
-                />
-                <Input
-                  label="Purchase price ₹"
-                  type="number"
-                  value={form.purchasePrice}
-                  onChange={(e) => setForm({ ...form, purchasePrice: e.target.value })}
-                />
-                <Input
-                  label="Tax %"
-                  type="number"
-                  value={form.taxPercent}
-                  onChange={(e) => setForm({ ...form, taxPercent: e.target.value })}
+                  label="HSN code"
+                  placeholder="e.g. 8423"
+                  value={form.hsnCode}
+                  onChange={(e) => setForm({ ...form, hsnCode: e.target.value })}
                 />
               </div>
 

@@ -4,6 +4,7 @@ import { Search, UserPlus, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { formatPhone } from '@/lib/utils'
 import { cn } from '@/lib/utils'
+import { BlockSkeleton } from '@/components/ui/Skeleton'
 
 export type ContactPick = {
   id: string
@@ -200,7 +201,9 @@ export function ContactPicker({
       {open && query.trim().length >= 2 && (!selected || query !== labelFor(selected)) ? (
         <ul className="absolute top-[calc(100%+4px)] z-30 max-h-64 w-full overflow-auto rounded-[8px] border border-border bg-card py-1 shadow-lg">
           {loading ? (
-            <li className="px-3 py-2 text-sm text-text-secondary">Searching…</li>
+            <li className="px-3 py-2">
+              <BlockSkeleton lines={3} className="p-0" />
+            </li>
           ) : (
             <>
               {hits.map((c) => (
@@ -228,40 +231,35 @@ export function ContactPicker({
                 </li>
               ))}
               {hits.length === 0 ? (
-                <li className="px-3 py-2 text-sm text-text-secondary">No customer matches “{query.trim()}”</li>
+                <li className="px-3 py-2 text-sm text-text-secondary">
+                  No customer matches “{query.trim()}”
+                </li>
               ) : null}
-              {!prospectMode ? (
-                <li className="border-t border-border">
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-semibold text-accent-blue hover:bg-accent-blue/5"
-                    onClick={goAddCustomer}
-                  >
-                    <UserPlus size={16} />
-                    Add new customer
-                    {query.trim() ? (
-                      <span className="font-normal text-text-secondary">— use “{query.trim()}”</span>
-                    ) : null}
-                  </button>
+              <li className="border-t border-border">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-semibold text-accent-blue hover:bg-accent-blue/5"
+                  onClick={goAddCustomer}
+                >
+                  <UserPlus size={16} />
+                  Add new customer
+                  {query.trim() ? (
+                    <span className="font-normal text-text-secondary">— “{query.trim()}”</span>
+                  ) : null}
+                </button>
+              </li>
+              {prospectMode ? (
+                <li className="border-t border-border px-3 py-2 text-[11px] text-text-secondary">
+                  Or type name &amp; phone on the form below — sale prospects become Customers only after Convert.
                 </li>
-              ) : (
-                <li className="border-t border-border px-3 py-2.5 text-xs text-text-secondary">
-                  New prospects are not added to Customers yet — enter their details on the enquiry form.
-                  They become a permanent customer only after Convert sale.
-                </li>
-              )}
+              ) : null}
             </>
           )}
         </ul>
       ) : null}
       <p className="text-xs text-text-secondary">
-        {prospectMode
-          ? 'Optional: link an existing customer. Otherwise fill name & phone below — enquiry only until convert.'
-          : (
-            <>
-              Type at least 2 characters. If not found, choose <strong>Add new customer</strong>.
-            </>
-          )}
+        Type at least 2 characters. If the name is not listed, choose{' '}
+        <strong>Add new customer</strong> in the dropdown.
       </p>
     </div>
   )

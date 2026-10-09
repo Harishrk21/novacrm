@@ -4,11 +4,14 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronRight,
+  Download,
   Eye,
+  FileSpreadsheet,
   History,
   Package,
   Pencil,
   Plus,
+  Printer,
   ShoppingCart,
   SlidersHorizontal,
   Warehouse as WarehouseIcon,
@@ -21,7 +24,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
+import { Drawer } from '@/components/ui/Drawer'
 import { Modal } from '@/components/ui/Modal'
 import { Input } from '@/components/ui/Input'
 import { PageTabs } from '@/components/ui/PageTabs'
@@ -29,7 +32,11 @@ import { Select } from '@/components/ui/Select'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { ProductImage } from '@/components/ProductImage'
 import { api, ApiClientError, num } from '@/lib/api'
-import { productRequiresStamping, productAttrs } from '@/lib/productCatalog'
+import {
+  productRequiresStamping,
+  productAttrs,
+  isWeighingCatalogProduct,
+} from '@/lib/productCatalog'
 import {
   HMS_FAMILY_OPTIONS,
   industryOptions,
@@ -38,11 +45,17 @@ import {
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
+import { can } from '@/lib/permissions'
+import { resolveInventoryAreas } from '@/lib/inventoryAreas'
+import { StockImportPanel } from '@/components/inventory/StockImportPanel'
+import { RequisitionsPanel } from '@/components/sales/RequisitionsPanel'
 import { APP_NAME } from '@/lib/branding'
 import {
   challanFromCustomFields,
   openPrintableDeliveryChallan,
 } from '@/lib/deliveryChallanPrint'
+import { expandSerialRange, parseSerialPaste } from '@/lib/stockSerial'
+import { downloadXlsx, printReportHtml, tableHtml } from '@/lib/reportExport'
 
 type CatalogProduct = {
   id: string
@@ -61,6 +74,10 @@ type StockUnit = {
   productId: string
   warehouseId: string
   serialNo: string
+  hmsUniqId?: string | null
+  unitCost?: number | null
+  brandId?: string | null
+  receiptId?: string | null
   stampingDate?: string | null
   notes?: string | null
   status: string
@@ -70,10 +87,25 @@ type StockUnit = {
   updatedAt?: string
   product?: { id: string; sku: string; name: string; imageUrl?: string | null; attributes?: unknown } | null
   warehouse?: { id: string; name: string; code?: string } | null
+  brand?: { id: string; name: string; code?: string } | null
+  receipt?: {
+    id: string
+    invoiceNo?: string | null
+    invoiceDate?: string | null
+    receivedDate?: string | null
+    spec?: string | null
+    unitAmount?: number | string | null
+    vendor?: { id: string; name: string } | null
+  } | null
   lead?: { id: string; name: string; company?: string | null; phone?: string | null; city?: string | null; status?: string } | null
   contact?: { id: string; name: string; customerCode?: string | null; phone?: string | null; city?: string | null } | null
   customFields?: Record<string, unknown> | null
 }
+
+type ReceiveUnitRow = { serialNo: string; hmsUniqId: string }
+
+type BrandRow = { id: string; name: string; code: string }
+type VendorRow = { id: string; name: string }
 
 type HistoryRow = {
   id: string
@@ -103,16 +135,122 @@ type ProductGroup = {
 const STATUS_COLOR: Record<string, 'green' | 'blue' | 'amber' | 'red' | 'gray'> = {
   IN_STOCK: 'green',
   DEMO: 'amber',
+  RENTED: 'purple',
   SOLD: 'blue',
   RETURNED: 'gray',
 }
 
-const emptyForm = {
-  productId: '',
-  warehouseId: '',
-  serialNo: '',
-  stampingDate: '',
-  notes: '',
+type EditPlacement = 'STOCK' | 'DEMO' | 'RENTAL'
+
+type EditFormState = {
+  warehouseId: string
+  serialNo: string
+  hmsUniqId: string
+  brandId: string
+  unitCost: string
+  stampingDate: string
+  notes: string
+  placement: EditPlacement
+  demoCustomerName: string
+  demoPhone: string
+  demoEmail: string
+  demoCompany: string
+  demoAddress: string
+  demoCity: string
+  demoState: string
+  demoAssigneeId: string
+  rentalCustomerName: string
+  rentalPhone: string
+  rentalEmail: string
+  rentalCompany: string
+  rentalAddress: string
+  rentalCity: string
+  rentalState: string
+  rentalStartAt: string
+  rentalExpectedReturnAt: string
+  rentalDailyRate: string
+  rentalDeposit: string
+  rentalTotal: string
+}
+
+function localDateTimeValue(d = new Date()) {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function emptyEditForm(warehouseId = ''): EditFormState {
+  return {
+    warehouseId,
+    serialNo: '',
+    hmsUniqId: '',
+    brandId: '',
+    unitCost: '',
+    stampingDate: '',
+    notes: '',
+    placement: 'STOCK',
+    demoCustomerName: '',
+    demoPhone: '',
+    demoEmail: '',
+    demoCompany: '',
+    demoAddress: '',
+    demoCity: '',
+    demoState: '',
+    demoAssigneeId: '',
+    rentalCustomerName: '',
+    rentalPhone: '',
+    rentalEmail: '',
+    rentalCompany: '',
+    rentalAddress: '',
+    rentalCity: '',
+    rentalState: '',
+    rentalStartAt: localDateTimeValue(),
+    rentalExpectedReturnAt: '',
+    rentalDailyRate: '',
+    rentalDeposit: '',
+    rentalTotal: '',
+  }
+}
+
+const emptyForm = emptyEditForm()
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function emptyReceiveForm(warehouseId = ''): {
+  productId: string
+  warehouseId: string
+  vendorId: string
+  brandId: string
+  spec: string
+  quantity: string
+  unitAmount: string
+  invoiceNo: string
+  invoiceDate: string
+  receivedDate: string
+  startSerial: string
+  stampingDate: string
+  notes: string
+  pasteSerials: string
+  units: ReceiveUnitRow[]
+} {
+  return {
+    productId: '',
+    warehouseId,
+    vendorId: '',
+    brandId: '',
+    spec: '',
+    quantity: '1',
+    unitAmount: '',
+    invoiceNo: '',
+    invoiceDate: todayIso(),
+    receivedDate: todayIso(),
+    startSerial: '',
+    stampingDate: '',
+    notes: '',
+    pasteSerials: '',
+    units: [],
+  }
 }
 
 function attrLabel(p: CatalogProduct | null | undefined) {
@@ -138,16 +276,35 @@ function matchesFamily(
   return false
 }
 
+function ymdLocal(d: Date) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+type ExportPreset = 'today' | '7d' | '30d' | 'custom'
+
+function rangeForPreset(preset: ExportPreset): { from: string; to: string } {
+  const to = new Date()
+  const from = new Date()
+  if (preset === '7d') from.setDate(from.getDate() - 6)
+  else if (preset === '30d') from.setDate(from.getDate() - 29)
+  return { from: ymdLocal(from), to: ymdLocal(to) }
+}
+
 export function InventoryPage() {
   const [searchParams] = useSearchParams()
   const preselectProduct = searchParams.get('productId') || ''
   const tip = DEFAULT_TIPS['erp.inventory'] ?? {
     title: 'Serial stock',
-    body: 'Each physical piece has a unique serial. Add stock with serial + stamping date. Demo issues reduce available stock until sold.',
+    body: 'Receive a supplier invoice in one go: pick supplier, brand, model, qty + starting serial — HMS Unique IDs and ending serial auto-fill.',
     tipType: 'TIP' as const,
   }
   const addToast = useUIStore((s) => s.addToast)
   const authUser = useAuthStore((s) => s.user)
+  const showSalesRelease = can(authUser?.role, 'requisitions:fulfill')
+  const invAreas = resolveInventoryAreas(authUser?.inventoryAreas, authUser?.role)
   const navigate = useNavigate()
 
   const [units, setUnits] = useState<StockUnit[]>([])
@@ -155,14 +312,34 @@ export function InventoryPage() {
   const [levels, setLevels] = useState<Array<Record<string, unknown>>>([])
   const [products, setProducts] = useState<CatalogProduct[]>([])
   const [warehouses, setWarehouses] = useState<Array<{ id: string; name: string; code?: string }>>([])
+  const [brands, setBrands] = useState<BrandRow[]>([])
+  const [vendors, setVendors] = useState<VendorRow[]>([])
+  const [stockAccessDenied, setStockAccessDenied] = useState(false)
+  const [stockLoadError, setStockLoadError] = useState<string | null>(null)
+  const [importOpen, setImportOpen] = useState(false)
   const [tab, setTab] = useState<'list' | 'add' | 'history' | 'demo'>('list')
   const [saving, setSaving] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
-  const [form, setForm] = useState({ ...emptyForm, productId: preselectProduct })
+  const [form, setForm] = useState(() => ({
+    ...emptyReceiveForm(),
+    productId: preselectProduct,
+  }))
   const [viewUnit, setViewUnit] = useState<StockUnit | null>(null)
   const [editUnit, setEditUnit] = useState<StockUnit | null>(null)
-  const [editForm, setEditForm] = useState(emptyForm)
+  const [editForm, setEditForm] = useState<EditFormState>(() => emptyEditForm())
+  const [teamUsers, setTeamUsers] = useState<Array<{ id: string; name: string }>>([])
+  const [receiveOpen, setReceiveOpen] = useState(false)
+  /** null = choose machine vs spare before the receive form */
+  const [receiveKind, setReceiveKind] = useState<null | 'machine' | 'spare'>(null)
   const [drillProductId, setDrillProductId] = useState<string | null>(null)
+
+  const [exportOpen, setExportOpen] = useState(false)
+  const [exportPreset, setExportPreset] = useState<ExportPreset>('today')
+  const [exportFrom, setExportFrom] = useState(() => ymdLocal(new Date()))
+  const [exportTo, setExportTo] = useState(() => ymdLocal(new Date()))
+  const [exportWarehouseId, setExportWarehouseId] = useState('')
+  const [exportProductId, setExportProductId] = useState('')
+  const [exportBusy, setExportBusy] = useState(false)
 
   // Filters (product group list + serial drill-down)
   const [filterProductId, setFilterProductId] = useState('')
@@ -173,8 +350,6 @@ export function InventoryPage() {
   const [filterQ, setFilterQ] = useState('')
   const [filterStampFrom, setFilterStampFrom] = useState('')
   const [filterStampTo, setFilterStampTo] = useState('')
-  const [addFamily, setAddFamily] = useState('')
-  const [addIndustry, setAddIndustry] = useState('')
   const [moreFilters, setMoreFilters] = useState(false)
   const [returnConfirm, setReturnConfirm] = useState<StockUnit | null>(null)
   const [returnNotes, setReturnNotes] = useState('')
@@ -188,10 +363,27 @@ export function InventoryPage() {
     [products],
   )
 
-  const addFormRequiresStamping = useMemo(() => {
-    const product = products.find((p) => p.id === form.productId)
-    return product ? productRequiresStamping(product) : false
-  }, [products, form.productId])
+  const receiveProduct = useMemo(
+    () => products.find((p) => p.id === form.productId) ?? null,
+    [products, form.productId],
+  )
+
+  const addFormRequiresStamping = useMemo(
+    () => (receiveProduct ? productRequiresStamping(receiveProduct) : false),
+    [receiveProduct],
+  )
+
+  const receiveIsWeighing = useMemo(
+    () => (receiveProduct ? isWeighingCatalogProduct(receiveProduct) : false),
+    [receiveProduct],
+  )
+
+  const receiveEndSerial = useMemo(() => {
+    if (receiveIsWeighing) return ''
+    const qty = Math.max(1, Math.floor(Number(form.quantity) || 1))
+    if (!form.startSerial.trim() || qty < 1) return ''
+    return expandSerialRange(form.startSerial.trim(), qty).at(-1) ?? ''
+  }, [form.startSerial, form.quantity, receiveIsWeighing])
 
   const editFormRequiresStamping = useMemo(() => {
     if (!editUnit) return false
@@ -206,71 +398,139 @@ export function InventoryPage() {
   }, [viewUnit, productMap])
 
   const load = useCallback(async () => {
+    setStockAccessDenied(false)
+    setStockLoadError(null)
+    if (!invAreas.machines) {
+      setStockAccessDenied(true)
+      setUnits([])
+      setHistory([])
+      setLevels([])
+      return
+    }
     try {
       // Load catalog + warehouses first so Add stock works even if serial API fails
       const [lookups, productPage] = await Promise.all([
         api.lookups(),
-        api.products({ limit: 500 }),
+        api.products({ limit: 200 }),
       ])
-      const catalog = (productPage.items ?? []).map((p) => ({
-        id: String(p.id),
-        name: String(p.name ?? ''),
-        sku: String(p.sku ?? ''),
-        unit: p.unit ? String(p.unit) : 'pcs',
-        imageUrl: (p.imageUrl as string | null) ?? null,
-        productType: p.productType ? String(p.productType) : undefined,
-        attributes: (p.attributes as Record<string, unknown> | null) ?? null,
-        purchasePrice: num(p.purchasePrice),
-        salePrice: num(p.salePrice),
-      }))
-      // Merge lookups products in case products API misses any active ones
-      const byId = new Map(catalog.map((p) => [p.id, p]))
+      // Prefer lookups (active catalog + attributes); merge products API for any extras
+      const byId = new Map<string, CatalogProduct>()
       for (const p of lookups.products) {
-        if (!byId.has(p.id)) {
-          byId.set(p.id, {
-            id: p.id,
-            name: p.name,
-            sku: p.sku,
-            unit: p.unit,
-            imageUrl: null,
-            productType: undefined,
-            attributes: null,
-            purchasePrice: num(p.purchasePrice),
-            salePrice: num(p.salePrice),
-          })
-        }
+        byId.set(p.id, {
+          id: p.id,
+          name: p.name,
+          sku: p.sku,
+          unit: p.unit,
+          imageUrl: p.imageUrl ?? null,
+          productType: p.productType ? String(p.productType) : undefined,
+          attributes: p.attributes ?? null,
+          purchasePrice: num(p.purchasePrice),
+          salePrice: num(p.salePrice),
+        })
+      }
+      for (const p of productPage.items ?? []) {
+        const id = String(p.id)
+        const prev = byId.get(id)
+        byId.set(id, {
+          id,
+          name: String(p.name ?? prev?.name ?? ''),
+          sku: String(p.sku ?? prev?.sku ?? ''),
+          unit: p.unit ? String(p.unit) : prev?.unit || 'pcs',
+          imageUrl: (p.imageUrl as string | null) ?? prev?.imageUrl ?? null,
+          productType: p.productType ? String(p.productType) : prev?.productType,
+          attributes:
+            (p.attributes as Record<string, unknown> | null) ?? prev?.attributes ?? null,
+          purchasePrice: num(p.purchasePrice ?? prev?.purchasePrice),
+          salePrice: num(p.salePrice ?? prev?.salePrice),
+        })
       }
       const merged = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name))
       setProducts(merged)
-      const WAREHOUSE_ORDER = ['MAIN', 'STORE', 'EXECUTIVE', 'STAMPING']
+      const WAREHOUSE_ORDER = ['MAIN', 'STORE', 'DEMO', 'EXECUTIVE', 'STAMPING']
       const sortedWarehouses = [...lookups.warehouses].sort((a, b) => {
         const ai = WAREHOUSE_ORDER.indexOf(String(a.code ?? '').toUpperCase())
         const bi = WAREHOUSE_ORDER.indexOf(String(b.code ?? '').toUpperCase())
         return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
       })
       setWarehouses(sortedWarehouses)
+      setTeamUsers(
+        (lookups.users ?? []).map((u) => ({ id: u.id, name: u.name })).sort((a, b) =>
+          a.name.localeCompare(b.name),
+        ),
+      )
+      const mainWh =
+        sortedWarehouses.find((w) => String(w.code ?? '').toUpperCase() === 'MAIN') ??
+        sortedWarehouses[0]
       setForm((f) => ({
         ...f,
-        warehouseId: f.warehouseId || sortedWarehouses[0]?.id || '',
-        productId: f.productId || preselectProduct || merged[0]?.id || '',
+        warehouseId: f.warehouseId || mainWh?.id || '',
+        productId: f.productId || preselectProduct || '',
       }))
-      if (preselectProduct) setTab('add')
+      if (preselectProduct) {
+        setTab('list')
+        setReceiveOpen(true)
+      }
 
-      const [stockUnits, hist, stockLevels] = await Promise.all([
-        api.stockUnits({ limit: 500 }).catch(() => [] as Record<string, unknown>[]),
-        api.inventoryHistory({ limit: 200 }).catch(() => [] as Record<string, unknown>[]),
-        api.inventory().catch(() => [] as Record<string, unknown>[]),
+      const settled = await Promise.allSettled([
+        api.stockUnits({ limit: 200 }),
+        api.inventoryHistory({ limit: 200 }),
+        api.inventory(),
+        api.inventoryBrands(),
+        api.vendors(),
       ])
-      setUnits(stockUnits as StockUnit[])
-      setHistory(hist as HistoryRow[])
-      setLevels(stockLevels)
+      const [unitsRes, histRes, levelsRes, brandsRes, vendorsRes] = settled
+
+      const denied = settled.some(
+        (r) => r.status === 'rejected' && r.reason instanceof ApiClientError && r.reason.status === 403,
+      )
+      if (denied) {
+        setStockAccessDenied(true)
+        setUnits([])
+        setHistory([])
+        setLevels([])
+        addToast({
+          type: 'error',
+          message: 'You do not have access to machine / product stock',
+        })
+      } else {
+        const stockFail = settled
+          .slice(0, 3)
+          .find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined
+        if (stockFail) {
+          const msg =
+            stockFail.reason instanceof ApiClientError
+              ? stockFail.reason.message
+              : 'Failed to load stock data'
+          setStockLoadError(msg)
+          addToast({ type: 'error', message: msg })
+        }
+        setUnits(unitsRes.status === 'fulfilled' ? (unitsRes.value as StockUnit[]) : [])
+        setHistory(histRes.status === 'fulfilled' ? (histRes.value as HistoryRow[]) : [])
+        setLevels(levelsRes.status === 'fulfilled' ? levelsRes.value : [])
+      }
+
+      const brandRows = brandsRes.status === 'fulfilled' ? brandsRes.value : []
+      const vendorRows = vendorsRes.status === 'fulfilled' ? vendorsRes.value : []
+      setBrands(
+        brandRows.map((b) => ({
+          id: String(b.id),
+          name: String(b.name ?? ''),
+          code: String(b.code ?? ''),
+        })),
+      )
+      setVendors(
+        vendorRows.map((v) => ({
+          id: String(v.id),
+          name: String(v.name ?? ''),
+        })),
+      )
     } catch (err) {
       addToast({
         type: 'error',
         message: err instanceof ApiClientError ? err.message : 'Failed to load inventory',
       })
     }
-  }, [addToast, preselectProduct])
+  }, [addToast, preselectProduct, invAreas.machines])
 
   useEffect(() => {
     void load()
@@ -294,20 +554,20 @@ export function InventoryPage() {
       )
       setReturnConfirm(null)
       setReturnNotes('')
-      if (result.outcome === 'READY_TO_BUY' || result.next === 'invoice') {
-        const contactId = String(result.contactId ?? '')
-        const productId = String(result.productId ?? returnConfirm.productId ?? '')
-        const serialNo = String(result.serialNo ?? returnConfirm.serialNo ?? '')
+      if (result.outcome === 'READY_TO_BUY' || result.next === 'requisition' || result.next === 'invoice') {
+        const leadId = String((result as { lead?: { id?: string }; leadId?: string }).lead?.id
+          ?? (result as { leadId?: string }).leadId
+          ?? '')
         addToast({
           type: 'success',
-          message: 'Customer converted — open proforma to complete sale',
+          message: 'Customer converted — approve sales requisition, then reduce stock (proforma after)',
         })
-        if (contactId) {
-          navigate(
-            `/erp/invoices?open=1&contactId=${encodeURIComponent(contactId)}&productId=${encodeURIComponent(productId)}&serialNo=${encodeURIComponent(serialNo)}`,
-          )
+        if (leadId) {
+          navigate(`/sale-tracking/${encodeURIComponent(leadId)}`)
           return
         }
+        navigate('/sale-tracking?queue=requisitions')
+        return
       } else if (result.enquiryMissing) {
         addToast({
           type: 'success',
@@ -369,7 +629,8 @@ export function InventoryPage() {
       if (q) {
         const name = (p && 'name' in p ? String(p.name) : '') || ''
         const sku = (p && 'sku' in p ? String(p.sku) : '') || ''
-        const hay = `${name} ${sku} ${u.serialNo} ${meta.familyName} ${meta.industryName}`.toLowerCase()
+        const hay =
+          `${name} ${sku} ${u.serialNo} ${u.hmsUniqId ?? ''} ${u.brand?.name ?? ''} ${u.receipt?.vendor?.name ?? ''} ${u.receipt?.invoiceNo ?? ''} ${meta.familyName} ${meta.industryName}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       if (filterStampFrom && u.stampingDate && String(u.stampingDate).slice(0, 10) < filterStampFrom) {
@@ -469,17 +730,6 @@ export function InventoryPage() {
     filterProductId || filterFamily || filterStatus || filterQ || advancedActive,
   )
 
-  const productsForAdd = useMemo(() => {
-    if (!addFamily) return []
-    if (addFamily === 'WEIGHING_SCALES' && !addIndustry) return []
-    return products.filter((p) => {
-      const meta = productCatalogMeta(productAttrs(p))
-      if (!matchesFamily(meta, addFamily)) return false
-      if (addIndustry && meta.industryCode !== addIndustry) return false
-      return true
-    })
-  }, [products, addFamily, addIndustry])
-
   const productsForFilter = useMemo(() => {
     return products.filter((p) => {
       const meta = productCatalogMeta(productAttrs(p))
@@ -489,51 +739,156 @@ export function InventoryPage() {
     })
   }, [products, filterFamily, filterIndustry])
 
-  function openAdd(defaults?: Partial<typeof form>) {
-    const productId = defaults?.productId || ''
-    let family = ''
-    let industry = ''
-    if (productId) {
-      const p = products.find((x) => x.id === productId)
-      if (p) {
-        const meta = productCatalogMeta(productAttrs(p))
-        family = meta.familyCode
-        industry = meta.industryCode
+  async function rebuildUnitGrid(next: typeof form, opts?: { clampQty?: boolean }) {
+    const parsed = Math.floor(Number(String(next.quantity).trim()))
+    const qtyValid = Number.isFinite(parsed) && parsed >= 1
+    const qty = qtyValid ? Math.min(200, parsed) : 0
+    const product = products.find((p) => p.id === next.productId)
+    const weighing = product ? isWeighingCatalogProduct(product) : false
+    const startReady = Boolean(next.startSerial.trim()) || Boolean(next.pasteSerials.trim())
+
+    if (!qty) {
+      setForm({ ...next, units: [] })
+      return
+    }
+
+    // Weighing: Unique IDs from qty alone. Others: wait until start serial (or paste) so end + IDs fill together.
+    const shouldPreviewIds = Boolean(next.productId) && (weighing || startReady)
+    let uniqIds: string[] = []
+    if (shouldPreviewIds) {
+      try {
+        uniqIds = await api.previewHmsUniqIds({ productId: next.productId, quantity: qty })
+      } catch {
+        uniqIds = []
       }
     }
-    setAddFamily(family)
-    setAddIndustry(industry)
+
+    let serials: string[] = []
+    if (weighing) {
+      serials = uniqIds.map((id) => id)
+    } else {
+      const pasted = parseSerialPaste(next.pasteSerials)
+      if (pasted.length > 0) {
+        serials = pasted.slice(0, qty)
+        while (serials.length < qty) serials.push('')
+      } else if (next.startSerial.trim()) {
+        serials = expandSerialRange(next.startSerial.trim(), qty)
+      } else {
+        serials = Array.from({ length: qty }, () => '')
+      }
+    }
+
+    const units: ReceiveUnitRow[] = Array.from({ length: qty }, (_, i) => ({
+      serialNo: weighing ? uniqIds[i] ?? '' : serials[i] ?? '',
+      hmsUniqId: uniqIds[i] ?? '',
+    }))
     setForm({
-      ...emptyForm,
-      warehouseId: defaults?.warehouseId || warehouses[0]?.id || '',
-      ...defaults,
-      productId,
+      ...next,
+      quantity: opts?.clampQty ? String(qty) : next.quantity,
+      units,
     })
+  }
+
+  function openAdd(defaults?: Partial<typeof form>) {
+    const mainWh =
+      warehouses.find((w) => String(w.code ?? '').toUpperCase() === 'MAIN') ?? warehouses[0]
+    const base = emptyReceiveForm(defaults?.warehouseId || mainWh?.id || '')
+    const next = {
+      ...base,
+      ...defaults,
+      productId: defaults?.productId || '',
+      units: [],
+    }
+    setForm(next)
     setErrors({})
     setViewUnit(null)
     setEditUnit(null)
-    setDrillProductId(null)
-    setTab('add')
+    setReceiveKind(null)
+    setReceiveOpen(true)
+    if (tab === 'add' || tab === 'history') setTab('list')
+    void rebuildUnitGrid(next)
+  }
+
+  function closeReceive() {
+    setReceiveOpen(false)
+    setReceiveKind(null)
+    setErrors({})
   }
 
   function openEdit(unit: StockUnit) {
+    const cf = (unit.customFields ?? {}) as Record<string, unknown>
+    const placement: EditPlacement =
+      unit.status === 'DEMO' ? 'DEMO' : unit.status === 'RENTED' ? 'RENTAL' : 'STOCK'
+    const mainWh =
+      warehouses.find((w) => String(w.code ?? '').toUpperCase() === 'MAIN') ?? warehouses[0]
+    setReceiveOpen(false)
+    setViewUnit(null)
     setEditUnit(unit)
     setEditForm({
-      productId: unit.productId,
-      warehouseId: unit.warehouseId,
+      ...emptyEditForm(unit.warehouseId || mainWh?.id || ''),
+      warehouseId: unit.warehouseId || mainWh?.id || '',
       serialNo: unit.serialNo,
+      hmsUniqId: unit.hmsUniqId ?? '',
+      brandId: unit.brandId ?? '',
+      unitCost: unit.unitCost != null ? String(unit.unitCost) : '',
       stampingDate: unit.stampingDate ? String(unit.stampingDate).slice(0, 10) : '',
       notes: unit.notes ?? '',
+      placement,
+      demoCustomerName: String(cf.demoCustomerName ?? unit.lead?.name ?? ''),
+      demoPhone: String(cf.demoPhone ?? unit.lead?.phone ?? ''),
+      demoEmail: '',
+      demoCompany: String(cf.demoCompany ?? unit.lead?.company ?? ''),
+      demoAddress: String(cf.demoAddress ?? ''),
+      demoCity: String(cf.demoCity ?? unit.lead?.city ?? ''),
+      demoState: String(cf.demoState ?? ''),
+      demoAssigneeId: String(cf.demoExecutiveId ?? ''),
+      rentalCustomerName: String(cf.rentalCustomerName ?? ''),
+      rentalPhone: String(cf.rentalCustomerPhone ?? ''),
+      rentalCompany: String(cf.rentalCustomerCompany ?? ''),
+      rentalStartAt: cf.rentedAt
+        ? localDateTimeValue(new Date(String(cf.rentedAt)))
+        : localDateTimeValue(),
+      rentalExpectedReturnAt: cf.expectedReturnAt
+        ? localDateTimeValue(new Date(String(cf.expectedReturnAt)))
+        : '',
     })
     setErrors({})
-    setViewUnit(null)
   }
 
   async function saveAdd() {
+    const qty = Math.floor(Number(form.quantity) || 0)
     const next: Record<string, string> = {}
-    if (!form.productId) next.productId = 'Select a product'
+    if (!form.productId) next.productId = 'Select a product / model'
     if (!form.warehouseId) next.warehouseId = 'Select a warehouse'
-    if (!form.serialNo.trim()) next.serialNo = 'Serial number is required'
+    if (!form.vendorId) next.vendorId = 'Select a supplier'
+    if (!form.brandId) next.brandId = 'Select a brand'
+    if (qty < 1 || qty > 200) next.quantity = 'Quantity must be 1–200'
+    const weighing = receiveProduct ? isWeighingCatalogProduct(receiveProduct) : false
+    if (
+      !weighing &&
+      !form.startSerial.trim() &&
+      form.units.every((u) => !u.serialNo.trim())
+    ) {
+      next.startSerial = 'Enter starting serial (or paste serials)'
+    }
+    const units =
+      form.units.length === qty
+        ? form.units
+        : weighing
+          ? Array.from({ length: qty }, (_, i) => ({
+              serialNo: form.units[i]?.hmsUniqId || form.units[i]?.serialNo || '',
+              hmsUniqId: form.units[i]?.hmsUniqId || '',
+            }))
+          : expandSerialRange(form.startSerial.trim() || 'SN0001', qty).map((serialNo, i) => ({
+              serialNo: form.units[i]?.serialNo || serialNo,
+              hmsUniqId: form.units[i]?.hmsUniqId || '',
+            }))
+    if (!weighing && units.some((u) => !u.serialNo.trim())) {
+      next.serialNo = 'Every unit needs a serial number'
+    }
+    if (units.some((u) => !u.hmsUniqId.trim())) {
+      next.hmsUniqId = 'HMS Unique ID missing — pick product and qty again'
+    }
     setErrors(next)
     if (Object.keys(next).length) {
       addToast({ type: 'error', message: Object.values(next)[0] })
@@ -541,22 +896,66 @@ export function InventoryPage() {
     }
     setSaving(true)
     try {
-      await api.addStockUnit({
+      let vendorId = form.vendorId
+      let brandId = form.brandId
+      const knownVendor = vendors.find(
+        (v) => v.id === vendorId || v.name.toLowerCase() === vendorId.trim().toLowerCase(),
+      )
+      if (knownVendor) vendorId = knownVendor.id
+      else if (vendorId.trim()) {
+        const created = await api.createVendor({ name: vendorId.trim() })
+        vendorId = String(created.id)
+        setVendors((prev) => [...prev, { id: vendorId, name: String(created.name ?? vendorId) }])
+      }
+      const knownBrand = brands.find(
+        (b) => b.id === brandId || b.name.toLowerCase() === brandId.trim().toLowerCase(),
+      )
+      if (knownBrand) brandId = knownBrand.id
+      else if (brandId.trim()) {
+        const created = await api.createInventoryBrand({ name: brandId.trim() })
+        brandId = String(created.id)
+        setBrands((prev) => [
+          ...prev,
+          { id: brandId, name: String(created.name ?? brandId), isActive: true },
+        ])
+      }
+      const res = await api.receiveStockBatch({
         productId: form.productId,
         warehouseId: form.warehouseId,
-        serialNo: form.serialNo.trim(),
-        stampingDate: addFormRequiresStamping ? form.stampingDate || null : null,
+        vendorId: vendorId || null,
+        brandId: brandId || null,
+        spec: form.spec.trim() || null,
+        quantity: qty,
+        unitAmount: form.unitAmount ? Number(form.unitAmount) : 0,
+        invoiceNo: form.invoiceNo.trim() || null,
+        invoiceDate: form.invoiceDate || null,
+        receivedDate: form.receivedDate || todayIso(),
         notes: form.notes.trim() || null,
+        stampingDate: addFormRequiresStamping ? form.stampingDate || null : null,
+        startSerial: form.startSerial.trim() || null,
+        units: units.map((u) => ({
+          serialNo: u.serialNo.trim(),
+          hmsUniqId: u.hmsUniqId.trim() || null,
+        })),
       })
-      addToast({ type: 'success', message: `Added serial ${form.serialNo.trim().toUpperCase()}` })
+      addToast({
+        type: 'success',
+        message: `${res.quantity} unit${res.quantity === 1 ? '' : 's'} were added to stock`,
+      })
       const addedProductId = form.productId
-      setForm((f) => ({ ...f, serialNo: '', stampingDate: '', notes: '' }))
+      const mainWh =
+        warehouses.find((w) => String(w.code ?? '').toUpperCase() === 'MAIN') ?? warehouses[0]
+      setForm(emptyReceiveForm(mainWh?.id || ''))
       setErrors({})
+      setReceiveOpen(false)
       setTab('list')
       setDrillProductId(addedProductId)
       await load()
     } catch (err) {
-      addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Could not add stock' })
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not receive stock',
+      })
     } finally {
       setSaving(false)
     }
@@ -565,8 +964,18 @@ export function InventoryPage() {
   async function saveEdit() {
     if (!editUnit) return
     const next: Record<string, string> = {}
-    if (!editForm.warehouseId) next.warehouseId = 'Select a warehouse'
     if (!editForm.serialNo.trim()) next.serialNo = 'Serial number is required'
+    if (editForm.placement === 'STOCK' && !editForm.warehouseId) {
+      next.warehouseId = 'Select a warehouse'
+    }
+    if (editForm.placement === 'DEMO') {
+      if (!editForm.demoCustomerName.trim()) next.demoCustomerName = 'Customer name is required'
+      if (!editForm.demoAssigneeId) next.demoAssigneeId = 'Select who is responsible for this demo'
+    }
+    if (editForm.placement === 'RENTAL') {
+      if (!editForm.rentalCustomerName.trim()) next.rentalCustomerName = 'Customer name is required'
+      if (!editForm.rentalStartAt) next.rentalStartAt = 'Rental start is required'
+    }
     setErrors(next)
     if (Object.keys(next).length) {
       addToast({ type: 'error', message: Object.values(next)[0] })
@@ -574,13 +983,62 @@ export function InventoryPage() {
     }
     setSaving(true)
     try {
-      await api.updateStockUnit(editUnit.id, {
-        warehouseId: editForm.warehouseId,
+      const demoWh = warehouses.find((w) => String(w.code ?? '').toUpperCase() === 'DEMO')
+      const body: Record<string, unknown> = {
         serialNo: editForm.serialNo.trim(),
+        hmsUniqId: editForm.hmsUniqId.trim() || null,
+        brandId: editForm.brandId || null,
+        unitCost: editForm.unitCost ? Number(editForm.unitCost) : null,
         stampingDate: editFormRequiresStamping ? editForm.stampingDate || null : null,
         notes: editForm.notes.trim() || null,
+        placement: editForm.placement,
+      }
+      if (editForm.placement === 'STOCK') {
+        body.warehouseId = editForm.warehouseId
+      }
+      if (editForm.placement === 'DEMO') {
+        body.warehouseId = demoWh?.id || editForm.warehouseId
+        body.demo = {
+          customerName: editForm.demoCustomerName.trim(),
+          customerPhone: editForm.demoPhone.trim() || null,
+          customerEmail: editForm.demoEmail.trim() || null,
+          customerCompany: editForm.demoCompany.trim() || null,
+          customerAddress: editForm.demoAddress.trim() || null,
+          city: editForm.demoCity.trim() || null,
+          state: editForm.demoState.trim() || null,
+          assigneeUserId: editForm.demoAssigneeId,
+          notes: editForm.notes.trim() || null,
+        }
+      }
+      if (editForm.placement === 'RENTAL') {
+        body.rental = {
+          customerName: editForm.rentalCustomerName.trim(),
+          customerPhone: editForm.rentalPhone.trim() || null,
+          customerEmail: editForm.rentalEmail.trim() || null,
+          customerCompany: editForm.rentalCompany.trim() || null,
+          customerAddress: editForm.rentalAddress.trim() || null,
+          city: editForm.rentalCity.trim() || null,
+          state: editForm.rentalState.trim() || null,
+          startAt: new Date(editForm.rentalStartAt).toISOString(),
+          expectedReturnAt: editForm.rentalExpectedReturnAt
+            ? new Date(editForm.rentalExpectedReturnAt).toISOString()
+            : null,
+          dailyRate: editForm.rentalDailyRate ? Number(editForm.rentalDailyRate) : null,
+          depositAmount: editForm.rentalDeposit ? Number(editForm.rentalDeposit) : null,
+          totalAmount: editForm.rentalTotal ? Number(editForm.rentalTotal) : null,
+          notes: editForm.notes.trim() || null,
+        }
+      }
+      await api.updateStockUnit(editUnit.id, body)
+      addToast({
+        type: 'success',
+        message:
+          editForm.placement === 'DEMO'
+            ? 'Demo details saved — unit marked DEMO'
+            : editForm.placement === 'RENTAL'
+              ? 'Rental saved — unit marked RENTED'
+              : 'Stock unit updated',
       })
-      addToast({ type: 'success', message: 'Stock unit updated' })
       setEditUnit(null)
       await load()
     } catch (err) {
@@ -590,13 +1048,217 @@ export function InventoryPage() {
     }
   }
 
+  function onEditWarehouseChange(warehouseId: string) {
+    const wh = warehouses.find((w) => w.id === warehouseId)
+    const code = String(wh?.code ?? '').toUpperCase()
+    setEditForm((f) => ({
+      ...f,
+      warehouseId,
+      placement: code === 'DEMO' || code === 'EXECUTIVE' ? 'DEMO' : f.placement === 'DEMO' ? 'STOCK' : f.placement,
+    }))
+  }
+
+  function applyExportPreset(preset: ExportPreset) {
+    setExportPreset(preset)
+    if (preset !== 'custom') {
+      const r = rangeForPreset(preset)
+      setExportFrom(r.from)
+      setExportTo(r.to)
+    }
+  }
+
+  async function downloadStockReport(format: 'xlsx' | 'pdf') {
+    if (!exportFrom || !exportTo) {
+      addToast({ type: 'error', message: 'Pick a from and to date' })
+      return
+    }
+    if (exportFrom > exportTo) {
+      addToast({ type: 'error', message: 'From date must be on or before To date' })
+      return
+    }
+    // Open print tab in the same click gesture (async fetch would otherwise blank/block it)
+    let printWin: Window | null = null
+    if (format === 'pdf') {
+      printWin = window.open('about:blank', '_blank')
+      if (!printWin) {
+        addToast({
+          type: 'error',
+          message: 'Popup blocked — allow popups for this site, then try Print again',
+        })
+        return
+      }
+      printWin.document.write(
+        '<!doctype html><title>Preparing report…</title><body style="font-family:system-ui;padding:24px;color:#64748b">Preparing stock report…</body>',
+      )
+      printWin.document.close()
+    }
+    setExportBusy(true)
+    try {
+      const data = await api.inventoryExport({
+        from: exportFrom,
+        to: exportTo,
+        warehouseId: exportWarehouseId || undefined,
+        productId: exportProductId || undefined,
+      })
+      if (!data.units.length && !data.receipts.length) {
+        printWin?.close()
+        addToast({ type: 'error', message: 'No stock added in this date range' })
+        return
+      }
+      const base = `HMS-stock-in_${data.from}_to_${data.to}`
+      const unitRows = data.units.map((u) => ({
+        'Added date': u.addedDate ?? '',
+        'HMS Unique ID': u.hmsUniqId ?? '',
+        'Serial / ID': u.serialNo ?? '',
+        Product: u.productName ?? '',
+        SKU: u.sku ?? '',
+        Brand: u.brand ?? '',
+        Supplier: u.supplier ?? '',
+        Warehouse: u.warehouse ?? '',
+        Status: u.status ?? '',
+        'Unit cost': u.unitCost ?? 0,
+        'Invoice no': u.invoiceNo ?? '',
+        'Received date': u.receivedDate ?? '',
+        Spec: u.spec ?? '',
+        'Stamping date': u.stampingDate ?? '',
+        Notes: u.notes ?? '',
+      }))
+      const receiptRows = data.receipts.map((r) => {
+        const product = r.product as { name?: string; sku?: string } | null
+        const vendor = r.vendor as { name?: string } | null
+        const brand = r.brand as { name?: string } | null
+        const warehouse = r.warehouse as { name?: string } | null
+        return {
+          'Received date': r.receivedDate ?? '',
+          'Invoice no': r.invoiceNo ?? '',
+          'Invoice date': r.invoiceDate ?? '',
+          Supplier: vendor?.name ?? '',
+          Brand: brand?.name ?? '',
+          Product: product?.name ?? '',
+          SKU: product?.sku ?? '',
+          Warehouse: warehouse?.name ?? '',
+          Qty: r.quantity ?? 0,
+          'Unit amount': r.unitAmount ?? 0,
+          'Line total': r.lineTotal ?? 0,
+          Spec: r.spec ?? '',
+          Notes: r.notes ?? '',
+        }
+      })
+      const summaryRows = [
+        { Metric: 'From', Value: data.from },
+        { Metric: 'To', Value: data.to },
+        { Metric: 'Units added', Value: data.summary.unitsAdded },
+        { Metric: 'Receipt batches', Value: data.summary.receipts },
+        { Metric: 'Stock value (unit cost)', Value: data.summary.totalValue },
+      ]
+
+      if (format === 'xlsx') {
+        downloadXlsx(`${base}.xlsx`, [
+          { name: 'Summary', rows: summaryRows },
+          { name: 'Units added', rows: unitRows },
+          { name: 'Receipts', rows: receiptRows.length ? receiptRows : [{ note: 'No receipt batches' }] },
+        ])
+        addToast({
+          type: 'success',
+          message: `Excel downloaded · ${data.summary.unitsAdded} unit${data.summary.unitsAdded === 1 ? '' : 's'}`,
+        })
+      } else {
+        const opened = printReportHtml(
+          `Stock in report · ${data.from} to ${data.to}`,
+          [
+            {
+              heading: 'Summary',
+              html: tableHtml(
+                ['Metric', 'Value'],
+                summaryRows.map((r) => [
+                  String(r.Metric),
+                  r.Metric === 'Stock value (unit cost)'
+                    ? formatCurrency(Number(r.Value))
+                    : String(r.Value),
+                ]),
+              ),
+            },
+            {
+              heading: `Units added (${unitRows.length})`,
+              html: tableHtml(
+                [
+                  'Date',
+                  'HMS ID',
+                  'Serial',
+                  'Product',
+                  'Brand',
+                  'Supplier',
+                  'Warehouse',
+                  'Cost',
+                  'Invoice',
+                ],
+                unitRows.map((r) => [
+                  String(r['Added date']),
+                  String(r['HMS Unique ID']),
+                  String(r['Serial / ID']),
+                  String(r.Product),
+                  String(r.Brand),
+                  String(r.Supplier),
+                  String(r.Warehouse),
+                  formatCurrency(Number(r['Unit cost'] || 0)),
+                  String(r['Invoice no']),
+                ]),
+              ),
+            },
+            {
+              heading: `Receipt batches (${receiptRows.length})`,
+              html: receiptRows.length
+                ? tableHtml(
+                    ['Received', 'Invoice', 'Supplier', 'Product', 'Qty', 'Total'],
+                    receiptRows.map((r) => [
+                      String(r['Received date']),
+                      String(r['Invoice no']),
+                      String(r.Supplier),
+                      String(r.Product),
+                      String(r.Qty),
+                      formatCurrency(Number(r['Line total'] || 0)),
+                    ]),
+                  )
+                : '<p>No receipt batches in this range.</p>',
+            },
+          ],
+          printWin,
+        )
+        if (!opened) {
+          printWin?.close()
+          addToast({
+            type: 'error',
+            message: 'Could not open print report — try again or use Excel',
+          })
+          return
+        }
+        addToast({ type: 'success', message: 'Report opened — use Print / Save PDF in the new tab' })
+      }
+      if (data.truncated) {
+        addToast({
+          type: 'info',
+          message: 'Export capped at 5,000 units — narrow the date range if needed',
+        })
+      }
+      setExportOpen(false)
+    } catch (err) {
+      printWin?.close()
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not download stock report',
+      })
+    } finally {
+      setExportBusy(false)
+    }
+  }
+
   const filterBar = (
     <div className="mb-3 space-y-2">
       <div className="flex flex-wrap items-center gap-2">
         <div className="min-w-[180px] flex-1 basis-[220px]">
           <Input
             className="h-9"
-            placeholder="Search name, SKU, serial, industry…"
+            placeholder="Search name, SKU, HMS ID, serial, brand, invoice…"
             value={filterQ}
             onChange={(e) => setFilterQ(e.target.value)}
           />
@@ -710,6 +1372,31 @@ export function InventoryPage() {
     </div>
   )
 
+  if (stockAccessDenied) {
+    return (
+      <div className="space-y-4">
+        <PageHeader
+          title="Inventory"
+          breadcrumbs={[{ label: 'ERP' }, { label: 'Inventory' }]}
+        />
+        <Card className="border-amber-200 bg-amber-50/50 p-6 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-100">
+          <p className="font-semibold">No access to machine / product stock</p>
+          <p className="mt-1 text-amber-900/80 dark:text-amber-100/80">
+            Your account is not assigned the Machines inventory area. Ask your company admin (or
+            platform admin) to enable it under Users → Inventory visibility.
+          </p>
+          {(invAreas.sparesBilling || invAreas.sparesWeighing) && (
+            <div className="mt-4">
+              <Link to="/erp/spare-stock">
+                <Button>Go to Spare stock</Button>
+              </Link>
+            </div>
+          )}
+        </Card>
+      </div>
+    )
+  }
+
   return (
     <div>
       <PageHeader
@@ -718,23 +1405,56 @@ export function InventoryPage() {
         breadcrumbs={[{ label: 'ERP' }, { label: 'Inventory' }]}
         actions={
           <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                applyExportPreset(exportPreset === 'custom' ? 'today' : exportPreset)
+                setExportOpen(true)
+              }}
+            >
+              <Download size={16} /> Download stock
+            </Button>
             <Link to="/erp/products">
               <Button variant="outline">
                 <Package size={16} /> Products
               </Button>
+            </Link>
+            <Link to="/erp/suppliers">
+              <Button variant="outline">Suppliers</Button>
             </Link>
             <Link to="/erp/purchase-orders">
               <Button variant="outline">
                 <ShoppingCart size={16} /> Purchase orders
               </Button>
             </Link>
+            <Button variant="outline" onClick={() => setImportOpen(true)}>
+              <FileSpreadsheet size={16} /> Import Excel
+            </Button>
             <Button onClick={() => openAdd()}>
-              <Plus size={16} /> Add stock
+              <Plus size={16} /> Receive stock
             </Button>
           </div>
         }
       />
-      {tab !== 'list' ? <FeatureTip title={tip.title} body={tip.body} tipType={tip.tipType} /> : null}
+      {importOpen ? (
+        <Card className="p-4">
+          <StockImportPanel
+            kinds={['machines']}
+            onImported={() => void load()}
+            onClose={() => setImportOpen(false)}
+          />
+        </Card>
+      ) : null}
+      {showSalesRelease ? (
+        <RequisitionsPanel
+          defaultQueue="fulfill"
+          title="Sales release queue"
+          subtitle="After sales notifies inventory: weighing → stamp, then PI (serial + HMS Unique ID) and delivery."
+        />
+      ) : null}
+      {tab === 'history' || receiveOpen ? (
+        <FeatureTip title={tip.title} body={tip.body} tipType={tip.tipType} />
+      ) : null}
 
       <div className="mb-3 flex flex-wrap gap-2">
         {[
@@ -757,23 +1477,25 @@ export function InventoryPage() {
 
       <PageTabs
         accent="theme"
-        active={tab}
+        active={receiveOpen ? 'add' : tab === 'add' ? 'list' : tab}
         onChange={(id) => {
-          if (id === 'add') openAdd()
+          if (id === 'add') {
+            openAdd()
+            return
+          }
+          setReceiveOpen(false)
+          setViewUnit(null)
+          setEditUnit(null)
+          if (id === 'list' || id === 'demo') setTab(id as 'list' | 'demo')
           else {
-            setViewUnit(null)
-            setEditUnit(null)
-            if (id === 'list' || id === 'demo') setTab(id as 'list' | 'demo')
-            else {
-              setDrillProductId(null)
-              setTab('history')
-            }
+            setDrillProductId(null)
+            setTab('history')
           }
         }}
         tabs={[
           { id: 'list', label: 'All stock', count: groups.length },
           { id: 'demo', label: 'Demo inventory', count: demoUnits.length },
-          { id: 'add', label: 'Add stock' },
+          { id: 'add', label: 'Receive stock' },
           { id: 'history', label: 'History', count: history.length },
         ]}
       />
@@ -834,14 +1556,17 @@ export function InventoryPage() {
                       <thead className="bg-muted text-xs text-text-secondary">
                         <tr>
                           {[
+                            'HMS Unique ID',
                             'Serial no.',
+                            'Brand',
+                            'Supplier',
+                            'Invoice',
+                            'Unit cost',
                             'Warehouse',
                             ...(drillGroup.product && productRequiresStamping(drillGroup.product)
                               ? ['Stamping date']
                               : []),
                             'Status',
-                            'Notes',
-                            'Added',
                             'Actions',
                           ].map((h) => (
                               <th key={h} className="px-4 py-3 font-medium">
@@ -854,7 +1579,21 @@ export function InventoryPage() {
                       <tbody>
                         {drillGroup.units.map((row) => (
                           <tr key={row.id} className="border-t border-border">
+                            <td className="px-4 py-3 font-mono text-xs font-semibold">
+                              {row.hmsUniqId || '—'}
+                            </td>
                             <td className="px-4 py-3 font-mono font-semibold">{row.serialNo}</td>
+                            <td className="px-4 py-3">{row.brand?.name ?? '—'}</td>
+                            <td className="px-4 py-3">{row.receipt?.vendor?.name ?? '—'}</td>
+                            <td className="px-4 py-3 text-xs">
+                              {row.receipt?.invoiceNo || '—'}
+                              {row.receipt?.invoiceDate
+                                ? ` · ${formatDate(String(row.receipt.invoiceDate))}`
+                                : ''}
+                            </td>
+                            <td className="px-4 py-3 tabular-nums">
+                              {row.unitCost != null ? formatCurrency(Number(row.unitCost)) : '—'}
+                            </td>
                             <td className="px-4 py-3">{row.warehouse?.name ?? '—'}</td>
                             {drillGroup.product && productRequiresStamping(drillGroup.product) ? (
                               <td className="px-4 py-3">
@@ -866,15 +1605,18 @@ export function InventoryPage() {
                                 {row.status.replace('_', ' ')}
                               </Badge>
                             </td>
-                            <td className="max-w-[200px] truncate px-4 py-3 text-text-secondary">
-                              {row.notes || '—'}
-                            </td>
-                            <td className="px-4 py-3 text-text-secondary">
-                              {row.createdAt ? formatDate(String(row.createdAt)) : '—'}
-                            </td>
                             <td className="px-4 py-3">
                               <div className="flex gap-1">
-                                <Button variant="ghost" size="sm" title="View" onClick={() => setViewUnit(row)}>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  title="View"
+                                  onClick={() => {
+                                    setEditUnit(null)
+                                    setReceiveOpen(false)
+                                    setViewUnit(row)
+                                  }}
+                                >
                                   <Eye size={14} />
                                 </Button>
                                 <Button variant="ghost" size="sm" title="Edit" onClick={() => openEdit(row)}>
@@ -895,14 +1637,22 @@ export function InventoryPage() {
               {groups.length === 0 ? (
                 <EmptyState
                   icon={<WarehouseIcon size={22} />}
-                  title={units.length === 0 ? 'No serial stock yet' : 'No products match filters'}
-                  subtitle={
-                    units.length === 0
-                      ? 'Add each physical unit with a unique serial number and stamping date.'
-                      : 'Try clearing filters or searching a different product / serial.'
+                  title={
+                    stockLoadError
+                      ? 'Could not load stock'
+                      : units.length === 0
+                        ? 'No serial stock yet'
+                        : 'No products match filters'
                   }
-                  actionLabel="Add stock"
-                  onAction={() => openAdd()}
+                  subtitle={
+                    stockLoadError
+                      ? stockLoadError
+                      : units.length === 0
+                        ? 'Receive a supplier invoice: model, brand, qty, starting serial — Unique IDs fill automatically.'
+                        : 'Try clearing filters or searching a different product / serial / HMS ID.'
+                  }
+                  actionLabel={stockLoadError ? 'Retry' : 'Receive stock'}
+                  onAction={() => (stockLoadError ? void load() : openAdd())}
                 />
               ) : (
                 <div className="overflow-x-auto">
@@ -1251,28 +2001,86 @@ export function InventoryPage() {
         </Card>
       ) : null}
 
-      {tab === 'add' ? (
-        <FormPanel
-          open
-          accent="theme"
-          eyebrow="Inventory"
-          title="Add stock"
-          subtitle="Product family → industry (weighing) → machine → warehouse → unique serial."
-          onClose={() => setTab('list')}
-          footer={
-            <>
-              <FormPanelCancel onClick={() => setTab('list')} />
-              <Button onClick={() => void saveAdd()} disabled={saving}>
-                {saving ? 'Saving…' : 'Add stock'}
+      <Drawer
+        open={receiveOpen}
+        width={640}
+        storageKey="nova.drawer.inventory.receive"
+        onClose={closeReceive}
+        title={
+          <div>
+            <div className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+              Inventory
+            </div>
+            <div className="text-lg font-semibold text-text-primary">
+              {receiveKind === null
+                ? 'What are you receiving?'
+                : receiveKind === 'spare'
+                  ? 'Spare parts stock'
+                  : 'Receive machine stock'}
+            </div>
+            <p className="mt-0.5 text-sm font-normal text-text-secondary">
+              {receiveKind === null
+                ? 'Choose machine (serial) stock or spare parts quantity stock.'
+                : receiveKind === 'spare'
+                  ? 'Billing / weighing spares are managed on the Spare stock page.'
+                  : 'One supplier invoice → N units. Weighing uses HMS Unique ID.'}
+            </p>
+          </div>
+        }
+        footer={
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" onClick={closeReceive}>
+              Cancel
+            </Button>
+            {receiveKind === 'machine' ? (
+              <Button onClick={() => void saveAdd()} disabled={saving || products.length === 0}>
+                {saving
+                  ? 'Saving…'
+                  : `Receive ${Math.max(1, Math.floor(Number(form.quantity) || 1))} unit${
+                      Math.floor(Number(form.quantity) || 1) === 1 ? '' : 's'
+                    }`}
               </Button>
-            </>
-          }
-        >
-          {products.length === 0 ? (
+            ) : null}
+          </div>
+        }
+      >
+        <div className="p-5">
+          {receiveKind === null ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-accent-blue hover:bg-muted/40"
+                onClick={() => setReceiveKind('machine')}
+              >
+                <div className="flex items-center gap-2 font-semibold text-text-primary">
+                  <Package size={18} /> Machine / product stock
+                </div>
+                <p className="mt-1.5 text-sm text-text-secondary">
+                  Serial units for weighing &amp; billing machines (HMS Unique ID, brands, suppliers).
+                </p>
+              </button>
+              <button
+                type="button"
+                className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-accent-blue hover:bg-muted/40"
+                onClick={() => {
+                  closeReceive()
+                  navigate('/erp/spare-stock?receive=1')
+                }}
+              >
+                <div className="flex items-center gap-2 font-semibold text-text-primary">
+                  <WarehouseIcon size={18} /> Spare parts stock
+                </div>
+                <p className="mt-1.5 text-sm text-text-secondary">
+                  Quantity stock by machine type → spare name → supplier &amp; invoice date. Issue to
+                  engineers separately.
+                </p>
+              </button>
+            </div>
+          ) : products.length === 0 ? (
             <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4 text-sm">
               <p className="font-medium text-amber-900">No products in catalog yet</p>
               <p className="mt-1 text-amber-800/80">
-                Create a product under Products first, then come back to add serial stock.
+                Create a product under Products first, then come back to receive stock.
               </p>
               <Link to="/erp/products" className="mt-3 inline-block">
                 <Button size="sm" variant="outline">
@@ -1281,54 +2089,77 @@ export function InventoryPage() {
               </Link>
             </div>
           ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Select
-                label="1. Product family *"
-                className="sm:col-span-2"
-                value={addFamily}
-                onChange={(e) => {
-                  setAddFamily(e.target.value)
-                  setAddIndustry('')
-                  setForm({ ...form, productId: '' })
-                }}
-                options={[{ value: '', label: 'Select product…' }, ...HMS_FAMILY_OPTIONS]}
-              />
-              {addFamily === 'WEIGHING_SCALES' ? (
-                <Select
-                  label="2. Industry *"
-                  className="sm:col-span-2"
-                  value={addIndustry}
-                  onChange={(e) => {
-                    setAddIndustry(e.target.value)
-                    setForm({ ...form, productId: '' })
-                  }}
-                  options={[
-                    { value: '', label: 'Select industry…' },
-                    ...industryOptions('WEIGHING_SCALES'),
-                  ]}
+            <div className="space-y-4">
+              <button
+                type="button"
+                className="text-sm font-medium text-accent-blue hover:underline"
+                onClick={() => setReceiveKind(null)}
+              >
+                ← Change stock type
+              </button>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="sm:col-span-2">
+                  <SearchableSelect
+                    label="Product / model *"
+                    value={form.productId}
+                    onChange={(productId) => {
+                      void rebuildUnitGrid({ ...form, productId })
+                    }}
+                    placeholder="Search by name or SKU…"
+                    error={errors.productId}
+                    options={products.map((p) => ({
+                      value: p.id,
+                      label: p.name,
+                      sublabel: [p.sku, p.productType].filter(Boolean).join(' · '),
+                    }))}
+                  />
+                </div>
+
+                <div>
+                  <SearchableSelect
+                    label="Supplier *"
+                    value={form.vendorId}
+                    error={errors.vendorId}
+                    allowCreate
+                    placeholder="Search or type supplier…"
+                    options={vendors.map((v) => ({ value: v.id, label: v.name }))}
+                    onChange={(vendorId) => setForm({ ...form, vendorId })}
+                  />
+                  <p className="mt-1.5 text-xs text-text-secondary">
+                    Shared list — also in{' '}
+                    <Link to="/erp/suppliers" className="font-medium text-accent-blue underline">
+                      Inventory hub
+                    </Link>
+                  </p>
+                </div>
+
+                <div>
+                  <SearchableSelect
+                    label="Brand *"
+                    value={form.brandId}
+                    error={errors.brandId}
+                    allowCreate
+                    placeholder="Search or type brand…"
+                    options={brands.map((b) => ({ value: b.id, label: b.name }))}
+                    onChange={(brandId) => setForm({ ...form, brandId })}
+                  />
+                  <p className="mt-1.5 text-xs text-text-secondary">
+                    Manage in{' '}
+                    <Link
+                      to="/erp/suppliers?tab=brands"
+                      className="font-medium text-accent-blue underline"
+                    >
+                      Suppliers → Brands
+                    </Link>
+                  </p>
+                </div>
+
+                <Input
+                  label="Spec"
+                  value={form.spec}
+                  onChange={(e) => setForm({ ...form, spec: e.target.value })}
+                  placeholder="e.g. 2T Superstar / 30kg"
                 />
-              ) : null}
-              <div className="sm:col-span-2">
-                <SearchableSelect
-                  label={addFamily === 'WEIGHING_SCALES' ? '3. Machine *' : '2. Machine *'}
-                  value={form.productId}
-                  onChange={(productId) => setForm({ ...form, productId })}
-                  placeholder={
-                    !addFamily
-                      ? 'Select product family first…'
-                      : addFamily === 'WEIGHING_SCALES' && !addIndustry
-                        ? 'Select industry first…'
-                        : 'Search machine by name or SKU…'
-                  }
-                  error={errors.productId}
-                  options={productsForAdd.map((p) => ({
-                    value: p.id,
-                    label: p.name,
-                    sublabel: p.sku,
-                  }))}
-                />
-              </div>
-              <div>
                 <Select
                   label="Warehouse *"
                   value={form.warehouseId}
@@ -1338,72 +2169,262 @@ export function InventoryPage() {
                     ...warehouses.map((w) => ({ value: w.id, label: w.name })),
                   ]}
                 />
-                {errors.warehouseId && <p className="mt-1 text-xs text-accent-red">{errors.warehouseId}</p>}
-              </div>
-              <Input
-                label="Serial number * (unique)"
-                value={form.serialNo}
-                error={errors.serialNo}
-                onChange={(e) => setForm({ ...form, serialNo: e.target.value })}
-                placeholder="e.g. BM-2026-00421"
-              />
-              <div>
+                {errors.warehouseId ? (
+                  <p className="text-xs text-accent-red sm:col-span-2">{errors.warehouseId}</p>
+                ) : null}
+
+                <Input
+                  label="Qty arrived *"
+                  type="text"
+                  inputMode="numeric"
+                  value={form.quantity}
+                  error={errors.quantity}
+                  onFocus={(e) => e.currentTarget.select()}
+                  onChange={(e) => {
+                    const quantity = e.target.value.replace(/[^\d]/g, '').slice(0, 3)
+                    void rebuildUnitGrid({ ...form, quantity })
+                  }}
+                  onBlur={() => {
+                    void rebuildUnitGrid(form, { clampQty: true })
+                  }}
+                  placeholder="e.g. 28"
+                />
+                <Input
+                  label="Per unit amount"
+                  type="number"
+                  min={0}
+                  value={form.unitAmount}
+                  onChange={(e) => setForm({ ...form, unitAmount: e.target.value })}
+                  placeholder="0"
+                />
+                <Input
+                  label="Supplier invoice no."
+                  value={form.invoiceNo}
+                  onChange={(e) => setForm({ ...form, invoiceNo: e.target.value })}
+                />
+                <Input
+                  label="Invoice date"
+                  type="date"
+                  value={form.invoiceDate}
+                  onChange={(e) => setForm({ ...form, invoiceDate: e.target.value })}
+                />
+                <Input
+                  label="Received date"
+                  type="date"
+                  value={form.receivedDate}
+                  onChange={(e) => setForm({ ...form, receivedDate: e.target.value })}
+                />
                 {addFormRequiresStamping ? (
+                  <Input
+                    label="Stamping date"
+                    type="date"
+                    value={form.stampingDate}
+                    onChange={(e) => setForm({ ...form, stampingDate: e.target.value })}
+                  />
+                ) : (
+                  <p className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-text-secondary">
+                    Govt. stamping not required for this product.
+                  </p>
+                )}
+
+                {receiveIsWeighing ? (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-950 sm:col-span-2 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100">
+                    <strong>Weighing machines:</strong> no supplier serial by default. Enter qty —
+                    HMS Unique IDs auto-fill below.
+                  </div>
+                ) : (
                   <>
                     <Input
-                      label="Stamping date"
-                      type="date"
-                      value={form.stampingDate}
-                      onChange={(e) => setForm({ ...form, stampingDate: e.target.value })}
+                      label="Starting serial *"
+                      value={form.startSerial}
+                      error={errors.startSerial || errors.serialNo}
+                      onChange={(e) => {
+                        void rebuildUnitGrid({
+                          ...form,
+                          startSerial: e.target.value,
+                          pasteSerials: '',
+                        })
+                      }}
+                      placeholder="e.g. SS2T2601001"
                     />
-                    <p className="mt-1 text-xs text-text-secondary">Usually sold within ~10 days of stamping</p>
+                    <Input
+                      label="Ending serial (auto)"
+                      value={receiveEndSerial}
+                      readOnly
+                      placeholder="Fills when start serial + qty are set"
+                    />
+                    <div className="sm:col-span-2">
+                      <label className="mb-1 block text-xs font-medium text-text-secondary">
+                        Or paste serials (one per line) — overrides auto-range
+                      </label>
+                      <textarea
+                        className="min-h-[72px] w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                        value={form.pasteSerials}
+                        onChange={(e) => {
+                          void rebuildUnitGrid({ ...form, pasteSerials: e.target.value })
+                        }}
+                        placeholder={'SS2T2601001\nSS2T2601005\n…'}
+                      />
+                    </div>
                   </>
-                ) : form.productId ? (
-                  <p className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-text-secondary">
-                    Govt. stamping is not required for this product — serial only.
-                  </p>
+                )}
+
+                {form.units.length > 0 &&
+                (receiveIsWeighing || form.startSerial.trim() || form.pasteSerials.trim()) ? (
+                  <div className="rounded-lg border border-emerald-300/70 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-900 sm:col-span-2 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100">
+                    <strong>
+                      {form.units.length} unit{form.units.length === 1 ? '' : 's'} will be added
+                    </strong>
+                    {!receiveIsWeighing && form.startSerial.trim() && receiveEndSerial ? (
+                      <span className="mt-0.5 block font-mono text-xs opacity-90">
+                        Serials {form.startSerial.trim().toUpperCase()} → {receiveEndSerial}
+                        {form.units[0]?.hmsUniqId
+                          ? ` · HMS IDs ${form.units[0].hmsUniqId} → ${form.units.at(-1)?.hmsUniqId ?? ''}`
+                          : ''}
+                      </span>
+                    ) : null}
+                    {receiveIsWeighing && form.units[0]?.hmsUniqId ? (
+                      <span className="mt-0.5 block font-mono text-xs opacity-90">
+                        HMS Unique IDs {form.units[0].hmsUniqId} →{' '}
+                        {form.units.at(-1)?.hmsUniqId ?? ''}
+                      </span>
+                    ) : null}
+                  </div>
                 ) : null}
+
+                <div className="sm:col-span-2">
+                  <Input
+                    label="Notes"
+                    value={form.notes}
+                    onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                    placeholder="Optional notes for this receipt"
+                  />
+                </div>
               </div>
-              <div className="sm:col-span-2">
-                <Input
-                  label="Notes"
-                  value={form.notes}
-                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                  placeholder="Optional notes for this unit"
-                />
-              </div>
+
+              {form.units.length > 0 &&
+              (receiveIsWeighing || form.startSerial.trim() || form.pasteSerials.trim()) ? (
+                <div className="overflow-x-auto rounded-xl border border-border">
+                  <table className="w-full min-w-[420px] text-left text-sm">
+                    <thead className="bg-muted text-xs text-text-secondary">
+                      <tr>
+                        <th className="px-3 py-2 font-medium">#</th>
+                        <th className="px-3 py-2 font-medium">HMS Unique ID</th>
+                        {!receiveIsWeighing ? (
+                          <th className="px-3 py-2 font-medium">Serial no.</th>
+                        ) : null}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {form.units.map((row, idx) => (
+                        <tr key={idx} className="border-t border-border">
+                          <td className="px-3 py-1.5 text-text-secondary">{idx + 1}</td>
+                          <td className="px-3 py-1.5">
+                            <input
+                              className="w-full rounded border border-border bg-background px-2 py-1 font-mono text-xs"
+                              value={row.hmsUniqId}
+                              onChange={(e) => {
+                                const id = e.target.value.toUpperCase()
+                                const units = [...form.units]
+                                units[idx] = {
+                                  ...row,
+                                  hmsUniqId: id,
+                                  serialNo: receiveIsWeighing ? id : row.serialNo,
+                                }
+                                setForm({ ...form, units })
+                              }}
+                            />
+                          </td>
+                          {!receiveIsWeighing ? (
+                            <td className="px-3 py-1.5">
+                              <input
+                                className="w-full rounded border border-border bg-background px-2 py-1 font-mono text-xs"
+                                value={row.serialNo}
+                                onChange={(e) => {
+                                  const units = [...form.units]
+                                  units[idx] = { ...row, serialNo: e.target.value.toUpperCase() }
+                                  setForm({ ...form, units })
+                                }}
+                              />
+                            </td>
+                          ) : null}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
             </div>
           )}
-        </FormPanel>
-      ) : null}
+        </div>
+      </Drawer>
 
-      {viewUnit ? (
-        <FormPanel
-          open
-          accent="theme"
-          eyebrow="Stock unit"
-          title={viewUnit.serialNo}
-          subtitle={`${viewUnit.product?.name ?? productMap[viewUnit.productId]?.name ?? 'Product'} · ${viewUnit.warehouse?.name ?? 'Warehouse'}`}
-          onClose={() => setViewUnit(null)}
-          footer={
-            <>
-              <FormPanelCancel onClick={() => setViewUnit(null)} />
-              <Button
-                onClick={() => {
-                  openEdit(viewUnit)
-                }}
-              >
-                <Pencil size={14} /> Edit
-              </Button>
-            </>
-          }
-        >
-          <dl className="grid gap-2 text-sm sm:grid-cols-2">
+      <Drawer
+        open={Boolean(viewUnit)}
+        width={520}
+        storageKey="nova.drawer.inventory.view"
+        onClose={() => setViewUnit(null)}
+        title={
+          viewUnit ? (
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+                Stock unit
+              </div>
+              <div className="text-lg font-semibold text-text-primary">
+                {viewUnit.hmsUniqId || viewUnit.serialNo}
+              </div>
+              <p className="mt-0.5 text-sm font-normal text-text-secondary">
+                {viewUnit.product?.name ?? productMap[viewUnit.productId]?.name ?? 'Product'} ·{' '}
+                {viewUnit.warehouse?.name ?? 'Warehouse'}
+              </p>
+            </div>
+          ) : (
+            'Stock unit'
+          )
+        }
+        footer={
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" onClick={() => setViewUnit(null)}>
+              Close
+            </Button>
+            <Button
+              onClick={() => {
+                if (viewUnit) openEdit(viewUnit)
+              }}
+            >
+              <Pencil size={14} /> Edit
+            </Button>
+          </div>
+        }
+      >
+        {viewUnit ? (
+          <dl className="grid gap-2 p-5 text-sm sm:grid-cols-2">
             {[
+              ['HMS Unique ID', viewUnit.hmsUniqId || '—'],
               ['Serial', viewUnit.serialNo],
               ['Status', viewUnit.status.replace('_', ' ')],
               ['Product', viewUnit.product?.name ?? productMap[viewUnit.productId]?.name],
               ['SKU', viewUnit.product?.sku ?? productMap[viewUnit.productId]?.sku],
+              ['Brand', viewUnit.brand?.name || '—'],
+              ['Supplier', viewUnit.receipt?.vendor?.name || '—'],
+              ['Spec', viewUnit.receipt?.spec || '—'],
+              ['Invoice no.', viewUnit.receipt?.invoiceNo || '—'],
+              [
+                'Invoice date',
+                viewUnit.receipt?.invoiceDate
+                  ? formatDate(String(viewUnit.receipt.invoiceDate))
+                  : '—',
+              ],
+              [
+                'Received date',
+                viewUnit.receipt?.receivedDate
+                  ? formatDate(String(viewUnit.receipt.receivedDate))
+                  : '—',
+              ],
+              [
+                'Unit cost',
+                viewUnit.unitCost != null ? formatCurrency(Number(viewUnit.unitCost)) : '—',
+              ],
               ['Warehouse', viewUnit.warehouse?.name],
               ...(viewUnitRequiresStamping
                 ? [['Stamping date', viewUnit.stampingDate ? formatDate(String(viewUnit.stampingDate)) : '—']]
@@ -1421,68 +2442,324 @@ export function InventoryPage() {
               <dd className="mt-0.5 whitespace-pre-wrap font-medium">{viewUnit.notes || '—'}</dd>
             </div>
           </dl>
-        </FormPanel>
-      ) : null}
+        ) : null}
+      </Drawer>
 
-      {editUnit ? (
-        <FormPanel
-          open
-          accent="theme"
-          eyebrow="Edit stock unit"
-          title={editUnit.serialNo}
-          subtitle="Update serial, warehouse, stamping date, or notes"
-          onClose={() => setEditUnit(null)}
-          footer={
-            <>
-              <FormPanelCancel onClick={() => setEditUnit(null)} />
-              <Button onClick={() => void saveEdit()} disabled={saving}>
-                {saving ? 'Saving…' : 'Save changes'}
-              </Button>
-            </>
-          }
-        >
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm sm:col-span-2">
-              <div className="text-xs text-text-secondary">Product (fixed)</div>
+      <Drawer
+        open={Boolean(editUnit)}
+        width={560}
+        storageKey="nova.drawer.inventory.edit"
+        onClose={() => setEditUnit(null)}
+        title={
+          editUnit ? (
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+                Edit stock unit
+              </div>
+              <div className="text-lg font-semibold text-text-primary">
+                {editUnit.hmsUniqId || editUnit.serialNo}
+              </div>
+              <p className="mt-0.5 text-sm font-normal text-text-secondary">
+                Main stock, Demo, or Rental — edit anytime
+              </p>
+            </div>
+          ) : (
+            'Edit stock'
+          )
+        }
+        footer={
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="outline" onClick={() => setEditUnit(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void saveEdit()} disabled={saving}>
+              {saving
+                ? 'Saving…'
+                : editForm.placement === 'DEMO'
+                  ? 'Save demo placement'
+                  : editForm.placement === 'RENTAL'
+                    ? 'Save rental'
+                    : 'Save changes'}
+            </Button>
+          </div>
+        }
+      >
+        {editUnit ? (
+          <div className="space-y-4 p-5">
+            <div className="rounded-lg border border-sky-200 bg-sky-50/80 px-3 py-2.5 text-sm text-sky-950 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-100">
+              You can edit any stock unit anytime (demos and rentals included). New stock defaults to{' '}
+              <strong>Main warehouse</strong>. Choose <strong>Demo</strong> or <strong>Rental</strong>{' '}
+              below to capture customer details and responsibility.
+            </div>
+
+            <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">
+              <div className="text-xs text-text-secondary">Product</div>
               <div className="font-medium">
                 {(editUnit.product?.sku ?? productMap[editUnit.productId]?.sku) || '—'} —{' '}
                 {editUnit.product?.name ?? productMap[editUnit.productId]?.name}
               </div>
+              <div className="mt-1 text-xs text-text-secondary">
+                Current status:{' '}
+                <Badge color={STATUS_COLOR[editUnit.status] ?? 'gray'} className="align-middle">
+                  {editUnit.status}
+                </Badge>
+              </div>
             </div>
-            <Select
-              label="Warehouse *"
-              value={editForm.warehouseId}
-              onChange={(e) => setEditForm({ ...editForm, warehouseId: e.target.value })}
-              options={warehouses.map((w) => ({ value: w.id, label: w.name }))}
-            />
-            <Input
-              label="Serial number *"
-              value={editForm.serialNo}
-              error={errors.serialNo}
-              onChange={(e) => setEditForm({ ...editForm, serialNo: e.target.value })}
-            />
-            {editFormRequiresStamping ? (
-              <Input
-                label="Stamping date"
-                type="date"
-                value={editForm.stampingDate}
-                onChange={(e) => setEditForm({ ...editForm, stampingDate: e.target.value })}
-              />
-            ) : (
-              <p className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-text-secondary sm:col-span-2">
-                Govt. stamping is not required for this product.
-              </p>
-            )}
-            <div className="sm:col-span-2">
-              <Input
-                label="Notes"
-                value={editForm.notes}
-                onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-              />
+
+            <div>
+              <p className="mb-2 text-sm font-medium text-text-secondary">Place as</p>
+              <div className="flex flex-wrap gap-2">
+                {(
+                  [
+                    { id: 'STOCK' as const, label: 'In stock' },
+                    { id: 'DEMO' as const, label: 'Demo' },
+                    { id: 'RENTAL' as const, label: 'Rental' },
+                  ] as const
+                ).map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
+                      editForm.placement === p.id
+                        ? 'border-accent-blue bg-accent-blue/10 text-accent-blue'
+                        : 'border-border bg-card text-text-primary hover:bg-muted'
+                    }`}
+                    onClick={() => {
+                      const demoWh = warehouses.find(
+                        (w) => String(w.code ?? '').toUpperCase() === 'DEMO',
+                      )
+                      const mainWh = warehouses.find(
+                        (w) => String(w.code ?? '').toUpperCase() === 'MAIN',
+                      )
+                      setEditForm((f) => ({
+                        ...f,
+                        placement: p.id,
+                        warehouseId:
+                          p.id === 'DEMO'
+                            ? demoWh?.id || f.warehouseId
+                            : p.id === 'STOCK'
+                              ? mainWh?.id || f.warehouseId
+                              : f.warehouseId,
+                      }))
+                    }}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
             </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {editForm.placement === 'STOCK' ? (
+                <Select
+                  label="Warehouse *"
+                  value={editForm.warehouseId}
+                  error={errors.warehouseId}
+                  onChange={(e) => onEditWarehouseChange(e.target.value)}
+                  options={warehouses.map((w) => ({
+                    value: w.id,
+                    label:
+                      String(w.code ?? '').toUpperCase() === 'MAIN'
+                        ? `${w.name} (default)`
+                        : w.name,
+                  }))}
+                />
+              ) : null}
+              <Input
+                label="HMS Unique ID"
+                value={editForm.hmsUniqId}
+                onChange={(e) => setEditForm({ ...editForm, hmsUniqId: e.target.value })}
+              />
+              <Input
+                label="Serial / ID *"
+                value={editForm.serialNo}
+                error={errors.serialNo}
+                onChange={(e) => setEditForm({ ...editForm, serialNo: e.target.value })}
+              />
+              <Select
+                label="Brand"
+                value={editForm.brandId}
+                onChange={(e) => setEditForm({ ...editForm, brandId: e.target.value })}
+                options={[
+                  { value: '', label: 'No brand' },
+                  ...brands.map((b) => ({ value: b.id, label: b.name })),
+                ]}
+              />
+              <Input
+                label="Unit cost ₹"
+                type="number"
+                value={editForm.unitCost}
+                onChange={(e) => setEditForm({ ...editForm, unitCost: e.target.value })}
+              />
+              {editFormRequiresStamping ? (
+                <Input
+                  label="Stamping date"
+                  type="date"
+                  value={editForm.stampingDate}
+                  onChange={(e) => setEditForm({ ...editForm, stampingDate: e.target.value })}
+                />
+              ) : null}
+              <div className="sm:col-span-2">
+                <Input
+                  label="Notes"
+                  value={editForm.notes}
+                  onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                />
+              </div>
+            </div>
+
+            {editForm.placement === 'DEMO' ? (
+              <section className="space-y-3 rounded-xl border border-amber-200/80 bg-amber-50/40 p-4 dark:border-amber-900/40 dark:bg-amber-950/20">
+                <h3 className="text-sm font-semibold text-text-primary">Demo customer & assignee</h3>
+                <p className="text-xs text-text-secondary">
+                  Creates / updates a Sale tracking enquiry and marks this serial as DEMO.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Input
+                    label="Customer name *"
+                    value={editForm.demoCustomerName}
+                    error={errors.demoCustomerName}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, demoCustomerName: e.target.value })
+                    }
+                  />
+                  <Input
+                    label="Phone"
+                    value={editForm.demoPhone}
+                    onChange={(e) => setEditForm({ ...editForm, demoPhone: e.target.value })}
+                  />
+                  <Input
+                    label="Company / shop"
+                    value={editForm.demoCompany}
+                    onChange={(e) => setEditForm({ ...editForm, demoCompany: e.target.value })}
+                  />
+                  <Input
+                    label="Email"
+                    value={editForm.demoEmail}
+                    onChange={(e) => setEditForm({ ...editForm, demoEmail: e.target.value })}
+                  />
+                  <Input
+                    label="City"
+                    value={editForm.demoCity}
+                    onChange={(e) => setEditForm({ ...editForm, demoCity: e.target.value })}
+                  />
+                  <Input
+                    label="State"
+                    value={editForm.demoState}
+                    onChange={(e) => setEditForm({ ...editForm, demoState: e.target.value })}
+                  />
+                  <Input
+                    className="sm:col-span-2"
+                    label="Address"
+                    value={editForm.demoAddress}
+                    onChange={(e) => setEditForm({ ...editForm, demoAddress: e.target.value })}
+                  />
+                  <div className="sm:col-span-2">
+                    <Select
+                      label="Responsible (assignee) *"
+                      value={editForm.demoAssigneeId}
+                      error={errors.demoAssigneeId}
+                      onChange={(e) =>
+                        setEditForm({ ...editForm, demoAssigneeId: e.target.value })
+                      }
+                      options={[
+                        { value: '', label: 'Select executive / salesperson…' },
+                        ...teamUsers.map((u) => ({ value: u.id, label: u.name })),
+                      ]}
+                    />
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
+            {editForm.placement === 'RENTAL' ? (
+              <section className="space-y-3 rounded-xl border border-emerald-200/80 bg-emerald-50/40 p-4 dark:border-emerald-900/40 dark:bg-emerald-950/20">
+                <h3 className="text-sm font-semibold text-text-primary">
+                  Rental · sales category + customer
+                </h3>
+                <p className="text-xs text-text-secondary">
+                  Logs a RENTAL enquiry under Sales, creates/updates the rental agreement, and marks
+                  the serial RENTED.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Input
+                    label="Customer name *"
+                    value={editForm.rentalCustomerName}
+                    error={errors.rentalCustomerName}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, rentalCustomerName: e.target.value })
+                    }
+                  />
+                  <Input
+                    label="Phone"
+                    value={editForm.rentalPhone}
+                    onChange={(e) => setEditForm({ ...editForm, rentalPhone: e.target.value })}
+                  />
+                  <Input
+                    label="Company / shop"
+                    value={editForm.rentalCompany}
+                    onChange={(e) => setEditForm({ ...editForm, rentalCompany: e.target.value })}
+                  />
+                  <Input
+                    label="Email"
+                    value={editForm.rentalEmail}
+                    onChange={(e) => setEditForm({ ...editForm, rentalEmail: e.target.value })}
+                  />
+                  <Input
+                    label="City"
+                    value={editForm.rentalCity}
+                    onChange={(e) => setEditForm({ ...editForm, rentalCity: e.target.value })}
+                  />
+                  <Input
+                    label="State"
+                    value={editForm.rentalState}
+                    onChange={(e) => setEditForm({ ...editForm, rentalState: e.target.value })}
+                  />
+                  <Input
+                    className="sm:col-span-2"
+                    label="Address"
+                    value={editForm.rentalAddress}
+                    onChange={(e) => setEditForm({ ...editForm, rentalAddress: e.target.value })}
+                  />
+                  <Input
+                    label="Rental start *"
+                    type="datetime-local"
+                    value={editForm.rentalStartAt}
+                    error={errors.rentalStartAt}
+                    onChange={(e) => setEditForm({ ...editForm, rentalStartAt: e.target.value })}
+                  />
+                  <Input
+                    label="Expected return"
+                    type="datetime-local"
+                    value={editForm.rentalExpectedReturnAt}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, rentalExpectedReturnAt: e.target.value })
+                    }
+                  />
+                  <Input
+                    label="Daily rate ₹"
+                    type="number"
+                    value={editForm.rentalDailyRate}
+                    onChange={(e) => setEditForm({ ...editForm, rentalDailyRate: e.target.value })}
+                  />
+                  <Input
+                    label="Deposit ₹"
+                    type="number"
+                    value={editForm.rentalDeposit}
+                    onChange={(e) => setEditForm({ ...editForm, rentalDeposit: e.target.value })}
+                  />
+                  <Input
+                    label="Agreed total ₹"
+                    type="number"
+                    value={editForm.rentalTotal}
+                    onChange={(e) => setEditForm({ ...editForm, rentalTotal: e.target.value })}
+                  />
+                </div>
+              </section>
+            ) : null}
           </div>
-        </FormPanel>
-      ) : null}
+        ) : null}
+      </Drawer>
 
       <Modal
         open={Boolean(returnConfirm)}
@@ -1576,6 +2853,110 @@ export function InventoryPage() {
             onChange={(e) => setReturnNotes(e.target.value)}
             placeholder="Condition, reason…"
           />
+        </div>
+      </Modal>
+
+      <Modal
+        open={exportOpen}
+        onClose={() => !exportBusy && setExportOpen(false)}
+        title="Download stock details"
+        subtitle="Units added in the period — Excel or Print/PDF"
+        size="md"
+        accent="theme"
+        footer={
+          <>
+            <Button variant="outline" disabled={exportBusy} onClick={() => setExportOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="outline"
+              disabled={exportBusy}
+              onClick={() => void downloadStockReport('pdf')}
+            >
+              <Printer size={16} />
+              {exportBusy ? 'Preparing…' : 'Print / PDF'}
+            </Button>
+            <Button disabled={exportBusy} onClick={() => void downloadStockReport('xlsx')}>
+              <FileSpreadsheet size={16} />
+              {exportBusy ? 'Preparing…' : 'Excel'}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <p className="mb-2 text-sm font-medium text-text-secondary">Period</p>
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  { id: 'today' as const, label: 'Today' },
+                  { id: '7d' as const, label: '7 days' },
+                  { id: '30d' as const, label: '1 month' },
+                  { id: 'custom' as const, label: 'Calendar' },
+                ] as const
+              ).map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
+                    exportPreset === p.id
+                      ? 'border-accent-blue bg-accent-blue/10 text-accent-blue'
+                      : 'border-border bg-card text-text-primary hover:bg-muted'
+                  }`}
+                  onClick={() => applyExportPreset(p.id)}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Input
+              label="From"
+              type="date"
+              value={exportFrom}
+              onChange={(e) => {
+                setExportPreset('custom')
+                setExportFrom(e.target.value)
+              }}
+            />
+            <Input
+              label="To"
+              type="date"
+              value={exportTo}
+              onChange={(e) => {
+                setExportPreset('custom')
+                setExportTo(e.target.value)
+              }}
+            />
+          </div>
+
+          <Select
+            label="Warehouse (optional)"
+            value={exportWarehouseId}
+            onChange={(e) => setExportWarehouseId(e.target.value)}
+            options={[
+              { value: '', label: 'All warehouses' },
+              ...warehouses.map((w) => ({ value: w.id, label: w.name })),
+            ]}
+          />
+
+          <Select
+            label="Machine (optional)"
+            value={exportProductId}
+            onChange={(e) => setExportProductId(e.target.value)}
+            options={[
+              { value: '', label: 'All machines' },
+              ...products.map((p) => ({ value: p.id, label: p.name })),
+            ]}
+          />
+
+          <p className="text-xs text-text-secondary">
+            Includes every unit entered into stock in this range (HMS Unique ID, serial, product,
+            brand, supplier, cost) plus receipt batch summary. Dates use India business day.
+            For spare monthly + machine filters together, use Inventory → Monthly report.
+          </p>
         </div>
       </Modal>
     </div>

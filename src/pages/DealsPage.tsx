@@ -35,6 +35,7 @@ import { api, ApiClientError, num } from '@/lib/api'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
+import { PageSkeleton } from '@/components/ui/Skeleton'
 
 type Stage = {
   id: string
@@ -480,7 +481,7 @@ export function DealsPage() {
       </div>
 
       {loading ? (
-        <Card className="p-8 text-sm text-text-secondary">Loading live pipeline…</Card>
+        <PageSkeleton cards={4} rows={5} />
       ) : view === 'kanban' ? (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(e) => void handleDragEnd(e)}>
           <div className="flex gap-4 overflow-x-auto pb-4">

@@ -13,6 +13,7 @@ import { ConfirmModal } from '@/components/ui/Modal'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 
 const CHANGE_TYPES = [
   { value: 'REPLACED', label: 'Replaced' },
@@ -61,6 +62,8 @@ type Props = {
   readOnly?: boolean
   /** Optional title override */
   title?: string
+  /** Default "under warranty / GC free" tick when logging a new part */
+  defaultUnderWarranty?: boolean
 }
 
 export function SparePartsPanel({
@@ -75,6 +78,7 @@ export function SparePartsPanel({
   canEdit = true,
   readOnly = false,
   title,
+  defaultUnderWarranty = false,
 }: Props) {
   const addToast = useUIStore((s) => s.addToast)
   const [rows, setRows] = useState<Record<string, unknown>[]>([])
@@ -89,6 +93,10 @@ export function SparePartsPanel({
   const [saving, setSaving] = useState(false)
   const [confirmId, setConfirmId] = useState<string | null>(null)
   const [sectionOpen, setSectionOpen] = useState(!collapsible || defaultOpen)
+
+  useEffect(() => {
+    if (collapsible && defaultOpen) setSectionOpen(true)
+  }, [collapsible, defaultOpen])
 
   const allowMutate = canEdit && !readOnly
   const machineLocked = Boolean(fixedAssetId)
@@ -179,6 +187,8 @@ export function SparePartsPanel({
       contactId: fixedContactId ?? '',
       ticketId: fixedTicketId ?? '',
       assetId: fixedAssetId ?? '',
+      underWarranty: defaultUnderWarranty,
+      chargeAmount: defaultUnderWarranty ? '0' : '',
     })
     setFormOpen(true)
   }
@@ -352,7 +362,7 @@ export function SparePartsPanel({
             ) : null}
 
             {loading ? (
-              <p className="p-6 text-sm text-text-secondary">Loading spare parts…</p>
+              <TableSkeleton rows={5} />
             ) : filtered.length === 0 ? (
               <EmptyState
                 icon={<Wrench size={22} />}

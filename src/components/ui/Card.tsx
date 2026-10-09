@@ -14,9 +14,9 @@ export function Card({ children, className, hover, padding = true, id }: CardPro
     <div
       id={id}
       className={cn(
-        'rounded-[8px] border border-border bg-card shadow-[var(--shadow-card)]',
+        'rounded-xl border border-border bg-card shadow-[var(--shadow-card)]',
         hover && 'transition-shadow duration-150 hover:shadow-[var(--shadow-hover)]',
-        padding && 'p-5',
+        padding && 'p-4 sm:p-5',
         className,
       )}
     >

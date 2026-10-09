@@ -24,9 +24,17 @@ export function isServiceEngineer(role?: string | null): boolean {
   return role === 'SERVICE_ENGINEER'
 }
 
-/** Sales executive — sale tracking, demo issue, daily demo updates. Legacy AGENT = sales. */
-export function isSalesExecutive(role?: string | null): boolean {
+/**
+ * Sales desk — in-office team (calls / enquiries / conversion), parallel to Service Desk.
+ * Role code stays `SALES_EXECUTIVE` (legacy `AGENT`) for DB compatibility.
+ */
+export function isSalesDesk(role?: string | null): boolean {
   return role === 'SALES_EXECUTIVE' || role === 'AGENT'
+}
+
+/** @deprecated use isSalesDesk — same role */
+export function isSalesExecutive(role?: string | null): boolean {
+  return isSalesDesk(role)
 }
 
 export function isWarehouse(role?: string | null): boolean {
@@ -48,9 +56,9 @@ export function filterServiceEngineers<T extends LookupUser>(users: T[]): T[] {
   return users.filter((u) => u.roleCode === 'SERVICE_ENGINEER')
 }
 
-/** Users who can own sale enquiries / demos. */
+/** Users who can own sale enquiries / demos (sales desk). */
 export function filterSalesExecutives<T extends LookupUser>(users: T[]): T[] {
-  return users.filter((u) => isSalesExecutive(u.roleCode))
+  return users.filter((u) => isSalesDesk(u.roleCode))
 }
 
 /** Can assign tickets to engineers and approve completion. */
@@ -59,7 +67,7 @@ export function canAssignTickets(role?: string | null): boolean {
 }
 
 export function canApproveTickets(role?: string | null): boolean {
-  return role === 'ADMIN' || role === 'MANAGER'
+  return role === 'ADMIN' || role === 'MANAGER' || role === 'SERVICE_DESK'
 }
 
 /** Can create service tickets (desk or admin). */
@@ -67,22 +75,35 @@ export function canCreateTickets(role?: string | null): boolean {
   return role === 'ADMIN' || role === 'MANAGER' || role === 'SERVICE_DESK'
 }
 
-/** Can open ERP inventory/products. */
+/** Can open ERP inventory/products (self-control model — most ops roles). */
 export function canAccessErp(role?: string | null): boolean {
-  return role === 'ADMIN' || role === 'WAREHOUSE'
+  return (
+    role === 'ADMIN' ||
+    role === 'MANAGER' ||
+    role === 'WAREHOUSE' ||
+    role === 'SALES_EXECUTIVE' ||
+    role === 'AGENT' ||
+    role === 'SERVICE_DESK' ||
+    role === 'SERVICE_ENGINEER'
+  )
 }
 
 /**
  * Proforma invoices (CRM estimates) — final GST bills live in Tally.
- * Admin + warehouse/billing team.
+ * Admin + manager + warehouse + sales desk (create after stock is sold).
  */
 export function canAccessProformaInvoices(role?: string | null): boolean {
-  return role === 'ADMIN' || role === 'MANAGER' || role === 'WAREHOUSE'
+  return (
+    role === 'ADMIN' ||
+    role === 'MANAGER' ||
+    role === 'WAREHOUSE' ||
+    isSalesDesk(role)
+  )
 }
 
-/** Can use Sale tracking (admin + sales executive). */
+/** Can use Sale tracking (admin + sales desk). */
 export function canAccessSaleTracking(role?: string | null): boolean {
-  return role === 'ADMIN' || role === 'MANAGER' || isSalesExecutive(role)
+  return role === 'ADMIN' || role === 'MANAGER' || isSalesDesk(role)
 }
 
 /**
@@ -113,7 +134,7 @@ export function roleLabel(role?: string | null): string {
       return 'Service Engineer'
     case 'SALES_EXECUTIVE':
     case 'AGENT':
-      return 'Sales Executive'
+      return 'Sales Desk'
     case 'WAREHOUSE':
       return 'Warehouse & billing'
     case 'READ_ONLY':
@@ -125,7 +146,7 @@ export function roleLabel(role?: string | null): string {
 
 export const TENANT_ROLE_OPTIONS = [
   { value: 'ADMIN', label: 'Admin' },
-  { value: 'SALES_EXECUTIVE', label: 'Sales executive' },
+  { value: 'SALES_EXECUTIVE', label: 'Sales desk' },
   { value: 'SERVICE_DESK', label: 'Service desk' },
   { value: 'SERVICE_ENGINEER', label: 'Service engineer' },
   { value: 'WAREHOUSE', label: 'Warehouse & billing' },

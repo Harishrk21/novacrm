@@ -32,10 +32,10 @@ export function assertStatusTransition(
     throw new AppError("Approve & close only after the engineer marks the job complete (RESOLVED)", 400);
   }
   if (to === "CLOSED" && !opts.isAdmin) {
-    throw new AppError("Only admin can approve and close completed service", 403);
+    throw new AppError("Only admin or service desk can approve and close completed service", 403);
   }
   if (from === "CLOSED" && to === "IN_PROGRESS" && !opts.isAdmin) {
-    throw new AppError("Only admin can reopen a closed ticket", 403);
+    throw new AppError("Only admin or service desk can reopen a closed ticket", 403);
   }
 }
 

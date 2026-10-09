@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
 import { api, ApiClientError } from '@/lib/api'
 import { useUIStore } from '@/store/uiStore'
+import { BlockSkeleton } from '@/components/ui/Skeleton'
 
 type CloudStatus = {
   configured: boolean
@@ -22,6 +23,7 @@ type CloudStatus = {
   environment?: string
   publicApiUrl?: string | null
   note?: string
+  source?: 'tenant' | 'env'
 }
 
 export function WhatsAppCloudPanel({ compact }: { compact?: boolean }) {
@@ -30,6 +32,12 @@ export function WhatsAppCloudPanel({ compact }: { compact?: boolean }) {
   const [loading, setLoading] = useState(true)
   const [testTo, setTestTo] = useState('')
   const [testing, setTesting] = useState(false)
+  const [showTenantForm, setShowTenantForm] = useState(false)
+  const [savingCfg, setSavingCfg] = useState(false)
+  const [tenantToken, setTenantToken] = useState('')
+  const [tenantPhoneId, setTenantPhoneId] = useState('')
+  const [tenantVerify, setTenantVerify] = useState('')
+  const [tenantWaba, setTenantWaba] = useState('')
 
   async function load() {
     setLoading(true)
@@ -72,6 +80,33 @@ export function WhatsAppCloudPanel({ compact }: { compact?: boolean }) {
       })
     } finally {
       setTesting(false)
+    }
+  }
+
+  async function saveTenantConfig() {
+    if (!tenantToken.trim() || !tenantPhoneId.trim()) {
+      addToast({ type: 'error', message: 'Token and Phone number ID are required' })
+      return
+    }
+    setSavingCfg(true)
+    try {
+      await api.saveWhatsAppCloudConfig({
+        token: tenantToken.trim(),
+        phoneNumberId: tenantPhoneId.trim(),
+        verifyToken: tenantVerify.trim() || undefined,
+        businessAccountId: tenantWaba.trim() || undefined,
+      })
+      addToast({ type: 'success', message: 'Company WhatsApp credentials saved (this tenant only)' })
+      setTenantToken('')
+      setShowTenantForm(false)
+      await load()
+    } catch (err) {
+      addToast({
+        type: 'error',
+        message: err instanceof ApiClientError ? err.message : 'Could not save credentials',
+      })
+    } finally {
+      setSavingCfg(false)
     }
   }
 
@@ -130,7 +165,7 @@ export function WhatsAppCloudPanel({ compact }: { compact?: boolean }) {
         )}
 
         {loading ? (
-          <p className="text-sm text-text-secondary">Checking Cloud API…</p>
+          <BlockSkeleton lines={5} className="p-0" />
         ) : status ? (
           <>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -160,10 +195,59 @@ export function WhatsAppCloudPanel({ compact }: { compact?: boolean }) {
                 ) : null}
                 App secret {status.hasAppSecret ? 'set' : 'missing'}
               </span>
+              {status.source ? (
+                <Badge color={status.source === 'tenant' ? 'blue' : 'gray'}>
+                  {status.source === 'tenant' ? 'Per-company token' : 'Server .env fallback'}
+                </Badge>
+              ) : null}
               <Button variant="outline" size="sm" onClick={() => void load()}>
                 <RefreshCw size={14} /> Refresh
               </Button>
+              <Button variant="outline" size="sm" onClick={() => setShowTenantForm((v) => !v)}>
+                {showTenantForm ? 'Hide company credentials' : 'Set company credentials'}
+              </Button>
             </div>
+
+            {showTenantForm ? (
+              <div className="grid gap-3 rounded-[8px] border border-border bg-surface p-3 sm:grid-cols-2">
+                <p className="sm:col-span-2 text-xs text-text-secondary">
+                  Store this company&apos;s Meta Cloud token separately — do not reuse another client&apos;s
+                  credentials. Falls back to server .env when empty.
+                </p>
+                <Input
+                  className="sm:col-span-2"
+                  label="Access token *"
+                  type="password"
+                  value={tenantToken}
+                  onChange={(e) => setTenantToken(e.target.value)}
+                  placeholder="EAAG…"
+                />
+                <Input
+                  label="Phone number ID *"
+                  value={tenantPhoneId}
+                  onChange={(e) => setTenantPhoneId(e.target.value)}
+                />
+                <Input
+                  label="WABA ID"
+                  value={tenantWaba}
+                  onChange={(e) => setTenantWaba(e.target.value)}
+                />
+                <Input
+                  className="sm:col-span-2"
+                  label="Verify token (optional)"
+                  value={tenantVerify}
+                  onChange={(e) => setTenantVerify(e.target.value)}
+                />
+                <Button
+                  disabled={savingCfg}
+                  onClick={() => void saveTenantConfig()}
+                  className="sm:col-span-2"
+                  style={{ backgroundColor: WA_GREEN }}
+                >
+                  {savingCfg ? 'Saving…' : 'Save for this company'}
+                </Button>
+              </div>
+            ) : null}
 
             <div className="rounded-[8px] border border-border bg-surface p-3">
               <div className="flex flex-wrap items-center gap-2">

@@ -8,9 +8,12 @@ export function isScopedEmployeeRole(role?: string | null): boolean {
   );
 }
 
+/** Sales desk (in-office calls/enquiries). Code remains SALES_EXECUTIVE / AGENT. */
 export function isSalesExecutiveRole(role?: string | null): boolean {
   return role === "SALES_EXECUTIVE" || role === "AGENT";
 }
+
+export const isSalesDeskRole = isSalesExecutiveRole;
 
 export function isCompanyAdminRole(role?: string | null): boolean {
   return role === "ADMIN" || role === "MANAGER";
@@ -25,7 +28,7 @@ export function canAssignTicketsRole(role?: string | null): boolean {
 }
 
 export function canApproveTicketsRole(role?: string | null): boolean {
-  return role === "ADMIN" || role === "MANAGER";
+  return role === "ADMIN" || role === "MANAGER" || role === "SERVICE_DESK";
 }
 
 export function canCreateTicketsRole(role?: string | null): boolean {

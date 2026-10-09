@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   CheckSquare,
   ChevronRight,
+  ListTodo,
   Play,
   RefreshCw,
   Ticket,
@@ -19,9 +20,13 @@ import { Card } from '@/components/ui/Card'
 import { Modal } from '@/components/ui/Modal'
 import { formatServiceId } from '@/lib/serviceId'
 import { api, ApiClientError, isTenantSession } from '@/lib/api'
-import { formatDateTime, timeAgo } from '@/lib/utils'
+import { cn, formatDateTime, timeAgo } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
+import { BlockSkeleton } from '@/components/ui/Skeleton'
+import { saleIsCompleted } from '@/lib/salesFlow'
+import { isServiceEngineer } from '@/lib/roles'
+import { useFieldShell } from '@/hooks/useFieldShell'
 
 type Row = Record<string, unknown>
 
@@ -39,6 +44,8 @@ function sortSla(a: Row, b: Row) {
 export function EmployeeDashboardPage() {
   const user = useAuthStore((s) => s.user)
   const addToast = useUIStore((s) => s.addToast)
+  const fieldShell = useFieldShell()
+  const engineer = isServiceEngineer(user?.role)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [leads, setLeads] = useState<Row[]>([])
@@ -147,6 +154,13 @@ export function EmployeeDashboardPage() {
     setCompleteOpen(false)
     setBusy(true)
     try {
+      // OPEN cannot jump to RESOLVED — start first if needed
+      if (String(current.status) === 'OPEN') {
+        await api.updateTicket(String(current.id), {
+          status: 'IN_PROGRESS',
+          sendWhatsApp: false,
+        })
+      }
       const updated = await api.updateTicket(String(current.id), { status: 'RESOLVED' })
       addToast({ type: 'success', message: 'Service completed' })
       if (updated.whatsapp?.fallbackWaLink && !updated.whatsapp.notified) {
@@ -166,7 +180,8 @@ export function EmployeeDashboardPage() {
   const stats = [
     {
       label: 'Open tickets',
-      value: summary.open || openTickets.length,
+      // Match queue: OPEN + IN_PROGRESS + PENDING (not OPEN-only summary)
+      value: openTickets.length,
       icon: Ticket,
       to: '/tickets',
       tint: 'bg-amber-50 text-accent-amber',
@@ -199,31 +214,52 @@ export function EmployeeDashboardPage() {
       <PageHeader
         title={
           <span className="inline-flex items-center gap-3">
-            <Avatar name={user?.name ?? 'User'} src={user?.avatarUrl} size="lg" />
+            {!fieldShell ? (
+              <Avatar name={user?.name ?? 'User'} src={user?.avatarUrl} size="lg" />
+            ) : null}
             <span>{`Hi, ${user?.name?.split(' ')[0] ?? 'there'}`}</span>
           </span>
         }
-        breadcrumbs={[{ label: 'Service desk' }, { label: 'My work' }]}
+        breadcrumbs={
+          fieldShell
+            ? undefined
+            : [{ label: 'Service desk' }, { label: 'My work' }]
+        }
         actions={
           <div className="flex flex-wrap gap-2">
-            <Link to="/contacts">
-              <Button variant="outline">
-                <Users size={16} /> Contacts
-              </Button>
-            </Link>
-            <Link to="/tickets?open=1">
-              <Button>
-                <Ticket size={16} /> New ticket
-              </Button>
-            </Link>
-            <Button variant="outline" onClick={() => void load()} disabled={loading}>
+            {engineer ? (
+              <Link to="/workqueue" className={fieldShell ? 'flex-1' : undefined}>
+                <Button variant="outline" className={fieldShell ? 'w-full min-h-11' : undefined}>
+                  <ListTodo size={16} /> Open to accept
+                </Button>
+              </Link>
+            ) : (
+              <>
+                <Link to="/contacts">
+                  <Button variant="outline">
+                    <Users size={16} /> Contacts
+                  </Button>
+                </Link>
+                <Link to="/tickets?open=1">
+                  <Button>
+                    <Ticket size={16} /> New ticket
+                  </Button>
+                </Link>
+              </>
+            )}
+            <Button
+              variant="outline"
+              onClick={() => void load()}
+              disabled={loading}
+              className={fieldShell ? 'min-h-11' : undefined}
+            >
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
             </Button>
           </div>
         }
       />
 
-      <PageTip moduleKey="crm.employee" />
+      {!fieldShell ? <PageTip moduleKey="crm.employee" /> : null}
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {stats.map((s) => (
@@ -291,22 +327,40 @@ export function EmployeeDashboardPage() {
               </span>
               <span>Priority: {labelize(String(current.priority))}</span>
             </div>
-            <div className="mt-5 flex flex-wrap gap-2">
+            <div
+              className={cn(
+                'mt-5 flex flex-wrap gap-2',
+                fieldShell && 'flex-col',
+              )}
+            >
               {String(current.status) === 'OPEN' ? (
-                <Button onClick={() => void startWork()} disabled={busy}>
-                  <Play size={16} /> {busy ? 'Updating…' : 'Start work'}
+                <Button
+                  onClick={() => void startWork()}
+                  disabled={busy}
+                  className={fieldShell ? 'min-h-12 w-full text-base' : undefined}
+                >
+                  <Play size={18} /> {busy ? 'Updating…' : 'Start work'}
                 </Button>
               ) : null}
-              <Button onClick={() => setCompleteOpen(true)} disabled={busy}>
-                <CheckCircle2 size={16} /> Complete service
+              <Button
+                onClick={() => setCompleteOpen(true)}
+                disabled={busy}
+                className={fieldShell ? 'min-h-12 w-full text-base' : undefined}
+              >
+                <CheckCircle2 size={18} /> Complete service
               </Button>
-              <Link to={`/tickets/${current.id}`}>
-                <Button variant="outline">Open ticket</Button>
+              <Link to={`/tickets/${current.id}`} className={fieldShell ? 'w-full' : undefined}>
+                <Button
+                  variant="outline"
+                  className={fieldShell ? 'min-h-12 w-full text-base' : undefined}
+                >
+                  Open ticket
+                </Button>
               </Link>
             </div>
           </div>
         ) : (
-          <p className="text-sm text-text-secondary">Loading your queue…</p>
+          <BlockSkeleton lines={5} className="p-0" />
         )}
 
         {queue.length > 0 ? (
@@ -415,7 +469,10 @@ export function EmployeeDashboardPage() {
           </Link>
         </div>
         <div className="divide-y divide-border">
-          {leads.slice(0, 5).map((lead) => (
+          {leads
+            .filter((lead) => !saleIsCompleted(lead))
+            .slice(0, 5)
+            .map((lead) => (
             <Link
               key={String(lead.id)}
               to="/sale-tracking"
@@ -425,13 +482,17 @@ export function EmployeeDashboardPage() {
                 <UserPlus size={16} className="shrink-0 text-text-secondary" />
                 {String(lead.name)}
               </span>
-              <Badge color={leadStatusColor[String(lead.status)] ?? 'slate'}>
-                {labelize(String(lead.status))}
-              </Badge>
+              {saleIsCompleted(lead) ? (
+                <Badge color="green">Completed</Badge>
+              ) : (
+                <Badge color={leadStatusColor[String(lead.status)] ?? 'slate'}>
+                  {labelize(String(lead.status))}
+                </Badge>
+              )}
             </Link>
           ))}
-          {!loading && !leads.length && (
-            <p className="p-6 text-center text-sm text-text-secondary">No leads assigned.</p>
+          {!loading && !leads.filter((lead) => !saleIsCompleted(lead)).length && (
+            <p className="p-6 text-center text-sm text-text-secondary">No open leads assigned.</p>
           )}
         </div>
       </Card>

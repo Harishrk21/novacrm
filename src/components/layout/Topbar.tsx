@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
 import {
   Bell,
   HelpCircle,
@@ -13,22 +13,33 @@ import {
   Moon,
   Sun,
   Palette,
+  Plus,
 } from 'lucide-react'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
-import { useNotificationsStore } from '@/store/notificationsStore'
+import {
+  NOTIFICATION_ARRIVED_EVENT,
+  useNotificationsStore,
+} from '@/store/notificationsStore'
 import { Avatar } from '@/components/ui/Avatar'
-import { BrandLogo } from '@/components/BrandLogo'
 import { api, isTenantSession } from '@/lib/api'
 import { timeAgo, formatCurrency, formatPhone, cn } from '@/lib/utils'
 import { PALETTES, type ColorPalette } from '@/lib/theme'
 import { APP_NAME } from '@/lib/branding'
 import { formatServiceId } from '@/lib/serviceId'
+import { canAccessProformaInvoices } from '@/lib/roles'
+import { BlockSkeleton } from '@/components/ui/Skeleton'
 
 type SearchHit = { id: string; primary: string; secondary?: string; type: string }
 
-export function Topbar() {
+type TopbarProps = {
+  /** Engineer phone shell — compact header, no sidebar toggle */
+  fieldShell?: boolean
+}
+
+export function Topbar({ fieldShell = false }: TopbarProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const setSidebarCollapsed = useUIStore((s) => s.setSidebarCollapsed)
   const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
   const themeMode = useUIStore((s) => s.themeMode)
@@ -39,6 +50,7 @@ export function Topbar() {
   const openHowItWorks = useUIStore((s) => s.openHowItWorks)
   const authUser = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
+  const brandingLocked = authUser?.branding?.locked === true
   const displayName = authUser?.name ?? 'User'
   const workspace = authUser?.tenantName ?? authUser?.tenantSlug ?? APP_NAME
   const userId = authUser?.id ?? ''
@@ -54,8 +66,10 @@ export function Topbar() {
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [notifOpen, setNotifOpen] = useState(false)
+  const [bellPulse, setBellPulse] = useState(false)
   const [avatarOpen, setAvatarOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [hits, setHits] = useState<SearchHit[]>([])
   const [searching, setSearching] = useState(false)
@@ -64,13 +78,14 @@ export function Topbar() {
   const notifRef = useRef<HTMLDivElement>(null)
   const avatarRef = useRef<HTMLDivElement>(null)
   const paletteRef = useRef<HTMLDivElement>(null)
+  const createRef = useRef<HTMLDivElement>(null)
 
   const unreadCount = unreadCountStore || notifs.filter((n) => !n.isRead).length
 
   useEffect(() => {
     if (!userId || !isTenantSession()) return
     void loadNotifs(userId, authUser?.role)
-    const id = window.setInterval(() => void loadNotifs(userId, authUser?.role), 45000)
+    const id = window.setInterval(() => void loadNotifs(userId, authUser?.role), 60_000)
     return () => window.clearInterval(id)
   }, [userId, authUser?.role, loadNotifs])
 
@@ -81,20 +96,38 @@ export function Topbar() {
       void import('@/lib/notificationSound').then(({ unlockNotificationSound }) => {
         unlockNotificationSound()
       })
+      document.removeEventListener('pointerdown', unlock)
+      document.removeEventListener('keydown', unlock)
     }
-    document.addEventListener('pointerdown', unlock, { once: true })
+    // One gesture unlocks the .wav for later alerts (browser autoplay policy)
+    document.addEventListener('pointerdown', unlock)
+    document.addEventListener('keydown', unlock)
     void import('@/store/notificationsStore').then(({ connectNotificationsSocket }) => {
-      cleanup = connectNotificationsSocket((p) => {
-        addToast({
-          type: 'success',
-          message: String(p.title ?? 'New notification'),
-        })
-      })
+      cleanup = connectNotificationsSocket()
     })
     return () => {
       document.removeEventListener('pointerdown', unlock)
+      document.removeEventListener('keydown', unlock)
       cleanup?.()
     }
+  }, [userId])
+
+  // Auto-open bell + toast whenever any new notification arrives (live or poll)
+  useEffect(() => {
+    if (!userId || !isTenantSession()) return
+    const onArrived = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ title?: string; message?: string }>).detail
+      setNotifOpen(true)
+      setBellPulse(true)
+      window.setTimeout(() => setBellPulse(false), 1800)
+      addToast({
+        type: 'info',
+        title: 'New notification',
+        message: detail?.title || 'You have a new alert',
+      })
+    }
+    window.addEventListener(NOTIFICATION_ARRIVED_EVENT, onArrived)
+    return () => window.removeEventListener(NOTIFICATION_ARRIVED_EVENT, onArrived)
   }, [userId, addToast])
 
   useEffect(() => {
@@ -104,6 +137,7 @@ export function Topbar() {
       if (notifRef.current && !notifRef.current.contains(t)) setNotifOpen(false)
       if (avatarRef.current && !avatarRef.current.contains(t)) setAvatarOpen(false)
       if (paletteRef.current && !paletteRef.current.contains(t)) setPaletteOpen(false)
+      if (createRef.current && !createRef.current.contains(t)) setCreateOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -202,26 +236,67 @@ export function Topbar() {
       await logout()
       addToast({ type: 'success', message: 'Signed out' })
     } finally {
-      navigate('/login', { replace: true })
+      navigate(authUser?.tenantSlug ? `/login/${authUser.tenantSlug}` : '/login', { replace: true })
       setLoggingOut(false)
     }
   }
 
+  const fieldTitle =
+    location.pathname === '/'
+      ? 'My work'
+      : location.pathname.startsWith('/workqueue')
+        ? 'Queue'
+        : location.pathname.startsWith('/tickets/')
+          ? 'Job'
+          : location.pathname.startsWith('/tickets')
+            ? 'My jobs'
+            : location.pathname.startsWith('/notifications')
+              ? 'Alerts'
+              : location.pathname.startsWith('/spare-parts')
+                ? 'Spares'
+                : location.pathname.startsWith('/contacts')
+                  ? 'Contacts'
+                  : location.pathname.startsWith('/settings')
+                    ? 'Profile'
+                    : 'Field'
+
   return (
-    <header className="flex h-14 shrink-0 items-center gap-4 border-b border-border bg-card px-4">
-      <button
-        className="rounded-[6px] p-1.5 text-text-secondary hover:bg-slate-100 lg:hidden"
-        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+    <header
+      className={cn(
+        'zcrm-topbar flex shrink-0 items-center gap-3 border-b border-border bg-card/95 px-3 backdrop-blur sm:px-4',
+        fieldShell ? 'h-12 pt-[env(safe-area-inset-top)]' : 'h-14',
+      )}
+    >
+      {!fieldShell ? (
+        <button
+          className="rounded-lg p-1.5 text-text-secondary hover:bg-muted lg:hidden"
+          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+        >
+          <Menu size={20} />
+        </button>
+      ) : (
+        <div className="flex min-w-0 items-center gap-2">
+          <img src="/hms-logo.png" alt="" className="h-7 w-auto object-contain" draggable={false} />
+          <h1 className="truncate text-[16px] font-semibold tracking-tight text-text-primary">
+            {fieldTitle}
+          </h1>
+        </div>
+      )}
+
+      {!fieldShell && location.pathname === '/workqueue' && (
+        <h1 className="hidden shrink-0 text-[17px] font-semibold tracking-tight text-text-primary sm:block">
+          Workqueue
+        </h1>
+      )}
+
+      <div
+        ref={searchRef}
+        className={cn(
+          'relative mx-auto w-full max-w-2xl',
+          fieldShell && 'hidden sm:block',
+        )}
       >
-        <Menu size={20} />
-      </button>
-
-      <div className="flex items-center">
-        <BrandLogo size="sm" className="max-w-[120px] lg:max-w-[140px]" />
-      </div>
-
-      <div ref={searchRef} className="relative mx-auto w-full max-w-xl">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" />
         <input
           value={search}
           onChange={(e) => {
@@ -229,19 +304,21 @@ export function Topbar() {
             setSearchOpen(true)
           }}
           onFocus={() => setSearchOpen(true)}
-          placeholder="Search customers by name or phone…"
-          className="h-9 w-full rounded-[6px] border border-border bg-surface pl-9 pr-3 text-base outline-none transition-all duration-150 focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
+          placeholder="Search records…"
+          className="h-9 w-full rounded-full border border-border bg-muted/70 pl-9 pr-3 text-[13px] text-text-primary outline-none transition-all duration-150 placeholder:text-text-secondary focus:border-[color:var(--color-accent-blue)] focus:bg-card focus:ring-2 focus:ring-[color:var(--color-accent-blue)]/25"
         />
         {searchOpen && search.trim().length >= 2 && (
-          <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-96 overflow-y-auto rounded-[8px] border border-border bg-card shadow-[0_4px_12px_rgba(0,0,0,0.12)]">
+          <div className="absolute left-0 right-0 top-full z-50 mt-1.5 max-h-96 overflow-y-auto rounded-xl border border-border bg-card shadow-[var(--shadow-hover)]">
             {searching ? (
-              <div className="p-4 text-center text-sm text-text-secondary">Searching…</div>
+              <div className="p-3">
+                <BlockSkeleton lines={4} className="p-0" />
+              </div>
             ) : hits.length === 0 ? (
               <div className="p-3">
-                <div className="mb-2 px-1 text-center text-sm text-text-secondary">No customers found</div>
+                <div className="mb-2 px-1 text-center text-sm text-text-secondary">No records found</div>
                 <button
                   type="button"
-                  className="w-full rounded-[8px] border border-dashed border-accent-blue/40 bg-accent-blue/5 px-3 py-2.5 text-left text-sm font-medium text-accent-blue hover:bg-accent-blue/10"
+                  className="w-full rounded-lg border border-dashed border-[color:var(--color-accent-blue)]/40 bg-[color:var(--color-accent-soft)] px-3 py-2.5 text-left text-sm font-medium text-[color:var(--color-accent-blue)] hover:opacity-90"
                   onClick={() => {
                     const q = encodeURIComponent(search.trim())
                     setSearchOpen(false)
@@ -276,21 +353,66 @@ export function Topbar() {
           </div>
         )}
         {searchOpen && search.trim().length > 0 && search.trim().length < 2 ? (
-          <div className="absolute left-0 right-0 top-full z-50 mt-1 rounded-[8px] border border-border bg-card p-3 text-sm text-text-secondary shadow-md">
+          <div className="absolute left-0 right-0 top-full z-50 mt-1.5 rounded-xl border border-border bg-card p-3 text-sm text-text-secondary shadow-md">
             Type at least 2 characters…
           </div>
         ) : null}
       </div>
 
-      <div className="flex items-center gap-1">
-        <button
-          onClick={toggleThemeMode}
-          className="rounded-[6px] p-2 text-text-secondary hover:bg-muted transition-colors duration-150"
-          title={themeMode === 'light' ? 'Switch to night mode' : 'Switch to day mode'}
-        >
-          {themeMode === 'light' ? <Moon size={18} /> : <Sun size={18} />}
-        </button>
+      <div className={cn('flex items-center gap-0.5', fieldShell && 'ml-auto')}>
+        {!fieldShell ? (
+          <div ref={createRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setCreateOpen((v) => !v)}
+              className="flex h-8 w-8 items-center justify-center rounded-full bg-[color:var(--color-accent-blue)] text-white shadow-sm transition hover:opacity-90"
+              title="Quick create"
+              aria-label="Quick create"
+            >
+              <Plus size={18} strokeWidth={2.5} />
+            </button>
+            {createOpen ? (
+              <div className="absolute right-0 top-full z-50 mt-1.5 w-52 overflow-hidden rounded-xl border border-border bg-card py-1 shadow-[var(--shadow-hover)]">
+                <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-secondary">
+                  Quick create
+                </div>
+                {[
+                  { to: '/tickets?open=1', label: 'Service ticket' },
+                  { to: '/sale-tracking?open=1', label: 'Sale enquiry' },
+                  { to: '/contacts?open=1', label: 'Customer' },
+                  ...(canAccessProformaInvoices(authUser?.role)
+                    ? [{ to: '/erp/invoices?open=1', label: 'Proforma invoice' }]
+                    : []),
+                ].map((row) => (
+                  <button
+                    key={row.to}
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+                    onClick={() => {
+                      setCreateOpen(false)
+                      navigate(row.to)
+                    }}
+                  >
+                    <Plus size={14} className="text-[color:var(--color-accent-blue)]" />
+                    {row.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
+        {!fieldShell ? (
+          <button
+            onClick={toggleThemeMode}
+            className="rounded-lg p-2 text-text-secondary transition-colors duration-150 hover:bg-muted"
+            title={themeMode === 'light' ? 'Switch to night mode' : 'Switch to day mode'}
+          >
+            {themeMode === 'light' ? <Moon size={17} /> : <Sun size={17} />}
+          </button>
+        ) : null}
+
+        {!fieldShell && !brandingLocked ? (
         <div ref={paletteRef} className="relative">
           <button
             onClick={() => setPaletteOpen(!paletteOpen)}
@@ -342,6 +464,7 @@ export function Topbar() {
             </div>
           )}
         </div>
+        ) : null}
 
         <div ref={notifRef} className="relative">
           <button
@@ -349,19 +472,32 @@ export function Topbar() {
               setNotifOpen(!notifOpen)
               if (!notifOpen && userId) void loadNotifs(userId, authUser?.role)
             }}
-            className="relative rounded-[6px] p-2 text-text-secondary hover:bg-muted transition-colors duration-150"
+            className={cn(
+              'relative rounded-[6px] p-2 text-text-secondary hover:bg-muted transition-colors duration-150',
+              bellPulse && 'animate-notif-bell text-accent-blue',
+            )}
             title="Notifications"
             aria-label="Notifications"
           >
-            <Bell size={18} />
+            <Bell size={18} className={bellPulse ? 'origin-top animate-notif-bell' : undefined} />
             {unreadCount > 0 && (
-              <span className="absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent-red px-1 text-[10px] font-bold text-white">
+              <span
+                className={cn(
+                  'absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent-red px-1 text-[10px] font-bold text-white',
+                  bellPulse && 'animate-ping-once',
+                )}
+              >
                 {unreadCount}
               </span>
             )}
           </button>
           {notifOpen && (
-            <div className="absolute right-0 top-full z-50 mt-1 w-80 rounded-[8px] border border-border bg-card shadow-[var(--shadow-hover)]">
+            <div
+              className={cn(
+                'absolute right-0 top-full z-50 mt-1 w-80 rounded-[8px] border border-border bg-card shadow-[var(--shadow-hover)]',
+                bellPulse && 'ring-2 ring-accent-blue/40',
+              )}
+            >
               <div className="flex items-center justify-between border-b border-border px-4 py-3">
                 <span className="text-md font-semibold">Notifications</span>
                 <div className="flex items-center gap-2">
@@ -433,7 +569,7 @@ export function Topbar() {
                         onClick={() => {
                           if (userId) void markRead(n.id, userId)
                           setNotifOpen(false)
-                          if (n.href) navigate(n.href)
+                          navigate(n.href || '/notifications')
                         }}
                       >
                         <div className="flex items-center gap-1.5">
@@ -475,15 +611,17 @@ export function Topbar() {
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={() => openHowItWorks()}
-          className="rounded-[6px] p-2 text-text-secondary hover:bg-muted transition-colors duration-150"
-          title="How HMS Enterprises works"
-          aria-label="How HMS Enterprises works"
-        >
-          <HelpCircle size={18} />
-        </button>
+        {!fieldShell ? (
+          <button
+            type="button"
+            onClick={() => openHowItWorks()}
+            className="rounded-[6px] p-2 text-text-secondary hover:bg-muted transition-colors duration-150"
+            title="How HMS Enterprises works"
+            aria-label="How HMS Enterprises works"
+          >
+            <HelpCircle size={18} />
+          </button>
+        ) : null}
 
         <div ref={avatarRef} className="relative ml-1">
           <button
@@ -493,10 +631,12 @@ export function Topbar() {
             aria-label="Account menu"
           >
             <Avatar name={displayName} src={authUser?.avatarUrl} size="sm" />
-            <span className="hidden max-w-[120px] truncate text-left text-xs leading-tight sm:block">
-              <span className="block font-semibold text-text-primary">{displayName}</span>
-              <span className="block text-text-secondary">{workspace}</span>
-            </span>
+            {!fieldShell ? (
+              <span className="hidden max-w-[120px] truncate text-left text-xs leading-tight sm:block">
+                <span className="block font-semibold text-text-primary">{displayName}</span>
+                <span className="block text-text-secondary">{workspace}</span>
+              </span>
+            ) : null}
           </button>
           {avatarOpen && (
             <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-[8px] border border-border bg-card py-1 shadow-[0_4px_12px_rgba(0,0,0,0.12)]">

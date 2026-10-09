@@ -58,12 +58,24 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
         ? "INIT"
         : undefined;
 
+  if (
+    (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2028") ||
+    /Transaction already closed|interactive transaction timeout/i.test(msg)
+  ) {
+    console.error("[db-tx-timeout]", code ?? "", msg);
+    return res.status(503).json({
+      success: false,
+      message: "Database is slow right now (remote RDS). Wait a moment and try again.",
+      details: code ? { code } : undefined,
+    });
+  }
+
   if (isDbPoolExhausted(err, msg)) {
     console.error("[db-pool]", code ?? "", msg);
     return res.status(503).json({
       success: false,
       message:
-        "Database connection pool is full. Wait a few seconds and retry. On Render, set DATABASE_URL with connection_limit=5&pool_timeout=20 and avoid running multiple API copies against the same small RDS.",
+        "Database is busy — please retry in a moment. If this keeps happening, restart the API service once and confirm only one production instance is running.",
       details: code ? { code } : undefined,
     });
   }

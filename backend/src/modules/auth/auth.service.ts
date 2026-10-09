@@ -4,6 +4,11 @@ import jwt, { type SignOptions } from "jsonwebtoken";
 import { prisma } from "../../config/database.js";
 import { env } from "../../config/env.js";
 import { AppError } from "../../common/errors.js";
+import { resolveInventoryAreas } from "../../common/inventoryAreas.js";
+import {
+  loadTenantEnabledModuleKeys,
+  resolveAllowedModules,
+} from "../../common/userModules.js";
 import { newId } from "../../common/utils/id.js";
 type Meta = { userAgent?: string; ip?: string };
 const hash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
@@ -33,8 +38,37 @@ function loginEmailCandidates(email: string): string[] {
   return [...set];
 }
 
-export async function platformLogin(_email: string, _password: string, _meta: Meta) {
-  throw new AppError("Platform admin is disabled — this is the HMS Enterprises company dashboard only", 403);
+export async function platformLogin(email: string, password: string, meta: Meta) {
+  const admin = await prisma.platformAdmin.findFirst({
+    where: {
+      email: email.trim().toLowerCase(),
+      status: "ACTIVE",
+      deletedAt: null,
+    },
+  });
+  if (!admin || !(await bcrypt.compare(password, admin.passwordHash))) {
+    throw new AppError("Invalid credentials", 401);
+  }
+  await prisma.platformAdmin.update({
+    where: { id: admin.id },
+    data: { lastLoginAt: new Date() },
+  });
+  const refreshToken = await issueRefresh({ platformAdminId: admin.id }, meta);
+  return {
+    accessToken: accessToken({
+      kind: "platform",
+      adminId: admin.id,
+      role: admin.role,
+    }),
+    refreshToken,
+    user: {
+      id: admin.id,
+      name: admin.name,
+      email: admin.email,
+      role: admin.role,
+      kind: "platform",
+    },
+  };
 }
 export async function tenantLogin(
   locator: { tenantSlug?: string; tenantCode?: string },
@@ -43,62 +77,105 @@ export async function tenantLogin(
   meta: Meta,
 ) {
   const emails = loginEmailCandidates(email);
-  let tenantId: string | undefined;
-  if (locator.tenantSlug || locator.tenantCode) {
-    const tenant = await prisma.tenant.findFirst({
-      where: {
-        deletedAt: null,
-        ...(locator.tenantSlug ? { slug: locator.tenantSlug } : { code: locator.tenantCode }),
-        status: { in: ["ACTIVE", "TRIAL"] },
-      },
-    });
-    if (!tenant) throw new AppError("Tenant not found or unavailable", 401);
-    tenantId = tenant.id;
-  } else {
-    const candidates = await prisma.user.findMany({
-      where: {
-        email: { in: emails },
-        status: "ACTIVE",
-        deletedAt: null,
-      },
-      select: { id: true, tenantId: true, passwordHash: true },
-      take: 20,
-    });
-    const tenantIds = [...new Set(candidates.map((c) => c.tenantId))];
-    const activeTenants = tenantIds.length
-      ? await prisma.tenant.findMany({
+
+  const slugRaw = locator.tenantSlug?.trim().toLowerCase() || "";
+  const codeRaw = locator.tenantCode?.trim() || "";
+
+  /** Common aliases people type on the login form for HMS Enterprises */
+  const SLUG_ALIASES: Record<string, string> = {
+    hms: "precision-scales-india",
+    "hms-enterprises": "precision-scales-india",
+    hmsenterprises: "precision-scales-india",
+    "hms-enterprises-in": "precision-scales-india",
+  };
+  const resolvedSlug = slugRaw ? SLUG_ALIASES[slugRaw] || slugRaw : "";
+
+  // Parallel first hop: resolve workspace + candidate users (no Prisma User↔Tenant relation).
+  const [locatedTenant, candidates] = await Promise.all([
+    resolvedSlug || codeRaw
+      ? prisma.tenant.findFirst({
           where: {
-            id: { in: tenantIds },
             deletedAt: null,
+            ...(resolvedSlug ? { slug: resolvedSlug } : { code: codeRaw }),
             status: { in: ["ACTIVE", "TRIAL"] },
           },
-          select: { id: true },
+          select: { id: true, slug: true, name: true, branding: true },
         })
-      : [];
-    const activeSet = new Set(activeTenants.map((t) => t.id));
+      : Promise.resolve(null),
+    prisma.user.findMany({
+      where: { email: { in: emails }, status: "ACTIVE", deletedAt: null },
+      take: 20,
+    }),
+  ]);
+
+  let tenantId = locatedTenant?.id;
+  let user =
+    tenantId != null
+      ? candidates.find((c) => c.tenantId === tenantId) ?? null
+      : null;
+
+  let tenantRow = locatedTenant;
+
+  if (!user) {
+    if (!candidates.length) throw new AppError("Invalid credentials", 401);
+    const tenantIds = [...new Set(candidates.map((c) => c.tenantId))];
+    const activeTenants = await prisma.tenant.findMany({
+      where: {
+        id: { in: tenantIds },
+        deletedAt: null,
+        status: { in: ["ACTIVE", "TRIAL"] },
+      },
+      select: { id: true, slug: true, name: true, branding: true },
+    });
+    const activeSet = new Map(activeTenants.map((t) => [t.id, t]));
     const matches = candidates.filter((c) => activeSet.has(c.tenantId));
     if (!matches.length) throw new AppError("Invalid credentials", 401);
     if (matches.length > 1) {
       throw new AppError("Multiple workspaces found for this email. Contact your admin.", 409);
     }
-    tenantId = matches[0].tenantId;
+    user = matches[0];
+    tenantId = user.tenantId;
+    tenantRow = activeSet.get(user.tenantId) ?? null;
   }
-  const user = await prisma.user.findFirst({
-    where: { tenantId, email: { in: emails }, status: "ACTIVE", deletedAt: null },
-  });
+
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
     throw new AppError("Invalid credentials", 401);
   }
-  const role = await prisma.role.findFirst({
-    where: { id: user.roleId, tenantId: user.tenantId, deletedAt: null },
-  });
+
+  // Gradually accelerate future logins if hashes were created with cost > 10
+  try {
+    if (bcrypt.getRounds(user.passwordHash) > 10) {
+      void bcrypt.hash(password, 10).then((nextHash) =>
+        prisma.user
+          .update({ where: { id: user!.id }, data: { passwordHash: nextHash } })
+          .catch(() => undefined),
+      );
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const [role, tenantFresh, refreshToken, tenantModuleKeys] = await Promise.all([
+    prisma.role.findFirst({
+      where: { id: user.roleId, tenantId: user.tenantId, deletedAt: null },
+      select: { code: true },
+    }),
+    // Reuse located tenant when possible; otherwise fetch branding in parallel with role
+    tenantRow
+      ? Promise.resolve(tenantRow)
+      : prisma.tenant.findFirst({
+          where: { id: user.tenantId },
+          select: { id: true, slug: true, name: true, branding: true },
+        }),
+    issueRefresh({ userId: user.id }, meta),
+    loadTenantEnabledModuleKeys(user.tenantId),
+    // Don't block token on lastLogin write
+    prisma.user
+      .update({ where: { id: user.id }, data: { lastLoginAt: new Date() } })
+      .catch(() => undefined),
+  ]);
   if (!role) throw new AppError("User role is unavailable", 403);
-  const tenant = await prisma.tenant.findFirst({
-    where: { id: user.tenantId },
-    select: { id: true, slug: true, name: true },
-  });
-  await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
-  const refreshToken = await issueRefresh({ userId: user.id }, meta);
+
   return {
     accessToken: accessToken({
       kind: "tenant",
@@ -115,8 +192,11 @@ export async function tenantLogin(
       avatarUrl: user.avatarUrl,
       role: role.code,
       tenantId: user.tenantId,
-      tenantSlug: tenant?.slug,
-      tenantName: tenant?.name,
+      tenantSlug: tenantFresh?.slug,
+      tenantName: tenantFresh?.name,
+      branding: tenantFresh?.branding ?? null,
+      inventoryAreas: resolveInventoryAreas(user.preferences, role.code),
+      allowedModules: resolveAllowedModules(user.preferences, role.code, tenantModuleKeys),
       kind: "tenant",
     },
   };
@@ -147,17 +227,25 @@ export async function me(auth: Express.Request["auth"]) {
     },
   });
   if (!user) return null;
-  const [tenant, role] = await Promise.all([
+  const [tenant, role, tenantModuleKeys] = await Promise.all([
     prisma.tenant.findFirst({
       where: { id: user.tenantId, deletedAt: null },
-      select: { id: true, name: true, slug: true, code: true },
+      select: { id: true, name: true, slug: true, code: true, branding: true },
     }),
     prisma.role.findFirst({
       where: { id: user.roleId, tenantId: user.tenantId, deletedAt: null },
       select: { id: true, code: true, name: true },
     }),
+    loadTenantEnabledModuleKeys(user.tenantId),
   ]);
-  return { ...user, tenant, role };
+  const { preferences, ...rest } = user;
+  return {
+    ...rest,
+    tenant,
+    role,
+    inventoryAreas: resolveInventoryAreas(preferences, role?.code),
+    allowedModules: resolveAllowedModules(preferences, role?.code, tenantModuleKeys),
+  };
 }
 
 export async function updateProfile(
@@ -188,7 +276,18 @@ export async function updateProfile(
       current.preferences && typeof current.preferences === "object" && !Array.isArray(current.preferences)
         ? (current.preferences as Record<string, unknown>)
         : {};
-    patch.preferences = { ...prev, ...data.preferences };
+    // inventoryAreas + allowedModules are admin-assigned only — never overwrite from self-service
+    const {
+      inventoryAreas: _dropInv,
+      allowedModules: _dropMods,
+      ...safePrefs
+    } = data.preferences as Record<string, unknown>;
+    patch.preferences = {
+      ...prev,
+      ...safePrefs,
+      ...(prev.inventoryAreas != null ? { inventoryAreas: prev.inventoryAreas } : {}),
+      ...(prev.allowedModules != null ? { allowedModules: prev.allowedModules } : {}),
+    };
   }
 
   await prisma.user.update({ where: { id: current.id }, data: patch });
@@ -212,7 +311,10 @@ export async function changePassword(
   }
   await prisma.user.update({
     where: { id: user.id },
-    data: { passwordHash: await bcrypt.hash(newPassword, 12) },
+    data: {
+      passwordHash: await bcrypt.hash(newPassword, 10),
+      tempPassword: null,
+    },
   });
   return { ok: true };
 }

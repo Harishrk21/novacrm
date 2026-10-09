@@ -2,11 +2,19 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { authenticate } from "../../middleware/auth.middleware.js";
 import { requireTenant, requireTenantAdmin } from "../../middleware/tenant.middleware.js";
+import { requirePermission } from "../../middleware/permissions.middleware.js";
 import { success } from "../../common/utils/response.js";
 import { prisma } from "../../config/database.js";
+import { cacheGet, cacheSet } from "../../config/redis.js";
+import { allPool } from "../../common/utils/concurrency.js";
 
 export const analyticsRouter = Router();
 analyticsRouter.use(authenticate, requireTenant);
+
+/** L1 in-process + L2 Redis — analytics is the heaviest dashboard query. */
+const summaryCache = new Map<string, { at: number; body: unknown }>();
+const SUMMARY_TTL_MS = 90_000;
+const SUMMARY_REDIS_TTL_SEC = 120;
 
 function parseRangeBounds(q: Request["query"]) {
   const now = new Date();
@@ -37,7 +45,7 @@ function parseRangeBounds(q: Request["query"]) {
   return { range, from, to, prevFrom, now };
 }
 
-analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Response) => {
+analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTenantAdmin, async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const { range, from, to, prevFrom, now } = parseRangeBounds(q.query);
   const filterAssignee = q.query.assigneeId ? String(q.query.assigneeId) : "";
@@ -45,7 +53,37 @@ analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Respon
   const filterTicketStatus = q.query.ticketStatus ? String(q.query.ticketStatus) : "";
   const filterLeadStatus = q.query.leadStatus ? String(q.query.leadStatus) : "";
   const filterCity = q.query.city ? String(q.query.city).trim().toLowerCase() : "";
+  const bust = String(q.query.refresh ?? "") === "1";
 
+  const cacheKey = [
+    t,
+    range,
+    from.toISOString(),
+    to.toISOString(),
+    filterAssignee,
+    filterSource,
+    filterTicketStatus,
+    filterLeadStatus,
+    filterCity,
+  ].join("|");
+  const redisKey = `analytics:summary:${cacheKey}`;
+  if (!bust) {
+    const hit = summaryCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < SUMMARY_TTL_MS) {
+      r.setHeader("X-Cache", "HIT-memory");
+      return success(r, hit.body);
+    }
+    const redisHit = await cacheGet<unknown>(redisKey);
+    if (redisHit) {
+      summaryCache.set(cacheKey, { at: Date.now(), body: redisHit });
+      r.setHeader("X-Cache", "HIT-redis");
+      return success(r, redisHit);
+    }
+  }
+
+  // Cap concurrency — loading whole tables in one Promise.all used to exhaust
+  // Prisma's pool (P2024) and break unrelated pages like Leads on shared RDS.
+  const DB_CONCURRENCY = 2;
   const [
     leadsRaw,
     deals,
@@ -53,129 +91,149 @@ analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Respon
     sources,
     users,
     accounts,
+    ticketsRaw,
+  ] = await allPool(
+    [
+      () =>
+        prisma.lead.findMany({
+          where: { tenantId: t, deletedAt: null },
+          select: {
+            id: true,
+            status: true,
+            sourceId: true,
+            score: true,
+            city: true,
+            state: true,
+            assignedToId: true,
+            createdAt: true,
+            company: true,
+            name: true,
+            customFields: true,
+            updatedAt: true,
+            convertedAt: true,
+          },
+        }),
+      () =>
+        prisma.deal.findMany({
+          where: { tenantId: t, deletedAt: null },
+          select: {
+            id: true,
+            name: true,
+            amount: true,
+            stageId: true,
+            probability: true,
+            ownerUserId: true,
+            accountId: true,
+            expectedCloseDate: true,
+            closedAt: true,
+            createdAt: true,
+          },
+        }),
+      () =>
+        prisma.pipelineStage.findMany({
+          where: { tenantId: t, isActive: true },
+          orderBy: { sortOrder: "asc" },
+        }),
+      () => prisma.leadSource.findMany({ where: { tenantId: t, isActive: true } }),
+      () =>
+        prisma.user.findMany({
+          where: { tenantId: t, deletedAt: null },
+          select: { id: true, name: true, email: true },
+        }),
+      () =>
+        prisma.account.findMany({
+          where: { tenantId: t, deletedAt: null },
+          select: { id: true, name: true, industry: true, city: true, state: true },
+        }),
+      () =>
+        prisma.ticket.findMany({
+          where: { tenantId: t, deletedAt: null },
+          select: {
+            id: true,
+            ticketNo: true,
+            subject: true,
+            status: true,
+            priority: true,
+            slaDueAt: true,
+            slaBreached: true,
+            assignedToId: true,
+            contactId: true,
+            accountId: true,
+            productId: true,
+            customFields: true,
+            paymentTotal: true,
+            advanceAmount: true,
+            odAmount: true,
+            paymentStatus: true,
+            nextDueDate: true,
+            stampingDate: true,
+            resolvedAt: true,
+            closedAt: true,
+            paidAt: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        }),
+    ],
+    DB_CONCURRENCY,
+  );
+
+  const [
     activities,
     invoicesRaw,
     products,
-    ticketsRaw,
     stock,
     contactCount,
     stockUnitGroups,
-  ] = await Promise.all([
-    prisma.lead.findMany({
-      where: { tenantId: t, deletedAt: null },
-      select: {
-        id: true,
-        status: true,
-        sourceId: true,
-        score: true,
-        city: true,
-        state: true,
-        assignedToId: true,
-        createdAt: true,
-        company: true,
-        name: true,
-        customFields: true,
-        updatedAt: true,
-        convertedAt: true,
-      },
-    }),
-    prisma.deal.findMany({
-      where: { tenantId: t, deletedAt: null },
-      select: {
-        id: true,
-        name: true,
-        amount: true,
-        stageId: true,
-        probability: true,
-        ownerUserId: true,
-        accountId: true,
-        expectedCloseDate: true,
-        closedAt: true,
-        createdAt: true,
-      },
-    }),
-    prisma.pipelineStage.findMany({
-      where: { tenantId: t, isActive: true },
-      orderBy: { sortOrder: "asc" },
-    }),
-    prisma.leadSource.findMany({ where: { tenantId: t, isActive: true } }),
-    prisma.user.findMany({
-      where: { tenantId: t, deletedAt: null },
-      select: { id: true, name: true, email: true },
-    }),
-    prisma.account.findMany({
-      where: { tenantId: t, deletedAt: null },
-      select: { id: true, name: true, industry: true, city: true, state: true },
-    }),
-    prisma.activity.findMany({
-      where: { tenantId: t, deletedAt: null },
-      orderBy: { createdAt: "desc" },
-      take: 200,
-      select: {
-        id: true,
-        type: true,
-        title: true,
-        status: true,
-        scheduledAt: true,
-        completedAt: true,
-        durationMinutes: true,
-        assignedToId: true,
-        createdAt: true,
-      },
-    }),
-    prisma.invoice.findMany({
-      where: { tenantId: t, deletedAt: null },
-      select: {
-        id: true,
-        grandTotal: true,
-        amountPaid: true,
-        status: true,
-        invoiceDate: true,
-        accountId: true,
-        serviceTicketId: true,
-        createdById: true,
-      },
-    }),
-    prisma.product.count({ where: { tenantId: t, deletedAt: null } }),
-    prisma.ticket.findMany({
-      where: { tenantId: t, deletedAt: null },
-      select: {
-        id: true,
-        ticketNo: true,
-        subject: true,
-        status: true,
-        priority: true,
-        slaDueAt: true,
-        slaBreached: true,
-        assignedToId: true,
-        contactId: true,
-        accountId: true,
-        productId: true,
-        customFields: true,
-        paymentTotal: true,
-        advanceAmount: true,
-        odAmount: true,
-        paymentStatus: true,
-        nextDueDate: true,
-        stampingDate: true,
-        resolvedAt: true,
-        closedAt: true,
-        paidAt: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    }),
-    prisma.stockLevel.findMany({
-      where: { tenantId: t },
-      select: { quantityOnHand: true, quantityReserved: true },
-    }),
-    prisma.contact.count({ where: { tenantId: t, deletedAt: null } }),
-    prisma.stockUnit.groupBy({
-      by: ["status"],
-      where: { tenantId: t, deletedAt: null },
-      _count: { _all: true },
-    }),
-  ]);
+  ] = await allPool(
+    [
+      () =>
+        prisma.activity.findMany({
+          where: { tenantId: t, deletedAt: null },
+          orderBy: { createdAt: "desc" },
+          take: 200,
+          select: {
+            id: true,
+            type: true,
+            title: true,
+            status: true,
+            scheduledAt: true,
+            completedAt: true,
+            durationMinutes: true,
+            assignedToId: true,
+            createdAt: true,
+          },
+        }),
+      () =>
+        prisma.invoice.findMany({
+          where: { tenantId: t, deletedAt: null },
+          select: {
+            id: true,
+            grandTotal: true,
+            amountPaid: true,
+            status: true,
+            invoiceDate: true,
+            accountId: true,
+            serviceTicketId: true,
+            createdById: true,
+          },
+        }),
+      () => prisma.product.count({ where: { tenantId: t, deletedAt: null } }),
+      () =>
+        prisma.stockLevel.findMany({
+          where: { tenantId: t },
+          select: { quantityOnHand: true, quantityReserved: true },
+        }),
+      () => prisma.contact.count({ where: { tenantId: t, deletedAt: null } }),
+      () =>
+        prisma.stockUnit.groupBy({
+          by: ["status"],
+          where: { tenantId: t, deletedAt: null },
+          _count: { _all: true },
+        }),
+    ],
+    DB_CONCURRENCY,
+  );
 
   const cityMatch = (city?: string | null) =>
     !filterCity || String(city ?? "").trim().toLowerCase() === filterCity;
@@ -233,14 +291,36 @@ analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Respon
     leads: leads.filter((l) => l.sourceId === s.id).length,
   }));
 
+  /** Read salePaymentTotal from lead customFields (set when admin marks sale completed) */
+  const leadCf = (l: { customFields: unknown }): Record<string, unknown> => {
+    const cf = l.customFields;
+    return cf && typeof cf === "object" && !Array.isArray(cf)
+      ? (cf as Record<string, unknown>)
+      : {};
+  };
+
   const leadsByOwner = users
     .map((u) => {
       const owned = leads.filter((l) => l.assignedToId === u.id);
-      const converted = owned.filter((l) => l.status === "CONVERTED").length;
+      const convertedLeads = owned.filter((l) => l.status === "CONVERTED");
+      const converted = convertedLeads.length;
       const demo = owned.filter((l) => l.status === "DEMO").length;
       const pending = owned.filter((l) =>
         ["NEW", "CONTACTED", "QUALIFIED"].includes(l.status),
       ).length;
+      const convertedInRange = owned.filter((l) => {
+        const at = l.convertedAt ?? (l.status === "CONVERTED" ? l.updatedAt : null);
+        return at != null && at >= from && at <= to;
+      }).length;
+      const saleRevenue = convertedLeads.reduce((s, l) => {
+        return s + (Number(leadCf(l).salePaymentTotal ?? 0) || 0);
+      }, 0);
+      const saleRevenueInRange = owned
+        .filter((l) => {
+          const at = l.convertedAt ?? (l.status === "CONVERTED" ? l.updatedAt : null);
+          return at != null && at >= from && at <= to;
+        })
+        .reduce((s, l) => s + (Number(leadCf(l).salePaymentTotal ?? 0) || 0), 0);
       return {
         id: u.id,
         name: u.name,
@@ -248,11 +328,14 @@ analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Respon
         pending,
         demo,
         converted,
+        convertedInRange,
+        saleRevenue,
+        saleRevenueInRange,
         conversionRate: owned.length ? Math.round((converted / owned.length) * 1000) / 10 : 0,
       };
     })
     .filter((row) => row.total > 0)
-    .sort((a, b) => b.converted - a.converted || b.total - a.total);
+    .sort((a, b) => b.convertedInRange - a.convertedInRange || b.converted - a.converted);
 
   const funnel = stages.map((stage) => {
     const stageDeals = deals.filter((d) => d.stageId === stage.id);
@@ -429,6 +512,23 @@ analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Respon
   const enquiriesDemo = leads.filter((l) => l.status === "DEMO").length;
   const enquiriesConverted = leads.filter((l) => l.status === "CONVERTED").length;
   const enquiriesLost = leads.filter((l) => l.status === "LOST" || l.status === "UNQUALIFIED").length;
+
+  // Sales closed in the selected range (using convertedAt when available)
+  const salesTotalInRange = leads.filter((l) => {
+    if (l.status !== "CONVERTED") return false;
+    const at = l.convertedAt ?? null;
+    return at != null && at >= from && at <= to;
+  }).length;
+  const saleRevenueInRange = leads
+    .filter((l) => {
+      if (l.status !== "CONVERTED") return false;
+      const at = l.convertedAt ?? null;
+      return at != null && at >= from && at <= to;
+    })
+    .reduce((s, l) => s + (Number(leadCf(l).salePaymentTotal ?? 0) || 0), 0);
+  const saleRevenueAllTime = leads
+    .filter((l) => l.status === "CONVERTED")
+    .reduce((s, l) => s + (Number(leadCf(l).salePaymentTotal ?? 0) || 0), 0);
   const enquiryByStatus = [
     { name: "Pending", value: enquiriesPending, code: "NEW" },
     { name: "Demo", value: enquiriesDemo, code: "DEMO" },
@@ -501,18 +601,58 @@ analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Respon
     value,
   }));
 
-  const ticketsByCategoryMap: Record<string, number> = {};
+  const ticketsCategoryMap: Record<string, { count: number; revenue: number; open: number; resolved: number }> = {};
   for (const x of tickets) {
     const cf =
       x.customFields && typeof x.customFields === "object" && !Array.isArray(x.customFields)
         ? (x.customFields as Record<string, unknown>)
         : {};
     const cat = String(cf.category ?? "General").trim() || "General";
-    ticketsByCategoryMap[cat] = (ticketsByCategoryMap[cat] ?? 0) + 1;
+    if (!ticketsCategoryMap[cat]) ticketsCategoryMap[cat] = { count: 0, revenue: 0, open: 0, resolved: 0 };
+    ticketsCategoryMap[cat].count += 1;
+    const openStatuses = new Set(["OPEN", "IN_PROGRESS", "PENDING"]);
+    if (openStatuses.has(x.status)) ticketsCategoryMap[cat].open += 1;
+    if (x.status === "RESOLVED" || x.status === "CLOSED") ticketsCategoryMap[cat].resolved += 1;
+    if (String(x.paymentStatus) === "PAID") {
+      ticketsCategoryMap[cat].revenue += Number(x.paymentTotal ?? 0);
+    }
   }
-  const ticketsByCategory = Object.entries(ticketsByCategoryMap)
-    .map(([name, value]) => ({ name, value }))
+  const ticketsByCategory = Object.entries(ticketsCategoryMap)
+    .map(([name, entry]) => ({ name, value: entry.count, revenue: entry.revenue, open: entry.open, resolved: entry.resolved }))
     .sort((a, b) => b.value - a.value);
+
+  const serviceRevenueByCategory = ticketsByCategory.map((r) => ({
+    name: r.name,
+    tickets: r.value,
+    revenue: r.revenue,
+    open: r.open,
+    resolved: r.resolved,
+  }));
+
+  // Stamping vs AMC vs Breakdown vs Installation splits for the admin
+  const stampingTickets = tickets.filter((x) => {
+    const cf =
+      x.customFields && typeof x.customFields === "object" && !Array.isArray(x.customFields)
+        ? (x.customFields as Record<string, unknown>)
+        : {};
+    return String(cf.category ?? "").toLowerCase() === "stamping";
+  });
+  const amcTickets = tickets.filter((x) => {
+    const cf =
+      x.customFields && typeof x.customFields === "object" && !Array.isArray(x.customFields)
+        ? (x.customFields as Record<string, unknown>)
+        : {};
+    return /amc/i.test(String(cf.category ?? ""));
+  });
+  const stampingInRange = stampingTickets.filter((x) => x.createdAt >= from && x.createdAt <= to).length;
+  const amcInRange = amcTickets.filter((x) => x.createdAt >= from && x.createdAt <= to).length;
+  const breakdownInRange = tickets.filter((x) => {
+    const cf =
+      x.customFields && typeof x.customFields === "object" && !Array.isArray(x.customFields)
+        ? (x.customFields as Record<string, unknown>)
+        : {};
+    return /breakdown/i.test(String(cf.category ?? "")) && x.createdAt >= from && x.createdAt <= to;
+  }).length;
 
   const ticketsByAssignee = users
     .map((u) => {
@@ -629,7 +769,7 @@ analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Respon
     ),
   ].sort();
 
-  return success(r, {
+  const payload = {
     range,
     from: from.toISOString(),
     to: to.toISOString(),
@@ -661,7 +801,7 @@ analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Respon
       dealsInRange: dealsInRange.length,
       dealGrowth,
       wonDeals: wonDeals.length,
-      wonRevenue: serviceCollected,
+      wonRevenue: saleRevenueAllTime,
       openPipeline: 0,
       invoiceRevenue,
       invoiceCount: invoices.length,
@@ -678,6 +818,12 @@ analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Respon
       resolvedTickets: resolvedTickets.length,
       resolvedInRange: resolvedInRange.length,
       slaBreached: breachedTickets.length,
+      salesTotalInRange,
+      saleRevenueInRange,
+      saleRevenueAllTime,
+      stampingInRange,
+      amcInRange,
+      breakdownInRange,
       unassignedTickets,
       awaitingAssignment,
       awaitingApproval,
@@ -702,6 +848,7 @@ analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Respon
     leadsByStatus: Object.entries(leadsByStatus).map(([name, value]) => ({ name, value })),
     leadsBySource,
     leadsByOwner,
+    serviceRevenueByCategory,
     leadMonthly,
     performers,
     ticketsByStatus,
@@ -737,5 +884,15 @@ analyticsRouter.get("/summary", requireTenantAdmin, async (q: Request, r: Respon
     sources: sources.map((s) => ({ id: s.id, name: s.name })),
     users: users.map((u) => ({ id: u.id, name: u.name })),
     cities,
-  });
+  };
+
+  summaryCache.set(cacheKey, { at: Date.now(), body: payload });
+  void cacheSet(redisKey, payload, SUMMARY_REDIS_TTL_SEC);
+  if (summaryCache.size > 80) {
+    const oldest = [...summaryCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) summaryCache.delete(oldest[0]);
+  }
+
+  r.setHeader("X-Cache", "MISS");
+  return success(r, payload);
 });

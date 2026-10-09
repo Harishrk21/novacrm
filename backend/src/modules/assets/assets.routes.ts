@@ -9,7 +9,17 @@ import { paramId } from "../../common/utils/params.js";
 import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { pagination, pageResult } from "../../common/utils/pagination.js";
-import { notFound } from "../../common/errors.js";
+import { AppError, notFound } from "../../common/errors.js";
+import {
+  defaultAmcEndFromStart,
+  defaultNextAmcService,
+  defaultWarrantyEndFromToday,
+  effectiveServicePlan,
+  hmsSoldCoverage,
+  isUnderGc,
+  normalizeServicePlan,
+} from "../../common/hmsCoverage.js";
+import { persistLapsedGc } from "./coverageLapse.js";
 
 const MACHINE_TYPES = [
   "WEIGHING",
@@ -22,6 +32,8 @@ const MACHINE_TYPES = [
   "OTHER",
 ] as const;
 
+const SERVICE_PLANS = ["GC", "NGC", "AMC", "NON_AMC"] as const;
+
 const body = z.object({
   contactId: z.string().min(1).max(36),
   machineType: z.enum(MACHINE_TYPES).optional(),
@@ -32,9 +44,11 @@ const body = z.object({
   model: z.string().nullable().optional(),
   serialNo: z.string().nullable().optional(),
   origin: z.enum(["SOLD_BY_US", "THIRD_PARTY"]).optional(),
-  servicePlan: z.enum(["AMC", "NON_AMC"]).optional(),
+  servicePlan: z.enum(SERVICE_PLANS).optional(),
+  warrantyEndDate: z.string().nullable().optional(),
   amcStartDate: z.string().nullable().optional(),
   amcEndDate: z.string().nullable().optional(),
+  nextServiceDueDate: z.string().nullable().optional(),
   remindersEnabled: z.boolean().optional(),
   stampingDate: z.string().nullable().optional(),
   nextDueDate: z.string().nullable().optional(),
@@ -56,16 +70,25 @@ function parseDate(v: unknown): Date | null {
 function serialize(row: {
   stampingDate: Date | null;
   nextDueDate: Date | null;
+  warrantyEndDate?: Date | null;
   amcStartDate?: Date | null;
   amcEndDate?: Date | null;
+  nextServiceDueDate?: Date | null;
   [key: string]: unknown;
 }) {
+  const slice = (v: Date | null | undefined) => (v ? v.toISOString().slice(0, 10) : null);
   return {
     ...row,
-    stampingDate: row.stampingDate ? row.stampingDate.toISOString().slice(0, 10) : null,
-    nextDueDate: row.nextDueDate ? row.nextDueDate.toISOString().slice(0, 10) : null,
-    amcStartDate: row.amcStartDate ? row.amcStartDate.toISOString().slice(0, 10) : null,
-    amcEndDate: row.amcEndDate ? row.amcEndDate.toISOString().slice(0, 10) : null,
+    servicePlan: effectiveServicePlan({
+      servicePlan: row.servicePlan as string | null | undefined,
+      warrantyEndDate: row.warrantyEndDate,
+    }),
+    stampingDate: slice(row.stampingDate),
+    nextDueDate: slice(row.nextDueDate),
+    warrantyEndDate: slice(row.warrantyEndDate),
+    amcStartDate: slice(row.amcStartDate),
+    amcEndDate: slice(row.amcEndDate),
+    nextServiceDueDate: slice(row.nextServiceDueDate),
   };
 }
 
@@ -78,7 +101,7 @@ assetsRouter.get("/", async (q: Request, r: Response) => {
   const where: Record<string, unknown> = { tenantId: t, deletedAt: null };
   if (q.query.contactId) where.contactId = String(q.query.contactId);
   if (q.query.machineType) where.machineType = String(q.query.machineType);
-  if (q.query.servicePlan === "AMC" || q.query.servicePlan === "NON_AMC") {
+  if (SERVICE_PLANS.includes(String(q.query.servicePlan) as (typeof SERVICE_PLANS)[number])) {
     where.servicePlan = String(q.query.servicePlan);
   }
   if (q.query.origin === "SOLD_BY_US" || q.query.origin === "THIRD_PARTY") {
@@ -89,6 +112,8 @@ assetsRouter.get("/", async (q: Request, r: Response) => {
     until.setDate(until.getDate() + 30);
     where.OR = [
       { nextDueDate: { lte: until, not: null } },
+      { nextServiceDueDate: { lte: until, not: null } },
+      { warrantyEndDate: { lte: until, not: null } },
       { amcEndDate: { lte: until, not: null } },
     ];
   }
@@ -114,6 +139,7 @@ assetsRouter.get("/", async (q: Request, r: Response) => {
     }),
     prisma.customerAsset.count({ where }),
   ]);
+  await persistLapsedGc(items);
   const contactIds = [...new Set(items.map((i) => i.contactId))];
   const contacts = contactIds.length
     ? await prisma.contact.findMany({
@@ -148,27 +174,62 @@ assetsRouter.post("/", validate(createSchema), async (q: Request, r: Response) =
     where: { id: d.contactId, tenantId: t, deletedAt: null },
   });
   if (!contact) throw notFound("Contact");
+  const origin = d.origin ?? "SOLD_BY_US";
+  const machineType = d.machineType ?? "WEIGHING";
+  const weighing = String(machineType) === "WEIGHING";
+  const soldCoverage = origin === "SOLD_BY_US" ? hmsSoldCoverage(new Date(), weighing) : null;
+  const plan = normalizeServicePlan(
+    d.servicePlan ?? (soldCoverage ? "GC" : "NON_AMC"),
+  );
+  if (plan === "AMC" && String(machineType) !== "WEIGHING") {
+    throw new AppError("AMC is only for weighing machines", 400);
+  }
+  const warrantyEnd =
+    plan === "GC"
+      ? parseDate(d.warrantyEndDate) ?? soldCoverage?.warrantyEndDate ?? defaultWarrantyEndFromToday()
+      : parseDate(d.warrantyEndDate);
+  const amcStart = plan === "AMC" ? parseDate(d.amcStartDate) ?? new Date() : null;
+  const amcEnd =
+    plan === "AMC" ? parseDate(d.amcEndDate) ?? defaultAmcEndFromStart(amcStart) : null;
+  const nextService =
+    plan === "AMC"
+      ? parseDate(d.nextServiceDueDate) ?? defaultNextAmcService(amcStart)
+      : parseDate(d.nextServiceDueDate);
+  const incomingCf =
+    d.customFields && typeof d.customFields === "object" && !Array.isArray(d.customFields)
+      ? (d.customFields as Record<string, unknown>)
+      : {};
+  const customFields = soldCoverage
+    ? {
+        ...incomingCf,
+        soldAt: incomingCf.soldAt ?? new Date().toISOString(),
+        stampingQuarter: incomingCf.stampingQuarter ?? soldCoverage.stampingQuarter,
+        stampingQuarterYear: incomingCf.stampingQuarterYear ?? soldCoverage.stampingQuarterYear,
+      }
+    : incomingCf;
   const row = await prisma.customerAsset.create({
     data: {
       id: newId(),
       tenantId: t,
       contactId: d.contactId,
-      machineType: d.machineType ?? "WEIGHING",
+      machineType,
       name: d.name.trim(),
       capacity: d.capacity ?? null,
       accuracy: d.accuracy ?? null,
       platformSize: d.platformSize ?? null,
       model: d.model ?? null,
       serialNo: d.serialNo ?? null,
-      origin: d.origin ?? "SOLD_BY_US",
-      servicePlan: d.servicePlan ?? "NON_AMC",
-      amcStartDate: d.servicePlan === "AMC" ? parseDate(d.amcStartDate) : null,
-      amcEndDate: d.servicePlan === "AMC" ? parseDate(d.amcEndDate) : null,
+      origin,
+      servicePlan: plan,
+      warrantyEndDate: warrantyEnd,
+      amcStartDate: amcStart,
+      amcEndDate: amcEnd,
+      nextServiceDueDate: nextService,
       remindersEnabled: d.remindersEnabled ?? true,
-      stampingDate: parseDate(d.stampingDate),
-      nextDueDate: parseDate(d.nextDueDate),
+      stampingDate: parseDate(d.stampingDate) ?? (weighing ? soldCoverage?.stampingDate ?? null : null),
+      nextDueDate: parseDate(d.nextDueDate) ?? (weighing ? soldCoverage?.nextDueDate ?? null : null),
       notes: d.notes ?? null,
-      customFields: (d.customFields as object | undefined) ?? undefined,
+      customFields: Object.keys(customFields).length ? (customFields as object) : undefined,
     },
   });
   return success(r, serialize(row), "Machine saved", 201);
@@ -179,6 +240,7 @@ assetsRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) => 
   const id = paramId(q);
   const row = await prisma.customerAsset.findFirst({ where: { id, tenantId: t, deletedAt: null } });
   if (!row) throw notFound("Machine");
+  await persistLapsedGc([row]);
   return success(r, serialize(row));
 });
 
@@ -197,12 +259,55 @@ assetsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respons
   const data: Record<string, unknown> = { ...d };
   if ("stampingDate" in d) data.stampingDate = parseDate(d.stampingDate);
   if ("nextDueDate" in d) data.nextDueDate = parseDate(d.nextDueDate);
+  if ("warrantyEndDate" in d) data.warrantyEndDate = parseDate(d.warrantyEndDate);
   if ("amcStartDate" in d) data.amcStartDate = parseDate(d.amcStartDate);
   if ("amcEndDate" in d) data.amcEndDate = parseDate(d.amcEndDate);
+  if ("nextServiceDueDate" in d) data.nextServiceDueDate = parseDate(d.nextServiceDueDate);
   if (typeof d.name === "string") data.name = d.name.trim();
-  if (d.servicePlan === "NON_AMC") {
-    data.amcStartDate = null;
-    data.amcEndDate = null;
+  if (typeof d.servicePlan === "string") {
+    const plan = normalizeServicePlan(d.servicePlan);
+    const machineType = String(d.machineType ?? existing.machineType);
+    if (plan === "AMC" && machineType !== "WEIGHING") {
+      throw new AppError("AMC is only for weighing machines", 400);
+    }
+    if (
+      plan === "AMC" &&
+      existing.servicePlan !== "AMC" &&
+      isUnderGc({
+        servicePlan: existing.servicePlan,
+        warrantyEndDate: existing.warrantyEndDate,
+      })
+    ) {
+      throw new AppError(
+        "AMC opens after the 1-year GC ends. Existing weighing customers not under GC can convert now.",
+        400,
+      );
+    }
+    data.servicePlan = plan;
+    if (plan === "GC" && !("warrantyEndDate" in d)) {
+      data.warrantyEndDate =
+        existing.warrantyEndDate ?? defaultWarrantyEndFromToday();
+    }
+    if (plan === "AMC") {
+      if (!("amcStartDate" in d) && !existing.amcStartDate) {
+        data.amcStartDate = new Date();
+      }
+      if (!("amcEndDate" in d) && !existing.amcEndDate) {
+        data.amcEndDate = defaultAmcEndFromStart(
+          ("amcStartDate" in d ? parseDate(d.amcStartDate) : existing.amcStartDate) ?? new Date(),
+        );
+      }
+      if (!("nextServiceDueDate" in d) && !existing.nextServiceDueDate) {
+        data.nextServiceDueDate = defaultNextAmcService(
+          ("amcStartDate" in d ? parseDate(d.amcStartDate) : existing.amcStartDate) ?? new Date(),
+        );
+      }
+    }
+    if (plan === "NGC" || plan === "NON_AMC") {
+      if (!("amcStartDate" in d)) data.amcStartDate = null;
+      if (!("amcEndDate" in d)) data.amcEndDate = null;
+      if (!("nextServiceDueDate" in d)) data.nextServiceDueDate = null;
+    }
   }
   await prisma.customerAsset.updateMany({ where: { id, tenantId: t, deletedAt: null }, data });
   const row = await prisma.customerAsset.findFirst({ where: { id, tenantId: t } });
@@ -218,6 +323,7 @@ assetsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respons
     });
   }
 
+  await persistLapsedGc([row]);
   return success(r, serialize(row), "Machine updated");
 });
 

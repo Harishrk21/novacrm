@@ -49,15 +49,18 @@ const docUpload = multer({
 });
 
 export const uploadsRouter = Router();
-uploadsRouter.use(authenticate, requireTenant);
+uploadsRouter.use(authenticate);
 
 uploadsRouter.post("/image", upload.single("file"), (req, res) => {
+  if (req.auth?.kind !== "platform" && req.auth?.kind !== "tenant") {
+    throw new AppError("Authentication required", 401);
+  }
   if (!req.file) throw new AppError("No image uploaded", 400);
   const url = `/uploads/${req.file.filename}`;
   return success(res, { url, filename: req.file.filename }, "Uploaded");
 });
 
-uploadsRouter.post("/file", docUpload.single("file"), (req, res) => {
+uploadsRouter.post("/file", requireTenant, docUpload.single("file"), (req, res) => {
   if (!req.file) throw new AppError("No file uploaded", 400);
   const url = `/uploads/${req.file.filename}`;
   return success(

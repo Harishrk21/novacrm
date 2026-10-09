@@ -7,9 +7,10 @@ export async function get(tenantId: string) {
   return row;
 }
 
+/** All module flags for the tenant (enabled + disabled) — sidebar / plan gating. */
 export const modules = (tenantId: string) =>
   prisma.tenantModule.findMany({
-    where: { tenantId, isEnabled: true },
+    where: { tenantId },
     orderBy: { sortOrder: "asc" },
   });
 

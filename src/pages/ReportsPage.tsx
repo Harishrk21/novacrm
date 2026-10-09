@@ -42,6 +42,7 @@ import {
 } from '@/lib/reportExport'
 import { formatCurrency } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
+import { PageSkeleton } from '@/components/ui/Skeleton'
 
 const CHART_FALLBACK = ['#3b82f6', '#f59e0b', '#10b981', '#8b5cf6', '#ef4444', '#64748b', '#06b6d4']
 
@@ -401,7 +402,7 @@ export function ReportsPage() {
       {error ? (
         <Card className="p-6 text-sm text-accent-red">{error}</Card>
       ) : loading && !data ? (
-        <Card className="p-6 text-sm text-text-secondary">Loading live reports…</Card>
+        <PageSkeleton cards={4} rows={6} />
       ) : !data || !k ? (
         <Card className="p-6 text-sm text-text-secondary">No analytics yet.</Card>
       ) : (

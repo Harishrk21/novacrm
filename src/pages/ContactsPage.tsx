@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
+  ChevronDown,
   Filter,
   Package,
   Phone,
   Search,
+  Upload,
   UserPlus,
   Users,
   Wrench,
@@ -25,23 +27,33 @@ import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
+import { CatalogMachinePick } from '@/components/contacts/CatalogMachinePick'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CustomerImportPanel } from '@/components/contacts/CustomerImportPanel'
+import {
+  ContactFilterSidebar,
+  loadFilterWidth,
+  type ContactFilterState,
+  type SystemFilterId,
+} from '@/components/contacts/ContactFilterSidebar'
 import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import { useRowSelection } from '@/hooks/useRowSelection'
+import { useConfirmLeave, useDiscardGuard } from '@/hooks/useDiscardGuard'
+import { useUnsavedStore } from '@/store/unsavedStore'
 import { api, ApiClientError } from '@/lib/api'
 import { ASSET_ORIGIN_OPTIONS } from '@/lib/assetOrigin'
 import {
   machineTypeRequiresStamping,
-  productAttrs,
   productRequiresStamping,
 } from '@/lib/productCatalog'
+import { hmsSoldCoverage, isWeighingMachine } from '@/lib/hmsCoverage'
 import { firstError, validateContactForm, type FieldErrors } from '@/lib/formValidation'
 import { cn, formatDate, formatPhone } from '@/lib/utils'
 import { toStoredIndianMobile } from '@/lib/phoneIndia'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { canAssignTickets, canCreateTickets, isServiceDesk } from '@/lib/roles'
+import { TableSkeleton, Skeleton } from '@/components/ui/Skeleton'
 
 type ContactRow = {
   id: string
@@ -111,13 +123,15 @@ const MACHINE_TYPES = [
 const emptyMachine = {
   skip: false,
   catalogProductId: '',
+  stockType: '',
+  brandId: '',
   machineType: 'WEIGHING',
   name: '',
   capacity: '',
   serialNo: '',
   model: '',
   origin: 'SOLD_BY_US',
-  servicePlan: 'NON_AMC',
+  servicePlan: 'GC',
   amcStartDate: '',
   amcEndDate: '',
   nextServiceDate: '',
@@ -153,15 +167,17 @@ export function ContactsPage() {
   const [accounts, setAccounts] = useState<Array<{ id: string; name: string }>>([])
   const [users, setUsers] = useState<Array<{ id: string; name: string }>>([])
   const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>([])
+  const [catalogBrands, setCatalogBrands] = useState<Array<{ id: string; name: string }>>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [accountFilter, setAccountFilter] = useState('')
   const [ownerFilter, setOwnerFilter] = useState('')
   const [cityFilter, setCityFilter] = useState('')
-  const [phone, setPhone] = useState('')
-  const [phoneResult, setPhoneResult] = useState<string | null>(null)
-  const [phoneNotFound, setPhoneNotFound] = useState(false)
+  const [hasEmailFilter, setHasEmailFilter] = useState(false)
+  const [hasWhatsappFilter, setHasWhatsappFilter] = useState(false)
+  const [filterOpen, setFilterOpen] = useState(true)
+  const [filterWidth, setFilterWidth] = useState(() => loadFilterWidth(280))
   const [tab, setTab] = useState<'list' | 'create' | 'import'>('list')
   const [createStep, setCreateStep] = useState<'customer' | 'product'>('customer')
   const [returnTo, setReturnTo] = useState<string | null>(null)
@@ -171,57 +187,167 @@ export function ContactsPage() {
   const [errors, setErrors] = useState<FieldErrors>({})
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
   const [busyDelete, setBusyDelete] = useState(false)
-  const [quickFilter, setQuickFilter] = useState<'all' | 'phone' | 'machines' | 'openJobs'>('all')
+  const [quickFilter, setQuickFilter] = useState<SystemFilterId>('all')
+  const [sortBy, setSortBy] = useState<'name' | 'recent' | 'machines' | 'jobs'>('name')
+  const [createMenuOpen, setCreateMenuOpen] = useState(false)
+  const createMenuRef = useRef<HTMLDivElement>(null)
+  const unsavedDirty = useUnsavedStore((s) => s.dirty)
+  const clearUnsaved = useUnsavedStore((s) => s.clear)
+  const createDirty =
+    tab === 'create' &&
+    Boolean(
+      form.name.trim() ||
+        form.mobile.trim() ||
+        form.email.trim() ||
+        form.street.trim() ||
+        machine.name.trim(),
+    )
+  const { requestLeave, dialog: leaveDialog } = useConfirmLeave(
+    unsavedDirty || createDirty,
+    'You have unsaved work. Discard and leave this view?',
+  )
+  useDiscardGuard(
+    createDirty && tab === 'create',
+    'Customer form has unsaved fields. Leaving will discard them.',
+  )
 
   const overview = useMemo(() => {
     const withPhone = items.filter((c) => Boolean(c.phone || c.mobile)).length
     const withMachines = items.filter((c) => Number(c.machineCount ?? 0) > 0).length
+    const noMachines = items.filter((c) => Number(c.machineCount ?? 0) === 0).length
     const openJobs = items.reduce((sum, c) => sum + Number(c.openJobCount ?? 0), 0)
-    return { total: items.length, withPhone, withMachines, openJobs }
+    const openJobsCustomers = items.filter((c) => Number(c.openJobCount ?? 0) > 0).length
+    const monthStart = new Date()
+    monthStart.setDate(1)
+    monthStart.setHours(0, 0, 0, 0)
+    const recent = items.filter((c) => {
+      if (!c.createdAt) return false
+      return new Date(c.createdAt).getTime() >= monthStart.getTime()
+    }).length
+    return {
+      total: items.length,
+      withPhone,
+      withMachines,
+      noMachines,
+      openJobs,
+      openJobsCustomers,
+      recent,
+    }
   }, [items])
 
   const displayed = useMemo(() => {
-    if (quickFilter === 'phone') return items.filter((c) => Boolean(c.phone || c.mobile))
-    if (quickFilter === 'machines') return items.filter((c) => Number(c.machineCount ?? 0) > 0)
-    if (quickFilter === 'openJobs') return items.filter((c) => Number(c.openJobCount ?? 0) > 0)
-    return items
-  }, [items, quickFilter])
+    let rows = items
+    if (quickFilter === 'phone') rows = rows.filter((c) => Boolean(c.phone || c.mobile))
+    else if (quickFilter === 'machines') rows = rows.filter((c) => Number(c.machineCount ?? 0) > 0)
+    else if (quickFilter === 'noMachines')
+      rows = rows.filter((c) => Number(c.machineCount ?? 0) === 0)
+    else if (quickFilter === 'openJobs')
+      rows = rows.filter((c) => Number(c.openJobCount ?? 0) > 0)
+    else if (quickFilter === 'recent') {
+      const monthStart = new Date()
+      monthStart.setDate(1)
+      monthStart.setHours(0, 0, 0, 0)
+      rows = rows.filter((c) => c.createdAt && new Date(c.createdAt).getTime() >= monthStart.getTime())
+    }
+    if (hasEmailFilter) rows = rows.filter((c) => Boolean(c.email?.trim()))
+    if (hasWhatsappFilter) rows = rows.filter((c) => Boolean(c.whatsapp?.trim()))
+    return rows
+  }, [items, quickFilter, hasEmailFilter, hasWhatsappFilter])
 
-  const ids = useMemo(() => displayed.map((i) => String(i.id)), [displayed])
+  const sortedDisplayed = useMemo(() => {
+    const rows = [...displayed]
+    rows.sort((a, b) => {
+      if (sortBy === 'recent') {
+        return new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()
+      }
+      if (sortBy === 'machines') {
+        return Number(b.machineCount ?? 0) - Number(a.machineCount ?? 0)
+      }
+      if (sortBy === 'jobs') {
+        return Number(b.openJobCount ?? 0) - Number(a.openJobCount ?? 0)
+      }
+      return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })
+    })
+    return rows
+  }, [displayed, sortBy])
+
+  const ids = useMemo(() => sortedDisplayed.map((i) => String(i.id)), [sortedDisplayed])
   const selection = useRowSelection(ids)
 
   const filtersActive = Boolean(
-    accountFilter || ownerFilter || cityFilter || search || quickFilter !== 'all',
+    accountFilter ||
+      ownerFilter ||
+      cityFilter ||
+      search ||
+      quickFilter !== 'all' ||
+      hasEmailFilter ||
+      hasWhatsappFilter,
   )
 
-  function toggleQuickFilter(next: 'all' | 'phone' | 'machines' | 'openJobs') {
+  const sidebarFilters: ContactFilterState = {
+    system: quickFilter,
+    accountId: accountFilter,
+    ownerUserId: ownerFilter,
+    city: cityFilter,
+    hasEmail: hasEmailFilter,
+    hasWhatsapp: hasWhatsappFilter,
+  }
+
+  function applySidebarFilters(next: ContactFilterState) {
+    setQuickFilter(next.system)
+    setAccountFilter(next.accountId)
+    setOwnerFilter(next.ownerUserId)
+    setCityFilter(next.city)
+    setHasEmailFilter(next.hasEmail)
+    setHasWhatsappFilter(next.hasWhatsapp)
+  }
+
+  function toggleQuickFilter(next: SystemFilterId) {
     setQuickFilter((prev) => (prev === next || next === 'all' ? 'all' : next))
-    document.getElementById('customer-directory')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
   useEffect(() => {
+    const tabQ = searchParams.get('tab')
+    const filterQ = searchParams.get('filter') as SystemFilterId | null
     const open = searchParams.get('open') === '1'
-    if (!open) return
-    const phoneQ = searchParams.get('phone') ?? ''
-    const nameQ = searchParams.get('q') ?? ''
-    const back = searchParams.get('returnTo')
-    setTab('create')
-    setCreateStep('customer')
-    setReturnTo(back)
-    setForm((prev) => ({
-      ...prev,
-      phone: phoneQ || prev.phone,
-      name: !phoneQ && nameQ && !/^\d/.test(nameQ) ? nameQ : prev.name,
-      mobile: phoneQ || prev.mobile,
-    }))
-    setSearchParams({}, { replace: true })
+
+    if (tabQ === 'import') {
+      setTab('import')
+      setSearchParams({}, { replace: true })
+      return
+    }
+    if (tabQ === 'create' || open) {
+      const phoneQ = searchParams.get('phone') ?? ''
+      const nameQ = searchParams.get('q') ?? ''
+      const back = searchParams.get('returnTo')
+      setTab('create')
+      setCreateStep('customer')
+      setReturnTo(back)
+      setForm((prev) => ({
+        ...prev,
+        phone: phoneQ || prev.phone,
+        name: !phoneQ && nameQ && !/^\d/.test(nameQ) ? nameQ : prev.name,
+        mobile: phoneQ || prev.mobile,
+      }))
+      setSearchParams({}, { replace: true })
+      return
+    }
+    if (
+      filterQ &&
+      ['all', 'phone', 'machines', 'openJobs', 'noMachines', 'recent'].includes(filterQ)
+    ) {
+      setQuickFilter(filterQ)
+      setFilterOpen(true)
+      setSearchParams({}, { replace: true })
+    }
   }, [searchParams, setSearchParams])
 
   const load = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
     try {
-      const [contactsRes, lookups, productPage] = await Promise.all([
+      // Lookups already includes products — don't pay a second RDS round-trip via /products.
+      const [contactsRes, lookups] = await Promise.all([
         api.contacts({
           limit: 100,
           search: search || undefined,
@@ -231,19 +357,39 @@ export function ContactsPage() {
           hasAccount: undefined,
         }),
         api.lookups(),
-        api.products({ limit: 500 }),
       ])
       setItems((contactsRes.items ?? []) as ContactRow[])
       setAccounts(lookups.accounts)
       setUsers(lookups.users)
       setCatalogProducts(
-        (productPage.items ?? []).map((p) => ({
+        (lookups.products ?? []).map((p) => ({
           id: String(p.id),
           name: String(p.name ?? ''),
           sku: String(p.sku ?? ''),
           attributes: (p.attributes as Record<string, unknown> | null) ?? null,
         })),
       )
+      try {
+        const [productPage, brandRows] = await Promise.all([
+          api.products({ limit: 200 }),
+          api.inventoryBrands(),
+        ])
+        if (productPage.items?.length) {
+          setCatalogProducts(
+            productPage.items.map((p) => ({
+              id: String(p.id),
+              name: String(p.name ?? ''),
+              sku: String(p.sku ?? ''),
+              attributes: (p.attributes as Record<string, unknown> | null) ?? null,
+            })),
+          )
+        }
+        setCatalogBrands(
+          (brandRows ?? []).map((b) => ({ id: String(b.id), name: String(b.name ?? '') })),
+        )
+      } catch {
+        /* sales without inventory APIs still get lookups catalog */
+      }
     } catch (err) {
       const message = err instanceof ApiClientError ? err.message : 'Failed to load contacts'
       setLoadError(message)
@@ -260,55 +406,32 @@ export function ContactsPage() {
     void load()
   }, [load])
 
-  async function handlePhoneLookup(event: FormEvent) {
-    event.preventDefault()
-    setPhoneNotFound(false)
-    if (!phone.trim()) {
-      setPhoneResult('Enter a phone number or Customer ID (CUS-#####).')
-      return
-    }
-    try {
-      const q = phone.trim()
-      if (/^CUS-/i.test(q)) {
-        const res = await api.contacts({ limit: 5, search: q.toUpperCase() })
-        const hits = (res.items ?? []) as ContactRow[]
-        const exact = hits.find((c) => String(c.customerCode).toUpperCase() === q.toUpperCase())
-        if (exact) {
-          navigate(`/contacts/${exact.id}`)
-          return
-        }
-        setPhoneResult('No customer found with that Customer ID.')
-        setPhoneNotFound(true)
-        return
+  useEffect(() => {
+    if (!createMenuOpen) return
+    function onDoc(e: MouseEvent) {
+      if (createMenuRef.current && !createMenuRef.current.contains(e.target as Node)) {
+        setCreateMenuOpen(false)
       }
-      const hits = (await api.contactsLookup(q)) as ContactRow[]
-      if (hits?.length) {
-        navigate(`/contacts/${hits[0].id}`)
-        return
-      }
-      setPhoneResult('No customer found with this phone number.')
-      setPhoneNotFound(true)
-    } catch (err) {
-      setPhoneResult(err instanceof ApiClientError ? err.message : 'Lookup failed')
-      setPhoneNotFound(false)
     }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [createMenuOpen])
+
+  function openCreateContact() {
+    setCreateMenuOpen(false)
+    setForm(emptyForm)
+    setMachine(emptyMachine)
+    setCreateStep('customer')
+    setErrors({})
+    setTab('create')
   }
 
-  function addCustomerFromLookup() {
-    const q = phone.trim()
-    const digits = q.replace(/\D/g, '')
-    const looksPhone = digits.length >= 7 && !/^CUS-/i.test(q)
-    setTab('create')
-    setCreateStep('customer')
-    setReturnTo(null)
-    setForm({
-      ...emptyForm,
-      phone: looksPhone ? q : '',
-      mobile: looksPhone ? q : '',
-      landline: '',
+  function openImportContacts() {
+    setCreateMenuOpen(false)
+    requestLeave(() => {
+      clearUnsaved()
+      setTab('import')
     })
-    setPhoneResult(null)
-    setPhoneNotFound(false)
   }
 
   function goNextToProduct(event?: FormEvent) {
@@ -335,14 +458,6 @@ export function ContactsPage() {
   const showStampingFields =
     !machine.skip && machine.origin === 'SOLD_BY_US' && machineRequiresStamping
 
-  const catalogProductsForType = useMemo(
-    () =>
-      catalogProducts.filter(
-        (p) => String(productAttrs(p).catalogKind ?? '') === machine.machineType,
-      ),
-    [catalogProducts, machine.machineType],
-  )
-
   function patchMachine(next: Partial<typeof machine>) {
     setMachine((prev) => {
       const merged = { ...prev, ...next }
@@ -361,6 +476,15 @@ export function ContactsPage() {
       addToast({ type: 'error', message: firstError(nextErrors) })
       setCreateStep('customer')
       return
+    }
+    if (!machine.skip && machine.origin === 'SOLD_BY_US') {
+      if (!machine.stockType || !machine.brandId || !machine.catalogProductId) {
+        addToast({
+          type: 'error',
+          message: 'Sold by us — select machine type, brand, and model',
+        })
+        return
+      }
     }
     const saveProduct = !machine.skip && machine.name.trim()
     setSaving(true)
@@ -401,6 +525,10 @@ export function ContactsPage() {
         customFields,
       })
       if (saveProduct) {
+        const soldByUs = machine.origin === 'SOLD_BY_US'
+        const weighing =
+          showStampingFields || isWeighingMachine(machine.machineType)
+        const coverage = soldByUs ? hmsSoldCoverage(new Date(), weighing) : null
         await api.createAsset({
           contactId: String(created.id),
           machineType: machine.machineType,
@@ -409,20 +537,42 @@ export function ContactsPage() {
           serialNo: machine.serialNo || null,
           model: machine.model || null,
           origin: machine.origin,
-          servicePlan: machine.servicePlan,
+          servicePlan: soldByUs
+            ? machine.servicePlan === 'AMC'
+              ? 'AMC'
+              : 'GC'
+            : machine.servicePlan,
+          warrantyEndDate: soldByUs
+            ? coverage?.warrantyEndDate ?? null
+            : null,
           amcStartDate: machine.servicePlan === 'AMC' ? machine.amcStartDate || null : null,
           amcEndDate: machine.servicePlan === 'AMC' ? machine.amcEndDate || null : null,
-          nextDueDate:
-            machine.servicePlan === 'AMC'
-              ? showStampingFields
-                ? machine.stampingValidity || null
-                : null
-              : machine.nextServiceDate || null,
-          stampingDate: showStampingFields ? machine.stampingDate || null : null,
+          nextDueDate: weighing
+            ? machine.stampingValidity || coverage?.nextDueDate || null
+            : machine.servicePlan === 'AMC'
+              ? machine.nextServiceDate || null
+              : null,
+          stampingDate: weighing
+            ? machine.stampingDate || coverage?.stampingDate || null
+            : null,
           remindersEnabled: machine.remindersEnabled,
-          customFields: machine.catalogProductId
-            ? { catalogProductId: machine.catalogProductId }
-            : undefined,
+          customFields: {
+            ...(machine.catalogProductId ? { catalogProductId: machine.catalogProductId } : {}),
+            ...(machine.brandId
+              ? {
+                  brandId: machine.brandId,
+                  brandName: catalogBrands.find((b) => b.id === machine.brandId)?.name ?? null,
+                }
+              : {}),
+            ...(machine.stockType ? { catalogFamily: machine.stockType } : {}),
+            ...(coverage
+              ? {
+                  soldAt: coverage.soldAt,
+                  stampingQuarter: coverage.stampingQuarter,
+                  stampingQuarterYear: coverage.stampingQuarterYear,
+                }
+              : {}),
+          },
         })
       }
       setTab('list')
@@ -477,48 +627,88 @@ export function ContactsPage() {
   return (
     <div className="space-y-5 pb-8">
       <PageHeader
-        title="Customers"
+        title="Contacts"
         count={items.length}
-        breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Customers' }]}
+        breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Contacts' }]}
         actions={
           tab === 'list' ? (
-            <Button
-              onClick={() => {
-                setForm(emptyForm)
-                setMachine(emptyMachine)
-                setCreateStep('customer')
-                setErrors({})
-                setTab('create')
-              }}
-            >
-              <UserPlus size={16} /> Add customer
-            </Button>
+            <div className="relative" ref={createMenuRef}>
+              <div className="inline-flex overflow-hidden rounded-[6px] shadow-sm">
+                <Button
+                  className="rounded-none rounded-l-[6px] shadow-none"
+                  onClick={openCreateContact}
+                >
+                  <UserPlus size={16} /> Create Contact
+                </Button>
+                <Button
+                  className="rounded-none rounded-r-[6px] border-l border-white/25 px-2 shadow-none"
+                  aria-label="More create options"
+                  aria-expanded={createMenuOpen}
+                  onClick={() => setCreateMenuOpen((o) => !o)}
+                >
+                  <ChevronDown size={16} className={createMenuOpen ? 'rotate-180' : ''} />
+                </Button>
+              </div>
+              {createMenuOpen ? (
+                <div className="absolute right-0 z-30 mt-1.5 min-w-[200px] overflow-hidden rounded-lg border border-border bg-card py-1 shadow-[var(--shadow-card)]">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-primary hover:bg-muted/60"
+                    onClick={openCreateContact}
+                  >
+                    <UserPlus size={14} className="text-accent-blue" />
+                    Create Contact
+                  </button>
+                  {canCreateTickets(authRole) ? (
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-primary hover:bg-muted/60"
+                      onClick={openImportContacts}
+                    >
+                      <Upload size={14} className="text-accent-blue" />
+                      Import Contacts
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           ) : null
         }
       />
+      {leaveDialog}
 
       <PageTabs
         accent="theme"
         active={tab}
         onChange={(id) => {
-          setTab(id as 'list' | 'create' | 'import')
-          if (id === 'create') {
-            setForm(emptyForm)
-            setMachine(emptyMachine)
-            setCreateStep('customer')
-            setErrors({})
-          }
+          requestLeave(() => {
+            clearUnsaved()
+            setTab(id as 'list' | 'create' | 'import')
+            if (id === 'create') {
+              setForm(emptyForm)
+              setMachine(emptyMachine)
+              setCreateStep('customer')
+              setErrors({})
+            }
+          })
         }}
         tabs={[
           { id: 'list', label: 'Directory', count: items.length },
-          ...(canCreateTickets(authRole) ? [{ id: 'import', label: 'Import' }] : []),
-          { id: 'create', label: 'Add customer' },
+          ...(canCreateTickets(authRole) ? [{ id: 'import', label: 'Import Contacts' }] : []),
+          { id: 'create', label: 'Create Contact' },
         ]}
       />
 
       {tab === 'import' ? (
         <CustomerImportPanel
+          onCancel={() =>
+            requestLeave(() => {
+              clearUnsaved()
+              setTab('list')
+            })
+          }
           onImported={() => {
+            clearUnsaved()
             void load()
             setTab('list')
           }}
@@ -527,206 +717,93 @@ export function ContactsPage() {
 
       {tab === 'list' ? (
         <>
-          {/* Overview strip */}
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {(
-              [
-                {
-                  id: 'all' as const,
-                  label: 'Total customers',
-                  value: overview.total,
-                  icon: Users,
-                  tint: 'from-sky-500/15 to-transparent text-sky-700 dark:text-sky-300',
-                  ring: 'ring-sky-400/60',
-                },
-                {
-                  id: 'phone' as const,
-                  label: 'With phone',
-                  value: overview.withPhone,
-                  icon: Phone,
-                  tint: 'from-emerald-500/15 to-transparent text-emerald-700 dark:text-emerald-300',
-                  ring: 'ring-emerald-400/60',
-                },
-                {
-                  id: 'machines' as const,
-                  label: 'With machines',
-                  value: overview.withMachines,
-                  icon: Package,
-                  tint: 'from-violet-500/15 to-transparent text-violet-700 dark:text-violet-300',
-                  ring: 'ring-violet-400/60',
-                },
-                {
-                  id: 'openJobs' as const,
-                  label: 'Open service jobs',
-                  value: overview.openJobs,
-                  icon: Wrench,
-                  tint: 'from-amber-500/15 to-transparent text-amber-800 dark:text-amber-300',
-                  ring: 'ring-amber-400/60',
-                },
-              ] as const
-            ).map((stat) => {
-              const Icon = stat.icon
-              const active = quickFilter === stat.id
-              return (
-                <button
-                  key={stat.id}
-                  type="button"
-                  onClick={() => toggleQuickFilter(stat.id)}
-                  className={cn(
-                    'relative overflow-hidden rounded-2xl border border-border bg-card p-4 text-left shadow-[var(--shadow-card)] transition',
-                    'bg-gradient-to-br hover:brightness-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-blue/40',
-                    stat.tint,
-                    active && `ring-2 ${stat.ring}`,
-                  )}
-                  aria-pressed={active}
-                  title={
-                    active && stat.id !== 'all'
-                      ? 'Click again to show all customers'
-                      : `Show ${stat.label.toLowerCase()}`
-                  }
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-secondary">
-                        {stat.label}
-                      </p>
-                      <p className="mt-1.5 text-2xl font-semibold tabular-nums tracking-tight text-text-primary">
-                        {loading ? '…' : stat.value}
-                      </p>
-                      <p className="mt-1 text-[10px] font-medium text-text-secondary">
-                        {active ? 'Filtered · click to clear' : 'Click to filter'}
-                      </p>
-                    </div>
-                    <div className="flex size-10 items-center justify-center rounded-xl bg-card/80 ring-1 ring-border/60">
-                      <Icon size={18} className="opacity-80" />
-                    </div>
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-
-          {/* Quick lookup */}
-          <Card
+          {/* Zoho-style: filter sidebar + directory */}
+          <div
             id="customer-directory"
-            className="scroll-mt-4 overflow-hidden border-border/80 p-0 shadow-[var(--shadow-card)]"
+            className="flex min-h-[560px] overflow-hidden rounded-xl border border-border/80 bg-card shadow-[var(--shadow-card)]"
           >
-            <div className="border-b border-border bg-gradient-to-r from-[var(--color-panel-from)] via-card to-[var(--color-panel-to)] px-5 py-4">
-              <div className="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <h2 className="text-sm font-semibold text-text-primary">Quick lookup</h2>
-                  <p className="mt-0.5 text-xs text-text-secondary">
-                    Jump to a customer by mobile or Customer ID (CUS-#####).
-                  </p>
-                </div>
-              </div>
-              <form onSubmit={handlePhoneLookup} className="mt-3">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                  <div className="relative flex-1">
-                    <Search
-                      className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-text-secondary"
-                      size={17}
-                    />
-                    <Input
-                      id="phone-lookup"
-                      value={phone}
-                      onChange={(e) => {
-                        setPhone(e.target.value)
-                        setPhoneResult(null)
-                        setPhoneNotFound(false)
-                      }}
-                      placeholder="+91 98xxx xxxxx or CUS-00042"
-                      className="h-11 rounded-xl border-border/80 bg-card pl-10 shadow-sm"
-                    />
-                  </div>
-                  <Button type="submit" className="h-11 rounded-xl px-5 sm:w-auto">
-                    Lookup
-                  </Button>
-                </div>
-                {phoneResult ? (
-                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/70 px-3.5 py-2.5">
-                    <p className="text-sm text-text-secondary">{phoneResult}</p>
-                    {phoneNotFound ? (
-                      <Button type="button" size="sm" variant="outline" onClick={addCustomerFromLookup}>
-                        <UserPlus size={14} /> Add customer
-                        {phone.trim() ? (
-                          <span className="font-normal opacity-80">— “{phone.trim()}”</span>
-                        ) : null}
-                      </Button>
-                    ) : null}
-                  </div>
-                ) : null}
-              </form>
-            </div>
+            <ContactFilterSidebar
+              open={filterOpen}
+              width={filterWidth}
+              onWidthChange={setFilterWidth}
+              onClose={() => setFilterOpen(false)}
+              filters={sidebarFilters}
+              onChange={applySidebarFilters}
+              accounts={accounts}
+              users={users}
+              showOwner={canAssign}
+              counts={{
+                all: overview.total,
+                phone: overview.withPhone,
+                machines: overview.withMachines,
+                noMachines: overview.noMachines,
+                openJobs: overview.openJobsCustomers,
+                recent: overview.recent,
+              }}
+            />
 
-            {/* Filters + table */}
-            <div className="border-b border-border px-5 py-3.5">
-              <div className="mb-2.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.06em] text-text-secondary">
-                <Filter size={13} /> Directory filters
-              </div>
-              <div className="flex flex-wrap gap-2.5">
-                <div className="relative min-w-[220px] flex-1">
+            <div className="flex min-w-0 flex-1 flex-col">
+              <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={filterOpen ? 'secondary' : 'outline'}
+                  onClick={() => setFilterOpen((v) => !v)}
+                  title="Toggle filters"
+                >
+                  <Filter size={14} />
+                  Filter
+                </Button>
+                <Select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+                  options={[
+                    { value: 'name', label: 'Sort: Name' },
+                    { value: 'recent', label: 'Sort: Newest' },
+                    { value: 'machines', label: 'Sort: Machines' },
+                    { value: 'jobs', label: 'Sort: Open jobs' },
+                  ]}
+                  className="h-9 w-[150px]"
+                />
+                <div className="relative min-w-[200px] flex-1">
                   <Search
                     className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary"
                     size={15}
                   />
                   <Input
-                    placeholder="Search ID, name, email, phone…"
+                    placeholder="Search name, mobile, or CUS-#####…"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    className="rounded-lg pl-9"
+                    className="h-9 rounded-lg pl-9"
                   />
                 </div>
-                <Select
-                  value={accountFilter}
-                  onChange={(e) => setAccountFilter(e.target.value)}
-                  className="w-44"
-                  options={[
-                    { value: '', label: 'All companies' },
-                    ...accounts.map((a) => ({ value: a.id, label: a.name })),
-                  ]}
-                />
-                {canAssign ? (
-                  <Select
-                    value={ownerFilter}
-                    onChange={(e) => setOwnerFilter(e.target.value)}
-                    className="w-40"
-                    options={[
-                      { value: '', label: 'All executives' },
-                      ...users.map((u) => ({ value: u.id, label: u.name })),
-                    ]}
-                  />
-                ) : null}
-                <Input
-                  placeholder="Area / city"
-                  value={cityFilter}
-                  onChange={(e) => setCityFilter(e.target.value)}
-                  className="w-36"
-                />
                 {filtersActive ? (
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => {
                       setSearch('')
-                      setAccountFilter('')
-                      setOwnerFilter('')
-                      setCityFilter('')
-                      setQuickFilter('all')
+                      applySidebarFilters({
+                        system: 'all',
+                        accountId: '',
+                        ownerUserId: '',
+                        city: '',
+                        hasEmail: false,
+                        hasWhatsapp: false,
+                      })
                     }}
                   >
                     Clear
                   </Button>
                 ) : null}
+                <div className="ml-auto text-xs text-text-secondary">
+                  Total records{' '}
+                  <span className="font-semibold text-text-primary">{sortedDisplayed.length}</span>
+                </div>
               </div>
-            </div>
 
             {loading ? (
-              <div className="space-y-3 p-6">
-                {[0, 1, 2].map((i) => (
-                  <div key={i} className="h-14 animate-pulse rounded-xl bg-muted/70" />
-                ))}
-              </div>
+              <TableSkeleton rows={6} className="p-6" />
             ) : loadError && items.length === 0 ? (
               <EmptyState
                 icon={<UserPlus size={26} />}
@@ -740,7 +817,7 @@ export function ContactsPage() {
                 icon={<UserPlus size={26} />}
                 title="No customers yet"
                 subtitle="Add your first customer shop / contact."
-                actionLabel="Add customer"
+                actionLabel="Create Contact"
                 onAction={() => {
                   setCreateStep('customer')
                   setTab('create')
@@ -750,12 +827,21 @@ export function ContactsPage() {
               <EmptyState
                 icon={<Users size={26} />}
                 title="No customers in this filter"
-                subtitle="Try another tile or clear the filter."
+                subtitle="Try another filter or clear all."
                 actionLabel="Show all"
-                onAction={() => setQuickFilter('all')}
+                onAction={() =>
+                  applySidebarFilters({
+                    system: 'all',
+                    accountId: '',
+                    ownerUserId: '',
+                    city: '',
+                    hasEmail: false,
+                    hasWhatsapp: false,
+                  })
+                }
               />
             ) : (
-              <div className="p-4 pt-3">
+              <div className="min-h-0 flex-1 overflow-auto p-3 pt-2">
                 {selection.someSelected ? (
                   <BulkActionBar
                     count={selection.selectedCount}
@@ -765,9 +851,9 @@ export function ContactsPage() {
                     onDelete={() => setConfirm({ ids: selection.selectedIds })}
                   />
                 ) : null}
-                <div className="overflow-hidden rounded-xl border border-border/80">
+                <div className="overflow-hidden rounded-lg border border-border/80">
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[1080px] text-left text-sm">
+                    <table className="w-full min-w-[880px] text-left text-sm">
                       <thead>
                         <tr className="border-b border-border bg-muted/50 text-[11px] uppercase tracking-[0.06em] text-text-secondary">
                           <th className="w-10 px-4 py-3">
@@ -779,13 +865,11 @@ export function ContactsPage() {
                             />
                           </th>
                           {[
-                            'Customer',
+                            'Contact name',
+                            'Account name',
                             'Phone',
-                            'Area',
                             'Machines',
-                            'Open jobs',
-                            'Last service',
-                            'Executive',
+                            'Contact owner',
                             'Actions',
                           ].map((h) => (
                             <th key={h} className="px-4 py-3 font-semibold">
@@ -795,16 +879,14 @@ export function ContactsPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {displayed.map((c) => {
+                        {sortedDisplayed.map((c) => {
                           const rawPhone = c.phone || c.mobile || ''
-                          const phoneDisplay = formatPhone(rawPhone) || 'No phone'
+                          const phoneDisplay = formatPhone(rawPhone) || '—'
                           const waRaw = c.whatsapp?.trim() || ''
                           const showWa =
                             Boolean(waRaw) &&
                             waRaw.replace(/\D/g, '') !== rawPhone.replace(/\D/g, '')
-                          const areaLine = [c.area, c.city].filter(Boolean).join(' · ') || 'No area'
                           const machines = Number(c.machineCount ?? 0)
-                          const openJobs = Number(c.openJobCount ?? 0)
                           return (
                             <tr
                               key={c.id}
@@ -826,27 +908,35 @@ export function ContactsPage() {
                                 >
                                   <Avatar name={c.name} size="sm" />
                                   <div className="min-w-0">
-                                    <div className="truncate font-semibold text-text-primary group-hover:text-accent-blue">
+                                    <div className="truncate font-semibold text-accent-blue hover:underline">
                                       {c.name}
                                     </div>
                                     <div className="font-mono text-[11px] text-text-secondary">
                                       {c.customerCode ?? 'No ID'}
-                                      {c.email ? (
-                                        <span className="ml-1.5 font-sans text-text-secondary/80">
-                                          · {c.email}
-                                        </span>
-                                      ) : null}
                                     </div>
                                   </div>
                                 </Link>
                               </td>
+                              <td className="px-4 py-2.5 text-text-primary">
+                                {c.accountName ? (
+                                  c.accountId ? (
+                                    <Link
+                                      to={`/accounts/${c.accountId}`}
+                                      className="text-accent-blue hover:underline"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      {c.accountName}
+                                    </Link>
+                                  ) : (
+                                    c.accountName
+                                  )
+                                ) : (
+                                  <span className="text-text-secondary">—</span>
+                                )}
+                              </td>
                               <td className="px-4 py-2.5">
-                                <div
-                                  className={cn(
-                                    'font-medium tabular-nums',
-                                    rawPhone ? 'text-text-primary' : 'text-text-secondary',
-                                  )}
-                                >
+                                <div className="flex items-center gap-1.5 font-medium tabular-nums text-text-primary">
+                                  {rawPhone ? <Phone size={12} className="text-accent-green" /> : null}
                                   {phoneDisplay}
                                 </div>
                                 {showWa ? (
@@ -856,39 +946,13 @@ export function ContactsPage() {
                                   </div>
                                 ) : null}
                               </td>
-                              <td className="px-4 py-2.5 text-text-primary">{areaLine}</td>
                               <td className="px-4 py-2.5">
                                 {machines > 0 ? (
                                   <span className="inline-flex items-center gap-1 rounded-md bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-700 dark:text-violet-300">
                                     <Package size={12} /> {machines}
                                   </span>
                                 ) : (
-                                  <span className="text-xs text-text-secondary">None</span>
-                                )}
-                              </td>
-                              <td className="px-4 py-2.5">
-                                {openJobs > 0 ? (
-                                  <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
-                                    <Wrench size={12} /> {openJobs}
-                                  </span>
-                                ) : (
-                                  <span className="text-xs text-text-secondary">None</span>
-                                )}
-                              </td>
-                              <td className="px-4 py-2.5 text-text-secondary">
-                                {c.lastServiceAt ? (
-                                  <div>
-                                    <div>{formatDate(String(c.lastServiceAt))}</div>
-                                    {c.lastServiceStatus ? (
-                                      <div className="text-[11px] capitalize">
-                                        {String(c.lastServiceStatus)
-                                          .replaceAll('_', ' ')
-                                          .toLowerCase()}
-                                      </div>
-                                    ) : null}
-                                  </div>
-                                ) : (
-                                  <span className="text-xs">No visits</span>
+                                  <span className="text-xs text-text-secondary">—</span>
                                 )}
                               </td>
                               <td className="px-4 py-2.5 text-text-secondary">
@@ -916,14 +980,17 @@ export function ContactsPage() {
                 </p>
               </div>
             )}
-          </Card>
+            </div>
+          </div>
         </>
       ) : tab === 'create' ? (
         <FormPanel
           open
           accent="theme"
           eyebrow="Customers"
-          title={createStep === 'customer' ? 'Add customer' : 'Add product / machine'}
+          title={createStep === 'customer' ? 'Create Contact' : 'Add product / machine'}
+          width={680}
+          storageKey="nova.drawer.contacts.create"
           subtitle={
             createStep === 'customer'
               ? 'Shop details first — then Next to add product (Sold by us or Outside).'
@@ -940,17 +1007,10 @@ export function ContactsPage() {
           footer={
             <>
               <FormPanelCancel
-                onClick={() => {
-                  if (createStep === 'product') {
-                    setCreateStep('customer')
-                    return
-                  }
-                  setTab('list')
-                  setForm(emptyForm)
-                  setMachine(emptyMachine)
-                  setErrors({})
-                  setReturnTo(null)
-                }}
+                skipConfirm={createStep === 'product'}
+                onClick={
+                  createStep === 'product' ? () => setCreateStep('customer') : undefined
+                }
               />
               {createStep === 'customer' ? (
                 <Button type="submit" form="customer-step">
@@ -1110,62 +1170,116 @@ export function ContactsPage() {
                       <Select
                         label="Origin *"
                         value={machine.origin}
-                        onChange={(e) => patchMachine({ origin: e.target.value })}
+                        onChange={(e) =>
+                          patchMachine({
+                            origin: e.target.value,
+                            servicePlan:
+                              e.target.value === 'SOLD_BY_US' && machine.servicePlan === 'NON_AMC'
+                                ? 'GC'
+                                : e.target.value === 'THIRD_PARTY' && machine.servicePlan === 'GC'
+                                  ? 'NON_AMC'
+                                  : machine.servicePlan,
+                          })
+                        }
                         options={ASSET_ORIGIN_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
                       />
                       <p className="mt-1 text-xs text-text-secondary">
                         {ASSET_ORIGIN_OPTIONS.find((o) => o.value === machine.origin)?.hint}
                       </p>
                     </div>
-                    <Select
-                      label="Type"
-                      value={machine.machineType}
-                      onChange={(e) =>
-                        patchMachine({
-                          machineType: e.target.value,
-                          catalogProductId: '',
-                        })
-                      }
-                      options={MACHINE_TYPES}
-                    />
-                    {catalogProductsForType.length > 0 ? (
-                      <Select
-                        label="Catalog product"
-                        className="lg:col-span-2"
-                        value={machine.catalogProductId}
-                        onChange={(e) => patchMachine({ catalogProductId: e.target.value })}
-                        options={[
-                          { value: '', label: 'Select from catalog (optional)…' },
-                          ...catalogProductsForType.map((p) => ({
-                            value: p.id,
-                            label: p.name,
-                          })),
-                        ]}
-                      />
-                    ) : null}
-                    <Input
-                      label="Product / machine name"
-                      className="lg:col-span-2"
-                      value={machine.name}
-                      onChange={(e) => patchMachine({ name: e.target.value })}
-                    />
-                    <Input label="Capacity" value={machine.capacity} onChange={(e) => patchMachine({ capacity: e.target.value })} />
-                    <Input label="Model" value={machine.model} onChange={(e) => patchMachine({ model: e.target.value })} />
+                    {machine.origin === 'SOLD_BY_US' ? (
+                      <div className="grid gap-4 sm:col-span-2 sm:grid-cols-2 lg:col-span-3 lg:grid-cols-3">
+                        <CatalogMachinePick
+                          products={catalogProducts}
+                          brands={catalogBrands}
+                          stockType={machine.stockType}
+                          brandId={machine.brandId}
+                          productId={machine.catalogProductId}
+                          onChange={(next) =>
+                            patchMachine({
+                              stockType: next.stockType,
+                              brandId: next.brandId,
+                              catalogProductId: next.productId,
+                              name: next.name,
+                              model: next.model,
+                              machineType: next.machineType,
+                              capacity: next.capacity || machine.capacity,
+                            })
+                          }
+                        />
+                        {machine.name ? (
+                          <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
+                            Selected: <strong className="text-text-primary">{machine.name}</strong>
+                            {machine.model ? ` · ${machine.model}` : ''}
+                          </p>
+                        ) : (
+                          <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
+                            Same as inventory: type → brand → model from catalog.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <Select
+                          label="Type"
+                          value={machine.machineType}
+                          onChange={(e) =>
+                            patchMachine({
+                              machineType: e.target.value,
+                              catalogProductId: '',
+                            })
+                          }
+                          options={MACHINE_TYPES}
+                        />
+                        <Input
+                          label="Product / machine name"
+                          className="lg:col-span-2"
+                          value={machine.name}
+                          onChange={(e) => patchMachine({ name: e.target.value })}
+                        />
+                        <Input
+                          label="Model"
+                          value={machine.model}
+                          onChange={(e) => patchMachine({ model: e.target.value })}
+                        />
+                        <Input
+                          label="Capacity"
+                          value={machine.capacity}
+                          onChange={(e) => patchMachine({ capacity: e.target.value })}
+                        />
+                      </>
+                    )}
                     <Input label="Serial number" value={machine.serialNo} onChange={(e) => patchMachine({ serialNo: e.target.value })} />
                     <Select
                       label="Service plan"
                       value={machine.servicePlan}
                       onChange={(e) => patchMachine({ servicePlan: e.target.value })}
-                      options={[
-                        { value: 'NON_AMC', label: 'Non-AMC' },
-                        { value: 'AMC', label: 'AMC' },
-                      ]}
+                      options={
+                        machine.origin === 'SOLD_BY_US'
+                          ? [
+                              { value: 'GC', label: 'GC — 1 year from sale' },
+                              ...(isWeighingMachine(machine.machineType)
+                                ? [{ value: 'AMC', label: 'AMC — weighing only (after GC / existing)' }]
+                                : []),
+                            ]
+                          : [
+                              { value: 'NON_AMC', label: 'NGC / Non-AMC' },
+                              ...(isWeighingMachine(machine.machineType)
+                                ? [{ value: 'AMC', label: 'AMC — weighing only' }]
+                                : []),
+                            ]
+                      }
                     />
-                    {machine.origin === 'THIRD_PARTY' ? (
+                    {machine.origin === 'SOLD_BY_US' ? (
+                      <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
+                        HMS sale = 1 year GC from today. Weighing also gets 1 year stamping, tagged
+                        quarter A–D (Oct is D).
+                      </p>
+                    ) : (
                       <p className="sm:col-span-2 lg:col-span-3 -mt-2 text-xs text-text-secondary">
                         Outside / repair-only machines can also take AMC — choose AMC and set dates.
                       </p>
-                    ) : null}
+                    )}
                     {machine.servicePlan === 'AMC' ? (
                       <>
                         <Input

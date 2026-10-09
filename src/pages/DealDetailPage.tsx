@@ -9,6 +9,7 @@ import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
+import { DetailSkeleton } from '@/components/ui/Skeleton'
 
 export function DealDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -63,7 +64,7 @@ export function DealDetailPage() {
     }
   }
 
-  if (loading) return <Card className="p-8 text-sm text-text-secondary">Loading deal…</Card>
+  if (loading) return <DetailSkeleton />
   if (!deal) {
     return (
       <EmptyState

@@ -10,6 +10,8 @@ import { api, ApiClientError, isTenantSession, num } from '@/lib/api'
 import { cn, formatDateTime, timeAgo } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
+import { isSalesDesk } from '@/lib/roles'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 
 type Row = Record<string, unknown>
 type Tab = 'open' | 'done' | 'all'
@@ -31,12 +33,13 @@ function related(task: Row) {
   if (ticketId) return { to: `/tickets/${ticketId}`, label: 'Ticket' }
   if (task.contactId) return { to: `/contacts/${task.contactId}`, label: 'Customer' }
   if (task.accountId) return { to: `/accounts/${task.accountId}`, label: 'Account' }
-  if (task.leadId) return { to: '/sale-tracking', label: 'Lead' }
+  if (task.leadId) return { to: `/sale-tracking/${String(task.leadId)}`, label: 'Lead' }
   return null
 }
 
 export function MyTasksPage() {
   const user = useAuthStore((s) => s.user)
+  const salesDesk = isSalesDesk(user?.role)
   const addToast = useUIStore((s) => s.addToast)
   const [items, setItems] = useState<Row[]>([])
   const [tickets, setTickets] = useState<Row[]>([])
@@ -53,9 +56,12 @@ export function MyTasksPage() {
     }
     setLoading(true)
     try {
+      // Sales desk has no tickets:view — activities only
       const [page, ticketPage] = await Promise.all([
         api.activities({ limit: 200, assignedToId: user.id }),
-        api.tickets({ limit: 100, mine: 1, sort: 'sla' }),
+        salesDesk
+          ? Promise.resolve({ items: [] as Row[] })
+          : api.tickets({ limit: 100, mine: 1, sort: 'sla' }).catch(() => ({ items: [] as Row[] })),
       ])
       setItems(page.items)
       setTickets(
@@ -71,7 +77,7 @@ export function MyTasksPage() {
     } finally {
       setLoading(false)
     }
-  }, [addToast, user?.id])
+  }, [addToast, salesDesk, user?.id])
 
   useEffect(() => {
     void load()
@@ -142,21 +148,25 @@ export function MyTasksPage() {
       <PageTip moduleKey="crm.employee" />
 
       <p className="text-sm text-text-secondary">
-        Live work assigned to you — service tickets and follow-up tasks from the database (not demo data).
+        {salesDesk
+          ? 'Follow-up tasks from your leads (created when a lead is assigned or a follow-up/reminder is set).'
+          : 'Live work assigned to you — service tickets and follow-up tasks from the database.'}
       </p>
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Card>
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-[8px] bg-amber-50 text-accent-amber">
-              <Clock3 size={18} />
+      <div className={cn('grid gap-3', salesDesk ? 'sm:grid-cols-2' : 'sm:grid-cols-3')}>
+        {!salesDesk ? (
+          <Card>
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-[8px] bg-amber-50 text-accent-amber">
+                <Clock3 size={18} />
+              </div>
+              <div>
+                <div className="text-2xl font-semibold">{tickets.length}</div>
+                <div className="text-sm text-text-secondary">Open tickets</div>
+              </div>
             </div>
-            <div>
-              <div className="text-2xl font-semibold">{tickets.length}</div>
-              <div className="text-sm text-text-secondary">Open tickets</div>
-            </div>
-          </div>
-        </Card>
+          </Card>
+        ) : null}
         <Card>
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-[8px] bg-blue-50 text-accent-blue">
@@ -164,7 +174,7 @@ export function MyTasksPage() {
             </div>
             <div>
               <div className="text-2xl font-semibold">{openItems.length}</div>
-              <div className="text-sm text-text-secondary">Open tasks</div>
+              <div className="text-sm text-text-secondary">Open follow-ups</div>
             </div>
           </div>
         </Card>
@@ -175,13 +185,13 @@ export function MyTasksPage() {
             </div>
             <div>
               <div className="text-2xl font-semibold">{doneItems.length}</div>
-              <div className="text-sm text-text-secondary">Completed tasks</div>
+              <div className="text-sm text-text-secondary">Completed</div>
             </div>
           </div>
         </Card>
       </div>
 
-      {tickets.length > 0 ? (
+      {!salesDesk && tickets.length > 0 ? (
         <Card padding={false}>
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <h2 className="font-semibold">Assigned service tickets</h2>
@@ -231,7 +241,7 @@ export function MyTasksPage() {
         </div>
 
         {loading ? (
-          <p className="p-8 text-center text-sm text-text-secondary">Loading your tasks…</p>
+          <TableSkeleton rows={6} />
         ) : !visible.length ? (
           <div className="p-10 text-center">
             <CheckCircle2 className="mx-auto text-accent-green" size={28} />
@@ -239,10 +249,15 @@ export function MyTasksPage() {
               {tab === 'open' ? 'No open tasks right now' : 'Nothing in this list yet'}
             </p>
             <p className="mt-1 text-sm text-text-secondary">
-              When your admin assigns a lead or activity to you, it shows up here automatically.
+              {salesDesk
+                ? 'Create an enquiry with a follow-up date, or open Workqueue → Follow-ups due.'
+                : 'When your admin assigns a lead or activity to you, it shows up here automatically.'}
             </p>
-            <Link to="/" className="mt-3 inline-block text-sm text-accent-blue hover:underline">
-              Back to My Work →
+            <Link
+              to={salesDesk ? '/workqueue' : '/'}
+              className="mt-3 inline-block text-sm text-accent-blue hover:underline"
+            >
+              {salesDesk ? 'Open Workqueue →' : 'Back to My Work →'}
             </Link>
           </div>
         ) : (

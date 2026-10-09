@@ -22,6 +22,7 @@ import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { emptyAccountForm, AccountFormFields, formToPayload, type AccountFormState } from '@/components/accounts/AccountFormFields'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 
 export function AccountsPage() {
   const navigate = useNavigate()
@@ -138,7 +139,7 @@ export function AccountsPage() {
             </div>
           </div>
           {loading ? (
-            <p className="p-6 text-sm text-text-secondary">Loading accounts from database…</p>
+            <TableSkeleton rows={8} />
           ) : loadError && items.length === 0 ? (
             <EmptyState
               icon={<Building2 size={26} />}

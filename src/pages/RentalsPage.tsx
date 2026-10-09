@@ -387,9 +387,11 @@ export function RentalsPage() {
                             .filter(Boolean)
                             .join(' · ')}
                         </div>
-                        {(r.city || r.state) && (
+                        {(Boolean(r.city) || Boolean(r.state)) && (
                           <div className="text-[11px] text-text-secondary">
-                            {[r.city, r.state].filter(Boolean).join(', ')}
+                            {[r.city, r.state]
+                              .filter((v): v is string => typeof v === 'string' && Boolean(v))
+                              .join(', ')}
                           </div>
                         )}
                         {r.contactId ? (

@@ -135,7 +135,7 @@ type ProductGroup = {
 const STATUS_COLOR: Record<string, 'green' | 'blue' | 'amber' | 'red' | 'gray'> = {
   IN_STOCK: 'green',
   DEMO: 'amber',
-  RENTED: 'purple',
+  RENTED: 'blue',
   SOLD: 'blue',
   RETURNED: 'gray',
 }
@@ -210,8 +210,6 @@ function emptyEditForm(warehouseId = ''): EditFormState {
     rentalTotal: '',
   }
 }
-
-const emptyForm = emptyEditForm()
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10)
@@ -916,7 +914,11 @@ export function InventoryPage() {
         brandId = String(created.id)
         setBrands((prev) => [
           ...prev,
-          { id: brandId, name: String(created.name ?? brandId), isActive: true },
+          {
+            id: brandId,
+            name: String(created.name ?? brandId),
+            code: String(created.code ?? brandId),
+          },
         ])
       }
       const res = await api.receiveStockBatch({

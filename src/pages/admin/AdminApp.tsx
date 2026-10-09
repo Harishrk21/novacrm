@@ -27,12 +27,11 @@ import {
   Palette,
   Plus,
   Puzzle,
-  Settings2,
   Sparkles,
   TrendingUp,
   Users,
 } from 'lucide-react'
-import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
+import { FeatureTip } from '@/components/tips/FeatureTip'
 import { Avatar } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'

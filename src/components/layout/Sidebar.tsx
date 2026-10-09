@@ -46,7 +46,6 @@ import { Badge } from '@/components/ui/Badge'
 import { HmsLogo } from '@/components/HmsLogo'
 import { useAuthStore } from '@/store/authStore'
 import { useModulesStore } from '@/store/modulesStore'
-import { resolveInventoryAreas } from '@/lib/inventoryAreas'
 import {
   isCompanyAdmin,
   isServiceDesk,
@@ -297,10 +296,6 @@ export function Sidebar() {
   const role = authUser?.role
   const isAdmin = isCompanyAdmin(role)
   const displayRole = roleLabel(role)
-  const invAreas = resolveInventoryAreas(authUser?.inventoryAreas, role)
-  const seeMachines = invAreas.machines
-  const seeSpares = invAreas.sparesBilling || invAreas.sparesWeighing
-
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({})
 
   async function handleLogout() {
@@ -350,13 +345,6 @@ export function Sidebar() {
   const rentalsActions: NavQuickAction[] = [
     { label: 'Issue rental', to: '/rentals?open=1', icon: Truck },
     { label: 'Active rentals', to: '/rentals', icon: Filter },
-  ]
-
-  const inventoryActions: NavQuickAction[] = [
-    { label: 'Products', to: '/erp/products', icon: Package },
-    { label: 'Stock', to: '/erp/stock', icon: Warehouse },
-    { label: 'Delivery challans', to: '/erp/delivery-challans', icon: ClipboardList },
-    { label: 'Suppliers', to: '/erp/suppliers', icon: Truck },
   ]
 
   const adminNav: NavSection[] = [

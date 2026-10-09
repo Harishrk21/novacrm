@@ -9,7 +9,6 @@ import {
   Upload,
   UserPlus,
   Users,
-  Wrench,
 } from 'lucide-react'
 import { Avatar } from '@/components/ui/Avatar'
 import { Button } from '@/components/ui/Button'
@@ -19,7 +18,6 @@ import {
   SelectCheckbox,
   ViewIconButton,
 } from '@/components/ui/BulkSelect'
-import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
 import { PhoneInput } from '@/components/ui/PhoneInput'
@@ -48,12 +46,12 @@ import {
 } from '@/lib/productCatalog'
 import { hmsSoldCoverage, isWeighingMachine } from '@/lib/hmsCoverage'
 import { firstError, validateContactForm, type FieldErrors } from '@/lib/formValidation'
-import { cn, formatDate, formatPhone } from '@/lib/utils'
+import { formatPhone } from '@/lib/utils'
 import { toStoredIndianMobile } from '@/lib/phoneIndia'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { canAssignTickets, canCreateTickets, isServiceDesk } from '@/lib/roles'
-import { TableSkeleton, Skeleton } from '@/components/ui/Skeleton'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 
 type ContactRow = {
   id: string
@@ -300,10 +298,6 @@ export function ContactsPage() {
     setCityFilter(next.city)
     setHasEmailFilter(next.hasEmail)
     setHasWhatsappFilter(next.hasWhatsapp)
-  }
-
-  function toggleQuickFilter(next: SystemFilterId) {
-    setQuickFilter((prev) => (prev === next || next === 'all' ? 'all' : next))
   }
 
   useEffect(() => {

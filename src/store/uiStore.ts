@@ -125,15 +125,18 @@ export const useUIStore = create<UIState>()(
       name: 'novacrm-ui',
       version: 2,
       migrate: (persisted, version) => {
-        const s = (persisted ?? {}) as Partial<UIState>
-        if (version < 2) {
-          return {
-            ...s,
-            themeMode: 'dark' as ThemeMode,
-            palette: 'violet' as ColorPalette,
-          }
+        const s = (persisted ?? {}) as Partial<{
+          themeMode: ThemeMode
+          palette: ColorPalette
+          sidebarCollapsed: boolean
+          currentUserId: string
+        }>
+        return {
+          themeMode: version < 2 ? ('dark' as ThemeMode) : (s.themeMode ?? 'dark'),
+          palette: version < 2 ? ('violet' as ColorPalette) : (s.palette ?? 'violet'),
+          sidebarCollapsed: s.sidebarCollapsed ?? false,
+          currentUserId: s.currentUserId ?? 'user-1',
         }
-        return s
       },
       partialize: (s) => ({
         themeMode: s.themeMode,

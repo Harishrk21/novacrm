@@ -297,8 +297,6 @@ export function TicketDetailPage() {
       })
       return
     }
-    const cat = catEarly
-    const wt = wtEarly
     const needsStampResult = stampingEarly
     if (nextStatus === 'RESOLVED' && needsStampResult && !editDraft.stampingDate.trim()) {
       addToast({

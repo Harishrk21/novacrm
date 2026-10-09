@@ -219,7 +219,7 @@ export function ClientDetailPage() {
           : PALETTES[editPalette].accent,
         ...(editLoginTagline.trim()
           ? { loginTagline: editLoginTagline.trim() }
-          : { loginTagline: null }),
+          : {}),
       }
       const logoUrl = editLogoUrl.trim() || null
       const patch = {

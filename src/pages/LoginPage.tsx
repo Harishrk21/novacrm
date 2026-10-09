@@ -82,7 +82,7 @@ export function LoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const { slug: routeSlugRaw } = useParams<{ slug?: string }>()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const [searchParams] = useSearchParams()
   const addToast = useUIStore((s) => s.addToast)
   const tenantLogin = useAuthStore((s) => s.tenantLogin)
   const platformLogin = useAuthStore((s) => s.platformLogin)
@@ -185,12 +185,6 @@ export function LoginPage() {
       setPassword('')
     }
   }, [mode])
-
-  function setMode(next: LoginMode) {
-    if (brandedSlug || isAdminPath) return
-    if (next === 'platform') navigate(PLATFORM_LOGIN_PATH)
-    else setSearchParams({})
-  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()

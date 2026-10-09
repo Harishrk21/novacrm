@@ -259,7 +259,7 @@ export function AddonsPanel() {
   const addToast = useUIStore((s) => s.addToast)
   const navigate = useNavigate()
   const [clientId, setClientId] = useState('')
-  const [addonId, setAddonId] = useState(ADDONS[0]?.id ?? '')
+  const [addonId, setAddonId] = useState<string>(ADDONS[0]?.id ?? '')
   const [busy, setBusy] = useState(false)
 
   function clientsWithModule(key: string) {

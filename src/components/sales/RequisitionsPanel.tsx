@@ -158,7 +158,6 @@ function WarehouseReleaseSteps({
   onReleaseAll,
   onStamp,
   onReduce,
-  onCreateDc,
   onPrintDc,
   onShip,
 }: {

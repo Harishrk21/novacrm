@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
-import { cn } from '@/lib/utils'
 
 const DEFAULT_MIN = 360
 const DEFAULT_MAX = 960

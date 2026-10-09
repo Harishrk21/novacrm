@@ -296,8 +296,8 @@ export function LeadsPage() {
             id,
             name: String(p.name ?? ''),
             sku: String(p.sku ?? ''),
-            salePrice: p.salePrice != null ? num(p.salePrice) : undefined,
-            taxPercent: p.taxPercent != null ? num(p.taxPercent) : undefined,
+            salePrice: num(p.salePrice),
+            taxPercent: num(p.taxPercent),
             attributes: (p.attributes as Record<string, unknown> | null) ?? null,
           })
         }
@@ -1003,7 +1003,7 @@ export function LeadsPage() {
             ? {
                 name: product.name ? String(product.name) : undefined,
                 sku: product.sku ? String(product.sku) : undefined,
-                salePrice: product.salePrice != null ? num(product.salePrice) : undefined,
+                salePrice: num(product.salePrice),
                 purchasePrice: product.purchasePrice != null ? num(product.purchasePrice) : undefined,
                 unit: product.unit ? String(product.unit) : undefined,
                 productType: product.productType ? String(product.productType) : undefined,
@@ -1790,20 +1790,26 @@ export function LeadsPage() {
                 </p>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
-                <Input
-                  label="Next follow-up date"
-                  type="date"
-                  value={form.followUpDate}
-                  onChange={(e) => setForm({ ...form, followUpDate: e.target.value })}
-                  hint="Day you plan to call back"
-                />
-                <Input
-                  label="Reminder (date & time)"
-                  type="datetime-local"
-                  value={form.reminderAt}
-                  onChange={(e) => setForm({ ...form, reminderAt: e.target.value })}
-                  hint="Exact ping time · Workqueue + notifications"
-                />
+                <div>
+                  <Input
+                    label="Next follow-up date"
+                    type="date"
+                    value={form.followUpDate}
+                    onChange={(e) => setForm({ ...form, followUpDate: e.target.value })}
+                  />
+                  <p className="mt-1 text-[11px] text-text-secondary">Day you plan to call back</p>
+                </div>
+                <div>
+                  <Input
+                    label="Reminder (date & time)"
+                    type="datetime-local"
+                    value={form.reminderAt}
+                    onChange={(e) => setForm({ ...form, reminderAt: e.target.value })}
+                  />
+                  <p className="mt-1 text-[11px] text-text-secondary">
+                    Exact ping time · Workqueue + notifications
+                  </p>
+                </div>
               </div>
             </section>
           ) : null}

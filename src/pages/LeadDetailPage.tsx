@@ -883,26 +883,6 @@ export function LeadDetailPage() {
     }
   }
 
-  async function skipDemo() {
-    if (!lead) return
-    setReqBusy(true)
-    try {
-      const history = await pushTimeline(cf, 'Demo skipped — proceeding without demo machine', 'demo')
-      const updated = await api.updateLead(String(lead.id), {
-        customFields: { ...cf, demoSkipped: true, timelineHistory: history },
-      })
-      setLead(updated)
-      addToast({ type: 'success', message: 'Demo skipped' })
-    } catch (err) {
-      addToast({
-        type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Could not skip demo',
-      })
-    } finally {
-      setReqBusy(false)
-    }
-  }
-
   async function saveSalePayment() {
     if (!lead) return
     const total = Math.max(0, Number(saleTotal) || 0)

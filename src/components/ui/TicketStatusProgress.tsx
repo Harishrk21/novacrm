@@ -51,11 +51,6 @@ const stepTone: Record<string, { ring: string; fill: string; bar: string; text: 
   },
 }
 
-function statusIndex(status: string): number {
-  const i = TICKET_STATUS_STEPS.findIndex((s) => s.key === status)
-  return i >= 0 ? i : 0
-}
-
 function toneFor(color: BadgeColor | string) {
   return stepTone[color] ?? stepTone.gray
 }

@@ -18,7 +18,6 @@ import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { AiAssistCard } from '@/components/ai/AiAssistCard'
 import { WhatsAppSendConfirm, type WhatsAppConfirmPayload } from '@/components/whatsapp/WhatsAppSendConfirm'
-import { RequisitionsPanel } from '@/components/sales/RequisitionsPanel'
 import { can } from '@/lib/permissions'
 import { useAuthStore } from '@/store/authStore'
 import {
@@ -888,14 +887,15 @@ export function InvoicesPage() {
           ): LineDraft => {
             const p = products.find((x) => x.id === pid)
             const meta = productCatalogMeta(p?.attributes)
-            const match =
-              (unitId && localUnits.find((u) => u.id === unitId)) ||
-              (serial &&
-                localUnits.find(
-                  (u) =>
-                    (!pid || u.productId === pid) &&
-                    u.serialNo.toUpperCase() === serial.toUpperCase(),
-                ))
+            const match: StockUnitOption | undefined =
+              (unitId ? localUnits.find((u) => u.id === unitId) : undefined) ||
+              (serial
+                ? localUnits.find(
+                    (u) =>
+                      (!pid || u.productId === pid) &&
+                      u.serialNo.toUpperCase() === serial.toUpperCase(),
+                  )
+                : undefined)
             const sn = match?.serialNo ?? serial
             const uniq = hmsUniqId || match?.hmsUniqId || null
             const line = newLine()

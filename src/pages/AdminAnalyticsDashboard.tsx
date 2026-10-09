@@ -123,11 +123,6 @@ function labelize(value: string) {
   return value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-function growthLabel(n: number | undefined) {
-  const v = Number(n ?? 0)
-  return `${v >= 0 ? '+' : ''}${v}%`
-}
-
 function kpiNum(kpis: Record<string, number> | undefined, key: string) {
   return Number(kpis?.[key] ?? 0) || 0
 }

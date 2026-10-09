@@ -233,8 +233,6 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
   const [spareUniqStart, setSpareUniqStart] = useState('')
 
   // Reduce
-  const [reduceUnitId, setReduceUnitId] = useState('')
-  const [reduceNotes, setReduceNotes] = useState('')
   const [reduceReason, setReduceReason] = useState('')
   const [engineerId, setEngineerId] = useState('')
   const [engineers, setEngineers] = useState<Array<{ id: string; name: string }>>([])
@@ -1133,15 +1131,6 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     [engineers],
   )
 
-  const reduceProductUnits = useMemo(() => {
-    if (!productId) return []
-    return units.filter(
-      (u) =>
-        String(u.productId) === productId &&
-        (String(u.status) === 'IN_STOCK' || String(u.status) === 'DEMO'),
-    )
-  }, [units, productId])
-
   const vendorOptions = useMemo(
     () => vendors.map((v) => ({ value: String(v.id), label: String(v.name) })),
     [vendors],
@@ -1535,7 +1524,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     openStockMove('reduce', {
       category: 'MACHINE',
       productId: productId || undefined,
-      unitId: reduceUnitId || undefined,
+      unitId: undefined,
     })
   }
 

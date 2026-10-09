@@ -21,7 +21,7 @@ import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { Switch } from '@/components/ui/Switch'
 import { useRowSelection } from '@/hooks/useRowSelection'
-import { api, ApiClientError, num } from '@/lib/api'
+import { api, ApiClientError } from '@/lib/api'
 import {
   buildHmsAttributes,
   familyByCode,
@@ -32,7 +32,6 @@ import {
 } from '@/lib/hmsCatalog'
 import { productAttrs, truncateProductName } from '@/lib/productCatalog'
 import { GC_MONTH_OPTIONS } from '@/lib/hmsCoverage'
-import { formatCurrency } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
 type ProductForm = {

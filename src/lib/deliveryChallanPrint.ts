@@ -1,4 +1,5 @@
 /** Delivery challan for demo issue or sale dispatch (browser Print → Save as PDF). */
+import { openPrintHtml } from '@/lib/openPrintHtml'
 
 function escapeHtml(value: string) {
   return value
@@ -482,17 +483,9 @@ export function openPrintableDeliveryChallan(
   fallbackSellerName = 'HMS Enterprises',
 ): boolean {
   const html = buildDeliveryChallanHtml(opts, fallbackSellerName)
-  try {
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const win = window.open(url, '_blank')
-    if (win) {
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
-      return true
-    }
-    URL.revokeObjectURL(url)
-  } catch {
-    /* fall through */
-  }
+  const result = openPrintHtml(html, {
+    filename: `${opts.number || 'delivery-challan'}.html`,
+  })
+  if (result !== false) return true
   return printViaHiddenIframe(html)
 }

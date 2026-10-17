@@ -1353,6 +1353,7 @@ model RentalAgreement {
   expectedReturnAt  DateTime?    @map("expected_return_at") @db.DateTime(3)
   returnedAt        DateTime?    @map("returned_at") @db.DateTime(3)
   dailyRate         Decimal?     @map("daily_rate") @db.Decimal(15, 2)
+  monthlyRate       Decimal?     @map("monthly_rate") @db.Decimal(15, 2)
   totalAmount       Decimal?     @map("total_amount") @db.Decimal(15, 2)
   depositAmount     Decimal?     @map("deposit_amount") @db.Decimal(15, 2)
   notes             String?      @db.Text

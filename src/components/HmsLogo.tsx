@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import { APP_NAME } from '@/lib/branding'
+import { APP_NAME, HMS_LOGO_URL } from '@/lib/branding'
 
 type HmsLogoProps = {
   className?: string
@@ -18,7 +18,7 @@ const heights = {
 export function HmsLogo({ className, size = 'md', alt = APP_NAME }: HmsLogoProps) {
   return (
     <img
-      src="/hms-logo.png"
+      src={HMS_LOGO_URL}
       alt={alt}
       className={cn('w-auto max-w-full object-contain object-left', heights[size], className)}
       draggable={false}

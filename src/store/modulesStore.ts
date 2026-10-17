@@ -21,6 +21,8 @@ export const useModulesStore = create<ModulesState>((set, get) => ({
       set({ modules: [], loaded: true })
       return
     }
+    // Already loaded this session — skip (AppLayout used to refetch on every mount)
+    if (get().loaded && get().modules.length > 0) return
     try {
       const rows = await api.tenantModules()
       set({

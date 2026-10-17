@@ -25,6 +25,8 @@ export interface WaConversation {
 
 interface AskMeisterState {
   connected: boolean
+  /** True when inbox was filled from local demo data (not a live AskMeister API). */
+  demoMode: boolean
   workspaceUrl: string
   apiKey: string
   workspaceName: string
@@ -136,6 +138,7 @@ export const useAskMeisterStore = create<AskMeisterState>()(
   persist(
     (set, get) => ({
       connected: false,
+      demoMode: false,
       workspaceUrl: 'https://app.askmeister.com',
       apiKey: '',
       workspaceName: '',
@@ -146,8 +149,10 @@ export const useAskMeisterStore = create<AskMeisterState>()(
 
       connect: ({ workspaceUrl, apiKey, workspaceName, phoneNumberId }) => {
         if (!apiKey.trim() || apiKey.trim().length < 8) return false
+        // No live AskMeister HTTP API in this app yet — always local demo inbox for UI practice.
+        const isDemo =
+          apiKey.trim().toLowerCase().includes('demo') || apiKey.trim().startsWith('am_demo')
         const demo = demoConversations()
-        // Link conversations to contacts by phone when possible
         const contacts = useCrmStore.getState().contacts
         const conversations = demo.conversations.map((c) => {
           const match = contacts.find(
@@ -161,9 +166,11 @@ export const useAskMeisterStore = create<AskMeisterState>()(
         })
         set({
           connected: true,
+          demoMode: true,
           workspaceUrl: workspaceUrl || 'https://app.askmeister.com',
           apiKey: apiKey.trim(),
-          workspaceName: workspaceName || 'AskMeister Workspace',
+          workspaceName:
+            workspaceName || (isDemo ? 'AskMeister Demo (local)' : 'AskMeister (local practice inbox)'),
           phoneNumberId: phoneNumberId || 'askmeister-primary',
           lastSyncedAt: new Date().toISOString(),
           conversations,
@@ -176,6 +183,7 @@ export const useAskMeisterStore = create<AskMeisterState>()(
       disconnect: () =>
         set({
           connected: false,
+          demoMode: false,
           apiKey: '',
           lastSyncedAt: undefined,
           conversations: [],
@@ -269,6 +277,7 @@ export const useAskMeisterStore = create<AskMeisterState>()(
       name: 'novacrm-askmeister',
       partialize: (s) => ({
         connected: s.connected,
+        demoMode: s.demoMode,
         workspaceUrl: s.workspaceUrl,
         apiKey: s.apiKey,
         workspaceName: s.workspaceName,

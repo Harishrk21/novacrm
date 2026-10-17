@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { ConfirmModal } from '@/components/ui/Modal'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { useNotificationsStore } from '@/store/notificationsStore'
@@ -43,10 +44,13 @@ export function FieldBottomNav() {
   const addToast = useUIStore((s) => s.addToast)
   const unread = useNotificationsStore((s) => s.unreadCount)
   const [moreOpen, setMoreOpen] = useState(false)
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
 
   const onTicketDetail = /^\/tickets\/[^/]+/.test(location.pathname)
 
   async function handleLogout() {
+    setLogoutConfirmOpen(false)
+    setMoreOpen(false)
     try {
       await logout()
       addToast({ type: 'success', message: 'Signed out' })
@@ -100,7 +104,10 @@ export function FieldBottomNav() {
               ))}
               <button
                 type="button"
-                onClick={() => void handleLogout()}
+                onClick={() => {
+                  setMoreOpen(false)
+                  setLogoutConfirmOpen(true)
+                }}
                 className="flex min-h-12 items-center gap-3 rounded-xl px-3 text-left text-[15px] font-medium text-accent-red hover:bg-muted"
               >
                 <LogOut size={20} />
@@ -110,6 +117,15 @@ export function FieldBottomNav() {
           </div>
         </div>
       ) : null}
+
+      <ConfirmModal
+        open={logoutConfirmOpen}
+        onClose={() => setLogoutConfirmOpen(false)}
+        onConfirm={() => void handleLogout()}
+        title="Log out?"
+        body="Are you sure you want to log out?"
+        confirmLabel="Log out"
+      />
 
       <nav
         className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"

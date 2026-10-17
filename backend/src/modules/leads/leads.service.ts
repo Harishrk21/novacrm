@@ -343,27 +343,60 @@ export async function list(t: string, q: Record<string, unknown>) {
       ...(enqDigits ? [{ leadNo: Number(enqDigits) }] : []),
     ];
   }
-  let items = await prisma.lead.findMany({
-    where,
-    skip: p.skip,
-    take: Math.max(p.take, q.serviceType ? 500 : p.take),
-    orderBy: { createdAt: "desc" },
-  });
+  const leadListSelect = {
+    id: true,
+    tenantId: true,
+    leadNo: true,
+    name: true,
+    email: true,
+    phone: true,
+    phoneNormalized: true,
+    company: true,
+    city: true,
+    state: true,
+    area: true,
+    sourceId: true,
+    status: true,
+    score: true,
+    assignedToId: true,
+    createdById: true,
+    convertedContactId: true,
+    convertedAt: true,
+    description: true,
+    tags: true,
+    customFields: true,
+    lastActivityAt: true,
+    createdAt: true,
+    updatedAt: true,
+  } as const;
+
+  // serviceType lives in custom_fields JSON — filter in SQL (default missing → SALES)
   if (q.serviceType) {
     const want = String(q.serviceType).toUpperCase();
-    items = items.filter((row) => {
-      const st = String(leadCf(row).serviceType ?? "SALES").toUpperCase();
-      return st === want;
-    });
+    const nonSales = ["SERVICE", "STAMPING", "RENTAL", "AMC"];
+    if (want === "SALES") {
+      where.NOT = {
+        OR: nonSales.map((st) => ({
+          customFields: { path: "$.serviceType", equals: st },
+        })),
+      };
+    } else {
+      where.customFields = { path: "$.serviceType", equals: want };
+    }
   }
-  const total = q.serviceType
-    ? items.length
-    : await prisma.lead.count({ where });
-  if (q.serviceType) {
-    items = items.slice(0, p.take);
-  }
+
+  const [items, total] = await Promise.all([
+    prisma.lead.findMany({
+      where,
+      skip: p.skip,
+      take: p.take,
+      orderBy: { createdAt: "desc" },
+      select: leadListSelect,
+    }),
+    prisma.lead.count({ where }),
+  ]);
   const out = pageResult(items, total, p.page, p.limit);
-  await cacheSet(key, out);
+  await cacheSet(key, out, 120);
   return out;
 }
 

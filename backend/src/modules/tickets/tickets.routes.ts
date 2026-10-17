@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { z } from "zod";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { authenticate } from "../../middleware/auth.middleware.js";
 import { requireTenant } from "../../middleware/tenant.middleware.js";
 import { requirePermission } from "../../middleware/permissions.middleware.js";
@@ -17,6 +17,7 @@ import { isScopedEmployeeRole, canAssignTicketsRole, canApproveTicketsRole, canC
 import { notifyTicketCompleted, notifyTicketPaidFully, notifyPaymentDue, notifyTicketCreatedCustomer, notifyTicketAssignedEngineer, notifyTicketStatusUpdate, refreshSlaBreached } from "./ticketNotify.service.js";
 import {
   assertCanClosePayment,
+  assertCanCompletePayment,
   assertCanInvoice,
   assertPaymentCollection,
   assertStatusTransition,
@@ -34,6 +35,35 @@ import {
 import { create as createInvoice } from "../invoices/invoices.service.js";
 import { defaultNextAmcService } from "../../common/hmsCoverage.js";
 import { updateStatus as updateInvoiceStatus } from "../invoices/invoices.service.js";
+
+/** Scoped roles may only touch tickets they are on; engineers may VIEW the open claim pool. */
+function assertCanAccessTicket(
+  role: string | undefined,
+  userId: string | undefined,
+  ticket: {
+    assignedToId: string | null;
+    receivedByUserId: string | null;
+    deliveredByUserId: string | null;
+    status: string;
+  },
+  opts?: { forWrite?: boolean },
+) {
+  if (!isScopedEmployeeRole(role) || !userId) return;
+  const linked =
+    ticket.assignedToId === userId ||
+    ticket.receivedByUserId === userId ||
+    ticket.deliveredByUserId === userId;
+  if (linked) return;
+  if (
+    !opts?.forWrite &&
+    role === "SERVICE_ENGINEER" &&
+    ticket.status === "OPEN" &&
+    !ticket.assignedToId
+  ) {
+    return;
+  }
+  throw new AppError("You do not have access to this ticket", 403);
+}
 
 const money = z.coerce.number().nonnegative().optional();
 const dateStr = z.string().nullable().optional();
@@ -476,7 +506,7 @@ ticketsRouter.get("/summary", requirePermission("tickets:view"), async (q: Reque
   const in30 = new Date();
   in30.setDate(in30.getDate() + 30);
 
-  const [open, overdue, unassigned, resolvedToday, byStatus, openJobs, assetsDue, onlyOpen] =
+  const [open, overdue, unassigned, resolvedToday, byStatus, balanceRows, assetsDue, onlyOpen] =
     await allPool(
       [
         () => prisma.ticket.count({ where: { ...base, status: { in: [...OPEN] } } }),
@@ -517,10 +547,18 @@ ticketsRouter.get("/summary", requirePermission("tickets:view"), async (q: Reque
             _count: { _all: true },
           }),
         () =>
-          prisma.ticket.findMany({
-            where: { ...base, status: { in: [...OPEN] } },
-            select: { paymentTotal: true, advanceAmount: true },
-          }),
+          prisma.$queryRaw<Array<{ balance: unknown }>>`
+            SELECT COALESCE(SUM(GREATEST(0, COALESCE(payment_total, 0) - COALESCE(advance_amount, 0))), 0) AS balance
+            FROM tickets
+            WHERE tenant_id = ${t}
+              AND deleted_at IS NULL
+              AND status IN ('OPEN', 'IN_PROGRESS', 'PENDING')
+              ${
+                isScopedEmployeeRole(q.auth?.role) && uid
+                  ? Prisma.sql`AND (assigned_to_id = ${uid} OR received_by_user_id = ${uid} OR delivered_by_user_id = ${uid})`
+                  : Prisma.empty
+              }
+          `,
         () =>
           prisma.customerAsset.count({
             where: {
@@ -537,9 +575,10 @@ ticketsRouter.get("/summary", requirePermission("tickets:view"), async (q: Reque
       3,
     );
 
-  const balanceOutstanding = openJobs.reduce(
-    (s, j) => s + Math.max(0, num(j.paymentTotal) - num(j.advanceAmount)),
-    0,
+  const balanceOutstanding = Number(
+    (Array.isArray(balanceRows) && balanceRows[0]
+      ? (balanceRows[0] as { balance: unknown }).balance
+      : 0) ?? 0,
   );
 
   return success(r, {
@@ -638,8 +677,44 @@ ticketsRouter.get("/", requirePermission("tickets:view"), async (q: Request, r: 
       ? [{ slaDueAt: "asc" as const }, { createdAt: "desc" as const }]
       : [{ createdAt: "desc" as const }];
 
+  const ticketListSelect = {
+    id: true,
+    tenantId: true,
+    ticketNo: true,
+    subject: true,
+    priority: true,
+    status: true,
+    slaDueAt: true,
+    slaBreached: true,
+    contactId: true,
+    accountId: true,
+    assignedToId: true,
+    productId: true,
+    assetId: true,
+    stampingDate: true,
+    nextDueDate: true,
+    odAmount: true,
+    paymentTotal: true,
+    advanceAmount: true,
+    paymentStatus: true,
+    paidAt: true,
+    paymentMethod: true,
+    paymentReference: true,
+    paymentProofUrl: true,
+    serviceInvoiceId: true,
+    signatureUrl: true,
+    customerSignedAt: true,
+    receivedByUserId: true,
+    deliveredByUserId: true,
+    customFields: true,
+    resolvedAt: true,
+    closedAt: true,
+    createdAt: true,
+    updatedAt: true,
+  } as const;
+
   const [items, total] = await Promise.all([
-    prisma.ticket.findMany({ where, skip: p.skip, take: p.take, orderBy }),
+    prisma.ticket.findMany({ where, skip: p.skip, take: p.take, orderBy, select: ticketListSelect }),
     prisma.ticket.count({ where }),
   ]);
 
@@ -923,6 +998,7 @@ ticketsRouter.get("/:id", requirePermission("tickets:view"), validate(idSchema),
   await refreshSlaBreached(t, [id]);
   const ticket = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
   if (!ticket) throw notFound("Ticket");
+  assertCanAccessTicket(q.auth?.role, q.auth?.userId, ticket);
   const messages = await prisma.ticketMessage.findMany({
     where: { tenantId: t, ticketId: id },
     orderBy: { createdAt: "asc" },
@@ -1030,6 +1106,7 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
   let engineerWhatsapp: Awaited<ReturnType<typeof notifyTicketAssignedEngineer>> | null = null;
   const existing = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
   if (!existing) throw notFound("Ticket");
+  assertCanAccessTicket(role, q.auth?.userId, existing, { forWrite: true });
 
   const stampingJob = isStampingTicket(existing);
   // Role gates
@@ -1127,6 +1204,24 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
     });
   }
 
+  if (String(nextStatus) === "RESOLVED" && prevStatus !== "RESOLVED" && prevStatus !== "CLOSED") {
+    const payTotal = "paymentTotal" in d ? num(d.paymentTotal) : num(existing.paymentTotal);
+    const adv = "advanceAmount" in d ? num(d.advanceAmount) : num(existing.advanceAmount);
+    const payStatus =
+      "paymentStatus" in d && typeof d.paymentStatus === "string"
+        ? d.paymentStatus
+        : String(existing.paymentStatus);
+    assertCanCompletePayment({
+      paymentStatus: payStatus,
+      paymentTotal: payTotal,
+      advanceAmount: adv,
+    });
+    if (isFreeJob(payTotal, adv) && payStatus !== "PAID") {
+      data.paymentStatus = "PAID";
+      data.paidAt = new Date();
+    }
+  }
+
   if (nextStatus === "CLOSED") {
     const payTotal = "paymentTotal" in d ? num(d.paymentTotal) : num(existing.paymentTotal);
     const adv = "advanceAmount" in d ? num(d.advanceAmount) : num(existing.advanceAmount);
@@ -1153,7 +1248,7 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
   if ("stampingDate" in d) data.stampingDate = parseDate(d.stampingDate);
   if ("nextDueDate" in d) data.nextDueDate = parseDate(d.nextDueDate);
 
-  // Stamping complete: stamp date required; next due defaults to +1 year and syncs to machine.
+  // Stamping complete: stamp date + Save stamp result required; next due defaults to +1 year.
   if (stampingJob && (String(nextStatus) === "RESOLVED" || String(nextStatus) === "CLOSED")) {
     const stamp =
       ("stampingDate" in data ? (data.stampingDate as Date | null) : null) ??
@@ -1163,6 +1258,16 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
     if (becomingDone && !stamp) {
       throw new AppError(
         "Enter the stamping date (and next due) before marking this stamping job complete",
+        400,
+      );
+    }
+    const cfStampCheck = {
+      ...ticketCf(existing.customFields),
+      ...((d.customFields as Record<string, unknown> | undefined) ?? {}),
+    };
+    if (becomingDone && String(nextStatus) === "RESOLVED" && !cfStampCheck.stampResultSavedAt) {
+      throw new AppError(
+        "Save stamp result on the ticket before marking this stamping job complete",
         400,
       );
     }
@@ -1195,6 +1300,24 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
       }));
     }
     data.customFields = mergedCf;
+  }
+
+  // Engineer Mark complete: day notes required on non-stamping jobs (was UI-only).
+  if (
+    role === "SERVICE_ENGINEER" &&
+    !stampingJob &&
+    String(nextStatus) === "RESOLVED" &&
+    prevStatus !== "RESOLVED" &&
+    prevStatus !== "CLOSED"
+  ) {
+    const cfForNotes = ticketCf(data.customFields ?? existing.customFields);
+    const notes = Array.isArray(cfForNotes.dayNotes) ? cfForNotes.dayNotes : [];
+    if (notes.length === 0) {
+      throw new AppError(
+        "Add at least one daily tracking note before marking the job complete",
+        400,
+      );
+    }
   }
 
   const nextPaymentTotal = "paymentTotal" in d ? num(d.paymentTotal) : num(existing.paymentTotal);
@@ -1543,14 +1666,22 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
   });
 });
 
-ticketsRouter.post("/:id/mark-paid", requirePermission("tickets:approve"), validate(markPaidSchema), async (q: Request, r: Response) => {
+ticketsRouter.post("/:id/mark-paid", requirePermission("tickets:write"), validate(markPaidSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
-  if (!canApproveTicketsRole(q.auth?.role)) {
-    throw new AppError("Only admin can mark tickets paid in full", 403);
-  }
+  const role = q.auth?.role;
   const existing = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
   if (!existing) throw notFound("Ticket");
+  const engineerOwns =
+    role === "SERVICE_ENGINEER" &&
+    existing.assignedToId != null &&
+    existing.assignedToId === q.auth?.userId;
+  if (!canApproveTicketsRole(role) && !engineerOwns) {
+    throw new AppError(
+      "Only desk/admin, or the assigned engineer, can mark this ticket paid in full",
+      403,
+    );
+  }
 
   const bodyPay = q.body as {
     paymentMethod: "CASH" | "UPI" | "NEFT" | "RTGS" | "CHEQUE" | "CARD" | "OTHER";

@@ -2,12 +2,13 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { AppError, notFound } from "../../common/errors.js";
-import { getWarehouseByCode } from "./warehouses.service.js";
+import { getWarehouseByCode, sortWarehousesForDropdown } from "./warehouses.service.js";
 import {
   expandSerialRange,
   familyCodeFromProduct,
   formatHmsUniqId,
   isWeighingProduct,
+  maxHmsUniqSeqInList,
   sequenceKeyForFamily,
 } from "./hmsUniqId.js";
 import { normalizePhone } from "../../common/utils/phone.js";
@@ -510,7 +511,7 @@ export async function stockWorkspace(t: string) {
         prisma.warehouse.findMany({
           where: { tenantId: t, deletedAt: null, isActive: true },
           orderBy: { code: "asc" },
-          select: { id: true, name: true, code: true },
+          select: { id: true, name: true, code: true, isDefault: true },
         }),
       () =>
         prisma.user.findMany({
@@ -567,7 +568,7 @@ export async function stockWorkspace(t: string) {
     units,
     vendors,
     brands,
-    warehouses,
+    warehouses: sortWarehousesForDropdown(warehouses),
     spares,
     users: users.map((u) => ({
       id: u.id,
@@ -807,11 +808,34 @@ export async function receiveBatchStock(t: string, user: string, d: ReceiveBatch
           });
         }
 
-        const startSeq = seq.nextValue;
+        // Heal drift: form always sends preview IDs as "manual", which used to
+        // skip sequence bumps — so nextValue could lag behind IDs already in stock.
+        const familyPrefix = `${year}-${familyShort}-`;
+        const existingForFamily = await tx.stockUnit.findMany({
+          where: {
+            tenantId: t,
+            deletedAt: null,
+            hmsUniqId: { startsWith: familyPrefix },
+          },
+          select: { hmsUniqId: true },
+        });
+        const dbMax = maxHmsUniqSeqInList(
+          existingForFamily.map((x) => x.hmsUniqId),
+          year,
+          familyShort,
+        );
+        const startSeq = Math.max(seq.nextValue, dbMax + 1);
+
         const allocated: string[] = [];
+        let autoCursor = startSeq;
         for (let i = 0; i < qty; i++) {
           const manual = unitRows[i]?.hmsUniqId?.trim().toUpperCase() || null;
-          allocated.push(manual || formatHmsUniqId(year, familyShort, startSeq + i));
+          if (manual) {
+            allocated.push(manual);
+          } else {
+            allocated.push(formatHmsUniqId(year, familyShort, autoCursor));
+            autoCursor += 1;
+          }
         }
         if (new Set(allocated).size !== allocated.length) {
           throw new AppError("Duplicate HMS Unique IDs in this batch", 422);
@@ -858,17 +882,12 @@ export async function receiveBatchStock(t: string, user: string, d: ReceiveBatch
           );
         }
 
-        const maxUsed = startSeq + qty - 1;
-        const autoMax = unitRows.reduce((max, u, i) => {
-          if (u.hmsUniqId?.trim()) return max;
-          return Math.max(max, startSeq + i);
-        }, startSeq - 1);
-        if (autoMax >= startSeq) {
-          await tx.numberSequence.update({
-            where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: seqKey } },
-            data: { nextValue: Math.max(seq.nextValue, autoMax + 1, maxUsed + 1) },
-          });
-        }
+        const allocatedMax = maxHmsUniqSeqInList(allocated, year, familyShort);
+        const nextVal = Math.max(startSeq, allocatedMax + 1, dbMax + 1);
+        await tx.numberSequence.update({
+          where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: seqKey } },
+          data: { nextValue: nextVal },
+        });
 
         const receiptId = newId();
         await tx.stockReceipt.create({
@@ -1018,10 +1037,33 @@ export async function previewHmsUniqIds(t: string, productId: string, quantity: 
   const familyShort = familyCodeFromProduct(product.attributes, product.sku);
   const year = new Date().getUTCFullYear();
   const seqKey = sequenceKeyForFamily(year, familyShort);
-  const seq = await prisma.numberSequence.findUnique({
-    where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: seqKey } },
-  });
-  const start = seq?.nextValue ?? 1;
+  const familyPrefix = `${year}-${familyShort}-`;
+  const [seq, existingForFamily] = await Promise.all([
+    prisma.numberSequence.findUnique({
+      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: seqKey } },
+    }),
+    prisma.stockUnit.findMany({
+      where: {
+        tenantId: t,
+        deletedAt: null,
+        hmsUniqId: { startsWith: familyPrefix },
+      },
+      select: { hmsUniqId: true },
+    }),
+  ]);
+  const dbMax = maxHmsUniqSeqInList(
+    existingForFamily.map((x) => x.hmsUniqId),
+    year,
+    familyShort,
+  );
+  const start = Math.max(seq?.nextValue ?? 1, dbMax + 1);
+  // Heal stuck sequence so later receives don't keep offering the same ID.
+  if (seq && start > seq.nextValue) {
+    await prisma.numberSequence.update({
+      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: seqKey } },
+      data: { nextValue: start },
+    });
+  }
   return Array.from({ length: qty }, (_, i) => formatHmsUniqId(year, familyShort, start + i));
 }
 
@@ -1085,10 +1127,11 @@ export type RentalPlacementInput = {
   customerAddress?: string | null;
   city?: string | null;
   state?: string | null;
-  contactId?: string | null;
+  contactId: string;
   startAt: string;
   expectedReturnAt?: string | null;
   dailyRate?: number | null;
+  monthlyRate?: number | null;
   totalAmount?: number | null;
   depositAmount?: number | null;
   notes?: string | null;
@@ -1356,6 +1399,10 @@ async function placeUnitOnRental(
 
   const { issueRental, getRental } = await import("../rentals/rentals.service.js");
 
+  if (!rental.contactId?.trim()) {
+    throw new AppError("Select a CRM customer before placing a unit on rental", 400);
+  }
+
   if (unit.status === "RENTED") {
     const cf =
       unit.customFields && typeof unit.customFields === "object" && !Array.isArray(unit.customFields)
@@ -1363,46 +1410,27 @@ async function placeUnitOnRental(
         : {};
     const rentalId = cf.rentalId ? String(cf.rentalId) : "";
     if (!rentalId) throw new AppError("Active rental link missing on this unit", 409);
-    const startAt = new Date(rental.startAt);
-    if (Number.isNaN(startAt.getTime())) throw new AppError("Invalid rental start", 422);
-    const expectedReturnAt = rental.expectedReturnAt
-      ? new Date(rental.expectedReturnAt)
-      : null;
-    await prisma.rentalAgreement.updateMany({
-      where: { id: rentalId, tenantId: t, status: "ACTIVE" },
-      data: {
-        customerName: rental.customerName.trim(),
-        customerPhone: rental.customerPhone?.trim() || null,
-        customerEmail: rental.customerEmail?.trim() || null,
-        customerCompany: rental.customerCompany?.trim() || null,
-        customerAddress: rental.customerAddress?.trim() || null,
-        city: rental.city?.trim() || null,
-        state: rental.state?.trim() || null,
-        contactId: rental.contactId || null,
-        startAt,
-        expectedReturnAt:
-          expectedReturnAt && !Number.isNaN(expectedReturnAt.getTime())
-            ? expectedReturnAt
-            : null,
-        dailyRate: rental.dailyRate != null ? rental.dailyRate : null,
-        totalAmount: rental.totalAmount != null ? rental.totalAmount : null,
-        depositAmount: rental.depositAmount != null ? rental.depositAmount : null,
-        notes: rental.notes?.trim() || null,
-      },
+    const { patchRental } = await import("../rentals/rentals.service.js");
+    await patchRental(t, rentalId, {
+      customerName: rental.customerName.trim(),
+      customerPhone: rental.customerPhone?.trim() || null,
+      customerEmail: rental.customerEmail?.trim() || null,
+      customerCompany: rental.customerCompany?.trim() || null,
+      customerAddress: rental.customerAddress?.trim() || null,
+      city: rental.city?.trim() || null,
+      state: rental.state?.trim() || null,
+      expectedReturnAt: rental.expectedReturnAt ?? null,
+      dailyRate: rental.dailyRate != null ? rental.dailyRate : null,
+      monthlyRate: rental.monthlyRate != null ? rental.monthlyRate : null,
+      totalAmount: rental.totalAmount != null ? rental.totalAmount : null,
+      depositAmount: rental.depositAmount != null ? rental.depositAmount : null,
+      notes: rental.notes?.trim() || null,
     });
     await prisma.stockUnit.update({
       where: { id: unit.id },
       data: {
-        contactId: rental.contactId || null,
+        contactId: rental.contactId,
         notes: rental.notes?.trim() || unit.notes,
-        customFields: {
-          ...cf,
-          rentalCustomerName: rental.customerName.trim(),
-          rentalCustomerPhone: rental.customerPhone?.trim() || null,
-          rentalCustomerCompany: rental.customerCompany?.trim() || null,
-          expectedReturnAt: expectedReturnAt?.toISOString() ?? null,
-          rentedAt: startAt.toISOString(),
-        },
       },
     });
     await getRental(t, rentalId);
@@ -1448,7 +1476,7 @@ async function placeUnitOnRental(
 
   await issueRental(t, userId, {
     stockUnitId: unitId,
-    contactId: rental.contactId || null,
+    contactId: rental.contactId,
     leadId,
     customerName: rental.customerName,
     customerPhone: rental.customerPhone,
@@ -1460,6 +1488,7 @@ async function placeUnitOnRental(
     startAt: rental.startAt,
     expectedReturnAt: rental.expectedReturnAt,
     dailyRate: rental.dailyRate,
+    monthlyRate: rental.monthlyRate,
     totalAmount: rental.totalAmount,
     depositAmount: rental.depositAmount,
     notes: rental.notes,
@@ -2793,6 +2822,30 @@ export async function reduceStockUnit(
   // Remote RDS: default 5s interactive tx often times out mid-reduce
   await prisma.$transaction(
     async (tx) => {
+      // Race-safe: only win if still IN_STOCK or DEMO (same statuses as pre-check)
+      const claimed = await tx.stockUnit.updateMany({
+        where: {
+          id: unit.id,
+          tenantId: t,
+          deletedAt: null,
+          status: { in: ["IN_STOCK", "DEMO"] },
+        },
+        data: {
+          status: "SOLD",
+          leadId: null,
+          ...(mappedContact ? { contactId: mappedContact.id } : {}),
+          notes: reason || unit.notes,
+          customFields: nextCf as Prisma.InputJsonValue,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new AppError(
+          `Serial ${unit.serialNo} was already sold or moved — refresh and try again`,
+          409,
+        );
+      }
+
+      // Decrement on-hand only when the unit was warehouse stock (not already DEMO)
       if (unit.status === "IN_STOCK") {
         const level = await tx.stockLevel.findUnique({
           where: {
@@ -2804,7 +2857,6 @@ export async function reduceStockUnit(
           },
         });
         if (level) {
-          // Unit row is source of truth — clamp level if out of sync instead of failing
           const next = level.quantityOnHand.sub(1);
           await tx.stockLevel.update({
             where: { id: level.id },
@@ -2812,17 +2864,6 @@ export async function reduceStockUnit(
           });
         }
       }
-
-      await tx.stockUnit.update({
-        where: { id: unit.id },
-        data: {
-          status: "SOLD",
-          leadId: null,
-          ...(mappedContact ? { contactId: mappedContact.id } : {}),
-          notes: reason || unit.notes,
-          customFields: nextCf as Prisma.InputJsonValue,
-        },
-      });
 
       await tx.stockMovement.create({
         data: {

@@ -332,6 +332,7 @@ export async function create(t: string, user: string, d: any) {
     });
   }
 
+  // Remote RDS: stock + serial work often exceeds Prisma's default 5s interactive tx
   const created = await prisma.$transaction(async (tx) => {
     let seq = await tx.numberSequence.findUnique({
       where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: "INVOICE" } },
@@ -642,15 +643,28 @@ export async function create(t: string, user: string, d: any) {
       });
     }
 
+    // Return lines from memory — avoid a last query after stock work (tx often near timeout)
+    const savedLines = lines.map((x) => ({
+      id: x.id,
+      tenantId: x.tenantId,
+      invoiceId,
+      productId: x.productId,
+      description: x.description,
+      quantity: x.quantity,
+      unitPrice: x.unitPrice,
+      taxPercent: x.taxPercent,
+      lineTotal: x.lineTotal,
+    }));
+
     return {
       ...invoice,
       customFields: serialBindings.length
         ? { ...prevCustom, soldStockUnits: serialBindings }
         : invoice.customFields,
       balanceDue: invoice.grandTotal,
-      lines: await tx.invoiceLine.findMany({ where: { tenantId: t, invoiceId } }),
+      lines: savedLines,
     };
-  });
+  }, { maxWait: 15_000, timeout: 30_000 });
 
   if (d.serviceTicketId) {
     await prisma.ticket.updateMany({

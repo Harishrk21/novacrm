@@ -37,6 +37,7 @@ import {
   productAttrs,
   isWeighingCatalogProduct,
 } from '@/lib/productCatalog'
+import { preferMainWarehouseId, sortWarehousesForDropdown } from '@/lib/warehouseSort'
 import {
   HMS_FAMILY_OPTIONS,
   industryOptions,
@@ -47,6 +48,7 @@ import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { can } from '@/lib/permissions'
 import { resolveInventoryAreas } from '@/lib/inventoryAreas'
+import { ContactPicker, type ContactPick } from '@/components/contacts/ContactPicker'
 import { StockImportPanel } from '@/components/inventory/StockImportPanel'
 import { RequisitionsPanel } from '@/components/sales/RequisitionsPanel'
 import { APP_NAME } from '@/lib/branding'
@@ -159,6 +161,7 @@ type EditFormState = {
   demoCity: string
   demoState: string
   demoAssigneeId: string
+  rentalContactId: string
   rentalCustomerName: string
   rentalPhone: string
   rentalEmail: string
@@ -168,6 +171,7 @@ type EditFormState = {
   rentalState: string
   rentalStartAt: string
   rentalExpectedReturnAt: string
+  rentalMonthlyRate: string
   rentalDailyRate: string
   rentalDeposit: string
   rentalTotal: string
@@ -196,6 +200,7 @@ function emptyEditForm(warehouseId = ''): EditFormState {
     demoCity: '',
     demoState: '',
     demoAssigneeId: '',
+    rentalContactId: '',
     rentalCustomerName: '',
     rentalPhone: '',
     rentalEmail: '',
@@ -205,6 +210,7 @@ function emptyEditForm(warehouseId = ''): EditFormState {
     rentalState: '',
     rentalStartAt: localDateTimeValue(),
     rentalExpectedReturnAt: '',
+    rentalMonthlyRate: '',
     rentalDailyRate: '',
     rentalDeposit: '',
     rentalTotal: '',
@@ -345,7 +351,7 @@ export function InventoryPage() {
   const [filterIndustry, setFilterIndustry] = useState('')
   const [filterWarehouseId, setFilterWarehouseId] = useState('')
   const [filterStatus, setFilterStatus] = useState('')
-  const [filterQ, setFilterQ] = useState('')
+  const [filterQ, setFilterQ] = useState(() => searchParams.get('q') ?? '')
   const [filterStampFrom, setFilterStampFrom] = useState('')
   const [filterStampTo, setFilterStampTo] = useState('')
   const [moreFilters, setMoreFilters] = useState(false)
@@ -444,24 +450,16 @@ export function InventoryPage() {
       }
       const merged = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name))
       setProducts(merged)
-      const WAREHOUSE_ORDER = ['MAIN', 'STORE', 'DEMO', 'EXECUTIVE', 'STAMPING']
-      const sortedWarehouses = [...lookups.warehouses].sort((a, b) => {
-        const ai = WAREHOUSE_ORDER.indexOf(String(a.code ?? '').toUpperCase())
-        const bi = WAREHOUSE_ORDER.indexOf(String(b.code ?? '').toUpperCase())
-        return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
-      })
+      const sortedWarehouses = sortWarehousesForDropdown(lookups.warehouses)
       setWarehouses(sortedWarehouses)
       setTeamUsers(
         (lookups.users ?? []).map((u) => ({ id: u.id, name: u.name })).sort((a, b) =>
           a.name.localeCompare(b.name),
         ),
       )
-      const mainWh =
-        sortedWarehouses.find((w) => String(w.code ?? '').toUpperCase() === 'MAIN') ??
-        sortedWarehouses[0]
       setForm((f) => ({
         ...f,
-        warehouseId: f.warehouseId || mainWh?.id || '',
+        warehouseId: f.warehouseId || preferMainWarehouseId(sortedWarehouses),
         productId: f.productId || preselectProduct || '',
       }))
       if (preselectProduct) {
@@ -510,17 +508,21 @@ export function InventoryPage() {
       const brandRows = brandsRes.status === 'fulfilled' ? brandsRes.value : []
       const vendorRows = vendorsRes.status === 'fulfilled' ? vendorsRes.value : []
       setBrands(
-        brandRows.map((b) => ({
-          id: String(b.id),
-          name: String(b.name ?? ''),
-          code: String(b.code ?? ''),
-        })),
+        brandRows
+          .map((b) => ({
+            id: String(b.id),
+            name: String(b.name ?? ''),
+            code: String(b.code ?? ''),
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
       )
       setVendors(
-        vendorRows.map((v) => ({
-          id: String(v.id),
-          name: String(v.name ?? ''),
-        })),
+        vendorRows
+          .map((v) => ({
+            id: String(v.id),
+            name: String(v.name ?? ''),
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
       )
     } catch (err) {
       addToast({
@@ -610,6 +612,8 @@ export function InventoryPage() {
   useEffect(() => {
     const t = searchParams.get('tab')
     if (t === 'demo') setTab('demo')
+    const q = searchParams.get('q')
+    if (q != null && q !== '') setFilterQ(q)
   }, [searchParams])
 
   const demoUnits = useMemo(() => units.filter((u) => u.status === 'DEMO'), [units])
@@ -975,6 +979,7 @@ export function InventoryPage() {
       if (!editForm.demoAssigneeId) next.demoAssigneeId = 'Select who is responsible for this demo'
     }
     if (editForm.placement === 'RENTAL') {
+      if (!editForm.rentalContactId) next.rentalContactId = 'Select a CRM customer'
       if (!editForm.rentalCustomerName.trim()) next.rentalCustomerName = 'Customer name is required'
       if (!editForm.rentalStartAt) next.rentalStartAt = 'Rental start is required'
     }
@@ -1014,6 +1019,7 @@ export function InventoryPage() {
       }
       if (editForm.placement === 'RENTAL') {
         body.rental = {
+          contactId: editForm.rentalContactId,
           customerName: editForm.rentalCustomerName.trim(),
           customerPhone: editForm.rentalPhone.trim() || null,
           customerEmail: editForm.rentalEmail.trim() || null,
@@ -1024,6 +1030,9 @@ export function InventoryPage() {
           startAt: new Date(editForm.rentalStartAt).toISOString(),
           expectedReturnAt: editForm.rentalExpectedReturnAt
             ? new Date(editForm.rentalExpectedReturnAt).toISOString()
+            : null,
+          monthlyRate: editForm.rentalMonthlyRate
+            ? Number(editForm.rentalMonthlyRate)
             : null,
           dailyRate: editForm.rentalDailyRate ? Number(editForm.rentalDailyRate) : null,
           depositAmount: editForm.rentalDeposit ? Number(editForm.rentalDeposit) : null,
@@ -1901,8 +1910,18 @@ export function InventoryPage() {
                         <td className="px-4 py-3">{sale ? formatCurrency(sale) : '—'}</td>
                         <td className="px-4 py-3">
                           {party || row.lead ? (
-                            row.lead ? (
-                              <Link to="/sale-tracking" className="text-accent-blue hover:underline">
+                            row.lead?.id ? (
+                              <Link
+                                to={`/sale-tracking/${String(row.lead.id)}`}
+                                className="text-accent-blue hover:underline"
+                              >
+                                {partyName}
+                              </Link>
+                            ) : party && 'id' in party && party.id ? (
+                              <Link
+                                to={`/contacts/${String(party.id)}`}
+                                className="text-accent-blue hover:underline"
+                              >
                                 {partyName}
                               </Link>
                             ) : (
@@ -2677,12 +2696,47 @@ export function InventoryPage() {
             {editForm.placement === 'RENTAL' ? (
               <section className="space-y-3 rounded-xl border border-emerald-200/80 bg-emerald-50/40 p-4 dark:border-emerald-900/40 dark:bg-emerald-950/20">
                 <h3 className="text-sm font-semibold text-text-primary">
-                  Rental · sales category + customer
+                  Rental · CRM customer + hire terms
                 </h3>
                 <p className="text-xs text-text-secondary">
-                  Logs a RENTAL enquiry under Sales, creates/updates the rental agreement, and marks
-                  the serial RENTED.
+                  Issues one serial on hire (stock −1), links the CRM customer, and marks the unit
+                  RENTED. Prefer Rentals → Issue rental for the full wizard.
                 </p>
+                <ContactPicker
+                  label="CRM customer *"
+                  valueId={editForm.rentalContactId}
+                  selected={
+                    editForm.rentalContactId
+                      ? ({
+                          id: editForm.rentalContactId,
+                          name: editForm.rentalCustomerName,
+                          phone: editForm.rentalPhone || null,
+                          email: editForm.rentalEmail || null,
+                        } as ContactPick)
+                      : null
+                  }
+                  onSelect={(c) => {
+                    if (!c) {
+                      setEditForm((f) => ({ ...f, rentalContactId: '' }))
+                      return
+                    }
+                    setEditForm((f) => ({
+                      ...f,
+                      rentalContactId: c.id,
+                      rentalCustomerName: c.name || f.rentalCustomerName,
+                      rentalPhone: c.phone || f.rentalPhone,
+                      rentalEmail: c.email || f.rentalEmail,
+                      rentalCompany:
+                        (c as { company?: string }).company || f.rentalCompany,
+                      rentalCity: (c as { city?: string }).city || f.rentalCity,
+                      rentalState: (c as { state?: string }).state || f.rentalState,
+                    }))
+                  }}
+                  returnTo="/erp/inventory"
+                />
+                {errors.rentalContactId ? (
+                  <p className="text-xs text-accent-red">{errors.rentalContactId}</p>
+                ) : null}
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Input
                     label="Customer name *"
@@ -2739,16 +2793,24 @@ export function InventoryPage() {
                     }
                   />
                   <Input
-                    label="Daily rate ₹"
+                    label="Monthly rate ₹"
                     type="number"
-                    value={editForm.rentalDailyRate}
-                    onChange={(e) => setEditForm({ ...editForm, rentalDailyRate: e.target.value })}
+                    value={editForm.rentalMonthlyRate}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, rentalMonthlyRate: e.target.value })
+                    }
                   />
                   <Input
                     label="Deposit ₹"
                     type="number"
                     value={editForm.rentalDeposit}
                     onChange={(e) => setEditForm({ ...editForm, rentalDeposit: e.target.value })}
+                  />
+                  <Input
+                    label="Daily rate ₹ (optional)"
+                    type="number"
+                    value={editForm.rentalDailyRate}
+                    onChange={(e) => setEditForm({ ...editForm, rentalDailyRate: e.target.value })}
                   />
                   <Input
                     label="Agreed total ₹"

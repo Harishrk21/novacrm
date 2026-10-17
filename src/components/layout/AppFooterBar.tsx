@@ -2,26 +2,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
-  Calendar,
   CheckCheck,
   Hash,
   HelpCircle,
   MessageCircle,
   MessagesSquare,
-  Mic,
   Minimize2,
-  Paperclip,
-  Phone,
   Pin,
   Plus,
-  Radio,
   Search,
   Send,
   Smile,
   Star,
   UserPlus,
   Users,
-  Video,
   X,
   Zap,
 } from 'lucide-react'
@@ -35,15 +29,7 @@ type Channel = Awaited<ReturnType<typeof api.teamChatChannels>>['items'][number]
 type Message = Awaited<ReturnType<typeof api.teamChatMessages>>['items'][number]
 type Teammate = Awaited<ReturnType<typeof api.teamChatTeammates>>['items'][number]
 type ListTab = 'all' | 'people' | 'channels' | 'messages'
-type QuickAction =
-  | 'dm'
-  | 'group'
-  | 'invite'
-  | 'call'
-  | 'channel'
-  | 'meet'
-  | 'schedule'
-  | 'live'
+type QuickAction = 'dm' | 'group' | 'invite' | 'channel'
 
 const LIST_TABS: { id: ListTab; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -395,19 +381,6 @@ export function TeamChatPanel() {
       addToast({ type: 'info', message: 'Invite teammates from Users' })
       return
     }
-    if (action === 'call' || action === 'meet' || action === 'schedule' || action === 'live') {
-      const labels: Record<string, string> = {
-        call: 'Calls',
-        meet: 'Meet Now',
-        schedule: 'Schedule Meeting',
-        live: 'Schedule Live Event',
-      }
-      addToast({
-        type: 'info',
-        message: `${labels[action]} — connect your calendar/VoIP in Setup to enable`,
-      })
-      return
-    }
     setActionModal(action)
   }
 
@@ -661,11 +634,8 @@ export function TeamChatPanel() {
                           { id: 'dm' as const, icon: MessageCircle, label: 'Send a Direct Message' },
                           { id: 'group' as const, icon: Users, label: 'Start a Group Conversation' },
                           { id: 'invite' as const, icon: UserPlus, label: 'Invite People' },
-                          { id: 'call' as const, icon: Phone, label: 'Make a Call' },
                           { id: 'channel' as const, icon: Hash, label: 'Create a Channel' },
-                          { id: 'meet' as const, icon: Video, label: 'Meet Now' },
-                          { id: 'schedule' as const, icon: Calendar, label: 'Schedule Meeting' },
-                          { id: 'live' as const, icon: Radio, label: 'Schedule Live Event' },
+                          // Call / Meet / Schedule / Live removed — VoIP & calendar not wired
                         ] as const
                       ).map((a) => (
                         <button
@@ -726,26 +696,6 @@ export function TeamChatPanel() {
                 title={active.pinnedAt ? 'Unpin' : 'Pin'}
               >
                 <Star size={14} fill={active.pinnedAt ? 'currentColor' : 'none'} />
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  addToast({ type: 'info', message: 'Voice call — connect VoIP in Setup to enable' })
-                }
-                className="rounded p-1.5 text-text-secondary hover:bg-muted"
-                title="Call"
-              >
-                <Phone size={14} />
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  addToast({ type: 'info', message: 'Video call — connect meeting provider in Setup' })
-                }
-                className="rounded p-1.5 text-text-secondary hover:bg-muted"
-                title="Video"
-              >
-                <Video size={14} />
               </button>
               <button
                 type="button"
@@ -823,16 +773,6 @@ export function TeamChatPanel() {
 
             <div className="shrink-0 border-t border-border px-2.5 py-2">
               <div className="flex items-end gap-1.5 rounded-xl border border-border bg-muted/40 px-2 py-1.5">
-                <button
-                  type="button"
-                  className="mb-1 rounded p-1 text-text-secondary hover:bg-muted"
-                  title="Attach"
-                  onClick={() =>
-                    addToast({ type: 'info', message: 'Attachments coming soon' })
-                  }
-                >
-                  <Paperclip size={16} />
-                </button>
                 <textarea
                   ref={inputRef}
                   value={draft}
@@ -855,27 +795,15 @@ export function TeamChatPanel() {
                 >
                   <Smile size={16} />
                 </button>
-                {draft.trim() ? (
-                  <button
-                    type="button"
-                    disabled={sending}
-                    onClick={() => void send()}
-                    className="mb-0.5 flex h-8 w-8 items-center justify-center rounded-lg bg-[color:var(--color-accent-blue)] text-white disabled:opacity-40"
-                  >
-                    <Send size={14} />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="mb-1 rounded p-1 text-text-secondary hover:bg-muted"
-                    title="Voice message"
-                    onClick={() =>
-                      addToast({ type: 'info', message: 'Voice messages coming soon' })
-                    }
-                  >
-                    <Mic size={16} />
-                  </button>
-                )}
+                <button
+                  type="button"
+                  disabled={sending || !draft.trim()}
+                  onClick={() => void send()}
+                  className="mb-0.5 flex h-8 w-8 items-center justify-center rounded-lg bg-[color:var(--color-accent-blue)] text-white disabled:opacity-40"
+                  title="Send"
+                >
+                  <Send size={14} />
+                </button>
               </div>
             </div>
           </div>

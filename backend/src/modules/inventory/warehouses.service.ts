@@ -12,6 +12,32 @@ export const STANDARD_WAREHOUSES = [
 
 export type WarehouseCode = (typeof STANDARD_WAREHOUSES)[number]["code"];
 
+const STANDARD_CODE_ORDER = STANDARD_WAREHOUSES.map((w) => w.code);
+
+/**
+ * Dropdown / list order: Main warehouse first, then other standard codes,
+ * then any custom warehouses A→Z by name.
+ */
+export function sortWarehousesForDropdown<
+  T extends { code?: string | null; name?: string | null; isDefault?: boolean | null },
+>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const aCode = String(a.code ?? "").toUpperCase();
+    const bCode = String(b.code ?? "").toUpperCase();
+    const aDefault = Boolean(a.isDefault) || aCode === "MAIN";
+    const bDefault = Boolean(b.isDefault) || bCode === "MAIN";
+    if (aDefault !== bDefault) return aDefault ? -1 : 1;
+    const ai = STANDARD_CODE_ORDER.indexOf(aCode as WarehouseCode);
+    const bi = STANDARD_CODE_ORDER.indexOf(bCode as WarehouseCode);
+    if (ai !== -1 || bi !== -1) {
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    }
+    return String(a.name ?? "").localeCompare(String(b.name ?? ""), undefined, {
+      sensitivity: "base",
+    });
+  });
+}
+
 /**
  * Ensure all four standard warehouses exist for a tenant (idempotent).
  * Fast path: if MAIN already exists, skip the 4 sequential upserts (huge win on high-latency RDS).

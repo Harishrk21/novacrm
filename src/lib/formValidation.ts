@@ -130,13 +130,13 @@ export function assetUrl(pathOrUrl?: string | null) {
   if (!pathOrUrl) return ''
   if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) return pathOrUrl
   const normalized = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`
-  const api = import.meta.env.VITE_API_URL as string | undefined
-  if (api) {
-    const origin = api.replace(/\/api\/?$/, '')
-    return `${origin}${normalized}`
-  }
-  if (typeof window !== 'undefined' && normalized.startsWith('/uploads/')) {
-    return normalized
+  // Uploaded files are stored on the API (Render). Static files in /public stay on the frontend (Vercel).
+  if (normalized.startsWith('/uploads/')) {
+    const api = import.meta.env.VITE_API_URL as string | undefined
+    if (api) {
+      const origin = api.replace(/\/api\/?$/, '')
+      return `${origin}${normalized}`
+    }
   }
   return normalized
 }

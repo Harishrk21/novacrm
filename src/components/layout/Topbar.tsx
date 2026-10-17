@@ -22,12 +22,23 @@ import {
   useNotificationsStore,
 } from '@/store/notificationsStore'
 import { Avatar } from '@/components/ui/Avatar'
+import { ConfirmModal } from '@/components/ui/Modal'
 import { api, isTenantSession } from '@/lib/api'
-import { timeAgo, formatCurrency, formatPhone, cn } from '@/lib/utils'
+import { formatCurrency, formatPhone, cn } from '@/lib/utils'
 import { PALETTES, type ColorPalette } from '@/lib/theme'
 import { APP_NAME } from '@/lib/branding'
+import { rememberTenantSlug, tenantLoginPath } from '@/lib/lastTenantSlug'
 import { formatServiceId } from '@/lib/serviceId'
-import { canAccessProformaInvoices } from '@/lib/roles'
+import { isExpiredNotification, resolveOpenPath } from '@/lib/notificationOpen'
+import { NotificationItem } from '@/components/notifications/NotificationItem'
+import {
+  canAccessProformaInvoices,
+  canAccessSaleTracking,
+  canCreateTickets,
+  isScopedEmployee,
+  isWarehouse,
+} from '@/lib/roles'
+import { useModulesStore } from '@/store/modulesStore'
 import { BlockSkeleton } from '@/components/ui/Skeleton'
 
 type SearchHit = { id: string; primary: string; secondary?: string; type: string }
@@ -54,6 +65,37 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
   const displayName = authUser?.name ?? 'User'
   const workspace = authUser?.tenantName ?? authUser?.tenantSlug ?? APP_NAME
   const userId = authUser?.id ?? ''
+  const role = authUser?.role
+  const moduleOn = useModulesStore((s) => s.enabled)
+
+  /** Role + module gated — never show create shortcuts another login cannot use. */
+  const quickCreateItems = useMemo(() => {
+    const items: Array<{ to: string; label: string }> = []
+    if (role === 'READ_ONLY' || isScopedEmployee(role)) return items
+
+    if (canAccessSaleTracking(role) && moduleOn('crm.leads')) {
+      items.push({ to: '/sale-tracking?open=1', label: 'Sale enquiry' })
+    }
+    if (canCreateTickets(role) && moduleOn('crm.tickets')) {
+      items.push({ to: '/tickets?open=1&job=service', label: 'Service ticket' })
+      if (moduleOn('crm.stamping', true)) {
+        items.push({
+          to: '/tickets?open=1&job=stamping&category=Stamping',
+          label: 'Stamping job',
+        })
+      }
+    }
+    if (moduleOn('crm.contacts') && (canAccessSaleTracking(role) || canCreateTickets(role) || isWarehouse(role) || role === 'ADMIN' || role === 'MANAGER')) {
+      items.push({ to: '/contacts?open=1', label: 'Customer' })
+    }
+    if (canAccessProformaInvoices(role) && moduleOn('erp.invoices')) {
+      items.push({ to: '/erp/invoices?open=1', label: 'Proforma invoice' })
+    }
+    if (isWarehouse(role) && moduleOn('erp.inventory')) {
+      items.push({ to: '/erp/stock/move', label: 'Stock move' })
+    }
+    return items
+  }, [moduleOn, role])
 
   const unreadCountStore = useNotificationsStore((s) => s.unreadCount)
   const loadNotifs = useNotificationsStore((s) => s.load)
@@ -61,7 +103,12 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
   const markAllRead = useNotificationsStore((s) => s.markAllRead)
   const clearOne = useNotificationsStore((s) => s.clearOne)
   const clearAll = useNotificationsStore((s) => s.clearAll)
-  const notifs = useNotificationsStore((s) => s.items)
+  const notifsAll = useNotificationsStore((s) => s.items)
+  /** Bell shows active alerts only — expired live under Notifications → Expired / Old */
+  const notifs = useMemo(
+    () => notifsAll.filter((n) => !isExpiredNotification(n)),
+    [notifsAll],
+  )
 
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
@@ -71,8 +118,16 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
   const [hits, setHits] = useState<SearchHit[]>([])
   const [searching, setSearching] = useState(false)
+  const [soundOn, setSoundOn] = useState(true)
+
+  useEffect(() => {
+    void import('@/lib/notificationSound').then(({ isNotificationSoundEnabled }) => {
+      setSoundOn(isNotificationSoundEnabled())
+    })
+  }, [])
 
   const searchRef = useRef<HTMLDivElement>(null)
   const notifRef = useRef<HTMLDivElement>(null)
@@ -80,7 +135,8 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
   const paletteRef = useRef<HTMLDivElement>(null)
   const createRef = useRef<HTMLDivElement>(null)
 
-  const unreadCount = unreadCountStore || notifs.filter((n) => !n.isRead).length
+  const unreadCount =
+    unreadCountStore || notifs.filter((n) => !n.isRead && !isExpiredNotification(n)).length
 
   useEffect(() => {
     if (!userId || !isTenantSession()) return
@@ -160,6 +216,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
             api.contacts({ limit: 10, search: q }),
             api.tickets({ limit: 8, search: q }),
             api.deals({ limit: 5, search: q }),
+            api.leads({ limit: 8, search: q }),
           ])
           if (cancelled) return
           const contacts =
@@ -168,6 +225,8 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
             settled[1].status === 'fulfilled' ? (settled[1].value.items ?? []) : []
           const deals =
             settled[2].status === 'fulfilled' ? (settled[2].value.items ?? []) : []
+          const leads =
+            settled[3].status === 'fulfilled' ? (settled[3].value.items ?? []) : []
 
           const next: SearchHit[] = [
             ...contacts.map((c) => ({
@@ -179,6 +238,15 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
               secondary:
                 formatPhone(String(c.phone ?? c.mobile ?? '')) ||
                 (c.city ? String(c.city) : undefined),
+            })),
+            ...leads.map((l) => ({
+              id: String(l.id),
+              type: 'lead',
+              primary: String(l.name ?? 'Enquiry'),
+              secondary: [l.company, l.phone, l.status]
+                .filter(Boolean)
+                .map(String)
+                .join(' · ') || undefined,
             })),
             ...tickets.map((t) => ({
               id: String(t.id),
@@ -210,6 +278,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
   const grouped = useMemo(() => {
     const g: Record<string, SearchHit[]> = {
       contact: [],
+      lead: [],
       ticket: [],
       deal: [],
     }
@@ -222,6 +291,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
     setSearch('')
     const paths: Record<string, string> = {
       contact: `/contacts/${id}`,
+      lead: `/sale-tracking/${id}`,
       deal: `/deals/${id}`,
       ticket: `/tickets/${id}`,
     }
@@ -236,7 +306,8 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
       await logout()
       addToast({ type: 'success', message: 'Signed out' })
     } finally {
-      navigate(authUser?.tenantSlug ? `/login/${authUser.tenantSlug}` : '/login', { replace: true })
+      rememberTenantSlug(authUser?.tenantSlug)
+      navigate(tenantLoginPath(authUser?.tenantSlug), { replace: true })
       setLoggingOut(false)
     }
   }
@@ -331,12 +402,16 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
               </div>
             ) : (
               <>
-                {(['contact', 'ticket', 'deal'] as const).map((key) =>
+                {(
+                  [
+                    { key: 'contact' as const, title: 'CUSTOMERS' },
+                    { key: 'lead' as const, title: 'SALE ENQUIRIES' },
+                    { key: 'ticket' as const, title: 'TICKETS' },
+                    { key: 'deal' as const, title: 'DEALS' },
+                  ] as const
+                ).map(({ key, title }) =>
                   grouped[key].length ? (
-                    <ResultGroup
-                      key={key}
-                      title={key === 'contact' ? 'CUSTOMERS' : key === 'ticket' ? 'TICKETS' : 'DEALS'}
-                    >
+                    <ResultGroup key={key} title={title}>
                       {grouped[key].map((item) => (
                         <ResultItem
                           key={`${key}-${item.id}`}
@@ -360,7 +435,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
       </div>
 
       <div className={cn('flex items-center gap-0.5', fieldShell && 'ml-auto')}>
-        {!fieldShell ? (
+        {!fieldShell && quickCreateItems.length > 0 ? (
           <div ref={createRef} className="relative">
             <button
               type="button"
@@ -372,18 +447,11 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
               <Plus size={18} strokeWidth={2.5} />
             </button>
             {createOpen ? (
-              <div className="absolute right-0 top-full z-50 mt-1.5 w-52 overflow-hidden rounded-xl border border-border bg-card py-1 shadow-[var(--shadow-hover)]">
+              <div className="absolute right-0 top-full z-50 mt-1.5 w-56 overflow-hidden rounded-xl border border-border bg-card py-1 shadow-[var(--shadow-hover)]">
                 <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-secondary">
                   Quick create
                 </div>
-                {[
-                  { to: '/tickets?open=1', label: 'Service ticket' },
-                  { to: '/sale-tracking?open=1', label: 'Sale enquiry' },
-                  { to: '/contacts?open=1', label: 'Customer' },
-                  ...(canAccessProformaInvoices(authUser?.role)
-                    ? [{ to: '/erp/invoices?open=1', label: 'Proforma invoice' }]
-                    : []),
-                ].map((row) => (
+                {quickCreateItems.map((row) => (
                   <button
                     key={row.to}
                     type="button"
@@ -494,17 +562,19 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
           {notifOpen && (
             <div
               className={cn(
-                'absolute right-0 top-full z-50 mt-1 w-80 rounded-[8px] border border-border bg-card shadow-[var(--shadow-hover)]',
+                // Mobile: almost full width under the bell; desktop: wider readable panel
+                'fixed inset-x-3 top-[3.25rem] z-[60] mx-auto max-h-[min(70vh,28rem)] w-auto max-w-md overflow-hidden rounded-xl border border-border bg-card shadow-xl sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mx-0 sm:mt-1 sm:w-[22.5rem] sm:max-w-none',
                 bellPulse && 'ring-2 ring-accent-blue/40',
               )}
             >
-              <div className="flex items-center justify-between border-b border-border px-4 py-3">
-                <span className="text-md font-semibold">Notifications</span>
-                <div className="flex items-center gap-2">
+              <div className="space-y-2 border-b border-border bg-card px-3 py-2.5 sm:px-3.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-text-primary">Notifications</span>
                   <button
                     type="button"
-                    className="text-xs text-text-secondary hover:text-text-primary hover:underline"
-                    title="Toggle notification sound"
+                    className="shrink-0 rounded-md px-2 py-1 text-[11px] text-text-secondary hover:bg-muted hover:text-text-primary"
+                    title={soundOn ? 'Turn notification sound off' : 'Turn notification sound on'}
+                    aria-pressed={soundOn}
                     onClick={() => {
                       void import('@/lib/notificationSound').then(
                         ({
@@ -514,6 +584,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
                         }) => {
                           const next = !isNotificationSoundEnabled()
                           setNotificationSoundEnabled(next)
+                          setSoundOn(next)
                           if (next) playNotificationBell()
                           addToast({
                             type: 'success',
@@ -523,85 +594,60 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
                       )
                     }}
                   >
-                    Sound
+                    Sound: {soundOn ? 'On' : 'Off'}
                   </button>
-                  {notifs.length > 0 && (
-                    <>
-                      <button
-                        className="flex items-center gap-1 text-xs text-accent-blue hover:underline"
-                        onClick={() => userId && markAllRead(userId)}
-                      >
-                        <CheckCheck size={12} /> Mark all read
-                      </button>
-                      <button
-                        type="button"
-                        className="flex items-center gap-1 text-xs text-accent-red hover:underline"
-                        title="Clear all notifications"
-                        onClick={() => {
-                          void clearAll().then(() => {
-                            addToast({ type: 'success', message: 'All notifications cleared' })
-                          })
-                        }}
-                      >
-                        <Trash2 size={12} /> Clear all
-                      </button>
-                    </>
-                  )}
                 </div>
+                {notifs.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      className="inline-flex min-h-[30px] items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px] font-medium text-accent-blue hover:bg-muted"
+                      onClick={() => userId && markAllRead(userId)}
+                    >
+                      <CheckCheck size={12} /> Mark all read
+                    </button>
+                    <button
+                      type="button"
+                      className="inline-flex min-h-[30px] items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px] font-medium text-accent-red hover:bg-muted"
+                      title="Clear all notifications"
+                      onClick={() => {
+                        void clearAll().then(() => {
+                          addToast({ type: 'success', message: 'All notifications cleared' })
+                        })
+                      }}
+                    >
+                      <Trash2 size={12} /> Clear all
+                    </button>
+                  </div>
+                ) : null}
               </div>
-              <div className="max-h-80 overflow-y-auto">
+              <div className="max-h-[min(52vh,20rem)] overflow-y-auto overscroll-contain bg-card">
                 {notifs.length === 0 ? (
                   <div className="p-6 text-center text-sm text-text-secondary">
                     No notifications yet. Ticket updates for your role appear here.
                   </div>
                 ) : (
                   notifs.slice(0, 12).map((n) => (
-                    <div
+                    <NotificationItem
                       key={n.id}
-                      className={cn(
-                        'flex w-full items-center gap-2 border-b border-border px-3 py-2 transition-colors duration-150 hover:bg-surface',
-                        !n.isRead && 'border-l-2 border-l-accent-blue bg-accent-blue/5',
-                      )}
-                    >
-                      <button
-                        type="button"
-                        className="min-w-0 flex-1 text-left"
-                        onClick={() => {
-                          if (userId) void markRead(n.id, userId)
-                          setNotifOpen(false)
-                          navigate(n.href || '/notifications')
-                        }}
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <div className="truncate text-sm font-medium text-text-primary">
-                            {n.title}
-                          </div>
-                          <span className="shrink-0 text-[10px] text-text-secondary">
-                            {timeAgo(n.createdAt)}
-                          </span>
-                        </div>
-                        <div className="truncate text-xs text-text-secondary">{n.message}</div>
-                      </button>
-                      <button
-                        type="button"
-                        className="shrink-0 rounded-[6px] p-1.5 text-text-secondary hover:bg-muted hover:text-accent-red"
-                        title="Clear notification"
-                        aria-label="Clear notification"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          void clearOne(n.id)
-                        }}
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
+                      n={n}
+                      density="compact"
+                      onOpen={() => {
+                        if (userId) void markRead(n.id, userId)
+                        setNotifOpen(false)
+                        navigate(resolveOpenPath(n, { role: authUser?.role }))
+                      }}
+                      onClear={() => {
+                        void clearOne(n.id)
+                      }}
+                    />
                   ))
                 )}
               </div>
-              <div className="border-t border-border px-4 py-2">
+              <div className="border-t border-border bg-card px-3 py-2.5">
                 <Link
                   to="/notifications"
-                  className="block text-center text-xs font-medium text-accent-blue hover:underline"
+                  className="block rounded-md py-1.5 text-center text-xs font-semibold text-accent-blue hover:bg-muted"
                   onClick={() => setNotifOpen(false)}
                 >
                   View all notifications
@@ -672,7 +718,10 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
               <button
                 type="button"
                 disabled={loggingOut}
-                onClick={() => void handleLogout()}
+                onClick={() => {
+                  setAvatarOpen(false)
+                  setLogoutConfirmOpen(true)
+                }}
                 className="flex w-full items-center gap-2 px-3 py-2 text-sm text-accent-red hover:bg-surface disabled:opacity-60"
               >
                 <LogOut size={14} /> {loggingOut ? 'Signing out…' : 'Logout'}
@@ -681,6 +730,14 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
           )}
         </div>
       </div>
+      <ConfirmModal
+        open={logoutConfirmOpen}
+        onClose={() => setLogoutConfirmOpen(false)}
+        onConfirm={() => void handleLogout()}
+        title="Log out?"
+        body="Are you sure you want to log out?"
+        confirmLabel="Log out"
+      />
     </header>
   )
 }

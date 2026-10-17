@@ -43,6 +43,7 @@ import { cn } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { Avatar } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
+import { ConfirmModal } from '@/components/ui/Modal'
 import { HmsLogo } from '@/components/HmsLogo'
 import { useAuthStore } from '@/store/authStore'
 import { useModulesStore } from '@/store/modulesStore'
@@ -297,8 +298,10 @@ export function Sidebar() {
   const isAdmin = isCompanyAdmin(role)
   const displayRole = roleLabel(role)
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({})
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
 
   async function handleLogout() {
+    setLogoutConfirmOpen(false)
     try {
       await logout()
       addToast({ type: 'success', message: 'Signed out' })
@@ -386,6 +389,12 @@ export function Sidebar() {
                 quickActions: contactsActions,
               } as NavItem,
             ]
+          : []),
+        ...(moduleOn('crm.accounts')
+          ? [{ to: '/accounts', icon: Briefcase, label: 'Accounts' } as NavItem]
+          : []),
+        ...(moduleOn('crm.deals')
+          ? [{ to: '/deals', icon: ClipboardList, label: 'Deals' } as NavItem]
           : []),
       ].filter(Boolean),
     },
@@ -556,16 +565,11 @@ export function Sidebar() {
           label: 'Service tickets',
           quickActions: ticketsActions.filter((a) => !a.adminOnly),
         },
-        { to: '/tickets?open=1', icon: Plus, label: 'New ticket' },
+        { to: '/tickets?open=1&job=service', icon: Plus, label: 'New service ticket' },
         {
-          to: '/sale-tracking',
-          icon: UserPlus,
-          label: 'Service intake',
-          quickActions: [
-            { label: 'Log today’s call', to: '/sale-tracking?open=1&today=1', icon: Plus },
-            { label: 'Today’s intake', to: '/sale-tracking?today=1', icon: Filter },
-            { label: 'Open intake list', to: '/sale-tracking', icon: Filter },
-          ],
+          to: '/tickets?open=1&job=stamping&category=Stamping',
+          icon: Plus,
+          label: 'New stamping job',
         },
         {
           to: '/spare-parts',
@@ -574,6 +578,29 @@ export function Sidebar() {
           quickActions: spareActions,
         },
         { to: '/service-reports', icon: FileText, label: 'Service reports' },
+        ...(moduleOn('crm.amc')
+          ? [{ to: '/amc', icon: Shield, label: 'AMC / Non-AMC', quickActions: amcActions } as NavItem]
+          : []),
+        ...(moduleOn('crm.stamping')
+          ? [
+              {
+                to: '/stamping',
+                icon: Stamp,
+                label: 'Stamping',
+                quickActions: stampingActions,
+              } as NavItem,
+            ]
+          : []),
+        ...(moduleOn('crm.rentals')
+          ? [
+              {
+                to: '/rentals',
+                icon: Truck,
+                label: 'Rentals',
+                quickActions: rentalsActions,
+              } as NavItem,
+            ]
+          : []),
       ],
     },
     {
@@ -698,6 +725,9 @@ export function Sidebar() {
           label: 'Contacts',
           quickActions: contactsActions.filter((a) => !a.adminOnly),
         },
+        ...(moduleOn('erp.invoices')
+          ? [{ to: '/erp/invoices', icon: FileText, label: 'Proforma invoices' } as NavItem]
+          : []),
       ],
     },
     {
@@ -708,6 +738,7 @@ export function Sidebar() {
         { to: '/erp/products', icon: Package, label: 'Products' },
         { to: '/erp/stock', icon: Warehouse, label: 'Stock' },
         { to: '/erp/suppliers', icon: Truck, label: 'Suppliers' },
+        { to: '/erp/releases', icon: PackageCheck, label: 'Approved releases' },
       ],
     },
     {
@@ -749,6 +780,9 @@ export function Sidebar() {
         { to: '/erp/suppliers', icon: Truck, label: 'Suppliers' },
         { to: '/erp/releases', icon: PackageCheck, label: 'Approved releases' },
         { to: '/erp/delivery-challans', icon: ClipboardList, label: 'Delivery challans' },
+        ...(moduleOn('erp.invoices')
+          ? [{ to: '/erp/invoices', icon: FileText, label: 'Proforma invoices' } as NavItem]
+          : []),
       ],
     },
     {
@@ -1010,7 +1044,7 @@ export function Sidebar() {
         </div>
         <button
           type="button"
-          onClick={() => void handleLogout()}
+          onClick={() => setLogoutConfirmOpen(true)}
           title="Log out"
           className={cn(
             'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-[13px] text-sidebar-text transition-colors duration-150 hover:bg-white/[0.06] hover:text-white',
@@ -1021,6 +1055,14 @@ export function Sidebar() {
           {!collapsed && <span>Log out</span>}
         </button>
       </div>
+      <ConfirmModal
+        open={logoutConfirmOpen}
+        onClose={() => setLogoutConfirmOpen(false)}
+        onConfirm={() => void handleLogout()}
+        title="Log out?"
+        body="Are you sure you want to log out?"
+        confirmLabel="Log out"
+      />
     </aside>
   )
 }

@@ -1,3 +1,6 @@
+import { notifyStockChanged } from '@/lib/stockEvents'
+import { tenantLoginPath } from '@/lib/lastTenantSlug'
+
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3001/api'
 
 export type ApiError = { code: string; message: string; details?: unknown }
@@ -32,8 +35,10 @@ export function getAuth(): TokenBundle | null {
 }
 
 export function setAuth(bundle: TokenBundle | null) {
-  if (!bundle) localStorage.removeItem(TOKEN_KEY)
-  else localStorage.setItem(TOKEN_KEY, JSON.stringify(bundle))
+  if (!bundle) {
+    localStorage.removeItem(TOKEN_KEY)
+    clearLookupsCache()
+  } else localStorage.setItem(TOKEN_KEY, JSON.stringify(bundle))
 }
 
 export function isTenantSession() {
@@ -48,21 +53,21 @@ function isRetryableStatus(status: number) {
   return status === 503 || status === 502 || status === 504 || status === 429
 }
 
-/** Retry transient DB pool / network failures so lists don't flash empty. */
-async function fetchWithRetry(url: string, options: RequestInit, maxAttempts = 4): Promise<Response> {
+/** Retry transient DB pool / network failures — keep attempts low so pages don't sit on skeleton. */
+async function fetchWithRetry(url: string, options: RequestInit, maxAttempts = 2): Promise<Response> {
   let lastError: unknown
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       const res = await fetch(url, options)
       if (isRetryableStatus(res.status) && attempt < maxAttempts - 1) {
-        await sleep(350 * (attempt + 1))
+        await sleep(200 * (attempt + 1))
         continue
       }
       return res
     } catch (err) {
       lastError = err
       if (attempt < maxAttempts - 1) {
-        await sleep(350 * (attempt + 1))
+        await sleep(200 * (attempt + 1))
         continue
       }
       throw err
@@ -71,28 +76,37 @@ async function fetchWithRetry(url: string, options: RequestInit, maxAttempts = 4
   throw lastError instanceof Error ? lastError : new Error('Request failed after retries')
 }
 
+/** Single-flight refresh — concurrent 401s share one /auth/refresh call. */
+let refreshInFlight: Promise<string | null> | null = null
+
 async function refreshAccessToken(): Promise<string | null> {
-  const auth = getAuth()
-  if (!auth?.refreshToken) return null
-  const res = await fetch(`${API_BASE}/auth/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refreshToken: auth.refreshToken }),
+  if (refreshInFlight) return refreshInFlight
+  refreshInFlight = (async () => {
+    const auth = getAuth()
+    if (!auth?.refreshToken) return null
+    const res = await fetch(`${API_BASE}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken: auth.refreshToken }),
+    })
+    if (!res.ok) {
+      setAuth(null)
+      return null
+    }
+    const json = (await res.json()) as {
+      success: boolean
+      data: { accessToken: string; refreshToken?: string }
+    }
+    setAuth({
+      ...auth,
+      accessToken: json.data.accessToken,
+      refreshToken: json.data.refreshToken ?? auth.refreshToken,
+    })
+    return json.data.accessToken
+  })().finally(() => {
+    refreshInFlight = null
   })
-  if (!res.ok) {
-    setAuth(null)
-    return null
-  }
-  const json = (await res.json()) as {
-    success: boolean
-    data: { accessToken: string; refreshToken?: string }
-  }
-  setAuth({
-    ...auth,
-    accessToken: json.data.accessToken,
-    refreshToken: json.data.refreshToken ?? auth.refreshToken,
-  })
-  return json.data.accessToken
+  return refreshInFlight
 }
 
 export async function apiFetch<T>(
@@ -107,7 +121,8 @@ export async function apiFetch<T>(
   }
 
   // AI endpoints: no multi-retry — Gemini/DB waits already feel long
-  const attempts = options.noRetry || path.startsWith('/ai/') ? 1 : 4
+  // Default 2 attempts — was 4 and stacked multi-second delays under every list skeleton
+  const attempts = options.noRetry || path.startsWith('/ai/') ? 1 : 2
   let res = await fetchWithRetry(`${API_BASE}${path}`, { ...options, headers }, attempts)
 
   if (res.status === 401 && !options.skipAuth) {
@@ -123,7 +138,7 @@ export async function apiFetch<T>(
         /* ignore */
       }
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-        window.location.assign('/login')
+        window.location.assign(tenantLoginPath())
       }
     }
   }
@@ -172,6 +187,76 @@ function qs(params?: Record<string, string | number | undefined | null>) {
 
 export type Page<T> = { items: T[]; meta?: { total: number; page: number; limit: number } }
 
+export type LookupsPayload = {
+  sources: Array<{ id: string; name: string; code: string; colorHex?: string | null }>
+  stages: Array<{
+    id: string
+    name: string
+    code: string
+    probability: number
+    colorHex?: string | null
+    sortOrder?: number
+  }>
+  users: Array<{
+    id: string
+    name: string
+    email: string
+    phone?: string | null
+    roleCode?: string | null
+    roleName?: string | null
+    avatarUrl?: string | null
+  }>
+  warehouses: Array<{ id: string; name: string; code: string; isDefault?: boolean }>
+  categories: Array<{ id: string; name: string; code: string; parentId?: string | null }>
+  accounts: Array<{ id: string; name: string; phone?: string; email?: string }>
+  contacts: Array<{ id: string; name: string; phone?: string; email?: string; accountId?: string }>
+  products: Array<{
+    id: string
+    sku: string
+    name: string
+    salePrice: string | number
+    purchasePrice: string | number
+    unit: string
+    taxPercent: string | number
+    imageUrl?: string | null
+    productType?: string | null
+    attributes?: Record<string, unknown> | null
+  }>
+  vendors: Array<{ id: string; name: string }>
+}
+
+export type LookupsScope = 'core' | 'full'
+
+/** Shared across pages — scoped caches so tickets don't wait on full catalog. */
+const LOOKUPS_CLIENT_TTL_MS = 120_000
+const lookupsCacheByScope = new Map<LookupsScope, { at: number; data: LookupsPayload }>()
+const lookupsInflightByScope = new Map<LookupsScope, Promise<LookupsPayload>>()
+
+export function clearLookupsCache() {
+  lookupsCacheByScope.clear()
+  lookupsInflightByScope.clear()
+}
+
+async function fetchLookupsCached(scope: LookupsScope = 'full'): Promise<LookupsPayload> {
+  const now = Date.now()
+  const hit = lookupsCacheByScope.get(scope)
+  if (hit && now - hit.at < LOOKUPS_CLIENT_TTL_MS) {
+    return hit.data
+  }
+  const inflight = lookupsInflightByScope.get(scope)
+  if (inflight) return inflight
+  const req = apiFetch<LookupsPayload>(`/meta/lookups${scope === 'core' ? '?scope=core' : ''}`)
+    .then((data) => {
+      lookupsCacheByScope.set(scope, { at: Date.now(), data })
+      return data
+    })
+    .finally(() => {
+      lookupsInflightByScope.delete(scope)
+    })
+  lookupsInflightByScope.set(scope, req)
+  return req
+}
+
 export const api = {
   platformLogin: (email: string, password: string) =>
     apiFetch<{
@@ -218,14 +303,14 @@ export const api = {
   changePassword: (body: { currentPassword: string; newPassword: string }) =>
     apiFetch<{ ok: boolean }>('/auth/me/password', { method: 'POST', body: JSON.stringify(body) }),
   meWithRetry: async () => {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        return await apiFetch<Record<string, unknown>>('/auth/me')
+        return await apiFetch<Record<string, unknown>>('/auth/me', { noRetry: true })
       } catch (err) {
         const retryable =
           err instanceof ApiClientError && (isRetryableStatus(err.status) || err.status === 0)
-        if (retryable && attempt < 2) {
-          await sleep(600 * (attempt + 1))
+        if (retryable && attempt < 1) {
+          await sleep(250)
           continue
         }
         throw err
@@ -563,44 +648,8 @@ export const api = {
       `/tips/${encodeURIComponent(moduleKey)}`,
     ),
 
-  lookups: () =>
-    apiFetch<{
-      sources: Array<{ id: string; name: string; code: string; colorHex?: string | null }>
-      stages: Array<{
-        id: string
-        name: string
-        code: string
-        probability: number
-        colorHex?: string | null
-        sortOrder?: number
-      }>
-      users: Array<{
-        id: string
-        name: string
-        email: string
-        phone?: string | null
-        roleCode?: string | null
-        roleName?: string | null
-        avatarUrl?: string | null
-      }>
-      warehouses: Array<{ id: string; name: string; code: string; isDefault?: boolean }>
-      categories: Array<{ id: string; name: string; code: string; parentId?: string | null }>
-      accounts: Array<{ id: string; name: string; phone?: string; email?: string }>
-      contacts: Array<{ id: string; name: string; phone?: string; email?: string; accountId?: string }>
-      products: Array<{
-        id: string
-        sku: string
-        name: string
-        salePrice: string | number
-        purchasePrice: string | number
-        unit: string
-        taxPercent: string | number
-        imageUrl?: string | null
-        productType?: string | null
-        attributes?: Record<string, unknown> | null
-      }>
-      vendors: Array<{ id: string; name: string }>
-    }>('/meta/lookups'),
+  /** `core` = users/stages/warehouses (fast). `full` = + contacts/products/accounts. */
+  lookups: (opts?: { scope?: LookupsScope }) => fetchLookupsCached(opts?.scope ?? 'full'),
 
   // Leads
   leads: (params?: Record<string, string | number | undefined>) =>
@@ -677,7 +726,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ reason }),
     }),
-  fulfillRequisition: (
+  fulfillRequisition: async (
     id: string,
     body?: {
       unitPrice?: number
@@ -686,11 +735,14 @@ export const api = {
       markShipped?: boolean
       stockUnitId?: string
     },
-  ) =>
-    apiFetch<Record<string, unknown>>(`/requisitions/${id}/fulfill`, {
+  ) => {
+    const res = await apiFetch<Record<string, unknown>>(`/requisitions/${id}/fulfill`, {
       method: 'POST',
       body: JSON.stringify(body ?? {}),
-    }),
+    })
+    notifyStockChanged()
+    return res
+  },
   shipRequisition: (id: string) =>
     apiFetch<Record<string, unknown>>(`/requisitions/${id}/ship`, {
       method: 'POST',
@@ -720,6 +772,8 @@ export const api = {
         stampingRequired: boolean
         stampingDate?: string | null
         nextDueDate?: string | null
+        stampingNumber?: string | null
+        stampingQuarter?: 'A' | 'B' | 'C' | 'D' | null
       }>
     },
   ) =>
@@ -1086,11 +1140,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  receiveStockBatch: (body: Record<string, unknown>) =>
-    apiFetch<{ receiptId: string; quantity: number; units: Array<Record<string, unknown>> }>(
-      '/inventory/receipts',
-      { method: 'POST', body: JSON.stringify(body) },
-    ),
+  receiveStockBatch: async (body: Record<string, unknown>) => {
+    const res = await apiFetch<{
+      receiptId: string
+      quantity: number
+      units: Array<Record<string, unknown>>
+    }>('/inventory/receipts', { method: 'POST', body: JSON.stringify(body) })
+    notifyStockChanged()
+    return res
+  },
   previewHmsUniqIds: (body: { productId: string; quantity: number }) =>
     apiFetch<string[]>('/inventory/uniq-ids/preview', {
       method: 'POST',
@@ -1120,7 +1178,7 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(body),
     }),
-  reduceStockUnit: (
+  reduceStockUnit: async (
     id: string,
     notesOrBody?:
       | string
@@ -1132,15 +1190,18 @@ export const api = {
           issuedToUserId?: string | null
           contactId?: string | null
         },
-  ) =>
-    apiFetch<Record<string, unknown>>(`/inventory/units/${id}/reduce`, {
+  ) => {
+    const res = await apiFetch<Record<string, unknown>>(`/inventory/units/${id}/reduce`, {
       method: 'POST',
       body: JSON.stringify(
         typeof notesOrBody === 'object' && notesOrBody !== null
           ? notesOrBody
           : { notes: notesOrBody ?? null },
       ),
-    }),
+    })
+    notifyStockChanged()
+    return res
+  },
   returnDemoUnit: (
     id: string,
     body?: {
@@ -1169,11 +1230,26 @@ export const api = {
   rentals: (params?: Record<string, string | number | undefined>) =>
     apiFetch<Array<Record<string, unknown>>>(`/rentals${qs(params)}`),
   rentalSummary: () =>
-    apiFetch<{ active: number; overdue: number; returnedThisMonth: number }>('/rentals/summary'),
+    apiFetch<{
+      active: number
+      overdue: number
+      returnedThisMonth: number
+      cancelled?: number
+    }>('/rentals/summary'),
   issueRental: (body: Record<string, unknown>) =>
     apiFetch<Record<string, unknown>>('/rentals', { method: 'POST', body: JSON.stringify(body) }),
+  patchRental: (id: string, body: Record<string, unknown>) =>
+    apiFetch<Record<string, unknown>>(`/rentals/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
   returnRental: (id: string, notes?: string) =>
     apiFetch<Record<string, unknown>>(`/rentals/${id}/return`, {
+      method: 'POST',
+      body: JSON.stringify({ notes: notes ?? null }),
+    }),
+  cancelRental: (id: string, notes?: string) =>
+    apiFetch<Record<string, unknown>>(`/rentals/${id}/cancel`, {
       method: 'POST',
       body: JSON.stringify({ notes: notes ?? null }),
     }),
@@ -1271,6 +1347,7 @@ export const api = {
         readAt?: string | null
         createdAt: string
         href?: string
+        expired?: boolean
       }>
     }>(`/notifications${qs ? `?${qs}` : ''}`)
   },

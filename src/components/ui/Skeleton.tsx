@@ -16,20 +16,20 @@ export function SkeletonProvider({
       baseColor="var(--color-muted, #e5e7eb)"
       highlightColor="var(--color-card, #f9fafb)"
       borderRadius={8}
-      duration={1.2}
+      duration={0.75}
     >
       <div className={className}>{children}</div>
     </SkeletonTheme>
   )
 }
 
-/** Full-screen session bootstrap (replaces "Checking session…"). */
+/** Compact session bootstrap — avoid a heavy full-dashboard fake layout. */
 export function SessionSkeleton({ variant = 'tenant' }: { variant?: 'tenant' | 'platform' }) {
   const dark = variant === 'platform'
   return (
     <div
       className={cn(
-        'flex min-h-screen flex-col gap-6 p-6 sm:p-10',
+        'flex min-h-screen flex-col items-center justify-center gap-4 p-6',
         dark ? 'bg-slate-950' : 'bg-surface',
       )}
     >
@@ -37,33 +37,11 @@ export function SessionSkeleton({ variant = 'tenant' }: { variant?: 'tenant' | '
         baseColor={dark ? '#1e293b' : 'var(--color-muted, #e5e7eb)'}
         highlightColor={dark ? '#334155' : 'var(--color-card, #f9fafb)'}
         borderRadius={8}
+        duration={0.7}
       >
-        <div className="flex items-center gap-4">
-          <Skeleton width={44} height={44} circle />
-          <div className="flex-1">
-            <Skeleton width="28%" height={18} />
-            <Skeleton width="18%" height={12} className="mt-2" />
-          </div>
-          <Skeleton width={120} height={36} />
-        </div>
-        <div className="flex min-h-0 flex-1 gap-4">
-          <div className="hidden w-56 shrink-0 space-y-3 sm:block">
-            <Skeleton height={28} />
-            {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} height={22} />
-            ))}
-          </div>
-          <div className="min-w-0 flex-1 space-y-4">
-            <Skeleton height={40} width="40%" />
-            <div className="grid gap-3 sm:grid-cols-3">
-              <Skeleton height={88} />
-              <Skeleton height={88} />
-              <Skeleton height={88} />
-            </div>
-            <Skeleton height={220} />
-            <Skeleton height={140} />
-          </div>
-        </div>
+        <Skeleton width={48} height={48} circle />
+        <Skeleton width={160} height={14} />
+        <Skeleton width={220} height={10} />
       </SkeletonTheme>
     </div>
   )
@@ -71,8 +49,8 @@ export function SessionSkeleton({ variant = 'tenant' }: { variant?: 'tenant' | '
 
 /** Generic page body while data loads. */
 export function PageSkeleton({
-  cards = 3,
-  rows = 6,
+  cards = 2,
+  rows = 4,
   className,
 }: {
   cards?: number
@@ -80,19 +58,19 @@ export function PageSkeleton({
   className?: string
 }) {
   return (
-    <SkeletonProvider className={cn('space-y-4', className)}>
-      <Skeleton height={28} width="32%" />
-      <Skeleton height={14} width="48%" />
+    <SkeletonProvider className={cn('space-y-3', className)}>
+      <Skeleton height={22} width="28%" />
+      <Skeleton height={12} width="40%" />
       {cards > 0 ? (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {Array.from({ length: cards }).map((_, i) => (
-            <Skeleton key={i} height={96} />
+            <Skeleton key={i} height={72} />
           ))}
         </div>
       ) : null}
-      <div className="space-y-2 rounded-[10px] border border-border bg-card p-4">
+      <div className="space-y-2 rounded-[10px] border border-border bg-card p-3">
         {Array.from({ length: rows }).map((_, i) => (
-          <Skeleton key={i} height={36} />
+          <Skeleton key={i} height={32} />
         ))}
       </div>
     </SkeletonProvider>
@@ -101,17 +79,17 @@ export function PageSkeleton({
 
 /** Table / list loading block. */
 export function TableSkeleton({
-  rows = 8,
+  rows = 5,
   className,
 }: {
   rows?: number
   className?: string
 }) {
   return (
-    <SkeletonProvider className={cn('space-y-2 p-4', className)}>
-      <Skeleton height={18} width="30%" />
+    <SkeletonProvider className={cn('space-y-2 p-3', className)}>
+      <Skeleton height={14} width="24%" />
       {Array.from({ length: rows }).map((_, i) => (
-        <Skeleton key={i} height={40} />
+        <Skeleton key={i} height={34} />
       ))}
     </SkeletonProvider>
   )

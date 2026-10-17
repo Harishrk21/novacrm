@@ -52,6 +52,13 @@ export type ServiceReportTicket = {
   contactId?: unknown
   assetId?: unknown
   customFields?: unknown
+  paymentTotal?: unknown
+  advanceAmount?: unknown
+  balanceDue?: unknown
+  paymentStatus?: unknown
+  paymentMethod?: unknown
+  assignedToName?: unknown
+  assignee?: { name?: string } | null
   contact?: {
     id?: string
     name?: string
@@ -116,7 +123,30 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
         : String(ticket.description || ticket.subject || ''),
     )
     setWorkDone(existing?.workDone ? String(existing.workDone) : '')
-    setLines([emptyLine()])
+    const savedParts = Array.isArray(existing?.spareParts)
+      ? (existing.spareParts as Array<Record<string, unknown>>)
+      : []
+    if (savedParts.length > 0) {
+      setLines(
+        savedParts.map((p) => ({
+          key: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          partName: String(p.partName || ''),
+          partCode: String(p.partCode || ''),
+          changeType: String(p.changeType || 'REPLACED'),
+          quantity: String(p.quantity ?? '1'),
+          oldSerialNo: String(p.oldSerialNo || ''),
+          newSerialNo: String(p.newSerialNo || ''),
+          chargeAmount:
+            p.chargeAmount != null && p.chargeAmount !== ''
+              ? String(p.chargeAmount)
+              : '',
+          underWarranty: Boolean(p.underWarranty),
+          notes: String(p.notes || ''),
+        })),
+      )
+    } else {
+      setLines([emptyLine()])
+    }
   }, [open, ticket])
 
   function updateLine(key: string, patch: Partial<SpareLine>) {
@@ -169,19 +199,58 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
         ticket.customFields && typeof ticket.customFields === 'object'
           ? (ticket.customFields as Record<string, unknown>)
           : {}
+      const engineerName =
+        ticket.assignedToName
+          ? String(ticket.assignedToName)
+          : ticket.assignee?.name
+            ? String(ticket.assignee.name)
+            : null
+      const spareParts = spareRows.map((line) => ({
+        partName: line.partName.trim(),
+        partCode: line.partCode.trim() || null,
+        changeType: line.changeType,
+        quantity: Math.max(1, Number(line.quantity) || 1),
+        oldSerialNo: line.oldSerialNo.trim() || null,
+        newSerialNo: line.newSerialNo.trim() || null,
+        chargeAmount: line.underWarranty
+          ? 0
+          : line.chargeAmount.trim()
+            ? Number(line.chargeAmount)
+            : null,
+        underWarranty: line.underWarranty,
+        notes: line.notes.trim() || null,
+      }))
       await api.updateTicket(String(ticket.id), {
         customFields: {
           ...cf,
           serviceReport: {
             issues: issues.trim(),
             workDone: workDone.trim(),
-            sparePartsCount: spareRows.length,
+            sparePartsCount: spareParts.length,
+            spareParts,
             savedAt: new Date().toISOString(),
             savedBy: authUser?.name ?? 'Desk',
             savedById: authUser?.id ?? null,
             customerName: contact?.name ?? null,
             machineName: asset?.name ?? null,
             machineSerial: asset?.serialNo ?? null,
+            machineType: asset?.machineType ?? null,
+            machineModel: asset?.model ?? null,
+            category: cf.category ? String(cf.category) : null,
+            workType: cf.workType ? String(cf.workType) : null,
+            engineerName,
+            paymentTotal:
+              ticket.paymentTotal != null ? Number(ticket.paymentTotal) : null,
+            advanceAmount:
+              ticket.advanceAmount != null ? Number(ticket.advanceAmount) : null,
+            balanceDue:
+              ticket.balanceDue != null ? Number(ticket.balanceDue) : null,
+            paymentStatus: ticket.paymentStatus
+              ? String(ticket.paymentStatus)
+              : null,
+            paymentMethod: ticket.paymentMethod
+              ? String(ticket.paymentMethod)
+              : null,
           },
         },
       })

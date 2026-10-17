@@ -1,55 +1,50 @@
 import { Link } from 'react-router-dom'
-import { Inbox, Link2, Mail, RefreshCw, Send, ShieldCheck } from 'lucide-react'
+import { Inbox, Link2, Mail, Send, ShieldCheck } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { useUIStore } from '@/store/uiStore'
 
 /**
- * Email engagement in a real CRM (HubSpot / Salesforce / Zoho pattern):
- * 1. Each user connects their mailbox via OAuth (Gmail / Microsoft 365).
- * 2. CRM stores refresh tokens scoped to that user + tenant (never shares passwords).
- * 3. Sync job pulls threads; To/From/CC are matched to contacts & leads by email.
- * 4. Matched messages land on the contact/deal timeline as EMAIL activities.
- * 5. Compose from CRM sends via the connected mailbox (SMTP/Graph/Gmail API).
- * 6. Opens/clicks (optional) use tracking pixels / link wrappers for engagement stats.
- *
- * HMS Enterprises currently shows the connect UX only — mailbox OAuth + sync is the next build.
+ * Mailbox OAuth sync is not wired yet. This screen explains the product model
+ * and routes admins to Settings → Integrations (honest empty state — no fake Connect).
  */
 export function EmailsPage() {
-  const addToast = useUIStore((s) => s.addToast)
   return (
     <div className="space-y-5">
       <PageHeader
         title="Emails"
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Emails' }]}
         actions={
-          <Button
-            variant="outline"
-            onClick={() =>
-              addToast({
-                type: 'info',
-                message: 'Connect Gmail or Outlook in Settings → Integrations (OAuth coming next)',
-              })
-            }
-          >
-            <Link2 size={16} /> Connect mailbox
-          </Button>
+          <Link to="/settings?tab=Integrations">
+            <Button variant="outline">
+              <Link2 size={16} /> Open Integrations
+            </Button>
+          </Link>
         }
       />
 
       <PageTip moduleKey="crm.emails" />
 
-      <Card className="flex min-h-[320px] items-center justify-center">
+      <Card className="border-amber-500/30 bg-amber-50/50 dark:bg-amber-950/20">
+        <p className="text-sm font-medium text-amber-950 dark:text-amber-100">
+          Mailbox sync is not available yet
+        </p>
+        <p className="mt-1 text-sm text-amber-900/80 dark:text-amber-100/70">
+          Gmail / Outlook OAuth and thread sync are planned. Connecting a flag in Settings does not
+          sync email today — use WhatsApp (Meta Cloud) for live messaging.
+        </p>
+      </Card>
+
+      <Card className="flex min-h-[280px] items-center justify-center">
         <EmptyState
           icon={<Mail size={26} />}
           title="No mailbox connected"
-          subtitle="In a production CRM, you connect Gmail or Outlook once; threads then sync onto contacts and deals automatically."
-          actionLabel="Open Integrations"
+          subtitle="When OAuth ships, each user will connect Gmail or Outlook once; threads will match contacts and log as EMAIL activities."
+          actionLabel="Go to Integrations"
           onAction={() => {
-            window.location.href = '/settings'
+            window.location.assign('/settings?tab=Integrations')
           }}
         />
       </Card>
@@ -61,7 +56,7 @@ export function EmailsPage() {
           </div>
           <div className="font-semibold">1. Connect</div>
           <p className="mt-1 text-sm text-text-secondary">
-            OAuth per user (Gmail / Microsoft 365). Tokens stay with the tenant user — CRM never stores the mailbox password.
+            OAuth per user (Gmail / Microsoft 365). Tokens stay with the tenant user.
           </p>
         </Card>
         <Card>
@@ -70,7 +65,7 @@ export function EmailsPage() {
           </div>
           <div className="font-semibold">2. Sync & match</div>
           <p className="mt-1 text-sm text-text-secondary">
-            Inbox/sent sync matches To/From to CRM contacts and leads, then logs an EMAIL activity on that record’s timeline.
+            Inbox/sent sync matches To/From to CRM contacts and leads.
           </p>
         </Card>
         <Card>
@@ -79,24 +74,10 @@ export function EmailsPage() {
           </div>
           <div className="font-semibold">3. Send from CRM</div>
           <p className="mt-1 text-sm text-text-secondary">
-            Compose from a contact or deal; send through the connected mailbox so replies stay in the same thread and CRM history.
+            Compose from a contact or deal through the connected mailbox.
           </p>
         </Card>
       </div>
-
-      <Card className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="font-semibold">Same idea as WhatsApp + AskMeister</div>
-          <p className="mt-1 text-sm text-text-secondary">
-            Channel connected → conversations linked to people → logged as engagement. Email uses OAuth sync instead of a WhatsApp gateway.
-          </p>
-        </div>
-        <Link to="/settings">
-          <Button variant="outline" size="sm">
-            <RefreshCw size={14} /> Configure
-          </Button>
-        </Link>
-      </Card>
     </div>
   )
 }

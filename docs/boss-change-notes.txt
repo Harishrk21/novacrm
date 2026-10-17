@@ -1,0 +1,951 @@
+================================================================================
+BOSS-SIDE CHANGE NOTES (running log)
+================================================================================
+Start: 14 Oct 2026
+Instruction: Note every boss-requested change clearly until told to END.
+Status: OPEN — keep appending until user says "end"
+================================================================================
+
+
+--------------------------------------------------------------------------------
+ENTRY 1 — Product uniqueness / no duplicate catalogue rows
+Date: 14 Oct 2026
+Sample to verify: ASK123
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Able to create duplicate product details (same model like ASK123).
+  - Clarify: what is the unique key?
+
+FINDING (as explained)
+  - Database unique key is ONLY: (tenantId, sku)
+  - Model name (e.g. ASK123) is NOT unique.
+  - Brand, HSN, description are NOT unique.
+  - Old create flow appended a random SKU suffix (…-ASK123-XXXX), so each
+    create looked unique to the DB even when the model name was the same.
+
+CHANGES MADE
+  1. Inventory hub (Edit/Add product drawer)
+     - Before create: block if same model name + same brand already exists.
+     - Clear error toast pointing to existing SKU; ask to edit instead.
+     - SKU generation is now deterministic (no random time suffix).
+       Format: HMS-{family}-{industry}-{brand?}-{model}
+
+  2. Products page (create flow)
+     - Same duplicate check (name + brand).
+     - Same deterministic SKU generation.
+
+  3. API error message (P2002 / SKU conflict)
+     - Clearer 409 text: product with this SKU already exists; open existing
+       product to edit — model name alone is not unique.
+
+FILES TOUCHED
+  - src/pages/erp/InventoryHubPage.tsx
+  - src/pages/erp/ProductsPage.tsx
+  - backend/src/middleware/error.middleware.ts
+
+NOT DONE / NOTE FOR BOSS
+  - Existing duplicate ASK123 rows already in DB are NOT auto-deleted.
+    Clean up / merge manually if needed.
+  - Unique constraint in DB remains (tenant_id, sku) — unchanged schema.
+
+
+--------------------------------------------------------------------------------
+ENTRY 2 — Edit product: GC months layout + optional months
+Date: 14 Oct 2026
+(Related boss UI feedback on Edit product form)
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  1. Bring GC Months dropdown below GC / Warranty.
+  2. Able to save without selecting any value in GC Months.
+
+CHANGES MADE
+  1. Layout: GC months sits under GC / warranty; AMC + Requires stamping stay
+     on the same row beside.
+  2. Save allowed with empty GC months (stores warrantyMonths as null).
+  3. Products page: removed “GC duration required” validation; label no longer
+     shows * ; placeholder “Months… (optional)”.
+
+FILES TOUCHED
+  - src/pages/erp/InventoryHubPage.tsx
+  - src/pages/erp/ProductsPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 3 — Add stock: master dropdown sort order (Main warehouse first)
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - On Add stock screen, all master dropdowns should have column sorting order.
+  - Warehouse dropdown: prefer “Main warehouse” as the first option
+    (was appearing after DEMO / Executive because API sorted by code A→Z).
+
+CHANGES MADE
+  1. Shared warehouse sort order:
+     Main (default / code MAIN) → STORE → DEMO → EXECUTIVE → STAMPING
+     → other/custom warehouses A→Z by name.
+  2. Applied on API workspace + lookups responses (backend).
+  3. Applied on Add stock UI (Inventory hub + Inventory page).
+  4. Default selected warehouse = Main warehouse when opening Add stock.
+  5. Brand / Supplier / Model / Spare / Engineer dropdown options sorted A→Z
+     by label/name.
+
+FILES TOUCHED
+  - backend/src/modules/inventory/warehouses.service.ts
+  - backend/src/modules/inventory/inventory.service.ts
+  - backend/src/modules/meta/meta.routes.ts
+  - src/lib/warehouseSort.ts (new)
+  - src/pages/erp/InventoryHubPage.tsx
+  - src/pages/erp/InventoryPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 4 — Stock On hand: row Actions (Add / Reduce) + single History tab
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  1. Add Actions button on each On hand stock row; on click show Add + Reduce.
+     Prefill that item on the stock add / reduce screen.
+  2. Use one History tab instead of “Reduce history” + “All history”.
+     (Asked: any reason for having both?)
+
+WHY TWO HISTORY TABS EXISTED (answer)
+  - “Reduce history” was only a shortcut: same History table with Action=Reduce
+    and date range forced to the current month.
+  - “All history” already had Action filter (Add + Reduce / Add only / Reduce only)
+    plus From/To dates — so the second tab was redundant UX.
+
+CHANGES MADE
+  1. On hand table: Actions column → menu with Add / Reduce.
+     Opens /erp/stock/move with productId or spareId (+ category) prefilled.
+  2. Tabs: On hand | Demo | History (removed Reduce history).
+  3. History keeps Action filter so reduce-only is still one click away.
+  4. Legacy ?view=reduce redirects to History with Action=Reduce.
+
+FILES TOUCHED
+  - src/pages/erp/InventoryHubPage.tsx
+  - src/pages/erp/StockMovePage.tsx (infer SPARE when spareId in URL)
+
+
+--------------------------------------------------------------------------------
+ENTRY 5 — Monthly stock report: Back button
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - No Back button visible on Monthly stock report screen.
+
+CHANGES MADE
+  - Added “Back to stock” button (same pattern as Add/Reduce stock pages).
+  - Inventory breadcrumb on report links to /erp/stock.
+
+FILES TOUCHED
+  - src/pages/erp/InventoryHubPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 6 — Stock History: remove duplicate top “Download report”
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Remove top “Download report” button — duplicates “Download Excel” in the
+    History filter row.
+
+CHANGES MADE
+  - Removed header Download report action on Stock page.
+  - History download remains via “Download Excel” next to Refresh filters.
+
+FILES TOUCHED
+  - src/pages/erp/InventoryHubPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 7 — Notification Open: requisition pending → approval page
+Date: 14 Oct 2026
+Sample: REQ-00003 · “Sales requisition pending approval” (ADMIN)
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Clicking Open on requisition pending notification did not open approval page.
+
+ROOT CAUSE
+  - API list endpoint set href="/notifications" for anything that wasn’t
+    ticket / lead / invoice_lead — including sales_requisition.
+  - Frontend notificationHref trusted that href first, so Open stayed on
+    Notifications instead of /sale-tracking?queue=requisitions&reqId=…
+
+CHANGES MADE
+  1. Backend: resolveNotificationHref — REQUISITION_PENDING / sales_requisition
+     → /sale-tracking?queue=requisitions&reqId={id}
+  2. Frontend: ignore stub href /notifications (and #); always resolve
+     requisition types from type/entityId.
+
+FILES TOUCHED
+  - backend/src/modules/notifications/notifications.routes.ts
+  - src/lib/notificationHref.ts
+
+
+--------------------------------------------------------------------------------
+ENTRY 8 — Confirm stamping: add Stamping number when Required = Yes
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Confirm stamping modal should have a field for stamping number when
+    Required = Yes (currently only stamped date + next due).
+
+CHANGES MADE
+  1. Added “Stamping number” (govt stamp / VC) under Required: Yes — on both
+     Confirm stamping modal and the release “complete” stamping step.
+  2. Saved per product line as stampLines[].stampingNumber; also stored as
+     requisition/unit vcNumber + stampingNumber for existing readers.
+
+FILES TOUCHED
+  - src/components/sales/RequisitionsPanel.tsx
+  - src/lib/api.ts
+  - backend/src/modules/requisitions/requisitions.service.ts
+
+
+--------------------------------------------------------------------------------
+ENTRY 9 — HMS Unique ID stuck on 0007 + Add stock UX
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - HMS Unique number always came as 0007; should be latest number + 1.
+  - Add-to-stock Unique ID screen felt confusing (start + end both same).
+
+CHANGES MADE
+  1. Backend: preview + receive now sync sequence from max HMS ID already
+     in stock for that year/family, then offer next. Receiving always bumps
+     the sequence (even when the form sends preview IDs).
+  2. UI: single HMS Unique ID field (range shown as helper text when qty > 1);
+     removed the confusing read-only “end” field on Add stock.
+
+FILES TOUCHED
+  - backend/src/modules/inventory/hmsUniqId.ts
+  - backend/src/modules/inventory/inventory.service.ts
+  - src/pages/erp/StockMovePage.tsx
+  - src/pages/erp/InventoryHubPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 10 — Release & ship: one tab per product
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Release & ship screen was hard to follow with products stacked vertically.
+  - Prefer tabs — one tab per product — so actions are clear at product level.
+
+CHANGES MADE
+  1. Product tabs (ASK123, astha, …) replace the stacked product list.
+  2. Stamping + pick units show only for the selected product tab.
+  3. Done products show a “already reduced” state; switch tab to continue.
+  4. Stamping validation runs for the active product only (per tab).
+
+FILES TOUCHED
+  - src/components/sales/RequisitionsPanel.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 11 — Service ticket form: group fields into tabs
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Service Ticket form is too long; group fields into tabs for a cleaner create flow.
+
+CHANGES MADE
+  1. After job type (Service / Stamping), create form uses tabs:
+     Details/Channel → Customer → Machine → Payment (non-desk) → Issue & assign.
+  2. Back / Next between tabs; validation jumps to the tab with missing fields.
+  3. Stamping step bar also switches the matching tab.
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 12 — Logout confirmation popup
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Clicking logout should ask “Are you sure you want to log out?” in a popup.
+
+CHANGES MADE
+  1. Confirm dialog before logout on sidebar, topbar avatar menu, field More menu,
+     and platform admin Sign out.
+
+FILES TOUCHED
+  - src/components/layout/Sidebar.tsx
+  - src/components/layout/Topbar.tsx
+  - src/components/layout/FieldBottomNav.tsx
+  - src/pages/admin/AdminApp.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 13 — Release & ship: vertical product tabs
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Keep one tab per product, but show tabs vertically for a clearer layout.
+
+CHANGES MADE
+  1. Replaced horizontal product pills with a left vertical product list
+     (status: need X / done, active highlight).
+  2. Stamping + pick units stay in the right panel for the selected product.
+  3. Helper copy updated to “list on the left”.
+
+FILES TOUCHED
+  - src/components/sales/RequisitionsPanel.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 14 — Release product tab: stamping quarter A–D
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - On each product tab, when stamping = Yes, also capture which quarter
+    (A / B / C / D) the machine is being stamped for.
+
+CHANGES MADE
+  1. Stamping quarter select (A Jan–Mar … D Oct–Dec) shown only when Yes.
+  2. Defaults from stamped date; saved on stamp line + requisition CF.
+  3. Same field on Confirm stamping modal.
+
+FILES TOUCHED
+  - src/components/sales/RequisitionsPanel.tsx
+  - src/lib/api.ts
+  - backend/src/modules/requisitions/requisitions.routes.ts
+  - backend/src/modules/requisitions/requisitions.service.ts
+
+
+--------------------------------------------------------------------------------
+ENTRY 15 — Machine stock alert (bottom-right) for warehouse
+Date: 14 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - When machine stock is less than 1, notify warehouse with a bottom-right
+    clickable prompt. Once stock is filled (>0), do not keep showing it.
+
+CHANGES MADE
+  1. Floating bottom-right stock alert for Warehouse / Admin / Manager
+     (machines inventory area).
+  2. Lists machine products with 0 in stock; click opens Add stock.
+  3. Auto-hides when stock is refilled; refreshes after receive / reduce /
+     release fulfill.
+
+FILES TOUCHED
+  - src/components/inventory/LowMachineStockAlert.tsx
+  - src/lib/stockEvents.ts
+  - src/components/layout/AppLayout.tsx
+  - src/lib/api.ts
+
+
+--------------------------------------------------------------------------------
+ENTRY 16 — Notifications: clickable rows + Expired / Old tab
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Entire notification row (and Open) should be clickable and go to the right
+    path for every login/role.
+  - Expired notifications should move to an Expired / Old tab.
+
+CHANGES MADE
+  1. Active / Unread / Expired·Old tabs on Notifications page.
+  2. Full row + Open navigate via role-aware path resolver.
+  3. Bell dropdown shows active only; expired stay on Expired / Old.
+  4. Backend href resolver aligned with frontend (warehouse → releases).
+
+FILES TOUCHED
+  - src/pages/NotificationsPage.tsx
+  - src/components/layout/Topbar.tsx
+  - src/lib/notificationHref.ts
+  - src/lib/notificationOpen.ts
+  - src/store/notificationsStore.ts
+  - src/lib/api.ts
+  - backend/src/modules/notifications/notifications.routes.ts
+
+
+--------------------------------------------------------------------------------
+ENTRY 17 — Go-live hardening: security + UX cleanup
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Fix edge cases / loopholes from project audit.
+  - Make non-clickable controls work (or stop looking like buttons).
+  - Remove duplicate buttons without breaking flows.
+
+CHANGES MADE
+  1. Ticket GET/PATCH: scoped roles can only access tickets they are on
+     (engineers may still VIEW open unassigned pool to Accept).
+  2. Engineer Mark complete requires day notes on the API (was UI-only).
+  3. Sale stock reduce restricted to warehouse/admin/manager; demo issue
+     still allowed for sales. Approved releases fulfill path unchanged.
+  4. Tickets queue chips sync with URL (?queue=…) so Sidebar links work.
+  5. Removed duplicate Mark complete / Approve & close / service report /
+     bill-menu download / Job sheet PDF / Stock Move header submit /
+     New lead (list card).
+  6. Products “Filters” inert button → plain label; Settings Edit opens
+     that user on Users page; unknown notifications → /workqueue.
+  7. Status dropdown no longer offers invalid OPEN → RESOLVED.
+
+FILES TOUCHED
+  - backend/src/modules/tickets/tickets.routes.ts
+  - backend/src/modules/inventory/inventory.controller.ts
+  - backend/src/modules/notifications/notifications.routes.ts
+  - src/pages/TicketDetailPage.tsx
+  - src/pages/TicketsPage.tsx
+  - src/pages/erp/ProductsPage.tsx
+  - src/pages/erp/StockMovePage.tsx
+  - src/pages/LeadsPage.tsx
+  - src/pages/SettingsPage.tsx
+  - src/pages/UsersPage.tsx
+  - src/lib/notificationHref.ts
+
+
+--------------------------------------------------------------------------------
+ENTRY 18 — Service desk Workqueue: task / meeting forms make sense
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Create task showed “Lead / enquiry” which is sales language — unclear for
+    service desk.
+  - Create meeting popup fields didn’t make sense for a real meeting.
+
+CHANGES MADE
+  1. Service desk (and engineer/admin workqueue) create forms link optional
+     Service ticket + Customer — not Lead / enquiry.
+  2. Sales desk keeps Lead / enquiry pickers as before.
+  3. Meeting form: title, meeting time, duration, location, agenda.
+  4. Call form: call time, duration, purpose notes; task form: due + notes.
+  5. SERVICE_DESK granted activities:view / activities:write so Save works.
+
+FILES TOUCHED
+  - src/pages/WorkqueuePage.tsx
+  - backend/src/common/permissions.ts
+
+
+--------------------------------------------------------------------------------
+ENTRY 19 — Workqueue Service tickets filter actually filters
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Under My Jobs → Service tickets, top-right filter did nothing.
+
+CHANGES MADE
+  1. Date filter (Today & Overdue / Today / Overdue / Week / All) now applies
+     to service tickets via SLA due date (+ slaBreached).
+  2. Added status filter (Open / In progress / Waiting / Pending approval).
+  3. Search toggle renamed Search; placeholder “Search SVC / customer…”.
+
+FILES TOUCHED
+  - src/pages/WorkqueuePage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 20 — New ticket form: full page (not right drawer)
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - New ticket form should be a full-screen page, not a right drawer.
+
+CHANGES MADE
+  1. Create-ticket UI is a full-width page card (header + form + sticky
+     Cancel / Save bar) instead of FormPanel drawer.
+  2. Page header shows New ticket title + Back to list / Create actions.
+  3. Discard-changes confirm still runs when leaving the form.
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 21 — New ticket full-page wizard polish + calm errors
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Full-page new ticket should look like a proper stepwise page.
+  - Don’t throw technical / red top-right toasts for missing fields —
+    clear, friendly in-form guidance instead.
+
+CHANGES MADE
+  1. Wizard layout: step chips, gradient step header, Continue / Create.
+  2. Validation & save failures show a soft sky “guide” banner on the page
+     (no red top-right toast for create-form errors).
+  3. Friendly copy for missing customer / machine / issue / engineer.
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+  - src/components/ui/MissingField.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 22 — New ticket: customer → machines in one step + add customer popup
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - After finding a customer (e.g. Ashok), show their machines to pick from.
+  - Or add a new machine for this visit from the same screen.
+  - If customer not found, add them in a popup here (don’t leave the page).
+
+CHANGES MADE
+  1. Wizard step “Customer & machine” — pick customer, then see machines.
+  2. Cards: Existing on file (pick) vs Add new machine.
+  3. “Add new customer” in search opens an in-page popup (name + mobile).
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+  - src/components/contacts/ContactPicker.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 23 — New ticket: medium crisp size + Create only on last step
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Wizard flow is right, but type cards / step tabs / paddings look too big.
+  - Don’t show “Create ticket” until the last step — follow the steps first.
+
+CHANGES MADE
+  1. Compact wizard: smaller headers, step chips (md not pill-jumbo), tighter
+     cards and section padding — medium, crisp, clear.
+  2. Create / Save only appears on the last step (header + sticky + in-form).
+     Earlier steps show Continue only.
+  3. List PageTabs hidden while on create (Back to list in header instead).
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 24 — New ticket: number existing machines + origin before add-new
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Show existing machines as 1. 2. …
+  - On Add new machine, choose Sold by us / Outside before filling details.
+
+CHANGES MADE
+  1. Existing machine cards numbered 1. 2. …
+  2. Add-new path: Sold by us vs Outside first; details form only after pick.
+  3. Save uses the chosen origin (not forced Outside).
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 25 — New ticket: full add-customer popup + machine
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - If customer not found, popup should have the exact add-new-customer fields
+    plus machine details (Sold by us / Outside).
+
+CHANGES MADE
+  1. “Add new customer” opens a large popup with full shop fields (address,
+     mobiles, WhatsApp, email, notes) matching Create Contact.
+  2. Same popup: Sold by us / Outside + catalog or outside machine fields.
+  3. Save creates customer + machine and selects both on the ticket.
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 26 — Ticket detail: payment always on + grouped full view
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - After ticket is created, payment must be enabled whether engineer is
+    assigned or not.
+  - Full ticket view should be grouped for clearer reading.
+
+CHANGES MADE
+  1. Payment section shown early on ticket detail — Save / Mark paid available
+     without assignment.
+  2. Full view grouped: Customer & machine · Issue · Actions · Payment ·
+     Work/approval · Assignment · Spares · Team notes.
+
+FILES TOUCHED
+  - src/pages/TicketDetailPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 27 — Ticket detail: collapsible groups + Actions row
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Groups should open/close with down arrow.
+  - Clarify Actions; align controls row-wise.
+
+CHANGES MADE
+  1. Each group is a chevron accordion (Customer, Actions, Payment, Work,
+     Assignment, Spares, Team notes).
+  2. Actions = 4 columns in a row: Assign · Start · Complete · Docs.
+
+FILES TOUCHED
+  - src/pages/TicketDetailPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 28 — Closed tickets: dates + service report download; admin month collected
+Date: 15 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - After a ticket is closed, show closed date; keep creation date visible.
+  - Service report downloadable per closed service (download icon on each row).
+  - Admin must see total service amount collected this month accurately.
+  - Creation date important for sales and service lists.
+
+CHANGES MADE
+  1. Tickets list: Created + Closed columns; download icon on each CLOSED row
+     (print / Save as PDF service report).
+  2. Service reports page: download icon on each report row.
+  3. Ticket detail: Created / Closed under title; Service report button when closed.
+  4. Sales (leads) list: dedicated Created column.
+  5. Admin analytics: “Service collected this month” = calendar month total
+     (PAID paymentTotal + PARTIAL advances; paidAt / closedAt / resolvedAt).
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+  - src/pages/ServiceReportsPage.tsx
+  - src/pages/TicketDetailPage.tsx
+  - src/pages/LeadsPage.tsx
+  - src/pages/AdminAnalyticsDashboard.tsx
+  - src/lib/serviceReportPrint.ts
+  - backend/src/modules/analytics/analytics.routes.ts
+
+
+--------------------------------------------------------------------------------
+ENTRY 29 — Stamping ticket: same create flow + stamp fields + progress bar
+Date: 16 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Stamping create same as service: search customer → pick old machine or add new.
+  - Payment same; additionally edit stamp date, next due, quarter on the form.
+  - 2-in-1: option if spare parts also needed on same visit.
+  - Add a progress bar.
+
+CHANGES MADE
+  1. Stamping create wizard aligned with service (customer / machine / payment /
+     issue) + violet progress bar (%).
+  2. After machine pick: editable Stamping date, Next due, Quarter (A–D), VC /
+     plate; optional “Also spare parts (2-in-1)” checkbox.
+  3. Create saves stamp dates on ticket + machine; alsoSpareParts flag opens
+     Spares panel on ticket detail.
+  4. Stamp fields remain editable on ticket detail before Mark complete.
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+  - src/pages/TicketDetailPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 30 — Quick create (+) menu must follow login role
+Date: 16 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Sales desk + icon can create lead enquiry — notice role-based UI.
+  - Each login should only see create / nav items allowed for that role.
+
+CHANGES MADE
+  1. Topbar Quick create (+) is role + module gated (not one list for everyone).
+  2. Sales desk: Sale enquiry, Customer, Proforma (if module on) — no service ticket.
+  3. Service desk: Service ticket, Stamping, Customer — no sale enquiry.
+  4. Warehouse: Customer / Stock move / Proforma as allowed; engineer field shell
+     still has no + (unchanged).
+
+FILES TOUCHED
+  - src/components/layout/Topbar.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 31 — Remove Service intake (/sale-tracking) from service desk
+Date: 16 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Why does Service intake open /sale-tracking? Not needed for service-first.
+
+CHANGES MADE
+  1. Removed “Service intake” from service desk sidebar (it was the sales
+     leads URL reused as phone intake).
+  2. Desk Service menu: tickets list + New service ticket + New stamping job.
+  3. Sale tracking stays for Sales desk only.
+
+FILES TOUCHED
+  - src/components/layout/Sidebar.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 32 — Confirm popups on approve / close / final sales steps
+Date: 16 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Popup confirmation for main actions: approve, close, final closing
+    (service + sales).
+
+CHANGES MADE
+  1. Service: Approve & close now opens the same confirm modal as Mark complete
+     (was firing close with no prompt).
+  2. Sales: Confirm before Approve & sign, Notify inventory, Reduce stock,
+     Reduce + ready to ship (lead detail).
+  3. Requisitions queue: Confirm before Sign and Ready to ship.
+  4. ConfirmModal supports primary (approve) vs danger (delete) buttons.
+  5. Demo return / convert / mark lost already had confirm UIs — labels clarified.
+
+FILES TOUCHED
+  - src/components/ui/Modal.tsx
+  - src/pages/TicketDetailPage.tsx
+  - src/pages/LeadDetailPage.tsx
+  - src/components/sales/RequisitionsPanel.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 33 — Reports / print reliability + service report centre
+Date: 16 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Recommend improvements for reports/invoices/downloads and fix them.
+
+CHANGES MADE
+  1. Shared openPrintHtml helper (blob tab + HTML download fallback).
+  2. Service report, job sheet, proforma, DC, PO use reliable opener
+     (fixed blank-tab / noopener failures).
+  3. Ticket “tax invoice” wording → Proforma (GST stays in Tally).
+  4. Service reports page: date / job type / status filters, paginated load
+     (up to ~1600 tickets scanned), Excel export of filtered rows.
+  5. Admin home: Download view (Excel of current range) + Full reports
+     carries ?range= into /reports.
+  6. Reports CSV export includes more than overview KPIs.
+
+FILES TOUCHED
+  - src/lib/openPrintHtml.ts (new)
+  - src/lib/serviceReportPrint.ts, jobSheetPrint.ts, invoicePrint.ts,
+    deliveryChallanPrint.ts
+  - src/pages/erp/PurchaseOrdersPage.tsx
+  - src/pages/TicketDetailPage.tsx
+  - src/pages/ServiceReportsPage.tsx
+  - src/pages/AdminAnalyticsDashboard.tsx
+  - src/pages/ReportsPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 34 — New machine for stamping/service opens as popup form
+Date: 17 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - While creating stamping (service) ticket, adding a new machine should popup
+    a form — current design clubs everything in one confusing frame.
+
+CHANGES MADE
+  1. Customer (step 1) and Machine (step 2) are separate coloured sections.
+  2. “Add new machine” opens a dedicated modal: origin → product details.
+  3. Main wizard only shows a short summary + Edit / Open form buttons.
+  4. Validation re-opens the modal if origin/name missing on create.
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+
+FOLLOW-UP (same day)
+  - Stamp date / next due / Outside banner no longer shows when only
+    “New machine” is selected. Appears after Use machine on ticket.
+  - Switching to New clears leftover stamp fields from an existing pick.
+
+
+--------------------------------------------------------------------------------
+ENTRY 35 — Create ticket always OPEN; first Accept; FlowStepBar
+Date: 17 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - After creating ticket: stay OPEN; whoever Accepts first gets it.
+  - Use progress step bar for engaging UX.
+
+CHANGES MADE
+  1. Create always saves status OPEN, unassigned (no assign on create).
+  2. Create wizard uses FlowStepBar (+ Open pool step).
+  3. Issue step explains first-Accept pool; assign picker removed from create.
+  4. Ticket detail shows lifecycle FlowStepBar (OPEN → Accept → Work → Close).
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+  - src/pages/TicketDetailPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 36 — Stamping: Save stamp result, then Mark complete at top
+Date: 17 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - After entering stamping date and filling the stamp section, show Save.
+  - Only after Save should Mark complete appear at the top.
+
+CHANGES MADE
+  1. Stamp section has “Save stamp result” (persists dates + stampResultSavedAt).
+  2. Editing stamp fields clears the saved flag until Save again.
+  3. Mark complete stays hidden/locked until save; then emerald banner + Actions.
+  4. Engineer and desk/admin both use the same save → unlock flow.
+
+FILES TOUCHED
+  - src/pages/TicketDetailPage.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 37 — Mark complete confirm + payment first; pro service report
+Date: 17 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Mark complete opens a confirm prompt.
+  - Only after payment confirmation / full amount paid can Mark complete run;
+    if payment missing, show that clearly.
+  - Service report download should look professional with full details.
+
+CHANGES MADE
+  1. Mark complete already opens confirm modal; copy now shows payment summary.
+  2. Mark complete blocked until PAID (or free ₹0); toast + scroll to Payment.
+  3. Service report print redesigned (customer/machine/facts/spares table/
+     payment/signatures); spare part lines saved on the report for download.
+
+FILES TOUCHED
+  - src/pages/TicketDetailPage.tsx
+  - src/lib/serviceReportPrint.ts
+  - src/components/tickets/ServiceReportModal.tsx
+
+
+--------------------------------------------------------------------------------
+ENTRY 38 — Stamping flow audit fixes
+Date: 17 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Check service-stamping flow is smooth without bugs / flow errors.
+
+CHANGES MADE
+  1. Existing machine no longer pre-fills historical stamp as “this visit”.
+  2. Quick-add sold machine on stamping does not stamp register until Save.
+  3. Free ₹0 Mark complete ignores unsaved payment draft typing.
+  4. Assigned engineer can Mark paid (backend + UI) so field flow unblocks.
+  5. Backend requires stampResultSavedAt before stamping → RESOLVED.
+  6. Hints/copy prioritize Save stamp → payment → Mark complete.
+
+FILES TOUCHED
+  - src/pages/TicketsPage.tsx
+  - src/pages/TicketDetailPage.tsx
+  - backend/src/modules/tickets/tickets.routes.ts
+
+
+--------------------------------------------------------------------------------
+ENTRY 39 — Rental hire flow (one serial per agreement)
+Date: 17 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Clear rental path: machine from stock to client on monthly hire;
+    serial noted; stock reduces; solid edge-case-free flow.
+  - One serial per rental (issue twice for two machines).
+
+CHANGES MADE
+  1. monthly_rate on rental_agreements (Prisma + RDS SQL / prod ALTER).
+  2. Issue race-safe: contact required, IN_STOCK re-check, no double ACTIVE.
+  3. Return + Cancel restore stock once; PATCH extend due/rates/notes.
+  4. Rentals UI: 3-step wizard + confirm; tabs Active/Overdue/Returned/
+     Cancelled; Return notes; Extend; Cancel; detail modal.
+  5. Inventory “place on rental” requires CRM customer + monthly rate.
+
+FILES TOUCHED
+  - backend/prisma/schema.prisma
+  - backend/src/modules/rentals/*
+  - backend/src/modules/inventory/inventory.service.ts (+ schema)
+  - database/rds/*.sql
+  - src/pages/RentalsPage.tsx
+  - src/pages/erp/InventoryPage.tsx
+  - src/lib/api.ts
+
+
+--------------------------------------------------------------------------------
+ENTRY 40 — Phase 1 readiness (bugs + speed, no redesign)
+Date: 17 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Raise readiness toward 90 without changing design / update UX.
+
+CHANGES MADE
+  1. Leads list: stamping convert ConfirmModal (same as lead detail).
+  2. Stock reduce: race-safe updateMany before qty decrement.
+  3. Tickets summary: SQL SUM for balance outstanding (no full open list).
+  4. Workqueue soft-refresh 45s + refresh on tab visible (was 20s).
+  5. Analytics: DB-level filters + stockLevel.aggregate (same charts).
+
+FILES TOUCHED
+  - src/pages/LeadsPage.tsx
+  - src/pages/WorkqueuePage.tsx
+  - backend/src/modules/tickets/tickets.routes.ts
+  - backend/src/modules/inventory/inventory.service.ts
+  - backend/src/modules/analytics/analytics.routes.ts
+
+
+--------------------------------------------------------------------------------
+ENTRY 41 — Phase 2 readiness (~90: payment sync, auth, nav, cache, lists, DB check)
+Date: 17 Oct 2026
+--------------------------------------------------------------------------------
+
+WHAT BOSS ASKED
+  - Proceed Phase 2 (defaults OK): API PAID/free before RESOLVED + auth/nav/Redis/DTOs/check.
+
+CHANGES MADE
+  1. API: assertCanCompletePayment before RESOLVED (same as UI); free jobs auto-PAID.
+  2. Auth: single-flight refresh mutex; 401 → branded /login/:slug via tenantLoginPath.
+  3. Roles/nav: MANAGER = company admin UI; desk gets AMC/stamping/rentals;
+     sales + warehouse get proforma invoices (+ sales releases).
+  4. Redis: fail-open clarified; DEPLOY/.env.example recommend prod REDIS_URL;
+     leads list cache TTL 120s (analytics already cached).
+  5. Ticket + lead list: select DTOs (no full TEXT dump); lead serviceType in SQL.
+  6. 03_check: indexes matched by column set (not short name only); all 11 cores.
+
+FILES TOUCHED
+  - backend/src/modules/tickets/ticketLifecycle.ts
+  - backend/src/modules/tickets/tickets.routes.ts
+  - backend/src/modules/leads/leads.service.ts
+  - backend/src/config/redis.ts
+  - backend/.env.example, DEPLOY.md
+  - src/lib/api.ts, src/lib/roles.ts, src/components/layout/Sidebar.tsx
+  - database/rds/03_check_up_to_date.sql
+
+
+================================================================================
+NEXT ENTRIES — append below this line as boss requests arrive
+================================================================================
+

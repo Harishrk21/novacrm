@@ -6,7 +6,7 @@ import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { FlowStepBar } from '@/components/ui/FlowStepBar'
 import { Input } from '@/components/ui/Input'
-import { Modal } from '@/components/ui/Modal'
+import { ConfirmModal, Modal } from '@/components/ui/Modal'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError } from '@/lib/api'
@@ -23,6 +23,7 @@ import {
   suggestStampingRequired,
   type ReleaseOrderLine,
 } from '@/lib/inventoryFlow'
+import { stampQuarterFromDate, STAMP_QUARTERS } from '@/lib/hmsCoverage'
 import { isWeighingCatalogProduct, productAttrs } from '@/lib/productCatalog'
 import { APP_NAME } from '@/lib/branding'
 import { can } from '@/lib/permissions'
@@ -132,7 +133,19 @@ type StampLineDraft = {
   stampingRequired: boolean
   stampingDate: string
   nextDueDate: string
+  /** Govt stamp / VC number — shown when Required = Yes */
+  stampingNumber: string
+  /** A Jan–Mar · B Apr–Jun · C Jul–Sep · D Oct–Dec — shown when Required = Yes */
+  stampingQuarter: '' | 'A' | 'B' | 'C' | 'D'
 }
+
+const STAMP_QUARTER_OPTIONS = [
+  { value: '', label: 'Select quarter…' },
+  ...STAMP_QUARTERS.map((q) => ({
+    value: q.code,
+    label: `Quarter ${q.code} · ${q.months}`,
+  })),
+]
 
 function stampingIsConfirmed(cf: Record<string, unknown>): boolean {
   if (cf.stampingConfirmedAt || cf.stampingSkipped) return true
@@ -264,6 +277,9 @@ export function RequisitionsPanel({
   const [stampLines, setStampLines] = useState<StampLineDraft[]>([])
   const [rejectId, setRejectId] = useState<string | null>(null)
   const [rejectReason, setRejectReason] = useState('')
+  const [confirmAction, setConfirmAction] = useState<null | { type: 'approve' | 'ship'; id: string }>(
+    null,
+  )
   const [pickOpen, setPickOpen] = useState<{
     id: string
     productId?: string | null
@@ -365,12 +381,24 @@ export function RequisitionsPanel({
     const today = new Date().toISOString().slice(0, 10)
     if (Array.isArray(cf.stampLines) && cf.stampLines.length) {
       setStampLines(
-        (cf.stampLines as Array<Record<string, unknown>>).map((l) => ({
-          label: String(l.label ?? 'Product'),
-          stampingRequired: Boolean(l.stampingRequired),
-          stampingDate: l.stampingDate ? String(l.stampingDate) : today,
-          nextDueDate: l.nextDueDate ? String(l.nextDueDate) : '',
-        })),
+        (cf.stampLines as Array<Record<string, unknown>>).map((l) => {
+          const date = l.stampingDate ? String(l.stampingDate) : today
+          const qRaw = String(l.stampingQuarter ?? cf.stampingQuarter ?? '')
+            .trim()
+            .toUpperCase()
+          const quarter =
+            qRaw === 'A' || qRaw === 'B' || qRaw === 'C' || qRaw === 'D'
+              ? qRaw
+              : stampQuarterFromDate(date)
+          return {
+            label: String(l.label ?? 'Product'),
+            stampingRequired: Boolean(l.stampingRequired),
+            stampingDate: date,
+            nextDueDate: l.nextDueDate ? String(l.nextDueDate) : '',
+            stampingNumber: String(l.stampingNumber ?? l.vcNumber ?? cf.vcNumber ?? ''),
+            stampingQuarter: quarter,
+          }
+        }),
       )
     } else {
       setStampLines(
@@ -379,11 +407,21 @@ export function RequisitionsPanel({
             typeof cf.stampingRequired === 'boolean'
               ? Boolean(cf.stampingRequired)
               : suggestStampingRequired(label)
+          const date = cf.stampingDate ? String(cf.stampingDate) : today
+          const qRaw = String(cf.stampingQuarter ?? '')
+            .trim()
+            .toUpperCase()
+          const quarter =
+            qRaw === 'A' || qRaw === 'B' || qRaw === 'C' || qRaw === 'D'
+              ? qRaw
+              : stampQuarterFromDate(date)
           return {
             label,
             stampingRequired: required,
-            stampingDate: cf.stampingDate ? String(cf.stampingDate) : today,
+            stampingDate: date,
             nextDueDate: cf.nextDueDate ? String(cf.nextDueDate) : '',
+            stampingNumber: cf.vcNumber ? String(cf.vcNumber) : '',
+            stampingQuarter: quarter,
           }
         }),
       )
@@ -394,7 +432,7 @@ export function RequisitionsPanel({
 
   function applyPickerSelection(
     products: Array<Record<string, unknown>>,
-    progress: ReturnType<typeof releaseStockProgress>,
+    progress: { activeLine: ReleaseOrderLine | null },
     preferredProductId?: string,
   ) {
     const active = progress.activeLine
@@ -419,6 +457,35 @@ export function RequisitionsPanel({
     setPickProductId(nextProductId)
     setPickMachineType(nextType)
     setPickedUnitIds([])
+  }
+
+  /** Switch Release & ship focus to one ordered product (tab). */
+  function selectReleaseProductTab(lineIndex: number) {
+    if (!pickOpen) return
+    const line = pickOpen.orderLines.find((l) => l.index === lineIndex)
+    if (!line) return
+    setPickOpen((prev) => (prev ? { ...prev, activeLine: line } : prev))
+    setPickedUnitIds([])
+    if (line.done) {
+      setPickProductId('')
+      setPickMachineType('')
+      return
+    }
+    applyPickerSelection(catalogProducts, { activeLine: line })
+  }
+
+  function stampIndexForOrderLine(line: ReleaseOrderLine | null | undefined): number {
+    if (!line || !stampLines.length) return -1
+    const exact = stampLines.findIndex(
+      (l) => l.label.trim().toLowerCase() === line.label.trim().toLowerCase(),
+    )
+    if (exact >= 0) return exact
+    if (line.index >= 0 && line.index < stampLines.length) return line.index
+    return stampLines.findIndex((l) => {
+      const a = l.label.trim().toLowerCase()
+      const b = line.label.trim().toLowerCase()
+      return Boolean(a && b && (a.includes(b) || b.includes(a)))
+    })
   }
 
   function syncPickOpenProgress(
@@ -620,6 +687,9 @@ export function RequisitionsPanel({
     )
   }, [stockOptions, pickProductId])
 
+  const activeStampIdx = stampIndexForOrderLine(pickOpen?.activeLine)
+  const activeStampLine = activeStampIdx >= 0 ? stampLines[activeStampIdx] : null
+
   const pickIsWeighing = pickMachineType === 'WEIGHING_SCALES'
 
   async function approve(id: string) {
@@ -666,16 +736,31 @@ export function RequisitionsPanel({
         })
         return
       }
+      if (line.stampingRequired && !line.stampingQuarter) {
+        addToast({
+          type: 'error',
+          message: `Select stamping quarter (A–D) for "${line.label}"`,
+        })
+        return
+      }
     }
+    const primaryStampNo =
+      stampLines.find((l) => l.stampingRequired && l.stampingNumber.trim())?.stampingNumber.trim() ||
+      null
     setBusyId(id)
     try {
       await api.recordRequisitionStamping(id, {
         stockUnitId: pickedUnitIds[0] || null,
+        vcNumber: primaryStampNo,
         lines: stampLines.map((l) => ({
           label: l.label,
           stampingRequired: l.stampingRequired,
           stampingDate: l.stampingRequired ? l.stampingDate : null,
           nextDueDate: l.stampingRequired && l.nextDueDate ? l.nextDueDate : null,
+          stampingNumber:
+            l.stampingRequired && l.stampingNumber.trim() ? l.stampingNumber.trim() : null,
+          stampingQuarter:
+            l.stampingRequired && l.stampingQuarter ? l.stampingQuarter : null,
         })),
       })
       setStampOpen(null)
@@ -970,25 +1055,43 @@ export function RequisitionsPanel({
       })
       return
     }
-    for (const line of stampLines) {
-      if (line.stampingRequired && !line.stampingDate) {
-        addToast({
-          type: 'error',
-          message: `Enter stamping date for "${line.label}" (or set Required = No)`,
-        })
-        return
-      }
+    const stampIdx = stampIndexForOrderLine(active)
+    const activeStamp = stampIdx >= 0 ? stampLines[stampIdx] : null
+    if (activeStamp?.stampingRequired && !activeStamp.stampingDate) {
+      addToast({
+        type: 'error',
+        message: `Enter stamping date for "${activeStamp.label}" (or set Required = No)`,
+      })
+      return
+    }
+    if (activeStamp?.stampingRequired && !activeStamp.stampingQuarter) {
+      addToast({
+        type: 'error',
+        message: `Select stamping quarter (A–D) for "${activeStamp.label}"`,
+      })
+      return
     }
     const id = pickOpen.id
     const ids = pickedUnitIds.slice(0, need)
+    const primaryStampNo =
+      (activeStamp?.stampingRequired && activeStamp.stampingNumber.trim()
+        ? activeStamp.stampingNumber.trim()
+        : null) ||
+      stampLines.find((l) => l.stampingRequired && l.stampingNumber.trim())?.stampingNumber.trim() ||
+      null
     setBusyId(id)
     try {
       await api.recordRequisitionStamping(id, {
+        vcNumber: primaryStampNo,
         lines: stampLines.map((l) => ({
           label: l.label,
           stampingRequired: l.stampingRequired,
           stampingDate: l.stampingRequired ? l.stampingDate : null,
           nextDueDate: l.stampingRequired && l.nextDueDate ? l.nextDueDate : null,
+          stampingNumber:
+            l.stampingRequired && l.stampingNumber.trim() ? l.stampingNumber.trim() : null,
+          stampingQuarter:
+            l.stampingRequired && l.stampingQuarter ? l.stampingQuarter : null,
         })),
       })
       let updated: Record<string, unknown> | null = null
@@ -1401,7 +1504,7 @@ export function RequisitionsPanel({
                             <Button
                               size="sm"
                               disabled={busyId === id}
-                              onClick={() => void approve(id)}
+                              onClick={() => setConfirmAction({ type: 'approve', id })}
                             >
                               Sign
                             </Button>
@@ -1435,7 +1538,7 @@ export function RequisitionsPanel({
                             onReduce={() => void openStockPicker(row, false)}
                             onCreateDc={() => void createSaleDc(id)}
                             onPrintDc={() => printSaleDc(row)}
-                            onShip={() => void ship(id)}
+                            onShip={() => setConfirmAction({ type: 'ship', id })}
                           />
                         ) : null}
                       </div>
@@ -1447,6 +1550,31 @@ export function RequisitionsPanel({
           </table>
         </div>
       )}
+
+      <ConfirmModal
+        open={confirmAction?.type === 'approve'}
+        onClose={() => setConfirmAction(null)}
+        title="Approve & sign this sale?"
+        body="Confirms the sales requisition. Sales can then notify inventory to release stock. Continue?"
+        confirmLabel={busyId === confirmAction?.id ? 'Signing…' : 'Approve & sign'}
+        confirmVariant="primary"
+        onConfirm={() => {
+          const id = confirmAction?.id
+          if (id) void approve(id)
+        }}
+      />
+      <ConfirmModal
+        open={confirmAction?.type === 'ship'}
+        onClose={() => setConfirmAction(null)}
+        title="Mark ready to ship?"
+        body="Moves this release to Shipped and notifies sales. Continue?"
+        confirmLabel={busyId === confirmAction?.id ? 'Shipping…' : 'Ready to ship'}
+        confirmVariant="primary"
+        onConfirm={() => {
+          const id = confirmAction?.id
+          if (id) void ship(id)
+        }}
+      />
 
       <Modal
         open={Boolean(rejectId)}
@@ -1493,6 +1621,7 @@ export function RequisitionsPanel({
             <Button
               disabled={
                 busyId === pickOpen?.id ||
+                Boolean(pickOpen?.activeLine?.done) ||
                 !pickedUnitIds.length ||
                 (activeLineRemaining > 0 && pickedUnitIds.length !== activeLineRemaining)
               }
@@ -1502,13 +1631,18 @@ export function RequisitionsPanel({
                 ? pickOpen?.mode === 'complete'
                   ? 'Releasing…'
                   : 'Reducing…'
-                : pickOpen?.mode === 'complete'
-                  ? pickOpen.activeLine && !pickOpen.orderLines.every((l) => l.done || l.index === pickOpen.activeLine?.index)
-                    ? `Reduce “${pickOpen.activeLine.label}” (${pickedUnitIds.length}/${activeLineRemaining}) → next`
-                    : `Finish release (${pickedUnitIds.length}/${activeLineRemaining || pickedUnitIds.length})`
-                  : activeLineRemaining > 0
-                    ? `Reduce ${pickedUnitIds.length}/${activeLineRemaining} for this product`
-                    : 'Reduce stock'}
+                : pickOpen?.activeLine?.done
+                  ? 'Already reduced'
+                  : pickOpen?.mode === 'complete'
+                    ? pickOpen.activeLine &&
+                      !pickOpen.orderLines.every(
+                        (l) => l.done || l.index === pickOpen.activeLine?.index,
+                      )
+                      ? `Reduce “${pickOpen.activeLine.label}” (${pickedUnitIds.length}/${activeLineRemaining}) → next`
+                      : `Finish release (${pickedUnitIds.length}/${activeLineRemaining || pickedUnitIds.length})`
+                    : activeLineRemaining > 0
+                      ? `Reduce ${pickedUnitIds.length}/${activeLineRemaining} for this product`
+                      : 'Reduce stock'}
             </Button>
           </>
         }
@@ -1562,46 +1696,6 @@ export function RequisitionsPanel({
                 </div>
               ) : null}
             </div>
-            {(pickOpen.orderLines?.length ? pickOpen.orderLines : null) ? (
-              <ul className="mt-3 space-y-1.5 border-t border-sky-200/70 pt-3 dark:border-sky-800/50">
-                {pickOpen.orderLines.map((line) => {
-                  const isActive = pickOpen.activeLine?.index === line.index && !line.done
-                  return (
-                    <li
-                      key={`${line.label}-${line.index}`}
-                      className={`flex flex-wrap items-center gap-2 rounded-lg px-2 py-1.5 text-sm ${
-                        line.done
-                          ? 'text-emerald-700 dark:text-emerald-300'
-                          : isActive
-                            ? 'bg-sky-100/80 text-sky-950 dark:bg-sky-950/50 dark:text-sky-100'
-                            : 'text-text-primary'
-                      }`}
-                    >
-                      <span
-                        className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold ${
-                          line.done
-                            ? 'bg-emerald-500 text-white'
-                            : isActive
-                              ? 'bg-sky-600 text-white'
-                              : 'bg-card text-text-secondary ring-1 ring-border'
-                        }`}
-                      >
-                        {line.done ? '✓' : line.index + 1}
-                      </span>
-                      <span className="font-medium">{line.label}</span>
-                      <span className="text-xs text-text-secondary">
-                        Qty {line.reduced}/{line.qty}
-                        {line.done
-                          ? ' · done'
-                          : isActive
-                            ? ` · reduce ${line.remaining} now`
-                            : ' · waiting'}
-                      </span>
-                    </li>
-                  )
-                })}
-              </ul>
-            ) : null}
             {pickOpen.customer.leadId && canViewSale ? (
               <Link
                 to={`/sale-tracking/${pickOpen.customer.leadId}`}
@@ -1613,80 +1707,222 @@ export function RequisitionsPanel({
           </div>
         ) : null}
 
-        {pickOpen?.mode === 'complete' ? (
+        <div
+          className={
+            pickOpen && pickOpen.orderLines.length > 1
+              ? 'flex flex-col gap-4 sm:flex-row sm:items-stretch sm:gap-5'
+              : undefined
+          }
+        >
+          {pickOpen && pickOpen.orderLines.length > 0 ? (
+            <nav
+              aria-label="Products on this release"
+              className={`shrink-0 rounded-xl border border-sky-200/80 bg-sky-50/40 p-2 dark:border-sky-800/50 dark:bg-sky-950/30 ${
+                pickOpen.orderLines.length > 1
+                  ? 'sm:w-[11.5rem] sm:self-start'
+                  : 'mb-4'
+              }`}
+            >
+              <div className="mb-1.5 px-2 text-[11px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                Products
+                <span className="ml-1 font-normal normal-case tracking-normal text-text-secondary">
+                  ({pickOpen.orderLines.filter((l) => l.done).length}/{pickOpen.orderLines.length}{' '}
+                  done)
+                </span>
+              </div>
+              <ul className="flex flex-col gap-1">
+                {pickOpen.orderLines.map((line) => {
+                  const isActive = pickOpen.activeLine?.index === line.index
+                  return (
+                    <li key={`${line.label}-${line.index}`}>
+                      <button
+                        type="button"
+                        onClick={() => selectReleaseProductTab(line.index)}
+                        className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition ${
+                          isActive
+                            ? 'bg-sky-600 text-white shadow-sm shadow-sky-600/25'
+                            : line.done
+                              ? 'bg-emerald-50 text-emerald-900 hover:bg-emerald-100/80 dark:bg-emerald-950/40 dark:text-emerald-100 dark:hover:bg-emerald-950/60'
+                              : 'bg-card text-text-primary hover:bg-sky-100/70 dark:hover:bg-sky-950/50'
+                        }`}
+                      >
+                        <span
+                          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
+                            line.done
+                              ? isActive
+                                ? 'bg-white/25 text-white'
+                                : 'bg-emerald-500 text-white'
+                              : isActive
+                                ? 'bg-white/25 text-white'
+                                : 'bg-muted text-text-secondary ring-1 ring-border'
+                          }`}
+                        >
+                          {line.done ? '✓' : line.index + 1}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-semibold">{line.label}</span>
+                          <span
+                            className={`block text-[11px] ${
+                              isActive ? 'text-white/80' : 'text-text-secondary'
+                            }`}
+                          >
+                            {line.done
+                              ? `Done · ${line.reduced}/${line.qty}`
+                              : `Need ${line.remaining} of ${line.qty}`}
+                          </span>
+                        </span>
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            </nav>
+          ) : null}
+
+          <div className="min-w-0 flex-1">
+        {pickOpen?.mode === 'complete' &&
+        pickOpen.activeLine &&
+        !pickOpen.activeLine.done &&
+        activeStampLine &&
+        activeStampIdx >= 0 ? (
           <div className="mb-4 space-y-3 rounded-xl border border-amber-200/80 bg-amber-50/50 p-4 dark:border-amber-900/40 dark:bg-amber-950/20">
             <div>
-              <h3 className="text-sm font-semibold text-text-primary">1. Stamping</h3>
+              <h3 className="text-sm font-semibold text-text-primary">
+                1. Stamping — {pickOpen.activeLine.label}
+              </h3>
               <p className="text-xs text-text-secondary">
-                Yes = stamped (enter date). No = not required (billing/POS). Then pick units below.
+                Yes = stamped (enter date). No = not required (billing/POS). Then pick unit(s)
+                below.
               </p>
             </div>
-            {stampLines.map((line, idx) => (
-              <div
-                key={`${line.label}-${idx}`}
-                className="rounded-lg border border-border bg-card p-3"
-              >
-                <div className="text-sm font-semibold">{line.label}</div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant={line.stampingRequired ? 'primary' : 'outline'}
-                    onClick={() =>
-                      setStampLines((prev) =>
-                        prev.map((l, i) => (i === idx ? { ...l, stampingRequired: true } : l)),
-                      )
-                    }
-                  >
-                    Yes
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={!line.stampingRequired ? 'primary' : 'outline'}
-                    onClick={() =>
-                      setStampLines((prev) =>
-                        prev.map((l, i) => (i === idx ? { ...l, stampingRequired: false } : l)),
-                      )
-                    }
-                  >
-                    No
-                  </Button>
-                </div>
-                {line.stampingRequired ? (
-                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <div className="rounded-lg border border-border bg-card p-3">
+              <div className="mt-0.5 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant={activeStampLine.stampingRequired ? 'primary' : 'outline'}
+                  onClick={() =>
+                    setStampLines((prev) =>
+                      prev.map((l, i) =>
+                        i === activeStampIdx
+                          ? {
+                              ...l,
+                              stampingRequired: true,
+                              stampingQuarter:
+                                l.stampingQuarter || stampQuarterFromDate(l.stampingDate),
+                            }
+                          : l,
+                      ),
+                    )
+                  }
+                >
+                  Yes
+                </Button>
+                <Button
+                  size="sm"
+                  variant={!activeStampLine.stampingRequired ? 'primary' : 'outline'}
+                  onClick={() =>
+                    setStampLines((prev) =>
+                      prev.map((l, i) =>
+                        i === activeStampIdx ? { ...l, stampingRequired: false } : l,
+                      ),
+                    )
+                  }
+                >
+                  No
+                </Button>
+              </div>
+              {activeStampLine.stampingRequired ? (
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <div className="sm:col-span-2">
                     <Input
-                      label="Stamped date *"
-                      type="date"
-                      value={line.stampingDate}
+                      label="Stamping number"
+                      value={activeStampLine.stampingNumber}
                       onChange={(e) =>
                         setStampLines((prev) =>
                           prev.map((l, i) =>
-                            i === idx ? { ...l, stampingDate: e.target.value } : l,
+                            i === activeStampIdx
+                              ? { ...l, stampingNumber: e.target.value }
+                              : l,
                           ),
                         )
                       }
-                    />
-                    <Input
-                      label="Next due (optional)"
-                      type="date"
-                      value={line.nextDueDate}
-                      onChange={(e) =>
-                        setStampLines((prev) =>
-                          prev.map((l, i) =>
-                            i === idx ? { ...l, nextDueDate: e.target.value } : l,
-                          ),
-                        )
-                      }
+                      placeholder="Govt stamp / VC number"
                     />
                   </div>
-                ) : (
-                  <p className="mt-2 text-xs text-text-secondary">No stamping for this line.</p>
-                )}
-              </div>
-            ))}
-            <h3 className="pt-1 text-sm font-semibold text-text-primary">2. Pick unit(s)</h3>
+                  <Select
+                    label="Stamping quarter *"
+                    value={activeStampLine.stampingQuarter}
+                    onChange={(e) =>
+                      setStampLines((prev) =>
+                        prev.map((l, i) =>
+                          i === activeStampIdx
+                            ? {
+                                ...l,
+                                stampingQuarter: e.target.value as StampLineDraft['stampingQuarter'],
+                              }
+                            : l,
+                        ),
+                      )
+                    }
+                    options={STAMP_QUARTER_OPTIONS}
+                  />
+                  <Input
+                    label="Stamped date *"
+                    type="date"
+                    value={activeStampLine.stampingDate}
+                    onChange={(e) => {
+                      const date = e.target.value
+                      setStampLines((prev) =>
+                        prev.map((l, i) =>
+                          i === activeStampIdx
+                            ? {
+                                ...l,
+                                stampingDate: date,
+                                stampingQuarter: date
+                                  ? stampQuarterFromDate(date)
+                                  : l.stampingQuarter,
+                              }
+                            : l,
+                        ),
+                      )
+                    }}
+                  />
+                  <Input
+                    label="Next due (optional)"
+                    type="date"
+                    value={activeStampLine.nextDueDate}
+                    onChange={(e) =>
+                      setStampLines((prev) =>
+                        prev.map((l, i) =>
+                          i === activeStampIdx ? { ...l, nextDueDate: e.target.value } : l,
+                        ),
+                      )
+                    }
+                  />
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-text-secondary">No stamping for this product.</p>
+              )}
+            </div>
+            <h3 className="pt-1 text-sm font-semibold text-text-primary">
+              2. Pick unit(s) — {pickOpen.activeLine.label}
+            </h3>
           </div>
         ) : null}
 
+        {pickOpen?.activeLine?.done ? (
+          <div className="mb-4 rounded-xl border border-emerald-200/80 bg-emerald-50/60 px-4 py-6 text-center dark:border-emerald-800/50 dark:bg-emerald-950/30">
+            <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
+              “{pickOpen.activeLine.label}” already reduced
+            </p>
+            <p className="mt-1 text-xs text-text-secondary">
+              Qty {pickOpen.activeLine.reduced}/{pickOpen.activeLine.qty} · pick the next product from
+              the list on the left
+            </p>
+          </div>
+        ) : null}
+
+        {!pickOpen?.activeLine?.done ? (
         <ol className="mb-4 grid grid-cols-3 gap-2">
           {[
             { n: 1, label: 'Type', done: Boolean(pickMachineType) },
@@ -1714,22 +1950,12 @@ export function RequisitionsPanel({
             </li>
           ))}
         </ol>
+        ) : null}
 
-        {stockLoading ? (
+        {pickOpen?.activeLine?.done ? null : stockLoading ? (
           <p className="py-8 text-center text-sm text-text-secondary">Loading stock…</p>
         ) : (
           <div className="space-y-4">
-            {pickOpen?.activeLine ? (
-              <div className="rounded-lg border border-sky-200 bg-sky-50/60 px-3 py-2 text-sm dark:border-sky-800 dark:bg-sky-950/30">
-                Now reducing:{' '}
-                <span className="font-semibold">{pickOpen.activeLine.label}</span>
-                <span className="text-text-secondary">
-                  {' '}
-                  · need exactly {pickOpen.activeLine.remaining} unit
-                  {pickOpen.activeLine.remaining === 1 ? '' : 's'}
-                </span>
-              </div>
-            ) : null}
 
             <div className="grid gap-4 sm:grid-cols-2">
               <Select
@@ -1812,7 +2038,7 @@ export function RequisitionsPanel({
                   {pickOpen?.activeLine
                     ? ` (“${pickOpen.activeLine.label}” × ${pickOpen.activeLine.qty})`
                     : ''}
-                  . Finish this product before the next (e.g. billing, then weighing).
+                  . Use the product list on the left to move between lines.
                 </p>
                 <ul className="max-h-[min(22rem,42vh)] space-y-2 overflow-auto rounded-xl border border-border bg-muted/15 p-2">
                   {pickUnitsForModel.map((u) => {
@@ -1882,13 +2108,15 @@ export function RequisitionsPanel({
             )}
           </div>
         )}
+          </div>
+        </div>
       </Modal>
 
       <Modal
         open={Boolean(stampOpen)}
         onClose={() => setStampOpen(null)}
         title="Confirm stamping"
-        subtitle="You stamp machines manually. Confirm per product: Required Yes → date + end date. Billing usually No."
+        subtitle="You stamp machines manually. Confirm per product: Required Yes → stamping number + dates. Billing usually No."
         size="xl"
         accent="amber"
         footer={
@@ -1923,7 +2151,16 @@ export function RequisitionsPanel({
                   variant={line.stampingRequired ? 'primary' : 'outline'}
                   onClick={() =>
                     setStampLines((prev) =>
-                      prev.map((l, i) => (i === idx ? { ...l, stampingRequired: true } : l)),
+                      prev.map((l, i) =>
+                        i === idx
+                          ? {
+                              ...l,
+                              stampingRequired: true,
+                              stampingQuarter:
+                                l.stampingQuarter || stampQuarterFromDate(l.stampingDate),
+                            }
+                          : l,
+                      ),
                     )
                   }
                 >
@@ -1943,17 +2180,57 @@ export function RequisitionsPanel({
               </div>
               {line.stampingRequired ? (
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <div className="sm:col-span-2">
+                    <Input
+                      label="Stamping number"
+                      value={line.stampingNumber}
+                      onChange={(e) =>
+                        setStampLines((prev) =>
+                          prev.map((l, i) =>
+                            i === idx ? { ...l, stampingNumber: e.target.value } : l,
+                          ),
+                        )
+                      }
+                      placeholder="Govt stamp / VC number"
+                    />
+                  </div>
+                  <Select
+                    label="Stamping quarter *"
+                    value={line.stampingQuarter}
+                    onChange={(e) =>
+                      setStampLines((prev) =>
+                        prev.map((l, i) =>
+                          i === idx
+                            ? {
+                                ...l,
+                                stampingQuarter: e.target.value as StampLineDraft['stampingQuarter'],
+                              }
+                            : l,
+                        ),
+                      )
+                    }
+                    options={STAMP_QUARTER_OPTIONS}
+                  />
                   <Input
                     label="Stamped date *"
                     type="date"
                     value={line.stampingDate}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      const date = e.target.value
                       setStampLines((prev) =>
                         prev.map((l, i) =>
-                          i === idx ? { ...l, stampingDate: e.target.value } : l,
+                          i === idx
+                            ? {
+                                ...l,
+                                stampingDate: date,
+                                stampingQuarter: date
+                                  ? stampQuarterFromDate(date)
+                                  : l.stampingQuarter,
+                              }
+                            : l,
                         ),
                       )
-                    }
+                    }}
                   />
                   <Input
                     label="End / next due date"

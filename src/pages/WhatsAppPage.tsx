@@ -27,6 +27,7 @@ import { cn, formatPhone, timeAgo } from '@/lib/utils'
 export function WhatsAppPage() {
   const addToast = useUIStore((s) => s.addToast)
   const connected = useAskMeisterStore((s) => s.connected)
+  const demoMode = useAskMeisterStore((s) => s.demoMode)
   const workspaceUrl = useAskMeisterStore((s) => s.workspaceUrl)
   const workspaceName = useAskMeisterStore((s) => s.workspaceName)
   const apiKey = useAskMeisterStore((s) => s.apiKey)
@@ -73,15 +74,24 @@ export function WhatsAppPage() {
       workspaceName: name,
       phoneNumberId: phoneId,
     })
-    if (ok) addToast({ type: 'success', message: 'AskMeister WhatsApp connected' })
-    else addToast({ type: 'error', message: 'Enter a valid AskMeister API key (min 8 chars)' })
+    if (ok) {
+      addToast({
+        type: 'success',
+        message: 'Local practice inbox loaded (not a live AskMeister API sync)',
+      })
+    } else {
+      addToast({ type: 'error', message: 'Enter a key of at least 8 characters' })
+    }
   }
 
   function handleSend() {
     if (!draft.trim()) return
     sendMessage(draft)
     setDraft('')
-    addToast({ type: 'success', message: 'Message sent via AskMeister' })
+    addToast({
+      type: 'success',
+      message: demoMode ? 'Saved in local practice inbox' : 'Message sent',
+    })
   }
 
   if (!connected) {
@@ -156,11 +166,15 @@ export function WhatsAppPage() {
                   variant="outline"
                   onClick={() => {
                     setKey('am_demo_novacrm_key')
-                    setName('AskMeister Demo')
-                    addToast({ type: 'info', message: 'Demo credentials filled — click Connect' })
+                    setName('AskMeister Demo (local)')
+                    addToast({
+                      type: 'info',
+                      message:
+                        'Local practice inbox only — not a live AskMeister sync. Click Connect to load sample chats.',
+                    })
                   }}
                 >
-                  Use demo credentials
+                  Use local demo inbox
                 </Button>
                 <a
                   href="https://app.askmeister.com"
@@ -217,14 +231,19 @@ export function WhatsAppPage() {
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'WhatsApp' }]}
         actions={
           <>
-            <Badge color="green">AskMeister connected</Badge>
+            <Badge color={demoMode ? 'amber' : 'green'}>
+              {demoMode ? 'Local demo inbox' : 'AskMeister connected'}
+            </Badge>
             {unreadTotal > 0 && <Badge color="amber">{unreadTotal} unread</Badge>}
             <Button
               variant="outline"
               size="sm"
               onClick={() => {
                 syncFromAskMeister()
-                addToast({ type: 'success', message: 'Synced from AskMeister' })
+                addToast({
+                  type: 'success',
+                  message: demoMode ? 'Reloaded local demo chats' : 'Synced',
+                })
               }}
             >
               <RefreshCw size={14} /> Sync

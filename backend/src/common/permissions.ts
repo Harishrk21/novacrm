@@ -124,6 +124,8 @@ export const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     "inventory:write",
     "purchase_orders:view",
     "purchase_orders:write",
+    "activities:view",
+    "activities:write",
     "whatsapp:view",
     "whatsapp:send",
     "ai:use",

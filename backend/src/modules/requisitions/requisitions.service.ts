@@ -974,6 +974,10 @@ type StampLineInput = {
   stampingRequired: boolean;
   stampingDate?: string | null;
   nextDueDate?: string | null;
+  /** Govt stamp / VC number */
+  stampingNumber?: string | null;
+  /** A Jan–Mar · B Apr–Jun · C Jul–Sep · D Oct–Dec */
+  stampingQuarter?: "A" | "B" | "C" | "D" | null;
 };
 
 /** Inventory confirms stamping required yes/no (weighing usually yes; billing no). Physical stamp is manual. */
@@ -1010,8 +1014,19 @@ export async function recordStamping(
     stampingRequired: boolean;
     stampingDate: string | null;
     nextDueDate: string | null;
+    stampingNumber: string | null;
+    stampingQuarter: "A" | "B" | "C" | "D" | null;
     confirmed: boolean;
   }>;
+
+  const normalizeQuarter = (
+    raw: string | null | undefined,
+  ): "A" | "B" | "C" | "D" | null => {
+    const q = String(raw ?? "")
+      .trim()
+      .toUpperCase();
+    return q === "A" || q === "B" || q === "C" || q === "D" ? q : null;
+  };
 
   if (body.lines?.length) {
     stampLines = body.lines.map((l) => {
@@ -1025,6 +1040,9 @@ export async function recordStamping(
         stampingRequired: required,
         stampingDate: required ? date : null,
         nextDueDate: required && l.nextDueDate?.trim() ? l.nextDueDate.trim() : null,
+        stampingNumber:
+          required && l.stampingNumber?.trim() ? l.stampingNumber.trim() : null,
+        stampingQuarter: required ? normalizeQuarter(l.stampingQuarter) : null,
         confirmed: true,
       };
     });
@@ -1041,6 +1059,9 @@ export async function recordStamping(
         stampingRequired: required,
         stampingDate: required ? date : null,
         nextDueDate: required && body.nextDueDate?.trim() ? body.nextDueDate.trim() : null,
+        stampingNumber:
+          required && body.vcNumber?.trim() ? body.vcNumber.trim() : null,
+        stampingQuarter: null,
         confirmed: true,
       },
     ];
@@ -1051,6 +1072,12 @@ export async function recordStamping(
   const anyRequired = stampLines.some((l) => l.stampingRequired);
   const primaryDate = stampLines.find((l) => l.stampingRequired)?.stampingDate ?? null;
   const primaryEnd = stampLines.find((l) => l.stampingRequired)?.nextDueDate ?? null;
+  const primaryStampNo =
+    stampLines.find((l) => l.stampingRequired && l.stampingNumber)?.stampingNumber ??
+    body.vcNumber?.trim() ??
+    null;
+  const primaryQuarter =
+    stampLines.find((l) => l.stampingRequired && l.stampingQuarter)?.stampingQuarter ?? null;
 
   // Optionally attach dates to the selected serial when stamping is required
   const unitId = body.stockUnitId?.trim() || row.stockUnitId;
@@ -1075,7 +1102,8 @@ export async function recordStamping(
         // nextDueDate lives on CustomerAsset / requisition CF — not on StockUnit
         customFields: {
           ...((unit.customFields as Record<string, unknown>) ?? {}),
-          vcNumber: body.vcNumber?.trim() || null,
+          vcNumber: primaryStampNo,
+          stampingNumber: primaryStampNo,
           plateNo: body.plateNo?.trim() || null,
           stampedForRequisitionId: row.id,
           stampedAt: new Date().toISOString(),
@@ -1106,7 +1134,9 @@ export async function recordStamping(
         stampingDate: primaryDate,
         nextDueDate: primaryEnd,
         stampLines,
-        vcNumber: body.vcNumber?.trim() || null,
+        vcNumber: primaryStampNo,
+        stampingNumber: primaryStampNo,
+        stampingQuarter: primaryQuarter,
         plateNo: body.plateNo?.trim() || null,
         hmsUniqId,
       } as Prisma.InputJsonValue,

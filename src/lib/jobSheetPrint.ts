@@ -1,4 +1,5 @@
 /** Printable service job sheet (browser Print → Save as PDF). */
+import { openPrintHtml } from '@/lib/openPrintHtml'
 
 function escapeHtml(value: string) {
   return value
@@ -207,19 +208,5 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
   </div>
 </body></html>`
 
-  // Build HTML first, then open via blob URL.
-  // Do NOT use noopener on about:blank — browsers open a blank tab and return null, so content never writes.
-  try {
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const win = window.open(url, '_blank')
-    if (!win) {
-      URL.revokeObjectURL(url)
-      return false
-    }
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
-    return true
-  } catch {
-    return false
-  }
+  return openPrintHtml(html, { filename: `${ticketLabel}-job-sheet.html` }) !== false
 }

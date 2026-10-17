@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   Award,
   Download,
@@ -79,18 +80,31 @@ function Kpi({
   label,
   value,
   hint,
+  to,
 }: {
   label: string
   value: string | number
   hint?: string
+  to?: string
 }) {
-  return (
-    <div className="rounded-lg border border-border bg-card p-3">
+  const inner = (
+    <>
       <div className="text-xs text-text-secondary">{label}</div>
       <div className="mt-1 text-xl font-semibold tabular-nums">{value}</div>
       {hint ? <div className="mt-0.5 text-[11px] text-text-muted">{hint}</div> : null}
-    </div>
+    </>
   )
+  if (to) {
+    return (
+      <Link
+        to={to}
+        className="block rounded-lg border border-border bg-card p-3 transition-colors hover:border-accent-blue/40 hover:bg-muted/40"
+      >
+        {inner}
+      </Link>
+    )
+  }
+  return <div className="rounded-lg border border-border bg-card p-3">{inner}</div>
 }
 
 function EmptyChart({ label = 'No data for current filters' }: { label?: string }) {
@@ -101,8 +115,17 @@ function EmptyChart({ label = 'No data for current filters' }: { label?: string 
 
 export function ReportsPage() {
   const addToast = useUIStore((s) => s.addToast)
+  const [searchParams] = useSearchParams()
+  const rangeFromUrl = searchParams.get('range')
+  const initialRange =
+    rangeFromUrl === 'week' ||
+    rangeFromUrl === 'month' ||
+    rangeFromUrl === 'quarter' ||
+    rangeFromUrl === 'year'
+      ? rangeFromUrl
+      : 'month'
   const [tab, setTab] = useState<Tab>('overview')
-  const [range, setRange] = useState('month')
+  const [range, setRange] = useState(initialRange)
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [assigneeId, setAssigneeId] = useState('')
@@ -114,6 +137,17 @@ export function ReportsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [exportOpen, setExportOpen] = useState(false)
+
+  useEffect(() => {
+    if (
+      rangeFromUrl === 'week' ||
+      rangeFromUrl === 'month' ||
+      rangeFromUrl === 'quarter' ||
+      rangeFromUrl === 'year'
+    ) {
+      setRange(rangeFromUrl)
+    }
+  }, [rangeFromUrl])
 
   const load = useCallback(async () => {
     if (!isTenantSession()) {
@@ -192,7 +226,26 @@ export function ReportsPage() {
       return
     }
     if (kind === 'csv') {
-      downloadCsv(`${base}.csv`, exportPack.overview)
+      // Flatten main packs so CSV is not overview-only
+      const flat = [
+        ...exportPack.overview.map((r) => ({ section: 'Overview', ...r })),
+        ...exportPack.ticketsByStatus.map((r) => ({
+          section: 'Ticket status',
+          metric: r.name,
+          value: r.value,
+        })),
+        ...exportPack.leadsByStatus.map((r) => ({
+          section: 'Lead status',
+          metric: r.name,
+          value: r.value,
+        })),
+        ...exportPack.performers.map((r) => ({
+          section: 'Performers',
+          metric: String((r as { name?: string }).name ?? ''),
+          value: JSON.stringify(r),
+        })),
+      ]
+      downloadCsv(`${base}.csv`, flat)
       addToast({ type: 'success', message: 'CSV downloaded' })
       return
     }
@@ -410,18 +463,52 @@ export function ReportsPage() {
           {tab === 'overview' ? (
             <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Kpi label="Open tickets" value={k.openTickets} hint={`${k.awaitingAssignment} unassigned`} />
-                <Kpi label="Balance outstanding" value={formatCurrency(k.balanceOutstanding)} />
-                <Kpi label="Service collected" value={formatCurrency(k.serviceCollected)} hint="Paid jobs" />
+                <Kpi
+                  label="Open tickets"
+                  value={k.openTickets}
+                  hint={`${k.awaitingAssignment} unassigned`}
+                  to="/tickets?status=OPEN"
+                />
+                <Kpi
+                  label="Balance outstanding"
+                  value={formatCurrency(k.balanceOutstanding)}
+                  to="/tickets"
+                />
+                <Kpi
+                  label="Service collected"
+                  value={formatCurrency(k.serviceCollected)}
+                  hint="Paid jobs"
+                  to="/service-reports"
+                />
                 <Kpi
                   label="Proforma total"
                   value={formatCurrency(k.invoiceRevenue)}
                   hint={`${k.invoiceCount} invoices`}
+                  to="/erp/invoices"
                 />
-                <Kpi label="Sale enquiries" value={k.totalLeads} hint={`${k.enquiriesConverted} converted`} />
-                <Kpi label="Conversion" value={`${k.conversionRate}%`} />
-                <Kpi label="In stock" value={k.inStock} hint={`${k.demoOut} on demo`} />
-                <Kpi label="Customers" value={k.contacts} hint={`${k.accounts} accounts`} />
+                <Kpi
+                  label="Sale enquiries"
+                  value={k.totalLeads}
+                  hint={`${k.enquiriesConverted} converted`}
+                  to="/sale-tracking"
+                />
+                <Kpi
+                  label="Conversion"
+                  value={`${k.conversionRate}%`}
+                  to="/sale-tracking?status=CONVERTED"
+                />
+                <Kpi
+                  label="In stock"
+                  value={k.inStock}
+                  hint={`${k.demoOut} on demo`}
+                  to="/erp/inventory"
+                />
+                <Kpi
+                  label="Customers"
+                  value={k.contacts}
+                  hint={`${k.accounts} accounts`}
+                  to="/contacts"
+                />
               </div>
               <div className="grid gap-4 lg:grid-cols-2">
                 <Card className="p-4">
@@ -484,10 +571,15 @@ export function ReportsPage() {
           {tab === 'leads' ? (
             <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Kpi label="Total enquiries" value={k.totalLeads} />
-                <Kpi label="Pending" value={k.enquiriesPending} />
-                <Kpi label="Demo" value={k.enquiriesDemo} />
-                <Kpi label="Converted" value={k.enquiriesConverted} hint={`${k.conversionRate}%`} />
+                <Kpi label="Total enquiries" value={k.totalLeads} to="/sale-tracking" />
+                <Kpi label="Pending" value={k.enquiriesPending} to="/sale-tracking?status=NEW" />
+                <Kpi label="Demo" value={k.enquiriesDemo} to="/sale-tracking?status=DEMO" />
+                <Kpi
+                  label="Converted"
+                  value={k.enquiriesConverted}
+                  hint={`${k.conversionRate}%`}
+                  to="/sale-tracking?status=CONVERTED"
+                />
               </div>
               <div className="grid gap-4 lg:grid-cols-2">
                 <Card className="p-4">
@@ -579,11 +671,24 @@ export function ReportsPage() {
           {tab === 'service' ? (
             <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Kpi label="Open" value={k.openTickets} hint={`${k.slaBreached} SLA breached`} />
-                <Kpi label="Resolved (range)" value={k.resolvedInRange} />
-                <Kpi label="Avg resolution" value={`${k.avgResolutionHours}h`} />
-                <Kpi label="Outstanding" value={formatCurrency(k.balanceOutstanding)} />
-      </div>
+                <Kpi
+                  label="Open"
+                  value={k.openTickets}
+                  hint={`${k.slaBreached} SLA breached`}
+                  to="/tickets?status=OPEN"
+                />
+                <Kpi
+                  label="Resolved (range)"
+                  value={k.resolvedInRange}
+                  to="/tickets?status=RESOLVED"
+                />
+                <Kpi label="Avg resolution" value={`${k.avgResolutionHours}h`} to="/tickets" />
+                <Kpi
+                  label="Outstanding"
+                  value={formatCurrency(k.balanceOutstanding)}
+                  to="/tickets"
+                />
+              </div>
               <div className="grid gap-4 lg:grid-cols-2">
                 <Card className="p-4">
                   <h3 className="mb-2 text-sm font-semibold">Status mix</h3>
@@ -733,10 +838,18 @@ export function ReportsPage() {
           {tab === 'stock' ? (
             <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Kpi label="In stock" value={k.inStock} />
-                <Kpi label="Demo out" value={k.demoOut} />
-                <Kpi label="Proforma revenue" value={formatCurrency(k.invoiceRevenue)} />
-                <Kpi label="Service collected" value={formatCurrency(k.serviceCollected)} />
+                <Kpi label="In stock" value={k.inStock} to="/erp/inventory" />
+                <Kpi label="Demo out" value={k.demoOut} to="/erp/inventory?tab=demo" />
+                <Kpi
+                  label="Proforma revenue"
+                  value={formatCurrency(k.invoiceRevenue)}
+                  to="/erp/invoices"
+                />
+                <Kpi
+                  label="Service collected"
+                  value={formatCurrency(k.serviceCollected)}
+                  to="/service-reports"
+                />
               </div>
               <div className="grid gap-4 lg:grid-cols-2">
                 <Card className="p-4">

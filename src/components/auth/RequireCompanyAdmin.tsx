@@ -1,4 +1,5 @@
 import { Navigate } from 'react-router-dom'
+import { AccessDenied } from '@/components/auth/AccessDenied'
 import { useAuthStore } from '@/store/authStore'
 import { canAccessProformaInvoices, isCompanyAdmin } from '@/lib/roles'
 import { hasAnyInventoryArea, resolveInventoryAreas } from '@/lib/inventoryAreas'
@@ -7,7 +8,12 @@ import { hasAnyInventoryArea, resolveInventoryAreas } from '@/lib/inventoryAreas
 export function RequireCompanyAdmin({ children }: { children: React.ReactNode }) {
   const role = useAuthStore((s) => s.user?.role)
   if (!isCompanyAdmin(role)) {
-    return <Navigate to="/" replace />
+    return (
+      <AccessDenied
+        title="Admin access required"
+        hint="This area is for company admins. Ask an admin if you need reports, users, or email settings."
+      />
+    )
   }
   return <>{children}</>
 }
@@ -15,13 +21,17 @@ export function RequireCompanyAdmin({ children }: { children: React.ReactNode })
 /**
  * ERP shell: at least one inventory area required.
  * Explicit all-off blocks even ADMIN/WAREHOUSE (role default only applies when unset).
- * Prefer hiding links in the sidebar over a silent bounce to dashboard.
  */
 export function RequireErpAccess({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user)
   const areas = resolveInventoryAreas(user?.inventoryAreas, user?.role)
   if (!hasAnyInventoryArea(areas)) {
-    return <Navigate to="/" replace />
+    return (
+      <AccessDenied
+        title="Inventory access required"
+        hint="No inventory areas are enabled on your account. Ask your company admin to turn on Machines or Spares for you."
+      />
+    )
   }
   return <>{children}</>
 }
@@ -31,9 +41,15 @@ export function RequireMachinesAccess({ children }: { children: React.ReactNode 
   const user = useAuthStore((s) => s.user)
   const areas = resolveInventoryAreas(user?.inventoryAreas, user?.role)
   if (!areas.machines) {
-    const spareFallback =
-      areas.sparesBilling || areas.sparesWeighing ? '/erp/spare-stock' : '/'
-    return <Navigate to={spareFallback} replace />
+    if (areas.sparesBilling || areas.sparesWeighing) {
+      return <Navigate to="/erp/spare-stock" replace />
+    }
+    return (
+      <AccessDenied
+        title="Machines stock not enabled"
+        hint="Your account does not include the Machines inventory area."
+      />
+    )
   }
   return <>{children}</>
 }
@@ -43,8 +59,15 @@ export function RequireSparesAccess({ children }: { children: React.ReactNode })
   const user = useAuthStore((s) => s.user)
   const areas = resolveInventoryAreas(user?.inventoryAreas, user?.role)
   if (!areas.sparesBilling && !areas.sparesWeighing) {
-    const machineFallback = areas.machines ? '/erp/inventory' : '/'
-    return <Navigate to={machineFallback} replace />
+    if (areas.machines) {
+      return <Navigate to="/erp/inventory" replace />
+    }
+    return (
+      <AccessDenied
+        title="Spare stock not enabled"
+        hint="Your account does not include Spares (billing or weighing)."
+      />
+    )
   }
   return <>{children}</>
 }
@@ -53,7 +76,12 @@ export function RequireSparesAccess({ children }: { children: React.ReactNode })
 export function RequireBillingAccess({ children }: { children: React.ReactNode }) {
   const role = useAuthStore((s) => s.user?.role)
   if (!canAccessProformaInvoices(role)) {
-    return <Navigate to="/" replace />
+    return (
+      <AccessDenied
+        title="Billing access required"
+        hint="Proforma invoices are limited to admin and billing/warehouse roles."
+      />
+    )
   }
   return <>{children}</>
 }

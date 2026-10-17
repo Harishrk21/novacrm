@@ -103,7 +103,16 @@ export function SettingsPage() {
           {tabs.map((tab) => (
             <button
               key={tab}
-              onClick={() => setActive(tab)}
+              onClick={() => {
+                setActive(tab)
+                try {
+                  const url = new URL(window.location.href)
+                  url.searchParams.set('tab', tab)
+                  window.history.replaceState({}, '', `${url.pathname}${url.search}`)
+                } catch {
+                  /* ignore */
+                }
+              }}
               className={cn(
                 'flex min-h-10 w-full items-center justify-between rounded-[6px] px-3 text-left text-sm font-medium',
                 active === tab
@@ -331,17 +340,21 @@ function Appearance() {
 
       <Card>
         <Heading
-          title="Offline cache"
-          subtitle="Reset the browser’s local CRM cache used when offline"
+          title="Browser offline seed"
+          subtitle="Clears this browser’s legacy local CRM seed only — does not change live server data, tickets, or stock"
         />
+        <p className="mb-3 text-sm text-text-secondary">
+          Day-to-day work uses the API. Use this only if an old offline demo store on this device
+          looks out of sync.
+        </p>
         <Button
           variant="outline"
           onClick={() => {
             resetDemoData()
-            addToast({ type: 'success', message: 'Local cache restored' })
+            addToast({ type: 'success', message: 'Browser offline seed reset' })
           }}
         >
-          Reset local cache
+          Reset browser seed
         </Button>
       </Card>
     </div>
@@ -734,8 +747,19 @@ function Company() {
         <BlockSkeleton lines={5} />
       ) : (
         <form className="grid gap-4 sm:grid-cols-2" onSubmit={(e) => void save(e)}>
-          <Input label="Company name" value={name} disabled />
-          <Input label="Currency" value={currency} disabled />
+          <div>
+            <Input label="Company name" value={name} disabled />
+            <p className="mt-1 text-xs text-text-muted">
+              Set by the platform when this client workspace was created — contact platform support to
+              rename.
+            </p>
+          </div>
+          <div>
+            <Input label="Currency" value={currency} disabled />
+            <p className="mt-1 text-xs text-text-muted">
+              Billing currency is platform-owned for this workspace.
+            </p>
+          </div>
           <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
           <PhoneInput label="Phone" value={phone} onChange={setPhone} hint="India (+91) — 10 digits" />
           <Input label="GSTIN" value={gstin} onChange={(e) => setGstin(e.target.value)} placeholder="22AAAAA0000A1Z5" />
@@ -1407,7 +1431,7 @@ export function UsersSettings() {
                       {user.lastLoginAt ? formatDateTime(user.lastLoginAt) : '—'}
                     </td>
                     <td className="px-5 py-4">
-                      <Link to="/users">
+                      <Link to={`/users?userId=${encodeURIComponent(String(user.id))}`}>
                         <Button variant="ghost" size="sm">
                           <Edit3 size={15} />
                           Edit
@@ -1574,31 +1598,18 @@ function EmailTemplates() {
 }
 
 function Integrations() {
-  const addToast = useUIStore((s) => s.addToast)
   const askConnected = useAskMeisterStore((s) => s.connected)
   const askName = useAskMeisterStore((s) => s.workspaceName)
+  const askDemo = useAskMeisterStore((s) => s.demoMode)
   const [cloudConfigured, setCloudConfigured] = useState(false)
-  const [flags, setFlags] = useState<Record<string, boolean>>({
-    exotel: true,
-    twilio: false,
-    gmail: true,
-    outlook: false,
-    googleCalendar: true,
-  })
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
-        const [t, cloud] = await Promise.all([
-          api.myTenant(),
-          api.whatsappCloudStatus().catch(() => null),
-        ])
+        const cloud = await api.whatsappCloudStatus().catch(() => null)
         if (cancelled) return
-        const settings = (t.settings ?? {}) as Record<string, unknown>
-        const integ = (settings.integrations ?? {}) as Record<string, boolean>
-        setFlags((prev) => ({ ...prev, ...integ }))
         if (cloud) setCloudConfigured(cloud.configured)
       } catch {
         /* keep defaults */
@@ -1610,21 +1621,6 @@ function Integrations() {
       cancelled = true
     }
   }, [])
-
-  async function toggle(key: string) {
-    const next = { ...flags, [key]: !flags[key] }
-    setFlags(next)
-    try {
-      await api.updateMyTenant({ settings: { integrations: next } })
-      addToast({ type: 'success', message: `${key} ${next[key] ? 'enabled' : 'disabled'}` })
-    } catch (err) {
-      setFlags(flags)
-      addToast({
-        type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Could not update integration',
-      })
-    }
-  }
 
   const cards = [
     {
@@ -1638,18 +1634,25 @@ function Integrations() {
     },
     {
       name: 'AskMeister WhatsApp',
-      description: 'Optional shared inbox UI — connect your AskMeister dashboard',
+      description: askDemo
+        ? 'Local demo inbox only — not a live AskMeister API sync'
+        : 'Optional shared inbox UI — connect AskMeister (or use local demo for UI practice)',
       state: askConnected ? 'on' : 'off',
       href: '/whatsapp',
-      badge: askConnected ? askName || 'Connected' : undefined,
+      badge: askConnected ? (askDemo ? 'Local demo' : askName || 'Connected') : undefined,
       ctaOn: 'Open WhatsApp inbox',
-      ctaOff: 'Connect AskMeister',
+      ctaOff: 'Open WhatsApp page',
     },
-    { name: 'Exotel', description: 'Cloud telephony and call tracking for India', key: 'exotel' },
-    { name: 'Twilio', description: 'Voice and messaging platform', key: 'twilio' },
-    { name: 'Gmail', description: 'Sync email conversations per user', key: 'gmail' },
-    { name: 'Outlook', description: 'Connect Microsoft email', key: 'outlook' },
-    { name: 'Google Calendar', description: 'Sync meetings and reminders', key: 'googleCalendar' },
+    // Honest: no OAuth/provider wiring yet — do not fake "Connected"
+    { name: 'Exotel', description: 'Cloud telephony and call tracking for India', state: 'soon' as const },
+    { name: 'Twilio', description: 'Voice and messaging platform', state: 'soon' as const },
+    { name: 'Gmail', description: 'Sync email conversations per user (OAuth not wired yet)', state: 'soon' as const },
+    { name: 'Outlook', description: 'Connect Microsoft email (OAuth not wired yet)', state: 'soon' as const },
+    {
+      name: 'Google Calendar',
+      description: 'Sync meetings and reminders (not wired yet)',
+      state: 'soon' as const,
+    },
     { name: 'Tally / Zoho Books', description: 'Accounting and invoicing sync', state: 'soon' as const },
   ] as const
 
@@ -1684,12 +1687,7 @@ function Integrations() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           {cards.map((item) => {
-            const state =
-              'state' in item
-                ? item.state
-                : flags[item.key]
-                  ? 'on'
-                  : 'off'
+            const state = item.state
             return (
               <Card key={item.name}>
                 <div className="flex items-start gap-3">
@@ -1722,9 +1720,9 @@ function Integrations() {
                           item.name
                         )}
                       </h3>
-                      {state === 'soon' && <Badge color="amber">Coming Soon</Badge>}
+                      {state === 'soon' && <Badge color="amber">Not available yet</Badge>}
                       {state === 'on' && (
-                        <Badge color="green">
+                        <Badge color={askDemo && item.name.includes('AskMeister') ? 'amber' : 'green'}>
                           {'badge' in item && item.badge ? item.badge : 'Connected'}
                         </Badge>
                       )}
@@ -1732,31 +1730,21 @@ function Integrations() {
                     <p className="mt-1 text-sm text-text-secondary">{item.description}</p>
                   </div>
                 </div>
-                {state !== 'soon' &&
-                  ('href' in item && item.href ? (
-                    <div className="mt-4 flex flex-col gap-2">
-                      <Link to={item.href}>
-                        <Button className="w-full" variant="primary">
-                          {state === 'on'
-                            ? ('ctaOn' in item && item.ctaOn) || 'Open'
-                            : ('ctaOff' in item && item.ctaOff) || 'Connect'}
-                        </Button>
-                      </Link>
-                      {state === 'on' ? (
-                        <Link to={item.href} className="text-center text-xs text-accent-blue hover:underline">
-                          Manage connection
-                        </Link>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <Button
-                      className="mt-4 w-full"
-                      variant={state === 'on' ? 'outline' : 'primary'}
-                      onClick={() => 'key' in item && void toggle(item.key)}
-                    >
-                      {state === 'on' ? 'Disconnect' : 'Connect'}
-                    </Button>
-                  ))}
+                {state !== 'soon' && 'href' in item && item.href ? (
+                  <div className="mt-4 flex flex-col gap-2">
+                    <Link to={item.href}>
+                      <Button className="w-full" variant="primary">
+                        {state === 'on'
+                          ? ('ctaOn' in item && item.ctaOn) || 'Open'
+                          : ('ctaOff' in item && item.ctaOff) || 'Open'}
+                      </Button>
+                    </Link>
+                  </div>
+                ) : state === 'soon' ? (
+                  <p className="mt-3 text-xs text-text-secondary">
+                    No fake connect — this provider is not wired in production yet.
+                  </p>
+                ) : null}
               </Card>
             )
           })}
@@ -1767,6 +1755,22 @@ function Integrations() {
 }
 
 type AutoRule = { id: string; name: string; description: string; enabled: boolean }
+
+/** Rules the backend automation pass actually honours (name substring match). */
+const SUPPORTED_AUTO_RULES: AutoRule[] = [
+  {
+    id: 'overdue-task-reminder',
+    name: 'Overdue task reminder',
+    description: 'Notify owners when tasks become overdue (server job)',
+    enabled: true,
+  },
+  {
+    id: 'lead-followup-nudge',
+    name: 'Lead follow-up nudge',
+    description: 'WhatsApp nudge for open leads with a follow-up due (when WhatsApp Cloud is configured)',
+    enabled: false,
+  },
+]
 
 function Automation() {
   const addToast = useUIStore((s) => s.addToast)
@@ -1780,34 +1784,31 @@ function Automation() {
         const t = await api.myTenant()
         if (cancelled) return
         const settings = (t.settings ?? {}) as Record<string, unknown>
-        const list = Array.isArray(settings.automationRules)
+        const stored = Array.isArray(settings.automationRules)
           ? (settings.automationRules as AutoRule[])
-          : [
-              {
-                id: '1',
-                name: 'Assign website leads',
-                description: 'Round-robin new website leads across active agents',
-                enabled: true,
-              },
-              {
-                id: '2',
-                name: 'High-value deal alert',
-                description: 'Notify managers when a deal exceeds ₹5L',
-                enabled: true,
-              },
-              {
-                id: '3',
-                name: 'Overdue task reminder',
-                description: 'Notify owners when tasks become overdue',
-                enabled: false,
-              },
-            ]
-        setRules(list)
+          : []
+        // Keep only rules the backend can run; merge toggles from storage by id/name
+        const next = SUPPORTED_AUTO_RULES.map((base) => {
+          const hit = stored.find(
+            (r) =>
+              r.id === base.id ||
+              String(r.name ?? '')
+                .toLowerCase()
+                .includes(
+                  base.name.toLowerCase().includes('overdue')
+                    ? 'overdue'
+                    : 'follow',
+                ),
+          )
+          return hit ? { ...base, enabled: Boolean(hit.enabled) } : base
+        })
+        setRules(next)
       } catch (err) {
         addToast({
           type: 'error',
           message: err instanceof ApiClientError ? err.message : 'Failed to load automation',
         })
+        setRules(SUPPORTED_AUTO_RULES)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -1832,41 +1833,16 @@ function Automation() {
     }
   }
 
-  async function addRule() {
-    const next: AutoRule[] = [
-      ...rules,
-      {
-        id: crypto.randomUUID(),
-        name: 'New automation rule',
-        description: 'Describe what this rule should do',
-        enabled: true,
-      },
-    ]
-    setRules(next)
-    try {
-      await api.updateMyTenant({ settings: { automationRules: next } })
-      addToast({ type: 'success', message: 'Rule added — edit description in company settings JSON later if needed' })
-    } catch (err) {
-      setRules(rules)
-      addToast({
-        type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Could not add rule',
-      })
-    }
-  }
-
   return (
     <Card>
       <Heading
         title="Automation"
-        subtitle="Toggle routine CRM rules (stored in company settings)"
-        action={
-          <Button onClick={() => void addRule()}>
-            <Plus size={16} />
-            Add Rule
-          </Button>
-        }
+        subtitle="Only rules the server actually runs are listed here"
       />
+      <p className="mb-4 rounded-[8px] border border-border bg-surface px-3 py-2 text-sm text-text-secondary">
+        Custom rule builder is not available yet. Toggles below control the scheduled automation
+        pass (overdue tasks + lead follow-up nudges).
+      </p>
       {loading ? (
         <BlockSkeleton lines={5} />
       ) : (

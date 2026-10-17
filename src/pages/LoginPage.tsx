@@ -9,6 +9,7 @@ import {
   PLATFORM_LOGO_URL,
   MEISTER_COLORS,
   HMS_COLORS,
+  HMS_LOGO_URL,
   RESERVED_LOGIN_SLUGS,
 } from '@/lib/branding'
 import { MeisterLogo } from '@/components/MeisterLogo'
@@ -110,11 +111,19 @@ export function LoginPage() {
   const [workspaceLoading, setWorkspaceLoading] = useState(Boolean(brandedSlug))
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
 
+  const showDemoLogins =
+    import.meta.env.DEV || import.meta.env.VITE_SHOW_DEMO_LOGINS === 'true'
   const [email, setEmail] = useState<string>(
-    mode === 'platform' ? 'admin@novacrm.com' : brandedSlug ? '' : DEMO.admin.fill.email,
+    mode === 'platform'
+      ? 'admin@novacrm.com'
+      : brandedSlug
+        ? ''
+        : showDemoLogins
+          ? DEMO.admin.fill.email
+          : '',
   )
   const [password, setPassword] = useState<string>(
-    mode === 'platform' ? '' : brandedSlug ? '' : DEMO.admin.fill.password,
+    mode === 'platform' ? '' : brandedSlug ? '' : showDemoLogins ? DEMO.admin.fill.password : '',
   )
   const [tenantSlug, setTenantSlug] = useState(brandedSlug)
   const [showPassword, setShowPassword] = useState(false)
@@ -218,7 +227,15 @@ export function LoginPage() {
       } else {
         addToast({ type: 'success', message: `Signed in to ${company}` })
       }
-      navigate('/')
+      const fromRaw = (location.state as { from?: string } | null)?.from
+      const from =
+        typeof fromRaw === 'string' &&
+        fromRaw.startsWith('/') &&
+        !fromRaw.startsWith('/login') &&
+        !fromRaw.startsWith('/admin')
+          ? fromRaw
+          : '/'
+      navigate(from, { replace: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -577,6 +594,12 @@ export function LoginPage() {
                     src={assetUrl(workspace.logoUrl)}
                     alt={companyName}
                     className="h-28 w-auto max-w-[min(100%,320px)] object-contain sm:h-36 md:h-44"
+                    onError={(e) => {
+                      const img = e.currentTarget
+                      if (img.dataset.fallbackApplied) return
+                      img.dataset.fallbackApplied = '1'
+                      img.src = HMS_LOGO_URL
+                    }}
                   />
                 </div>
                 <div className="mt-4">
@@ -655,6 +678,12 @@ export function LoginPage() {
                     src={assetUrl(workspace.logoUrl)}
                     alt={companyName}
                     className="h-16 w-auto max-w-[220px] object-contain sm:h-20"
+                    onError={(e) => {
+                      const img = e.currentTarget
+                      if (img.dataset.fallbackApplied) return
+                      img.dataset.fallbackApplied = '1'
+                      img.src = HMS_LOGO_URL
+                    }}
                   />
                 </div>
               ) : (
@@ -742,14 +771,21 @@ export function LoginPage() {
             </button>
           </form>
 
+          {mode === 'workspace' ? (
+            <p className="mt-4 text-center text-[12px] leading-relaxed text-white/45">
+              Forgot your password? Ask your company admin to reset it — there is no self-serve
+              reset link on this login.
+            </p>
+          ) : null}
+
           {mode === 'platform' ? (
             <p className="mt-6 text-center text-[11px] text-white/40">
               Client companies sign in at /login/&#123;slug&#125; — not here.
             </p>
-          ) : brandedSlug === 'hms' || brandedSlug === 'precision-scales-india' ? (
+          ) : (brandedSlug === 'hms' || brandedSlug === 'precision-scales-india') && showDemoLogins ? (
             <div className="mt-6 space-y-2 border-t border-white/10 pt-5">
               <p className="text-xs text-white/45">
-                Demo roles — same /login/hms URL, different accounts:
+                Dev demo roles (hidden in production unless VITE_SHOW_DEMO_LOGINS=true):
               </p>
               <div className="grid gap-2 sm:grid-cols-2">
                 {DEMO_BLOCKS.map((b) => (

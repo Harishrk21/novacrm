@@ -37,7 +37,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
-import { Modal } from '@/components/ui/Modal'
+import { ConfirmModal, Modal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
@@ -245,6 +245,7 @@ function AdminShell() {
   const session = useAdminSession()
   const navigate = useNavigate()
   const logoutAuth = useAuthStore((s) => s.logout)
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
   const [clients, setClients] = useState<ClientRow[]>([])
   const [categories, setCategories] = useState<BusinessCategory[]>(CATEGORIES)
   const [plansCatalog, setPlansCatalog] = useState<
@@ -592,16 +593,25 @@ function AdminShell() {
           </div>
           <button
             className="flex w-full items-center gap-2 rounded-[6px] px-3 py-2 text-sm text-red-300 hover:bg-white/5"
-            onClick={() => {
-              void logoutAuth()
-              localStorage.removeItem(ADMIN_KEY)
-              navigate('/login/admin', { replace: true })
-            }}
+            onClick={() => setLogoutConfirmOpen(true)}
           >
             <LogOut size={14} /> Sign out
           </button>
         </div>
       </aside>
+
+      <ConfirmModal
+        open={logoutConfirmOpen}
+        onClose={() => setLogoutConfirmOpen(false)}
+        onConfirm={() => {
+          void logoutAuth()
+          localStorage.removeItem(ADMIN_KEY)
+          navigate('/login/admin', { replace: true })
+        }}
+        title="Log out?"
+        body="Are you sure you want to log out?"
+        confirmLabel="Log out"
+      />
 
       <main className="min-w-0 flex-1 overflow-y-auto p-6">
         <Outlet context={outletContext} />
@@ -901,6 +911,14 @@ function OverviewDashboard({
           </Button>
         </div>
       </div>
+
+      {!liveMode ? (
+        <div className="rounded-[8px] border border-amber-400/50 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:bg-amber-950/40 dark:text-amber-100">
+          <strong>Local demo mode</strong> — the platform API is offline. Tenants shown here are
+          sample rows in this browser only and are <em>not</em> live customer workspaces. Fix API
+          connectivity before onboarding real clients.
+        </div>
+      ) : null}
 
       {/* KPI strip — industry standard for platform admin */}
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

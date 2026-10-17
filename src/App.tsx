@@ -13,6 +13,10 @@ import { PlatformLoginPage } from '@/pages/PlatformLoginPage'
 import { LeadsRedirect } from '@/components/routing/LeadsRedirect'
 import { PageSkeleton } from '@/components/ui/Skeleton'
 
+const NotFoundPage = lazy(() =>
+  import('@/pages/NotFoundPage').then((m) => ({ default: m.NotFoundPage })),
+)
+
 /** Route chunks — keep login + shell eager; defer every heavy page. */
 const DashboardPage = lazy(() =>
   import('@/pages/DashboardPage').then((m) => ({ default: m.DashboardPage })),
@@ -83,6 +87,9 @@ const WorkqueuePage = lazy(() =>
 )
 const NotificationsPage = lazy(() =>
   import('@/pages/NotificationsPage').then((m) => ({ default: m.NotificationsPage })),
+)
+const TeamChatOpenPage = lazy(() =>
+  import('@/pages/TeamChatOpenPage').then((m) => ({ default: m.TeamChatOpenPage })),
 )
 const UsersPage = lazy(() =>
   import('@/pages/UsersPage').then((m) => ({ default: m.UsersPage })),
@@ -349,7 +356,15 @@ export default function App() {
               }
             />
             <Route path="whatsapp" element={<WhatsAppPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="team-chat" element={<TeamChatOpenPage />} />
+            <Route
+              path="*"
+              element={
+                <Suspense fallback={<PageSkeleton />}>
+                  <NotFoundPage />
+                </Suspense>
+              }
+            />
           </Route>
         </Routes>
       </Suspense>

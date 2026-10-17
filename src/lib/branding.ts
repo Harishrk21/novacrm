@@ -48,6 +48,9 @@ export const RESERVED_LOGIN_SLUGS = [
   'meister',
 ] as const
 
+/** HMS lockup shipped in `public/hms-logo.png` (Vercel static). */
+export const HMS_LOGO_URL = '/hms-logo.png'
+
 /** HMS brand palette (from official logo). */
 export const HMS_COLORS = {
   redBright: '#E31E24',

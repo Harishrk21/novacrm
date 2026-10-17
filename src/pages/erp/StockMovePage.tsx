@@ -15,6 +15,7 @@ import { downloadXlsx } from '@/lib/reportExport'
 import { productAttrs } from '@/lib/productCatalog'
 import { expandSerialRange, bumpSerial } from '@/lib/stockSerial'
 import { filterServiceEngineers } from '@/lib/roles'
+import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { APP_NAME } from '@/lib/branding'
 import { TableSkeleton } from '@/components/ui/Skeleton'
@@ -59,11 +60,15 @@ export function StockMovePage() {
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const addToast = useUIStore((s) => s.addToast)
+  const role = useAuthStore((s) => s.user?.role)
+  const canSaleReduce =
+    role === 'WAREHOUSE' || role === 'ADMIN' || role === 'MANAGER'
 
   const mode: StockMode = params.get('mode') === 'reduce' ? 'reduce' : 'add'
-  const [category, setCategory] = useState<Category>(
-    () => (params.get('category') === 'SPARE' ? 'SPARE' : 'MACHINE'),
-  )
+  const [category, setCategory] = useState<Category>(() => {
+    if (params.get('category') === 'SPARE' || params.get('spareId')) return 'SPARE'
+    return 'MACHINE'
+  })
   const [stockMachineType, setStockMachineType] = useState<StockMachineType | ''>('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -84,7 +89,6 @@ export function StockMovePage() {
   const [serialStart, setSerialStart] = useState('')
   const [serialEnd, setSerialEnd] = useState('')
   const [hmsStart, setHmsStart] = useState('')
-  const [hmsEnd, setHmsEnd] = useState('')
   const [previewHmsIds, setPreviewHmsIds] = useState<string[]>([])
   const [hmsManual, setHmsManual] = useState(false)
   const [invoiceNo, setInvoiceNo] = useState('')
@@ -104,6 +108,9 @@ export function StockMovePage() {
   })
   /** Machine reduce purpose — Sales (sold) or Demo (taken to customer site). */
   const [reducePurpose, setReducePurpose] = useState<'SALE' | 'DEMO' | ''>('')
+  useEffect(() => {
+    if (!canSaleReduce && reducePurpose === 'SALE') setReducePurpose('')
+  }, [canSaleReduce, reducePurpose])
   const [reduceReasonNote, setReduceReasonNote] = useState('')
   const [reduceReason, setReduceReason] = useState('')
   const [engineerId, setEngineerId] = useState('')
@@ -298,10 +305,7 @@ export function StockMovePage() {
         if (cancelled) return
         const list = Array.isArray(ids) ? ids.map(String) : []
         setPreviewHmsIds(list)
-        if (list.length) {
-          setHmsStart(list[0] ?? '')
-          setHmsEnd(list[list.length - 1] ?? '')
-        }
+        if (list.length) setHmsStart(list[0] ?? '')
       })
       .catch(() => {
         if (!cancelled) setPreviewHmsIds([])
@@ -314,9 +318,7 @@ export function StockMovePage() {
   // Local expand when user typed HMS start manually
   useEffect(() => {
     if (!hmsManual || !hmsStart.trim()) return
-    const ids = expandSerialRange(hmsStart.trim(), nQty)
-    setPreviewHmsIds(ids)
-    setHmsEnd(ids.length ? ids[ids.length - 1]! : '')
+    setPreviewHmsIds(expandSerialRange(hmsStart.trim(), nQty))
   }, [hmsManual, hmsStart, nQty])
 
   // Serial start → end autopopulate (non-weighing)
@@ -694,24 +696,11 @@ export function StockMovePage() {
           { label: mode === 'add' ? 'Add' : 'Reduce' },
         ]}
         actions={
-          <div className="flex flex-wrap gap-2">
-            <Link to="/erp/stock">
-              <Button variant="outline">
-                <ArrowLeft size={16} /> Back to stock
-              </Button>
-            </Link>
-            <Button
-              variant={mode === 'add' ? 'primary' : 'danger'}
-              onClick={submit}
-              disabled={saving}
-            >
-              {saving
-                ? 'Saving…'
-                : mode === 'add'
-                  ? 'Add to stock'
-                  : 'Reduce stock'}
+          <Link to="/erp/stock">
+            <Button variant="outline">
+              <ArrowLeft size={16} /> Back to stock
             </Button>
-          </div>
+          </Link>
         }
       />
 
@@ -1001,44 +990,53 @@ export function StockMovePage() {
                 value={unitCost}
                 onChange={(e) => setUnitCost(e.target.value)}
               />
-              <Input
-                label="HMS Unique ID (start) *"
-                value={hmsStart}
-                onChange={(e) => {
-                  setHmsManual(true)
-                  setHmsStart(e.target.value)
-                }}
-                placeholder="Auto from model, or type start"
-              />
-              <Input
-                label="HMS Unique ID (end)"
-                value={hmsEnd}
-                readOnly
-                className="bg-muted/30"
-                placeholder="Auto from start + qty"
-              />
+              <div className={nQty > 1 || isWeighingStock ? 'sm:col-span-2' : undefined}>
+                <Input
+                  label={nQty > 1 ? 'HMS Unique ID (first) *' : 'HMS Unique ID *'}
+                  value={hmsStart}
+                  onChange={(e) => {
+                    setHmsManual(true)
+                    setHmsStart(e.target.value)
+                  }}
+                  placeholder="Next number loads automatically"
+                />
+                {hmsPreviewDisplay.length > 1 ? (
+                  <p className="mt-1 text-xs text-text-secondary">
+                    This batch: {hmsPreviewDisplay[0]} →{' '}
+                    {hmsPreviewDisplay[hmsPreviewDisplay.length - 1]} ({hmsPreviewDisplay.length}{' '}
+                    IDs)
+                  </p>
+                ) : hmsPreviewDisplay.length === 1 ? (
+                  <p className="mt-1 text-xs text-text-secondary">
+                    Next available ID for this machine type (year + type + sequence).
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-text-secondary">
+                    Pick a model to load the next HMS Unique ID, or type one.
+                  </p>
+                )}
+                {isWeighingStock ? (
+                  <p className="mt-2 text-xs text-text-secondary">
+                    Weighing machines have no manufacturer serial — only this HMS Unique ID is
+                    stored.
+                  </p>
+                ) : null}
+              </div>
               {!isWeighingStock ? (
-                <>
+                <div className={nQty > 1 ? 'sm:col-span-2' : undefined}>
                   <Input
-                    label="Serial number (start) *"
+                    label={nQty > 1 ? 'Serial number (first) *' : 'Serial number *'}
                     value={serialStart}
                     onChange={(e) => setSerialStart(e.target.value)}
-                    placeholder="Start serial"
+                    placeholder="Manufacturer serial"
                   />
-                  <Input
-                    label="Serial number (end)"
-                    value={serialEnd}
-                    readOnly
-                    className="bg-muted/30"
-                    placeholder="Auto from start + qty"
-                  />
-                </>
-              ) : (
-                <div className="sm:col-span-2 rounded-lg border border-border bg-muted/25 px-3 py-2.5 text-sm text-text-secondary">
-                  Weighing machines do not use a manufacturer serial — only HMS Unique ID is stored
-                  and shown.
+                  {serialEnd && nQty > 1 ? (
+                    <p className="mt-1 text-xs text-text-secondary">
+                      Range: {serialStart.trim().toUpperCase()} → {serialEnd}
+                    </p>
+                  ) : null}
                 </div>
-              )}
+              ) : null}
             </div>
           ) : null}
 
@@ -1356,11 +1354,15 @@ export function StockMovePage() {
                   <div className="grid gap-2 sm:grid-cols-2">
                     {(
                       [
-                        {
-                          id: 'SALE' as const,
-                          title: 'Sale',
-                          body: 'Customer ordered — stock out for sale / dispatch.',
-                        },
+                        ...(canSaleReduce
+                          ? [
+                              {
+                                id: 'SALE' as const,
+                                title: 'Sale',
+                                body: 'Customer ordered — stock out for sale / dispatch.',
+                              },
+                            ]
+                          : []),
                         {
                           id: 'DEMO' as const,
                           title: 'Demo',

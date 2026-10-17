@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Building2, Pencil, UserPlus, Users } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
@@ -172,6 +173,7 @@ function roleBadgeColor(code?: string) {
 }
 
 export function UsersPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const addToast = useUIStore((s) => s.addToast)
   const authUser = useAuthStore((s) => s.user)
   const patchUser = useAuthStore((s) => s.patchUser)
@@ -254,6 +256,24 @@ export function UsersPage() {
     setViewUser(null)
     setFormOpen(true)
   }
+
+  // Settings → Edit deep-link: /users?userId=…
+  useEffect(() => {
+    const uid = searchParams.get('userId')?.trim()
+    if (!uid || loading || !data?.items?.length || formOpen) return
+    const u = data.items.find((x) => x.id === uid)
+    if (!u) return
+    openEdit(u)
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('userId')
+        return next
+      },
+      { replace: true },
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, data, searchParams, formOpen])
 
   async function uploadPhoto(file?: File | null) {
     if (!file) return

@@ -6,6 +6,7 @@ import {
   type InventoryAreas,
 } from '@/lib/inventoryAreas'
 import type { AllowedModules } from '@/lib/userModules'
+import { rememberTenantSlug } from '@/lib/lastTenantSlug'
 
 type AuthKind = 'platform' | 'tenant' | null
 
@@ -140,6 +141,8 @@ export const useAuthStore = create<AuthState>()(
           inventoryAreas?: InventoryAreas
           allowedModules?: AllowedModules
         }
+        const resolvedSlug = loginUser.tenantSlug ?? tenantSlug
+        rememberTenantSlug(resolvedSlug)
         get().setSession(
           'tenant',
           {
@@ -150,7 +153,7 @@ export const useAuthStore = create<AuthState>()(
             avatarUrl: loginUser.avatarUrl ?? null,
             role: loginUser.role,
             tenantId: loginUser.tenantId,
-            tenantSlug: loginUser.tenantSlug ?? tenantSlug,
+            tenantSlug: resolvedSlug,
             tenantName: loginUser.tenantName,
             branding: loginUser.branding ?? null,
             inventoryAreas: resolveInventoryAreas(
@@ -224,7 +227,10 @@ export const useAuthStore = create<AuthState>()(
         }
         if (auth.kind === 'platform') {
           const existing = get()
-          if (existing.bootstrapped && existing.user && existing.kind === 'platform') {
+          // Cached platform user → paint UI now; refresh /me in background
+          if (existing.user && existing.kind === 'platform') {
+            if (!existing.bootstrapped) set({ bootstrapped: true })
+            void get().refreshSession()
             return
           }
           try {
@@ -247,15 +253,20 @@ export const useAuthStore = create<AuthState>()(
         }
 
         const existing = get()
-        if (existing.bootstrapped && existing.user && existing.kind === 'tenant') {
+        // Daily return: cached tenant user + JWT → show app immediately (no skeleton wait on RDS /me)
+        if (existing.user && existing.kind === 'tenant') {
+          rememberTenantSlug(existing.user.tenantSlug)
+          if (!existing.bootstrapped) set({ bootstrapped: true })
           void get().refreshSession()
           return
         }
         try {
           const me = await api.meWithRetry()
+          const next = tenantUserFromMe(me as Parameters<typeof tenantUserFromMe>[0])
+          rememberTenantSlug(next.tenantSlug)
           set({
             kind: 'tenant',
-            user: tenantUserFromMe(me as Parameters<typeof tenantUserFromMe>[0]),
+            user: next,
             bootstrapped: true,
           })
         } catch (err) {
@@ -263,6 +274,7 @@ export const useAuthStore = create<AuthState>()(
             setAuth(null)
             set({ kind: null, user: null, bootstrapped: true })
           } else if (existing.user && existing.kind === 'tenant') {
+            rememberTenantSlug(existing.user.tenantSlug)
             set({ bootstrapped: true })
           } else {
             set({ kind: null, user: null, bootstrapped: true })
@@ -273,6 +285,22 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'novacrm-auth-user',
       partialize: (s) => ({ kind: s.kind, user: s.user }),
+      onRehydrateStorage: () => (state) => {
+        // Persist finishes after first paint — unlock shell as soon as cached session is restored
+        try {
+          const auth = getAuth()
+          if (
+            state?.user &&
+            state?.kind &&
+            auth?.accessToken &&
+            auth.kind === state.kind
+          ) {
+            useAuthStore.setState({ bootstrapped: true })
+          }
+        } catch {
+          /* ignore */
+        }
+      },
     },
   ),
 )

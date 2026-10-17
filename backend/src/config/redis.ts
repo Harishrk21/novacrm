@@ -24,10 +24,18 @@ if (redis) {
   redis.on("close", () => {
     available = false;
   });
+  // Fail open: mark unavailable on error; ioredis reconnect restores "ready"
   redis.on("error", () => {
     available = false;
   });
-  void redis.connect().catch(() => undefined);
+  void redis.connect().catch(() => {
+    available = false;
+  });
+}
+
+/** True when Redis is configured and currently usable (cache hits). */
+export function isRedisAvailable() {
+  return available && !!redis;
 }
 
 export async function cacheGet<T>(key: string): Promise<T | null> {

@@ -52,7 +52,7 @@ export function pathToModuleKey(to: string): string | null {
     path === '/my-tasks' ||
     path === '/workqueue' ||
     path === '/settings' ||
-    path === '/team-chat'
+    path === '/team-chat' // footer dock via TeamChatOpenPage — not a module gate
   ) {
     return null
   }

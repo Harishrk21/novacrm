@@ -5,9 +5,11 @@ import { Topbar } from './Topbar'
 import { AppFooterBar } from './AppFooterBar'
 import { FieldBottomNav } from './FieldBottomNav'
 import { ToastContainer } from '@/components/ui/Toast'
+import { LowMachineStockAlert } from '@/components/inventory/LowMachineStockAlert'
 import { HowItWorksDrawer } from '@/components/help/HowItWorksDrawer'
 import { PwaInstallTip } from '@/components/pwa/PwaInstallTip'
 import { APP_NAME } from '@/lib/branding'
+import { isTenantSession } from '@/lib/api'
 import { useModulesStore } from '@/store/modulesStore'
 import { useUnsavedStore } from '@/store/unsavedStore'
 import { useFieldShell } from '@/hooks/useFieldShell'
@@ -47,6 +49,37 @@ export function AppLayout() {
     void loadModules()
   }, [loadModules])
 
+  // Prefetch common routes + warm lookups cache so nav isn't double-waiting
+  useEffect(() => {
+    const idle =
+      typeof window !== 'undefined' && 'requestIdleCallback' in window
+        ? window.requestIdleCallback
+        : (cb: () => void) => window.setTimeout(cb, 150)
+    const id = idle(() => {
+      void import('@/pages/TicketsPage')
+      void import('@/pages/WorkqueuePage')
+      void import('@/pages/LeadsPage')
+      void import('@/pages/ContactsPage')
+      void import('@/pages/NotificationsPage')
+      void import('@/pages/erp/InventoryHubPage')
+      void import('@/lib/api').then(({ api }) => {
+        if (!isTenantSession()) return
+        // Warm fast core first, then full catalog — don't block UI
+        void api
+          .lookups({ scope: 'core' })
+          .then(() => api.lookups({ scope: 'full' }))
+          .catch(() => undefined)
+      })
+    })
+    return () => {
+      if (typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(id as number)
+      } else {
+        window.clearTimeout(id as number)
+      }
+    }
+  }, [])
+
   return (
     <div className="flex h-full overflow-hidden bg-surface">
       {!fieldShell ? <Sidebar /> : null}
@@ -59,13 +92,15 @@ export function AppLayout() {
           )}
         >
           {showInstallTip ? <PwaInstallTip /> : null}
-          <Outlet key={location.pathname} />
+          {/* No pathname key — remounting every visit forced full skeleton + refetch */}
+          <Outlet />
         </main>
         {!fieldShell ? <AppFooterBar /> : null}
       </div>
       {fieldShell ? <FieldBottomNav /> : null}
       <HowItWorksDrawer />
       <ToastContainer />
+      <LowMachineStockAlert />
       <UnsavedBeforeUnload />
     </div>
   )

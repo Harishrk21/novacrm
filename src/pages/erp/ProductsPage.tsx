@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Package, SlidersHorizontal, X } from 'lucide-react'
 import { ProductImage } from '@/components/ProductImage'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
@@ -72,17 +72,24 @@ const emptyForm = (): ProductForm => ({
   uploading: false,
 })
 
-function skuFromName(familyCode: string, industryCode: string, name: string) {
+function skuFromName(familyCode: string, industryCode: string, name: string, brand?: string) {
   const fam = familyCode.replaceAll('_', '').slice(0, 6)
   const ind = industryCode ? industryCode.replaceAll('_', '').slice(0, 4) : 'GEN'
+  const brandSlug = (brand ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 12)
   const slug = name
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 28)
-  const suffix = Date.now().toString(36).slice(-4).toUpperCase()
-  return `HMS-${fam}-${ind}-${slug || 'MODEL'}-${suffix}`
+  return brandSlug
+    ? `HMS-${fam}-${ind}-${brandSlug}-${slug || 'MODEL'}`
+    : `HMS-${fam}-${ind}-${slug || 'MODEL'}`
 }
 
 function productToForm(p: Record<string, unknown>): ProductForm {
@@ -121,6 +128,7 @@ export function ProductsPage() {
     tipType: 'TIP' as const,
   }
   const addToast = useUIStore((s) => s.addToast)
+  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [items, setItems] = useState<Record<string, unknown>[]>([])
   const [categories, setCategories] = useState<
@@ -248,7 +256,14 @@ export function ProductsPage() {
               : 'CCM')
     return {
       name,
-      sku: fromCatalog?.sku ?? skuFromName(formState.familyCode, formState.industryCode, name),
+      sku:
+        fromCatalog?.sku ??
+        skuFromName(
+          formState.familyCode,
+          formState.industryCode,
+          name,
+          formState.brandName,
+        ),
       catalogKind,
       requiresStamping: formState.requiresStamping,
       trackInventory: fromCatalog?.trackInventory ?? fam.code !== 'BILLING_SOFTWARE',
@@ -312,8 +327,19 @@ export function ProductsPage() {
       addToast({ type: 'error', message: 'Select a machine or enter a custom machine name' })
       return
     }
-    if (form.gcApplicable && !form.warrantyMonths) {
-      addToast({ type: 'error', message: 'Select GC duration (3 / 6 / 9 / 12 months)' })
+    const brandKey = form.brandName.trim().toLowerCase()
+    const nameKey = machine.name.toLowerCase()
+    const duplicate = items.find((p) => {
+      if (String(p.name ?? '').trim().toLowerCase() !== nameKey) return false
+      const a = productAttrs(p)
+      const pBrand = String(a.brand ?? '').trim().toLowerCase()
+      return brandKey ? pBrand === brandKey : !pBrand
+    })
+    if (duplicate) {
+      addToast({
+        type: 'error',
+        message: `Product “${machine.name}” already exists (SKU ${String(duplicate.sku ?? '')}). Edit the existing row instead.`,
+      })
       return
     }
     setSaving(true)
@@ -388,10 +414,6 @@ export function ProductsPage() {
     const machine = resolveMachine(editForm)
     if (!machine) {
       addToast({ type: 'error', message: 'Enter machine name' })
-      return
-    }
-    if (editForm.gcApplicable && !editForm.warrantyMonths) {
-      addToast({ type: 'error', message: 'Select GC duration (3 / 6 / 9 / 12 months)' })
       return
     }
     setSaving(true)
@@ -573,7 +595,7 @@ export function ProductsPage() {
               <div>
                 <div className="text-sm font-semibold">GC applicable</div>
                 <p className="text-xs text-text-secondary">
-                  Leave off if guarantee does not apply. If on — pick duration.
+                  Leave off if guarantee does not apply. Duration is optional when GC is on.
                 </p>
               </div>
               <Switch
@@ -583,7 +605,7 @@ export function ProductsPage() {
                   setState((f) => ({
                     ...f,
                     gcApplicable: on,
-                    warrantyMonths: on ? f.warrantyMonths || '12' : '',
+                    warrantyMonths: on ? f.warrantyMonths : '',
                   }))
                 }
               />
@@ -591,11 +613,11 @@ export function ProductsPage() {
             {state.gcApplicable ? (
               <div className="mt-3 max-w-xs">
                 <Select
-                  label="GC duration *"
+                  label="GC duration"
                   value={state.warrantyMonths}
                   onChange={(e) => setState((f) => ({ ...f, warrantyMonths: e.target.value }))}
                   options={[
-                    { value: '', label: 'Select months…' },
+                    { value: '', label: 'Months… (optional)' },
                     ...GC_MONTH_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
                   ]}
                 />
@@ -778,9 +800,9 @@ export function ProductsPage() {
                 <X size={14} /> Clear
               </Button>
             ) : (
-              <Button variant="outline" className="pointer-events-none opacity-60">
-                <SlidersHorizontal size={14} /> Filters
-              </Button>
+              <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary">
+                <SlidersHorizontal size={14} /> Filters above
+              </span>
             )}
           </div>
 
@@ -832,10 +854,7 @@ export function ProductsPage() {
                       <tr
                         key={id}
                         className="cursor-pointer border-b border-border hover:bg-surface/60"
-                        onClick={() => {
-                          setEditProduct(null)
-                          setViewProduct(p)
-                        }}
+                        onClick={() => navigate(`/erp/products/${id}`)}
                       >
                         <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                           <SelectCheckbox
@@ -868,10 +887,7 @@ export function ProductsPage() {
                         <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center gap-0.5">
                             <ViewIconButton
-                              onClick={() => {
-                                setEditProduct(null)
-                                setViewProduct(p)
-                              }}
+                              onClick={() => navigate(`/erp/products/${id}`)}
                             />
                             <EditIconButton
                               onClick={() => {

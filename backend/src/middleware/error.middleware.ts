@@ -8,8 +8,9 @@ export function notFoundHandler(req: Request, _res: Response, next: NextFunction
 }
 
 function isDbPoolExhausted(err: unknown, msg: string) {
-  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2024") return true;
-  return /Timed out fetching a new connection|connection pool|max clients|EMAXCONNSESSION|too many connections/i.test(
+  if (err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2024" || err.code === "P2037"))
+    return true;
+  return /Timed out fetching a new connection|connection pool|max clients|EMAXCONNSESSION|too many connections|ERROR 08004 \(1040\)/i.test(
     msg,
   );
 }
@@ -40,7 +41,9 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
           ? "That employee code is already used. Leave code blank for auto, or pick a new one."
           : /invoice_number|invoiceNumber/i.test(target)
             ? "Invoice number already used — try Create again (number sequence was behind)."
-            : "A record with this value already exists";
+            : /sku/i.test(target)
+              ? "A product with this SKU already exists. Open the existing product to edit — model name alone is not unique."
+              : "A record with this value already exists";
     return res.status(409).json({ success: false, message: hint, details: target || undefined });
   }
   if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2000") {
@@ -75,7 +78,7 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     return res.status(503).json({
       success: false,
       message:
-        "Database is busy — please retry in a moment. If this keeps happening, restart the API service once and confirm only one production instance is running.",
+        "Database is busy (connection limit). On shared RDS: stop extra apps using the same DB, lower each app’s connection_limit, restart Render once, or raise RDS max_connections. Then retry login.",
       details: code ? { code } : undefined,
     });
   }

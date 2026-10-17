@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { api, getAuth, isTenantSession } from '@/lib/api'
 import { notificationHref } from '@/lib/notificationHref'
+import { isExpiredNotification } from '@/lib/notificationOpen'
 
 /** Fired when a brand-new notification should pop the header bell + sound. */
 export const NOTIFICATION_ARRIVED_EVENT = 'hms:notification-arrived'
@@ -34,6 +35,11 @@ export type AppNotification = {
   type?: string
   entityType?: string | null
   entityId?: string | null
+  /** Socket stub before the server row is loaded — dismiss is local-only. */
+  ephemeral?: boolean
+  /** Task done / superseded — shown under Expired / Old tab */
+  expired?: boolean
+  readAt?: string | null
 }
 
 type State = {
@@ -41,7 +47,7 @@ type State = {
   unreadCount: number
   loading: boolean
   lastFetchedAt: number | null
-  load: (_userId?: string, _role?: string) => Promise<void>
+  load: (_userId?: string, role?: string) => Promise<void>
   markRead: (id: string, _userId?: string) => Promise<void>
   markAllRead: (_userId?: string) => Promise<void>
   clearOne: (id: string) => Promise<void>
@@ -62,7 +68,7 @@ export const useNotificationsStore = create<State>((set, get) => ({
   loading: false,
   lastFetchedAt: null,
 
-  load: async () => {
+  load: async (_userId?, role?) => {
     if (!isTenantSession()) {
       set({ items: [], unreadCount: 0, lastFetchedAt: Date.now() })
       return
@@ -71,27 +77,42 @@ export const useNotificationsStore = create<State>((set, get) => ({
     const hadFetch = get().lastFetchedAt != null
     set({ loading: true })
     try {
-      const res = await api.notifications({ limit: 50 })
-      const items: AppNotification[] = (res.items ?? []).map((n) => ({
-        id: String(n.id),
-        title: String(n.title),
-        message: String(n.message),
-        createdAt: String(n.createdAt),
-        isRead: Boolean(n.isRead),
-        href: notificationHref({
-          type: n.type ? String(n.type) : null,
-          entityType: n.entityType ? String(n.entityType) : null,
-          entityId: n.entityId ? String(n.entityId) : null,
-          href: n.href ? String(n.href) : null,
-        }),
-        kind: mapKind(String(n.type ?? 'TICKET')),
-        type: String(n.type ?? ''),
-        entityType: n.entityType ? String(n.entityType) : null,
-        entityId: n.entityId ? String(n.entityId) : null,
-      }))
+      const res = await api.notifications({ limit: 80 })
+      const items: AppNotification[] = (res.items ?? []).map((n) => {
+        const title = String(n.title)
+        const type = String(n.type ?? '')
+        const entityType = n.entityType ? String(n.entityType) : null
+        const entityId = n.entityId ? String(n.entityId) : null
+        const hrefIn = n.href ? String(n.href) : null
+        return {
+          id: String(n.id),
+          title,
+          message: String(n.message),
+          createdAt: String(n.createdAt),
+          isRead: Boolean(n.isRead),
+          href: notificationHref(
+            {
+              type,
+              entityType,
+              entityId,
+              href: hrefIn,
+            },
+            { role },
+          ),
+          kind: mapKind(type || 'TICKET'),
+          type,
+          entityType,
+          entityId,
+          expired: Boolean(n.expired) || isExpiredNotification({ title }),
+          readAt: n.readAt != null ? String(n.readAt) : null,
+        }
+      })
       set({
         items,
-        unreadCount: Number(res.unreadCount ?? items.filter((i) => !i.isRead).length),
+        unreadCount: Number(
+          res.unreadCount ??
+            items.filter((i) => !i.isRead && !isExpiredNotification(i)).length,
+        ),
         lastFetchedAt: Date.now(),
         loading: false,
       })
@@ -116,10 +137,12 @@ export const useNotificationsStore = create<State>((set, get) => ({
 
   markRead: async (id) => {
     const prev = get().items
+    const target = prev.find((n) => n.id === id)
     set({
       items: prev.map((n) => (n.id === id ? { ...n, isRead: true } : n)),
-      unreadCount: Math.max(0, get().unreadCount - (prev.find((n) => n.id === id && !n.isRead) ? 1 : 0)),
+      unreadCount: Math.max(0, get().unreadCount - (target && !target.isRead ? 1 : 0)),
     })
+    if (id.startsWith('live-') || target?.ephemeral) return
     try {
       await api.markNotificationRead(id)
     } catch {
@@ -146,8 +169,8 @@ export const useNotificationsStore = create<State>((set, get) => ({
         get().unreadCount - (target && !target.isRead ? 1 : 0),
       ),
     })
-    // Live socket stubs are not persisted yet
-    if (id.startsWith('live-')) return
+    // Live socket stubs are not persisted yet — dismiss is local-only
+    if (id.startsWith('live-') || target?.ephemeral) return
     try {
       await api.deleteNotification(id)
     } catch {
@@ -182,6 +205,7 @@ export const useNotificationsStore = create<State>((set, get) => ({
       type: n.type,
       entityType: n.entityType,
       entityId: n.entityId,
+      ephemeral: true,
     }
     lastLivePrependAt = Date.now()
     set({
@@ -263,12 +287,28 @@ export function connectNotificationsSocket(
         const idSet = new Set(p.ids)
         const next = p.removed
           ? state.items.filter((n) => !idSet.has(n.id))
-          : state.items.map((n) => (idSet.has(n.id) ? { ...n, isRead: true } : n))
+          : state.items.map((n) =>
+              idSet.has(n.id)
+                ? {
+                    ...n,
+                    isRead: true,
+                    expired: true,
+                    title: n.title.startsWith('✓') ? n.title : `✓ ${n.title}`,
+                  }
+                : n,
+            )
         setOptimistic(next)
       } else if (p.entityId) {
-        // Live stubs may not have server ids yet — drop by entity
-        const next = state.items.filter(
-          (n) => !(n.entityId === p.entityId && !n.isRead),
+        // Live stubs may not have server ids yet — mark expired / drop unread stubs
+        const next = state.items.map((n) =>
+          n.entityId === p.entityId
+            ? {
+                ...n,
+                isRead: true,
+                expired: true,
+                title: n.title.startsWith('✓') ? n.title : `✓ ${n.title}`,
+              }
+            : n,
         )
         setOptimistic(next)
       }
@@ -279,7 +319,7 @@ export function connectNotificationsSocket(
   function setOptimistic(items: AppNotification[]) {
     useNotificationsStore.setState({
       items,
-      unreadCount: items.filter((i) => !i.isRead).length,
+      unreadCount: items.filter((i) => !i.isRead && !isExpiredNotification(i)).length,
     })
   }
 

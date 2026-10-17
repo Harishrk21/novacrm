@@ -340,7 +340,6 @@ export function ContactsPage() {
     setLoading(true)
     setLoadError(null)
     try {
-      // Lookups already includes products — don't pay a second RDS round-trip via /products.
       const [contactsRes, lookups] = await Promise.all([
         api.contacts({
           limit: 100,
@@ -350,7 +349,7 @@ export function ContactsPage() {
           city: cityFilter || undefined,
           hasAccount: undefined,
         }),
-        api.lookups(),
+        api.lookups({ scope: 'full' }),
       ])
       setItems((contactsRes.items ?? []) as ContactRow[])
       setAccounts(lookups.accounts)
@@ -363,9 +362,11 @@ export function ContactsPage() {
           attributes: (p.attributes as Record<string, unknown> | null) ?? null,
         })),
       )
+      // Paint contacts list now — catalog enrichment must not hold the skeleton
+      setLoading(false)
       try {
         const [productPage, brandRows] = await Promise.all([
-          api.products({ limit: 200 }),
+          api.products({ limit: 150 }),
           api.inventoryBrands(),
         ])
         if (productPage.items?.length) {
@@ -391,6 +392,7 @@ export function ContactsPage() {
         type: 'error',
         message,
       })
+      setLoading(false)
     } finally {
       setLoading(false)
     }

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
+  ArrowDown,
+  ArrowUp,
   Bell,
   Building2,
   CheckSquare,
@@ -18,6 +20,14 @@ import {
   CalendarDays,
   Megaphone,
 } from 'lucide-react'
+import {
+  activityHref,
+  activitySubjectLabel,
+  contactHref,
+  dealHref,
+  leadHref,
+  workqueueRowHref,
+} from '@/lib/recordLinks'
 import {
   differenceInCalendarDays,
   endOfDay,
@@ -44,6 +54,7 @@ import {
   isServiceEngineer,
 } from '@/lib/roles'
 import { TableSkeleton } from '@/components/ui/Skeleton'
+import { ContactPicker, type ContactPick } from '@/components/contacts/ContactPicker'
 import { useFieldShell } from '@/hooks/useFieldShell'
 
 type Row = Record<string, unknown>
@@ -119,6 +130,36 @@ function matchesDateFilter(a: Row, filter: DateFilter): boolean {
   return true
 }
 
+/** Service tickets use SLA due (and slaBreached); jobs without SLA stay in broad queues. */
+function matchesTicketDateFilter(t: Row, filter: DateFilter): boolean {
+  if (filter === 'all') return true
+  const breached = t.slaBreached === true || t.slaBreached === 1 || t.slaBreached === 'true'
+  const iso = t.slaDueAt != null ? String(t.slaDueAt) : null
+  if (!iso) {
+    if (filter === 'overdue') return breached
+    if (filter === 'today') {
+      const created = t.createdAt ? parseISO(String(t.createdAt)) : null
+      if (!created || !isValid(created)) return false
+      const today = startOfDay(new Date())
+      return created >= today && created <= endOfDay(new Date())
+    }
+    // today_overdue / week — keep active jobs visible when SLA isn’t set
+    return filter === 'today_overdue' || filter === 'week'
+  }
+  if (filter === 'overdue' && breached) return true
+  return matchesDateFilter({ scheduledAt: iso, status: breached ? 'OVERDUE' : '' }, filter)
+}
+
+type TicketStatusFilter = '' | 'OPEN' | 'IN_PROGRESS' | 'PENDING' | 'RESOLVED'
+
+const TICKET_STATUS_FILTERS: { value: TicketStatusFilter; label: string }[] = [
+  { value: '', label: 'All statuses' },
+  { value: 'OPEN', label: 'Open' },
+  { value: 'IN_PROGRESS', label: 'In progress' },
+  { value: 'PENDING', label: 'Waiting' },
+  { value: 'RESOLVED', label: 'Pending approval' },
+]
+
 function priorityOf(row: Row): string {
   const cf = (row.customFields as Record<string, unknown> | null) ?? {}
   if (cf.priority) return labelize(String(cf.priority))
@@ -164,6 +205,34 @@ function matchesLeadFollowFilter(iso: string, filter: DateFilter): boolean {
 }
 
 type CreateKind = 'followup' | 'task' | 'call' | 'meeting'
+type SortKey = 'subject' | 'due' | 'status' | 'priority' | 'related' | 'contact'
+
+function rowDueMs(row: Row): number {
+  const fields = (row.customFields as Record<string, unknown> | null) ?? {}
+  const iso =
+    row.scheduledAt != null
+      ? String(row.scheduledAt)
+      : fields.reminder_at
+        ? String(fields.reminder_at)
+        : fields.follow_up_date
+          ? `${String(fields.follow_up_date).slice(0, 10)}T10:00:00`
+          : row.slaDueAt != null
+            ? String(row.slaDueAt)
+            : row.expectedCloseDate != null
+              ? String(row.expectedCloseDate)
+              : null
+  if (!iso) return Number.MAX_SAFE_INTEGER
+  const t = new Date(iso).getTime()
+  return Number.isFinite(t) ? t : Number.MAX_SAFE_INTEGER
+}
+
+function rowSubjectText(nav: NavId, row: Row): string {
+  if (nav === 'tickets' || nav === 'claimable') return String(row.subject ?? 'Ticket')
+  if (nav === 'leads' || nav === 'touched-leads' || nav === 'followups' || nav === 'contacts') {
+    return String(row.name ?? 'Record')
+  }
+  return activitySubjectLabel(row)
+}
 
 export function WorkqueuePage() {
   const navigate = useNavigate()
@@ -190,17 +259,26 @@ export function WorkqueuePage() {
   const [dateFilter, setDateFilter] = useState<DateFilter>(() =>
     isSalesDesk(useAuthStore.getState().user?.role) ? 'week' : 'today_overdue',
   )
-  const [filterOpen, setFilterOpen] = useState(false)
+  const [ticketStatusFilter, setTicketStatusFilter] = useState<TicketStatusFilter>('')
+  const [filterOpen, setFilterOpen] = useState(true)
   const [page, setPage] = useState(1)
   const [localFilter, setLocalFilter] = useState('')
+  const [sortKey, setSortKey] = useState<SortKey>('due')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   const [createOpen, setCreateOpen] = useState<CreateKind | null>(null)
   const [createBusy, setCreateBusy] = useState(false)
   const [createForm, setCreateForm] = useState({
     leadId: '',
+    ticketId: '',
+    contactId: '',
     title: '',
     scheduledAt: '',
     notes: '',
+    durationMinutes: '30',
+    location: '',
   })
+  const [pickedContact, setPickedContact] = useState<ContactPick | null>(null)
+  const serviceSide = !salesDesk
   const [todayAlertDismissed, setTodayAlertDismissed] = useState(() => {
     try {
       return localStorage.getItem(`nova.followupAlert.${new Date().toISOString().slice(0, 10)}`) === '1'
@@ -242,7 +320,8 @@ export function WorkqueuePage() {
                   : {}),
             })
           : Promise.resolve({ items: [] as Row[] }),
-        wantsSalesQueues
+        // Sales + service desk both link activities to customers
+        wantsSalesQueues || isServiceDesk(role) || isServiceEngineer(role) || isCompanyAdmin(role)
           ? api.contacts({ limit: 100 })
           : Promise.resolve({ items: [] as Row[] }),
       ])
@@ -295,19 +374,39 @@ export function WorkqueuePage() {
   }, [load])
 
   // Engineers + desk: soft-refresh so Accept / Mark complete updates show
+  // 45s (was 20s) to ease MySQL pool pressure; skip when tab hidden
   useEffect(() => {
     if (!isServiceEngineer(role) && !isServiceDesk(role)) return
     const id = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return
       void load()
-    }, 20000)
-    return () => window.clearInterval(id)
+    }, 45_000)
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void load()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      window.clearInterval(id)
+      document.removeEventListener('visibilitychange', onVis)
+    }
   }, [role, load])
 
   useEffect(() => {
     setPage(1)
     setLocalFilter('')
-  }, [nav, dateFilter])
+    setSortKey('due')
+    setSortDir('asc')
+  }, [nav, dateFilter, ticketStatusFilter])
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      setSortDir(key === 'due' ? 'asc' : 'asc')
+    }
+    setPage(1)
+  }
 
   const openActivities = useMemo(
     () => activities.filter((a) => matchesDateFilter(a, dateFilter)),
@@ -418,12 +517,33 @@ export function WorkqueuePage() {
     [tickets],
   )
 
+  /** Apply date + status filters so Workqueue controls actually change the ticket list. */
+  const filteredTickets = useMemo(() => {
+    return tickets.filter((t) => {
+      if (!matchesTicketDateFilter(t, dateFilter)) return false
+      if (ticketStatusFilter && String(t.status) !== ticketStatusFilter) return false
+      return true
+    })
+  }, [tickets, dateFilter, ticketStatusFilter])
+
+  const filteredMyTickets = useMemo(() => {
+    return myTickets.filter((t) => {
+      if (!matchesTicketDateFilter(t, dateFilter)) return false
+      if (ticketStatusFilter && String(t.status) !== ticketStatusFilter) return false
+      return true
+    })
+  }, [myTickets, dateFilter, ticketStatusFilter])
+
+  const filteredClaimableTickets = useMemo(() => {
+    return claimableTickets.filter((t) => matchesTicketDateFilter(t, dateFilter))
+  }, [claimableTickets, dateFilter])
+
   const counts: Record<NavId, number> = {
     tasks: tasks.length,
     meetings: meetings.length,
     calls: calls.length,
-    tickets: isServiceEngineer(role) ? myTickets.length : tickets.length,
-    claimable: claimableTickets.length,
+    tickets: isServiceEngineer(role) ? filteredMyTickets.length : filteredTickets.length,
+    claimable: filteredClaimableTickets.length,
     followups: dueFollowUpLeads.length,
     leads: myLeads.length,
     'touched-leads': touchedLeads.length,
@@ -448,8 +568,8 @@ export function WorkqueuePage() {
     if (nav === 'tasks') list = tasks
     else if (nav === 'meetings') list = meetings
     else if (nav === 'calls') list = calls
-    else if (nav === 'tickets') list = isServiceEngineer(role) ? myTickets : tickets
-    else if (nav === 'claimable') list = claimableTickets
+    else if (nav === 'tickets') list = isServiceEngineer(role) ? filteredMyTickets : filteredTickets
+    else if (nav === 'claimable') list = filteredClaimableTickets
     else if (nav === 'followups') list = dueFollowUpLeads
     else if (nav === 'leads') list = myLeads
     else if (nav === 'touched-leads') list = touchedLeads
@@ -458,15 +578,26 @@ export function WorkqueuePage() {
 
     if (q) {
       list = list.filter((r) => {
+        const contact = r.contact as { name?: string; area?: string; phone?: string } | null
+        const deal = r.deal as { name?: string } | null
+        const fields = (r.customFields as Record<string, unknown> | null) ?? {}
         const hay = [
           r.title,
           r.subject,
           r.name,
-          (r.contact as { name?: string; area?: string } | null)?.name,
-          (r.contact as { area?: string } | null)?.area,
-          (r.customFields as { serviceArea?: string } | null)?.serviceArea,
-          (r.deal as { name?: string } | null)?.name,
+          r.phone,
+          r.email,
+          r.company,
+          r.ticketNo != null ? `#${r.ticketNo}` : '',
+          r.ticketNo != null ? `SVC-${String(r.ticketNo).padStart(5, '0')}` : '',
+          contact?.name,
+          contact?.area,
+          contact?.phone,
+          fields.serviceArea,
+          deal?.name,
           r.accountName,
+          r.status,
+          priorityOf(r),
         ]
           .filter(Boolean)
           .join(' ')
@@ -475,28 +606,56 @@ export function WorkqueuePage() {
       })
     }
 
+    const dir = sortDir === 'asc' ? 1 : -1
     return list.slice().sort((a, b) => {
-      const as = a.scheduledAt
-        ? new Date(String(a.scheduledAt)).getTime()
-        : a.slaDueAt
-          ? new Date(String(a.slaDueAt)).getTime()
-          : Number.MAX_SAFE_INTEGER
-      const bs = b.scheduledAt
-        ? new Date(String(b.scheduledAt)).getTime()
-        : b.slaDueAt
-          ? new Date(String(b.slaDueAt)).getTime()
-          : Number.MAX_SAFE_INTEGER
-      return as - bs
+      let cmp = 0
+      if (sortKey === 'due') {
+        cmp = rowDueMs(a) - rowDueMs(b)
+      } else if (sortKey === 'subject') {
+        cmp = rowSubjectText(nav, a).localeCompare(rowSubjectText(nav, b), undefined, {
+          sensitivity: 'base',
+        })
+      } else if (sortKey === 'status') {
+        cmp = statusLabel(a, nav).localeCompare(statusLabel(b, nav), undefined, {
+          sensitivity: 'base',
+        })
+      } else if (sortKey === 'priority') {
+        cmp = priorityOf(a).localeCompare(priorityOf(b), undefined, { sensitivity: 'base' })
+      } else if (sortKey === 'related') {
+        const ar =
+          (a.deal as { name?: string } | null)?.name ||
+          (a.leadId ? 'Lead' : '') ||
+          (a.accountName ? String(a.accountName) : '') ||
+          ''
+        const br =
+          (b.deal as { name?: string } | null)?.name ||
+          (b.leadId ? 'Lead' : '') ||
+          (b.accountName ? String(b.accountName) : '') ||
+          ''
+        cmp = String(ar).localeCompare(String(br), undefined, { sensitivity: 'base' })
+      } else if (sortKey === 'contact') {
+        const an =
+          (a.contact as { name?: string } | null)?.name ||
+          String(a.phone ?? a.email ?? a.name ?? '')
+        const bn =
+          (b.contact as { name?: string } | null)?.name ||
+          String(b.phone ?? b.email ?? b.name ?? '')
+        cmp = an.localeCompare(bn, undefined, { sensitivity: 'base' })
+      }
+      if (cmp !== 0) return cmp * dir
+      return (rowDueMs(a) - rowDueMs(b)) * dir
     })
   }, [
     nav,
     localFilter,
+    sortKey,
+    sortDir,
     tasks,
     meetings,
     calls,
-    tickets,
-    myTickets,
-    claimableTickets,
+    filteredTickets,
+    filteredMyTickets,
+    filteredClaimableTickets,
     role,
     dueFollowUpLeads,
     myLeads,
@@ -538,24 +697,52 @@ export function WorkqueuePage() {
     [myLeads],
   )
 
+  const ticketOptions = useMemo(
+    () =>
+      tickets.map((t) => {
+        const no = t.ticketNo != null ? `SVC-${String(t.ticketNo).padStart(5, '0')}` : 'Ticket'
+        const subj = String(t.subject ?? '').trim()
+        const cName = (t.contact as { name?: string } | null)?.name
+        return {
+          value: String(t.id),
+          label: subj ? `${no} · ${subj}` : no,
+          sublabel: [cName, t.status].filter(Boolean).map(String).join(' · ') || undefined,
+        }
+      }),
+    [tickets],
+  )
+
   function openCreate(kind: CreateKind) {
-    const tomorrow = new Date()
-    if (kind === 'followup') tomorrow.setDate(tomorrow.getDate() + 1)
-    const local = new Date(tomorrow.getTime() - tomorrow.getTimezoneOffset() * 60000)
+    const when = new Date()
+    if (kind === 'followup') when.setDate(when.getDate() + 1)
+    else if (kind === 'meeting') when.setHours(when.getHours() + 1, 0, 0, 0)
+    const local = new Date(when.getTime() - when.getTimezoneOffset() * 60000)
       .toISOString()
       .slice(0, 16)
-    const defaults: Record<CreateKind, string> = {
+    const salesDefaults: Record<CreateKind, string> = {
       followup: 'Follow up call',
       task: 'Task',
       call: 'Sales call',
-      meeting: 'Meeting',
+      meeting: 'Customer meeting',
     }
+    const serviceDefaults: Record<CreateKind, string> = {
+      followup: 'Follow up',
+      task: 'Service follow-up',
+      call: 'Customer call',
+      meeting: 'Site visit / meeting',
+    }
+    const defaults = salesDesk ? salesDefaults : serviceDefaults
     setCreateForm({
       leadId: '',
+      ticketId: '',
+      contactId: '',
       title: defaults[kind],
       scheduledAt: local,
       notes: '',
+      durationMinutes: kind === 'meeting' ? '30' : kind === 'call' ? '15' : '',
+      location: '',
     })
+    setPickedContact(null)
     setCreateOpen(kind)
   }
 
@@ -570,7 +757,10 @@ export function WorkqueuePage() {
       return
     }
     if (!createForm.scheduledAt) {
-      addToast({ type: 'error', message: 'Pick date & time' })
+      addToast({
+        type: 'error',
+        message: createOpen === 'meeting' ? 'Pick meeting date & time' : 'Pick date & time',
+      })
       return
     }
     setCreateBusy(true)
@@ -581,17 +771,34 @@ export function WorkqueuePage() {
         call: 'CALL',
         meeting: 'MEETING',
       }
+      const durationRaw = createForm.durationMinutes.trim()
+      const durationMinutes =
+        (createOpen === 'meeting' || createOpen === 'call') && durationRaw
+          ? Math.max(0, Math.round(Number(durationRaw)) || 0)
+          : null
+      const notesParts = [
+        createOpen === 'meeting' && createForm.location.trim()
+          ? `Location: ${createForm.location.trim()}`
+          : '',
+        createForm.notes.trim(),
+      ].filter(Boolean)
       await api.createActivity({
         type: typeMap[createOpen],
         title: createForm.title.trim(),
-        description: createForm.notes.trim() || null,
+        description: notesParts.join('\n') || null,
         scheduledAt: new Date(createForm.scheduledAt).toISOString(),
         status: 'PENDING',
-        leadId: createForm.leadId || null,
+        durationMinutes: durationMinutes && durationMinutes > 0 ? durationMinutes : null,
+        leadId: salesDesk ? createForm.leadId || null : null,
+        contactId: createForm.contactId || pickedContact?.id || null,
         assignedToId: user?.id ?? null,
         customFields: {
           from_workqueue: true,
           ...(createOpen === 'followup' ? { auto_from: 'lead_followup' } : {}),
+          ...(createForm.ticketId ? { ticketId: createForm.ticketId } : {}),
+          ...(createOpen === 'meeting' && createForm.location.trim()
+            ? { location: createForm.location.trim() }
+            : {}),
         },
       })
       addToast({
@@ -671,47 +878,15 @@ export function WorkqueuePage() {
   }
 
   function subjectCell(row: Row) {
-    if (nav === 'tickets' || nav === 'claimable') {
-      return (
-        <Link to={`/tickets/${row.id}`} className="text-[color:var(--color-accent-blue)] hover:underline">
-          {String(row.subject ?? 'Ticket')}
-        </Link>
-      )
-    }
-    if (nav === 'leads' || nav === 'touched-leads' || nav === 'followups') {
-      return (
-        <Link
-          to={`/sale-tracking/${row.id}`}
-          className="text-[color:var(--color-accent-blue)] hover:underline"
-        >
-          {String(row.name ?? 'Enquiry')}
-        </Link>
-      )
-    }
-    if (nav === 'contacts') {
-      return (
-        <Link
-          to={`/contacts/${row.id}`}
-          className="text-[color:var(--color-accent-blue)] hover:underline"
-        >
-          {String(row.name ?? 'Contact')}
-        </Link>
-      )
-    }
-    // Follow-up / call / task activities → open the linked enquiry (not /my-tasks,
-    // which also loads service tickets and 403s for sales desk).
-    if (row.leadId) {
-      return (
-        <Link
-          to={`/sale-tracking/${String(row.leadId)}`}
-          className="text-[color:var(--color-accent-blue)] hover:underline"
-        >
-          {String(row.title ?? 'Follow-up')}
-        </Link>
-      )
+    const label = rowSubjectText(nav, row)
+    const href = workqueueRowHref(nav, row)
+    if (!href) {
+      return <span className="font-medium text-text-primary">{label}</span>
     }
     return (
-      <span className="font-medium text-text-primary">{String(row.title ?? 'Activity')}</span>
+      <Link to={href} className="text-[color:var(--color-accent-blue)] hover:underline">
+        {label}
+      </Link>
     )
   }
 
@@ -739,11 +914,11 @@ export function WorkqueuePage() {
 
   function relatedCell(row: Row) {
     const deal = row.deal as { id?: string; name?: string } | null
-    const contact = row.contact as { id?: string; name?: string } | null
-    if (deal?.name) {
+    const dHref = dealHref(row)
+    if (deal?.name && dHref) {
       return (
         <Link
-          to={deal.id ? `/deals/${deal.id}` : '/deals'}
+          to={dHref}
           className="inline-flex items-center gap-1.5 text-[color:var(--color-accent-blue)] hover:underline"
         >
           <Building2 size={13} className="shrink-0 text-text-secondary" />
@@ -751,10 +926,11 @@ export function WorkqueuePage() {
         </Link>
       )
     }
-    if (row.leadId) {
+    const lHref = leadHref(row)
+    if (lHref) {
       return (
         <Link
-          to={`/sale-tracking/${row.leadId}`}
+          to={lHref}
           className="inline-flex items-center gap-1.5 text-[color:var(--color-accent-blue)] hover:underline"
         >
           <Users size={13} className="shrink-0 text-amber-500" />
@@ -762,12 +938,30 @@ export function WorkqueuePage() {
         </Link>
       )
     }
-    if (contact?.name && (nav === 'tickets' || nav === 'tasks' || nav === 'meetings' || nav === 'calls')) {
+    const ticketHref = activityHref(row)
+    if (
+      ticketHref?.startsWith('/tickets/') &&
+      (nav === 'tasks' || nav === 'meetings' || nav === 'calls')
+    ) {
       return (
-        <span className="inline-flex items-center gap-1.5 text-text-secondary">
-          <Building2 size={13} />
-          —
-        </span>
+        <Link
+          to={ticketHref}
+          className="inline-flex items-center gap-1.5 text-[color:var(--color-accent-blue)] hover:underline"
+        >
+          <Ticket size={13} className="shrink-0 text-text-secondary" />
+          Service job
+        </Link>
+      )
+    }
+    if (row.accountId && row.accountName) {
+      return (
+        <Link
+          to={`/accounts/${String(row.accountId)}`}
+          className="inline-flex items-center gap-1.5 text-[color:var(--color-accent-blue)] hover:underline"
+        >
+          <Building2 size={13} className="text-text-secondary" />
+          {String(row.accountName)}
+        </Link>
       )
     }
     if (row.accountName) {
@@ -778,20 +972,34 @@ export function WorkqueuePage() {
         </span>
       )
     }
+    const cHref = contactHref(row)
+    const contact = row.contact as { name?: string } | null
+    if (cHref && contact?.name) {
+      return (
+        <Link
+          to={cHref}
+          className="inline-flex items-center gap-1.5 text-[color:var(--color-accent-blue)] hover:underline"
+        >
+          <Building2 size={13} className="shrink-0 text-text-secondary" />
+          {contact.name}
+        </Link>
+      )
+    }
     return <span className="text-text-secondary">—</span>
   }
 
   function contactCell(row: Row) {
     const contact = row.contact as { id?: string; name?: string } | null
-    if (contact?.name) {
+    const href = contactHref(row)
+    if (contact?.name && href) {
       return (
-        <Link
-          to={contact.id ? `/contacts/${contact.id}` : '/contacts'}
-          className="text-[color:var(--color-accent-blue)] hover:underline"
-        >
+        <Link to={href} className="text-[color:var(--color-accent-blue)] hover:underline">
           {contact.name}
         </Link>
       )
+    }
+    if (contact?.name) {
+      return <span className="text-text-primary">{contact.name}</span>
     }
     if (nav === 'leads' || nav === 'touched-leads' || nav === 'followups') {
       return <span className="text-text-secondary">{String(row.phone ?? row.email ?? '—')}</span>
@@ -800,6 +1008,39 @@ export function WorkqueuePage() {
       return <span className="text-text-secondary">{String(row.email ?? row.phone ?? '—')}</span>
     }
     return <span className="text-text-secondary">—</span>
+  }
+
+  function SortTh({
+    label,
+    column,
+    className,
+  }: {
+    label: string
+    column: SortKey
+    className?: string
+  }) {
+    const active = sortKey === column
+    return (
+      <th className={cn('px-3 py-2.5 font-medium', className)}>
+        <button
+          type="button"
+          onClick={() => toggleSort(column)}
+          className={cn(
+            'inline-flex items-center gap-1 rounded px-0.5 hover:text-text-primary',
+            active ? 'text-text-primary' : 'text-text-secondary',
+          )}
+        >
+          {label}
+          {active ? (
+            sortDir === 'asc' ? (
+              <ArrowUp size={12} />
+            ) : (
+              <ArrowDown size={12} />
+            )
+          ) : null}
+        </button>
+      </th>
+    )
   }
 
   const isActivityNav = nav === 'tasks' || nav === 'meetings' || nav === 'calls'
@@ -1022,26 +1263,59 @@ export function WorkqueuePage() {
             >
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             </button>
-            <div className="ml-auto flex items-center gap-2">
-              {filterOpen && (
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+              {isActivityNav || nav === 'followups' || nav === 'tickets' || nav === 'claimable' ? (
+                <select
+                  value={dateFilter}
+                  onChange={(e) => setDateFilter(e.target.value as DateFilter)}
+                  className="h-8 max-w-[10.5rem] appearance-none rounded-md border border-border bg-muted/40 py-1 pl-2.5 pr-7 text-[12px] font-medium text-text-primary outline-none focus:border-[color:var(--color-accent-blue)]"
+                  title="Date filter"
+                >
+                  {DATE_FILTERS.map((f) => (
+                    <option key={f.value} value={f.value}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              {nav === 'tickets' ? (
+                <select
+                  value={ticketStatusFilter}
+                  onChange={(e) => setTicketStatusFilter(e.target.value as TicketStatusFilter)}
+                  className="h-8 max-w-[9.5rem] appearance-none rounded-md border border-border bg-muted/40 py-1 pl-2.5 pr-7 text-[12px] font-medium text-text-primary outline-none focus:border-[color:var(--color-accent-blue)]"
+                  title="Status filter"
+                >
+                  {TICKET_STATUS_FILTERS.map((f) => (
+                    <option key={f.value || 'all'} value={f.value}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              {filterOpen ? (
                 <input
                   autoFocus
                   value={localFilter}
                   onChange={(e) => setLocalFilter(e.target.value)}
-                  placeholder="Filter records…"
-                  className="h-8 w-48 rounded-md border border-border bg-muted/40 px-2.5 text-[13px] outline-none focus:border-[color:var(--color-accent-blue)]"
+                  placeholder={
+                    nav === 'tickets' || nav === 'claimable'
+                      ? 'Search SVC / customer…'
+                      : 'Filter records…'
+                  }
+                  className="h-8 w-40 rounded-md border border-border bg-muted/40 px-2.5 text-[13px] outline-none focus:border-[color:var(--color-accent-blue)] sm:w-52"
                 />
-              )}
+              ) : null}
               <button
                 type="button"
                 onClick={() => setFilterOpen((v) => !v)}
                 className={cn(
                   'inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-[13px] text-text-secondary hover:bg-muted hover:text-text-primary',
-                  filterOpen && 'border-[color:var(--color-accent-blue)] text-text-primary',
+                  (filterOpen || localFilter) &&
+                    'border-[color:var(--color-accent-blue)] text-text-primary',
                 )}
               >
                 <Filter size={14} />
-                Filter
+                Search
               </button>
               {nav === 'leads' ? (
                 <Button size="sm" onClick={() => navigate('/sale-tracking?open=1')}>
@@ -1168,12 +1442,14 @@ export function WorkqueuePage() {
                             {claimBusyId === tid ? 'Accepting…' : 'Accept job'}
                           </button>
                         ) : null}
-                        <Link
-                          to={`/tickets/${tid}`}
-                          className="flex min-h-11 w-full items-center justify-center rounded-xl border border-border text-[14px] font-semibold text-accent-blue"
-                        >
-                          Open job
-                        </Link>
+                        {workqueueRowHref(nav, row) ? (
+                          <Link
+                            to={workqueueRowHref(nav, row)!}
+                            className="flex min-h-11 w-full items-center justify-center rounded-xl border border-border text-[14px] font-semibold text-accent-blue"
+                          >
+                            {nav === 'tickets' || nav === 'claimable' ? 'Open job' : 'Open'}
+                          </Link>
+                        ) : null}
                       </div>
                     </div>
                   )
@@ -1183,13 +1459,13 @@ export function WorkqueuePage() {
               <table className="w-full min-w-[880px] border-collapse text-left text-[13px]">
                 <thead className="sticky top-0 z-10 bg-card">
                   <tr className="border-b border-border text-[12px] font-medium text-text-secondary">
-                    <th className="px-4 py-2.5 font-medium">Subject</th>
-                    <th className="px-3 py-2.5 font-medium">Due Date</th>
-                    <th className="px-3 py-2.5 font-medium">Status</th>
-                    <th className="px-3 py-2.5 font-medium">Priority</th>
-                    <th className="px-3 py-2.5 font-medium">Related To</th>
-                    <th className="px-4 py-2.5 font-medium">Contact Name</th>
-                    {nav === 'claimable' || nav === 'tickets' ? (
+                    <SortTh label="Subject" column="subject" className="px-4" />
+                    <SortTh label="Due Date" column="due" />
+                    <SortTh label="Status" column="status" />
+                    <SortTh label="Priority" column="priority" />
+                    <SortTh label="Related To" column="related" />
+                    <SortTh label="Contact Name" column="contact" className="px-4" />
+                    {nav === 'claimable' || nav === 'tickets' || isActivityNav ? (
                       <th className="px-4 py-2.5 font-medium">Action</th>
                     ) : null}
                   </tr>
@@ -1228,7 +1504,7 @@ export function WorkqueuePage() {
                       </td>
                       <td className="max-w-[200px] truncate px-3 py-2.5">{relatedCell(row)}</td>
                       <td className="max-w-[180px] truncate px-4 py-2.5">{contactCell(row)}</td>
-                      {nav === 'claimable' || nav === 'tickets' ? (
+                      {nav === 'claimable' || nav === 'tickets' || isActivityNav ? (
                         <td className="px-4 py-2.5">
                           {nav === 'claimable' && unassigned && isServiceEngineer(role) ? (
                             <button
@@ -1239,13 +1515,15 @@ export function WorkqueuePage() {
                             >
                               {claimBusyId === tid ? 'Accepting…' : 'Accept'}
                             </button>
-                          ) : (
+                          ) : workqueueRowHref(nav, row) ? (
                             <Link
-                              to={`/tickets/${tid}`}
+                              to={workqueueRowHref(nav, row)!}
                               className="text-[12px] font-semibold text-accent-blue hover:underline"
                             >
                               Open
                             </Link>
+                          ) : (
+                            <span className="text-[12px] text-text-secondary">—</span>
                           )}
                         </td>
                       ) : null}
@@ -1293,12 +1571,20 @@ export function WorkqueuePage() {
           createOpen === 'followup'
             ? 'Create follow-up'
             : createOpen === 'call'
-              ? 'Create call'
+              ? 'Log / schedule call'
               : createOpen === 'meeting'
-                ? 'Create meeting'
+                ? 'Schedule meeting'
                 : 'Create task'
         }
-        subtitle="Saved to your workqueue and linked to the enquiry when selected."
+        subtitle={
+          salesDesk
+            ? 'Saved to your workqueue and linked to the enquiry when selected.'
+            : createOpen === 'meeting'
+              ? 'Site visit or customer meeting — link a ticket or customer so the row opens the right record.'
+              : createOpen === 'call'
+                ? 'Outbound / follow-up call — link a ticket or customer when you know who it is for.'
+                : 'Personal reminder on your workqueue. Optionally link a service ticket or customer.'
+        }
         size="md"
         accent="amber"
         footer={
@@ -1313,7 +1599,11 @@ export function WorkqueuePage() {
         }
       >
         <div className="space-y-3">
-          {(createOpen === 'followup' || createOpen === 'call' || createOpen === 'meeting' || createOpen === 'task') && (
+          {salesDesk &&
+          (createOpen === 'followup' ||
+            createOpen === 'call' ||
+            createOpen === 'meeting' ||
+            createOpen === 'task') ? (
             <SearchableSelect
               label={createOpen === 'followup' ? 'Lead / enquiry *' : 'Lead / enquiry (optional)'}
               value={createForm.leadId}
@@ -1322,25 +1612,111 @@ export function WorkqueuePage() {
               placeholder="Search enquiry…"
               emptyText="No open leads — create a lead first"
             />
-          )}
+          ) : null}
+
+          {serviceSide &&
+          (createOpen === 'task' || createOpen === 'call' || createOpen === 'meeting') ? (
+            <>
+              <SearchableSelect
+                label="Service ticket (optional)"
+                value={createForm.ticketId}
+                onChange={(v) => {
+                  const t = tickets.find((x) => String(x.id) === v)
+                  const cid = t?.contactId != null ? String(t.contactId) : ''
+                  const cname = (t?.contact as { name?: string } | null)?.name ?? ''
+                  setCreateForm((f) => ({
+                    ...f,
+                    ticketId: v,
+                    contactId: cid || f.contactId,
+                  }))
+                  if (cid) {
+                    setPickedContact({ id: cid, name: cname || 'Customer' })
+                  }
+                }}
+                options={ticketOptions}
+                placeholder="Search ticket / SVC…"
+                emptyText="No open tickets in your queue"
+              />
+              <ContactPicker
+                label="Customer (optional)"
+                valueId={createForm.contactId}
+                selected={pickedContact}
+                returnTo="/workqueue"
+                onSelect={(c) => {
+                  setPickedContact(c)
+                  setCreateForm((f) => ({ ...f, contactId: c?.id ?? '' }))
+                }}
+              />
+            </>
+          ) : null}
+
           <Input
-            label="Title *"
+            label={
+              createOpen === 'meeting'
+                ? 'Meeting title *'
+                : createOpen === 'call'
+                  ? 'Call title *'
+                  : 'Title *'
+            }
             value={createForm.title}
             onChange={(e) => setCreateForm((f) => ({ ...f, title: e.target.value }))}
+            placeholder={
+              createOpen === 'meeting'
+                ? 'e.g. On-site visit — calibration'
+                : createOpen === 'call'
+                  ? 'e.g. Call customer about spare parts'
+                  : 'e.g. Remind engineer for parts'
+            }
           />
           <Input
-            label="Due date & time *"
+            label={
+              createOpen === 'meeting'
+                ? 'Meeting date & time *'
+                : createOpen === 'call'
+                  ? 'Call date & time *'
+                  : 'Due date & time *'
+            }
             type="datetime-local"
             value={createForm.scheduledAt}
             onChange={(e) => setCreateForm((f) => ({ ...f, scheduledAt: e.target.value }))}
           />
+          {createOpen === 'meeting' || createOpen === 'call' ? (
+            <Input
+              label="Duration (minutes)"
+              type="number"
+              min={0}
+              value={createForm.durationMinutes}
+              onChange={(e) => setCreateForm((f) => ({ ...f, durationMinutes: e.target.value }))}
+              placeholder={createOpen === 'meeting' ? '30' : '15'}
+            />
+          ) : null}
+          {createOpen === 'meeting' ? (
+            <Input
+              label="Location / venue"
+              value={createForm.location}
+              onChange={(e) => setCreateForm((f) => ({ ...f, location: e.target.value }))}
+              placeholder="Customer site, office, Google Meet…"
+            />
+          ) : null}
           <label className="block text-sm">
-            <span className="mb-1 block font-medium text-text-secondary">Notes</span>
+            <span className="mb-1 block font-medium text-text-secondary">
+              {createOpen === 'meeting'
+                ? 'Agenda'
+                : createOpen === 'call'
+                  ? 'Call notes / purpose'
+                  : 'Notes'}
+            </span>
             <textarea
               className="min-h-[72px] w-full rounded-[6px] border border-border bg-card px-3 py-2 text-sm outline-none focus:border-accent-blue"
               value={createForm.notes}
               onChange={(e) => setCreateForm((f) => ({ ...f, notes: e.target.value }))}
-              placeholder="What to discuss…"
+              placeholder={
+                createOpen === 'meeting'
+                  ? 'What to cover on site…'
+                  : createOpen === 'call'
+                    ? 'What to ask / confirm…'
+                    : 'What needs to be done…'
+              }
             />
           </label>
           {createOpen === 'followup' ? (

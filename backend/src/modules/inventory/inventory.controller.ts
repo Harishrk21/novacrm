@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { AppError } from "../../common/errors.js";
 import { success } from "../../common/utils/response.js";
 import { paramId } from "../../common/utils/params.js";
 import {
@@ -135,6 +136,19 @@ export const stampUnit = async (q: Request, r: Response) => {
 export const reduceUnit = async (q: Request, r: Response) => {
   await requireMachines(q);
   const purpose = q.body?.purpose === "DEMO" ? "DEMO" : q.body?.purpose === "SALE" ? "SALE" : undefined;
+  const role = q.auth?.role;
+  // DEMO issue stays available to sales/engineers. SALE reduce is warehouse/admin only
+  // (approved releases use fulfill internally and bypass this HTTP gate).
+  if (purpose !== "DEMO") {
+    const maySaleReduce =
+      role === "WAREHOUSE" || role === "ADMIN" || role === "MANAGER";
+    if (!maySaleReduce) {
+      throw new AppError(
+        "Only warehouse or admin can reduce stock for sale. Use Approved releases for sales.",
+        403,
+      );
+    }
+  }
   return success(
     r,
     await s.reduceStockUnit(q.auth!.tenantId!, q.auth!.userId, paramId(q), {

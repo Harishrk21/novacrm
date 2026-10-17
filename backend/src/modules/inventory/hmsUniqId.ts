@@ -56,6 +56,40 @@ export function sequenceKeyForFamily(year: number, familyShort: string) {
   return `HMS_UNIQ_${year}_${familyShort}`;
 }
 
+/** Parse trailing seq from `2026-WS-0007` → 7 (null if pattern mismatch). */
+export function parseHmsUniqSeq(
+  hmsUniqId: string | null | undefined,
+  year: number,
+  familyShort: string,
+): number | null {
+  const raw = String(hmsUniqId ?? "")
+    .trim()
+    .toUpperCase();
+  if (!raw) return null;
+  const re = new RegExp(
+    `^${year}-${familyShort.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)$`,
+    "i",
+  );
+  const m = raw.match(re);
+  if (!m?.[1]) return null;
+  const n = Number.parseInt(m[1], 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Highest allocated seq for year+family among a list of HMS IDs. */
+export function maxHmsUniqSeqInList(
+  ids: Array<string | null | undefined>,
+  year: number,
+  familyShort: string,
+): number {
+  let max = 0;
+  for (const id of ids) {
+    const n = parseHmsUniqSeq(id, year, familyShort);
+    if (n != null && n > max) max = n;
+  }
+  return max;
+}
+
 /** Bump trailing digits on a serial: ABC1001 + 2 → ABC1003 */
 export function bumpSerial(start: string, offset: number): string {
   const s = start.trim().toUpperCase();

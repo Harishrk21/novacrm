@@ -24,6 +24,95 @@ const idSchema = z.object({
 export const notificationsRouter = Router();
 notificationsRouter.use(authenticate, requireTenant);
 
+/** In-app Open target — keep in sync with src/lib/notificationHref.ts */
+function resolveNotificationHref(
+  n: {
+    type?: string | null;
+    entityType?: string | null;
+    entityId?: string | null;
+  },
+  role?: string | null,
+): string {
+  const type = String(n.type ?? "").toUpperCase();
+  const entityType = String(n.entityType ?? "").toLowerCase();
+  const entityId = n.entityId ? String(n.entityId) : "";
+  const roleCode = String(role ?? "").toUpperCase();
+  const warehouseish =
+    roleCode === "WAREHOUSE" || roleCode === "ADMIN" || roleCode === "MANAGER";
+  const isLeadEntity =
+    entityType === "lead" || entityType === "leads" || entityType === "enquiry";
+
+  if (type === "REQUISITION_PENDING" || type === "REQUISITION_REJECTED") {
+    if (entityId) {
+      return `/sale-tracking?queue=requisitions&reqId=${encodeURIComponent(entityId)}`;
+    }
+    return "/sale-tracking?queue=requisitions";
+  }
+
+  if (
+    type === "REQUISITION_APPROVED" ||
+    type === "REQUISITION_INVENTORY" ||
+    type === "REQUISITION_SHIPPED" ||
+    type === "REQUISITION_FULFILLED" ||
+    type === "REQUISITION_SALE_DC" ||
+    type.includes("REQUISITION") ||
+    entityType === "sales_requisition"
+  ) {
+    if (warehouseish) return "/erp/releases";
+    if (isLeadEntity && entityId) return `/sale-tracking/${entityId}`;
+    if (entityId) {
+      return `/sale-tracking?queue=requisitions&reqId=${encodeURIComponent(entityId)}`;
+    }
+    return "/sale-tracking?queue=requisitions";
+  }
+
+  if (
+    type === "LEAD_FOLLOWUP" ||
+    type === "LEAD_FOLLOWUP_DUE" ||
+    type.includes("FOLLOWUP")
+  ) {
+    if (entityId) return `/sale-tracking/${entityId}`;
+    return "/workqueue";
+  }
+
+  if (
+    isLeadEntity ||
+    type.startsWith("LEAD_") ||
+    type === "LEAD_DAY_UPDATE" ||
+    type === "LEAD_STATUS_CHANGE"
+  ) {
+    if (entityId) return `/sale-tracking/${entityId}`;
+    return "/sale-tracking";
+  }
+
+  if (entityType === "ticket" || type.includes("TICKET")) {
+    if (entityId) return `/tickets/${entityId}`;
+    return "/tickets";
+  }
+
+  if (entityType === "activity" || type.includes("TASK") || type.includes("CALL")) {
+    if (isLeadEntity && entityId) return `/sale-tracking/${entityId}`;
+    return "/workqueue";
+  }
+
+  if (entityType === "invoice_lead" && entityId) {
+    return `/erp/invoices?open=1&contactId=${encodeURIComponent(entityId)}`;
+  }
+  if (entityType === "contact" && entityId) return `/contacts/${entityId}`;
+  if (entityType === "deal" && entityId) return `/deals/${entityId}`;
+
+  if (
+    type === "DEMO_ISSUE" ||
+    type === "DEMO_RETURN" ||
+    type.startsWith("DEMO_") ||
+    entityType === "stock_unit"
+  ) {
+    return "/erp/stock?view=demo";
+  }
+
+  return "/workqueue";
+}
+
 notificationsRouter.get("/", validate(listSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const uid = q.auth!.userId!;
@@ -42,6 +131,8 @@ notificationsRouter.get("/", validate(listSchema), async (q: Request, r: Respons
     }),
     prisma.notification.count({ where: { tenantId: t, userId: uid, isRead: false } }),
   ]);
+  const roleCode = q.auth?.role ?? null;
+
   return success(r, {
     unreadCount,
     items: items.map((n) => ({
@@ -54,14 +145,10 @@ notificationsRouter.get("/", validate(listSchema), async (q: Request, r: Respons
       isRead: n.isRead,
       readAt: n.readAt,
       createdAt: n.createdAt,
-      href:
-        n.entityType === "ticket" && n.entityId
-          ? `/tickets/${n.entityId}`
-          : n.entityType === "lead" && n.entityId
-            ? `/sale-tracking/${n.entityId}`
-            : n.entityType === "invoice_lead" && n.entityId
-              ? `/erp/invoices?open=1&contactId=${n.entityId}`
-              : "/notifications",
+      expired:
+        String(n.title ?? "").trim().startsWith("✓") ||
+        String(n.title ?? "").trim().startsWith("✔"),
+      href: resolveNotificationHref(n, roleCode),
     })),
   });
 });

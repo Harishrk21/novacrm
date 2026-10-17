@@ -9,7 +9,10 @@ import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { notFound } from "../../common/errors.js";
 import { paramId } from "../../common/utils/params.js";
-import { ensureStandardWarehouses } from "../inventory/warehouses.service.js";
+import {
+  ensureStandardWarehouses,
+  sortWarehousesForDropdown,
+} from "../inventory/warehouses.service.js";
 import { allPool } from "../../common/utils/concurrency.js";
 
 /** Dropdown / lookup data for forms across CRM + ERP */
@@ -18,21 +21,26 @@ metaRouter.use(authenticate, requireTenant);
 
 /** Short L1 cache — lookups are hit on almost every form open. */
 const lookupsCache = new Map<string, { at: number; body: unknown }>();
-const LOOKUPS_TTL_MS = 30_000;
+const LOOKUPS_TTL_MS = 120_000;
 
 metaRouter.get("/lookups", async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
-  const lite = String(q.query.lite ?? "") === "1" || String(q.query.scope ?? "") === "warehouses";
+  const scopeRaw = String(q.query.scope ?? q.query.lite ?? "").toLowerCase();
+  const lite = scopeRaw === "1" || scopeRaw === "warehouses";
+  /** core = users/stages/warehouses only — tickets/forms that don't need full catalog */
+  const coreOnly = scopeRaw === "core";
   // Only seed missing warehouses (no-op when already present) — never block every lookups call
   // with four sequential upserts against remote RDS.
   void ensureStandardWarehouses(t).catch(() => undefined);
 
   if (lite) {
-    const warehouses = await prisma.warehouse.findMany({
-      where: { tenantId: t, deletedAt: null, isActive: true },
-      orderBy: [{ code: "asc" }],
-      select: { id: true, name: true, code: true },
-    });
+    const warehouses = sortWarehousesForDropdown(
+      await prisma.warehouse.findMany({
+        where: { tenantId: t, deletedAt: null, isActive: true },
+        orderBy: [{ code: "asc" }],
+        select: { id: true, name: true, code: true, isDefault: true },
+      }),
+    );
     return success(r, {
       sources: [],
       stages: [],
@@ -46,101 +54,122 @@ metaRouter.get("/lookups", async (q: Request, r: Response) => {
     });
   }
 
-  const cacheKey = `lookups:${t}`;
+  const cacheKey = `lookups:${t}:${coreOnly ? "core" : "full"}`;
   const hit = lookupsCache.get(cacheKey);
   if (hit && Date.now() - hit.at < LOOKUPS_TTL_MS) {
     r.setHeader("X-Cache", "HIT-memory");
     return success(r, hit.body);
   }
 
-  // Never open 10 connections at once against a shared RDS pool
-  const [sources, stages, usersRaw, roles, warehouses, categories, accounts, contacts, products, vendors] =
-    await allPool(
-      [
-        () =>
-          prisma.leadSource.findMany({
-            where: { tenantId: t, isActive: true },
-            orderBy: { name: "asc" },
-          }),
-        () =>
-          prisma.pipelineStage.findMany({
-            where: { tenantId: t, isActive: true },
-            orderBy: { sortOrder: "asc" },
-          }),
-        () =>
-          prisma.user.findMany({
-            where: { tenantId: t, deletedAt: null, status: "ACTIVE" },
-            select: { id: true, name: true, email: true, phone: true, avatarUrl: true, roleId: true },
-            orderBy: { name: "asc" },
-            take: 300,
-          }),
-        () =>
-          prisma.role.findMany({
-            where: { tenantId: t, deletedAt: null },
-            select: { id: true, code: true, name: true },
-          }),
-        () =>
-          prisma.warehouse.findMany({
-            where: { tenantId: t, deletedAt: null, isActive: true },
-            orderBy: [{ code: "asc" }],
-          }),
-        () =>
-          prisma.productCategory.findMany({
-            where: { tenantId: t, deletedAt: null },
-            select: { id: true, name: true, code: true, parentId: true },
-            orderBy: { name: "asc" },
-          }),
-        () =>
-          prisma.account.findMany({
-            where: { tenantId: t, deletedAt: null },
-            select: { id: true, name: true, phone: true, email: true, city: true },
-            orderBy: { name: "asc" },
-            take: 500,
-          }),
-        () =>
-          prisma.contact.findMany({
-            where: { tenantId: t, deletedAt: null },
-            select: {
-              id: true,
-              name: true,
-              phone: true,
-              email: true,
-              accountId: true,
-              customerCode: true,
-              customerNo: true,
-            },
-            orderBy: { name: "asc" },
-            take: 500,
-          }),
-        () =>
-          prisma.product.findMany({
-            where: { tenantId: t, deletedAt: null, isActive: true },
-            select: {
-              id: true,
-              sku: true,
-              name: true,
-              salePrice: true,
-              purchasePrice: true,
-              unit: true,
-              taxPercent: true,
-              imageUrl: true,
-              productType: true,
-              attributes: true,
-            },
-            orderBy: { name: "asc" },
-            take: 500,
-          }),
-        () =>
-          prisma.vendor.findMany({
-            where: { tenantId: t, deletedAt: null },
-            select: { id: true, name: true, phone: true, email: true },
-            orderBy: { name: "asc" },
-            take: 300,
-          }),
-      ],
-      3,
-    );
-  const roleById = Object.fromEntries(roles.map((r) => [r.id, r]));
+  // Core path: few small queries (tickets/assign). Full path still capped — no 500-row dumps.
+  const coreJobs = [
+    () =>
+      prisma.leadSource.findMany({
+        where: { tenantId: t, isActive: true },
+        orderBy: { name: "asc" },
+      }),
+    () =>
+      prisma.pipelineStage.findMany({
+        where: { tenantId: t, isActive: true },
+        orderBy: { sortOrder: "asc" },
+      }),
+    () =>
+      prisma.user.findMany({
+        where: { tenantId: t, deletedAt: null, status: "ACTIVE" },
+        select: { id: true, name: true, email: true, phone: true, avatarUrl: true, roleId: true },
+        orderBy: { name: "asc" },
+        take: 200,
+      }),
+    () =>
+      prisma.role.findMany({
+        where: { tenantId: t, deletedAt: null },
+        select: { id: true, code: true, name: true },
+      }),
+    () =>
+      prisma.warehouse.findMany({
+        where: { tenantId: t, deletedAt: null, isActive: true },
+        orderBy: [{ code: "asc" }],
+      }),
+    () =>
+      prisma.productCategory.findMany({
+        where: { tenantId: t, deletedAt: null },
+        select: { id: true, name: true, code: true, parentId: true },
+        orderBy: { name: "asc" },
+      }),
+    () =>
+      prisma.vendor.findMany({
+        where: { tenantId: t, deletedAt: null },
+        select: { id: true, name: true, phone: true, email: true },
+        orderBy: { name: "asc" },
+        take: 150,
+      }),
+  ] as const;
+
+  const catalogJobs = [
+    () =>
+      prisma.account.findMany({
+        where: { tenantId: t, deletedAt: null },
+        select: { id: true, name: true, phone: true, email: true, city: true },
+        orderBy: { name: "asc" },
+        take: 200,
+      }),
+    () =>
+      prisma.contact.findMany({
+        where: { tenantId: t, deletedAt: null },
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          email: true,
+          accountId: true,
+          customerCode: true,
+          customerNo: true,
+        },
+        orderBy: { name: "asc" },
+        take: 200,
+      }),
+    () =>
+      prisma.product.findMany({
+        where: { tenantId: t, deletedAt: null, isActive: true },
+        select: {
+          id: true,
+          sku: true,
+          name: true,
+          salePrice: true,
+          purchasePrice: true,
+          unit: true,
+          taxPercent: true,
+          imageUrl: true,
+          productType: true,
+          // attributes omitted — large JSON; pages that need it call /products
+        },
+        orderBy: { name: "asc" },
+        take: 200,
+      }),
+  ] as const;
+
+  const pooled = coreOnly
+    ? await allPool([...coreJobs], 3)
+    : await allPool([...coreJobs, ...catalogJobs], 3);
+
+  const sources = pooled[0] as Awaited<ReturnType<(typeof coreJobs)[0]>>;
+  const stages = pooled[1] as Awaited<ReturnType<(typeof coreJobs)[1]>>;
+  const usersRaw = pooled[2] as Awaited<ReturnType<(typeof coreJobs)[2]>>;
+  const roles = pooled[3] as Awaited<ReturnType<(typeof coreJobs)[3]>>;
+  const warehouses = pooled[4] as Awaited<ReturnType<(typeof coreJobs)[4]>>;
+  const categories = pooled[5] as Awaited<ReturnType<(typeof coreJobs)[5]>>;
+  const vendors = pooled[6] as Awaited<ReturnType<(typeof coreJobs)[6]>>;
+  const accounts = coreOnly
+    ? []
+    : (pooled[7] as Awaited<ReturnType<(typeof catalogJobs)[0]>>);
+  const contacts = coreOnly
+    ? []
+    : (pooled[8] as Awaited<ReturnType<(typeof catalogJobs)[1]>>);
+  const products = coreOnly
+    ? []
+    : (pooled[9] as Awaited<ReturnType<(typeof catalogJobs)[2]>>);
+
+  const roleById = Object.fromEntries(roles.map((role) => [role.id, role]));
   const users = usersRaw.map((u) => ({
     id: u.id,
     name: u.name,
@@ -155,7 +184,7 @@ metaRouter.get("/lookups", async (q: Request, r: Response) => {
     sources,
     stages,
     users,
-    warehouses,
+    warehouses: sortWarehousesForDropdown(warehouses),
     categories,
     accounts,
     contacts,

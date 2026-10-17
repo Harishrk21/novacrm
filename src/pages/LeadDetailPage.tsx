@@ -109,6 +109,10 @@ export function LeadDetailPage() {
   const [requisition, setRequisition] = useState<SalesRequisitionRow | null>(null)
   const [reqBusy, setReqBusy] = useState(false)
   const [reqConfirmOpen, setReqConfirmOpen] = useState(false)
+  /** Gate approve / reduce stock / ship / notify before irreversible sales steps. */
+  const [saleConfirm, setSaleConfirm] = useState<
+    null | 'approve' | 'fulfill' | 'fulfillShip' | 'notifyInventory'
+  >(null)
   const [rejectOpen, setRejectOpen] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [lostOpen, setLostOpen] = useState(false)
@@ -1496,7 +1500,7 @@ export function LeadDetailPage() {
             ) : null}
             {canReqApprove && requisition?.status === 'PENDING_APPROVAL' ? (
               <>
-                <Button size="sm" disabled={reqBusy} onClick={() => void approveReq()}>
+                <Button size="sm" disabled={reqBusy} onClick={() => setSaleConfirm('approve')}>
                   Approve & sign
                 </Button>
                 <Button size="sm" variant="outline" disabled={reqBusy} onClick={() => setRejectOpen(true)}>
@@ -1505,12 +1509,17 @@ export function LeadDetailPage() {
               </>
             ) : null}
             {canReqWrite && requisition?.status === 'APPROVED' ? (
-              <Button size="sm" variant="outline" disabled={reqBusy} onClick={() => void notifyInventory()}>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={reqBusy}
+                onClick={() => setSaleConfirm('notifyInventory')}
+              >
                 Notify inventory
               </Button>
             ) : null}
             {canReqFulfill && requisition?.status === 'APPROVED' ? (
-              <Button size="sm" disabled={reqBusy} onClick={() => void fulfillReq(false)}>
+              <Button size="sm" disabled={reqBusy} onClick={() => setSaleConfirm('fulfill')}>
                 Reduce stock
               </Button>
             ) : null}
@@ -2137,7 +2146,7 @@ export function LeadDetailPage() {
                 ) : null}
                 {canReqApprove && requisition?.status === 'PENDING_APPROVAL' ? (
                   <>
-                    <Button disabled={reqBusy} onClick={() => void approveReq()}>
+                    <Button disabled={reqBusy} onClick={() => setSaleConfirm('approve')}>
                       Approve & sign
                     </Button>
                     <Button variant="outline" disabled={reqBusy} onClick={() => setRejectOpen(true)}>
@@ -2146,7 +2155,7 @@ export function LeadDetailPage() {
                   </>
                 ) : null}
                 {canReqWrite && requisition?.status === 'APPROVED' ? (
-                  <Button disabled={reqBusy} onClick={() => void notifyInventory()}>
+                  <Button disabled={reqBusy} onClick={() => setSaleConfirm('notifyInventory')}>
                     {requisition.customFields?.inventoryNotifiedAt
                       ? 'Notify inventory again'
                       : 'Notify inventory team'}
@@ -2154,10 +2163,14 @@ export function LeadDetailPage() {
                 ) : null}
                 {canReqFulfill && requisition?.status === 'APPROVED' ? (
                   <>
-                    <Button disabled={reqBusy} onClick={() => void fulfillReq(false)}>
+                    <Button disabled={reqBusy} onClick={() => setSaleConfirm('fulfill')}>
                       Reduce stock
                     </Button>
-                    <Button variant="outline" disabled={reqBusy} onClick={() => void fulfillReq(true)}>
+                    <Button
+                      variant="outline"
+                      disabled={reqBusy}
+                      onClick={() => setSaleConfirm('fulfillShip')}
+                    >
                       Reduce + ready to ship
                     </Button>
                   </>
@@ -2682,8 +2695,8 @@ export function LeadDetailPage() {
               {demoReturning
                 ? 'Processing…'
                 : returnOutcome === 'READY_TO_BUY'
-                  ? 'Convert & open invoice'
-                  : 'Return stock & close enquiry'}
+                  ? 'Confirm — ready to buy'
+                  : 'Confirm — return & close'}
             </Button>
           </>
         }
@@ -2843,7 +2856,7 @@ export function LeadDetailPage() {
               Cancel
             </Button>
             <Button onClick={() => void convert()} disabled={convertBusy || !convertStageId}>
-              {convertBusy ? 'Converting…' : 'Convert & request requisition'}
+              {convertBusy ? 'Converting…' : 'Confirm convert'}
             </Button>
           </>
         }
@@ -2992,7 +3005,45 @@ export function LeadDetailPage() {
         title="Send requisition to admin?"
         body="This asks admin to sign off before inventory can release stock. Continue?"
         confirmLabel={reqBusy ? 'Sending…' : 'Send requisition'}
+        confirmVariant="primary"
         onConfirm={() => void submitRequisition()}
+      />
+
+      <ConfirmModal
+        open={saleConfirm === 'approve'}
+        onClose={() => setSaleConfirm(null)}
+        title="Approve & sign this sale?"
+        body="Confirms the sales requisition. Sales can then notify inventory to release stock. Continue?"
+        confirmLabel={reqBusy ? 'Signing…' : 'Approve & sign'}
+        confirmVariant="primary"
+        onConfirm={() => void approveReq()}
+      />
+      <ConfirmModal
+        open={saleConfirm === 'notifyInventory'}
+        onClose={() => setSaleConfirm(null)}
+        title="Notify inventory?"
+        body="Warehouse will see this sale for stamping / stock release. Continue?"
+        confirmLabel={reqBusy ? 'Notifying…' : 'Notify inventory'}
+        confirmVariant="primary"
+        onConfirm={() => void notifyInventory()}
+      />
+      <ConfirmModal
+        open={saleConfirm === 'fulfill'}
+        onClose={() => setSaleConfirm(null)}
+        title="Reduce stock for this sale?"
+        body="Serial stock moves to the customer machine. This is a final warehouse step. Continue?"
+        confirmLabel={reqBusy ? 'Reducing…' : 'Reduce stock'}
+        confirmVariant="primary"
+        onConfirm={() => void fulfillReq(false)}
+      />
+      <ConfirmModal
+        open={saleConfirm === 'fulfillShip'}
+        onClose={() => setSaleConfirm(null)}
+        title="Reduce stock and mark ready to ship?"
+        body="Stock is reduced and the sale moves to Ready to ship. Sales are notified. Continue?"
+        confirmLabel={reqBusy ? 'Processing…' : 'Reduce & ship'}
+        confirmVariant="primary"
+        onConfirm={() => void fulfillReq(true)}
       />
     </div>
   )

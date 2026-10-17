@@ -194,6 +194,8 @@ interface ConfirmModalProps {
   title: string
   body: string
   confirmLabel?: string
+  /** Approve / continue actions use primary; destructive defaults to danger. */
+  confirmVariant?: 'danger' | 'primary'
   /**
    * When true (default), Cancel-style onClose also runs after confirm (closes delete dialogs).
    * Set false when onClose undoes the confirm action (e.g. navigation discard: proceed vs reset).
@@ -208,6 +210,7 @@ export function ConfirmModal({
   title,
   body,
   confirmLabel = 'Delete',
+  confirmVariant = 'danger',
   closeOnConfirm = true,
 }: ConfirmModalProps) {
   return (
@@ -216,14 +219,14 @@ export function ConfirmModal({
       onClose={onClose}
       title={title}
       size="sm"
-      accent="amber"
+      accent={confirmVariant === 'primary' ? 'emerald' : 'amber'}
       footer={
         <>
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
           <Button
-            variant="danger"
+            variant={confirmVariant}
             onClick={() => {
               onConfirm()
               if (closeOnConfirm) onClose()

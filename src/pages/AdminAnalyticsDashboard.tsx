@@ -14,6 +14,7 @@ import {
   TrendingUp,
   Users,
   Warehouse,
+  Download,
   FileText,
   LayoutDashboard,
   AlertTriangle,
@@ -41,6 +42,7 @@ import { Card } from '@/components/ui/Card'
 import { Select } from '@/components/ui/Select'
 import { PALETTES } from '@/lib/theme'
 import { api, isTenantSession, ApiClientError } from '@/lib/api'
+import { downloadXlsx } from '@/lib/reportExport'
 import { formatCurrency, formatDate, timeAgo } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 import { APP_NAME } from '@/lib/branding'
@@ -259,6 +261,49 @@ export function AdminAnalyticsDashboard() {
   const activePov = POVS.find((p) => p.id === pov) ?? POVS[0]
   const accent = ACCENT[activePov.accent]
 
+  function downloadCurrentView() {
+    if (!analytics?.kpis) {
+      addToast({ type: 'error', message: 'Nothing to download yet — wait for live data' })
+      return
+    }
+    const k = analytics.kpis as Record<string, unknown>
+    const stamp = new Date().toISOString().slice(0, 10)
+    downloadXlsx(`ops-snapshot-${range}-${stamp}.xlsx`, [
+      {
+        name: 'KPIs',
+        rows: Object.entries(k).map(([metric, value]) => ({ metric, value })),
+      },
+      {
+        name: 'Tickets by status',
+        rows: (analytics.ticketsByStatus ?? []).map((r) => ({
+          status: r.name,
+          count: r.value,
+        })),
+      },
+      {
+        name: 'Leads by status',
+        rows: (analytics.leadsByStatus ?? []).map((r) => ({
+          status: r.name,
+          count: r.value,
+        })),
+      },
+      {
+        name: 'Performers',
+        rows: (analytics.performers ?? []).map((r) => ({ ...r })),
+      },
+      {
+        name: 'Attention tickets',
+        rows: recentTickets.map((t) => ({
+          ticket: t.ticketNo != null ? String(t.ticketNo) : String(t.id ?? ''),
+          subject: String(t.subject ?? ''),
+          status: String(t.status ?? ''),
+          priority: String(t.priority ?? ''),
+        })),
+      },
+    ])
+    addToast({ type: 'success', message: 'Ops snapshot Excel downloaded' })
+  }
+
   return (
     <div className="space-y-5 pb-8">
       <PageHeader
@@ -266,11 +311,19 @@ export function AdminAnalyticsDashboard() {
         breadcrumbs={[{ label: APP_NAME }, { label: 'Home' }]}
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Link to="/reports">
+            <Link to={`/reports?range=${encodeURIComponent(range)}`}>
               <Button size="sm">
                 <FileText size={14} /> Full reports
               </Button>
             </Link>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={loading || !analytics}
+              onClick={() => downloadCurrentView()}
+            >
+              <Download size={14} /> Download view
+            </Button>
             <Select
               value={range}
               onChange={(e) => setRange(e.target.value)}
@@ -1415,11 +1468,12 @@ function StockPov({ analytics }: { analytics: Analytics }) {
           hint={formatCurrency(kpiNum(k, 'invoiceRevenue'))}
         />
         <MetricTile
-          to="/tickets"
-          label="Service collected"
-          value={formatCurrency(kpiNum(k, 'serviceCollected'))}
+          to="/tickets?queue=closed"
+          label="Service collected this month"
+          value={formatCurrency(kpiNum(k, 'serviceCollectedThisMonth'))}
           tone="emerald"
           icon={<CircleDollarSign size={16} />}
+          hint={`${kpiNum(k, 'serviceJobsPaidThisMonth')} paid job${kpiNum(k, 'serviceJobsPaidThisMonth') === 1 ? '' : 's'} · calendar month`}
         />
       </div>
       <Panel title="Serials by status">

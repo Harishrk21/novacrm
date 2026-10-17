@@ -1,25 +1,25 @@
 -- =============================================================================
--- NovaCRM / HMS Enterprises  |  AWS RDS MySQL 8 production schema
--- Companion bootstrap (users + database): database/rds/01_bootstrap.sql
--- Full guide: database/RDS_MYSQL_SETUP.md
--- This file is a copy of database/rds/02_schema.sql for Workbench one-shot schema apply.
--- Generated from backend/prisma/schema.prisma (source of truth)
+-- Meister CRM+ERP / HMS Enterprises — FULL MySQL schema (AWS RDS MySQL 8)
+-- Source of truth: backend/prisma/schema.prisma (generated via prisma migrate diff)
 -- =============================================================================
--- Architecture: shared DB + shared schema, row isolation via tenant_id
+-- WHAT THIS FILE DOES
+--   1) Creates database `novacrm` (and optional app user)
+--   2) Creates ALL tables (52) matching the current Prisma models
+--   3) Adds recommended performance indexes
 --
--- APPLY ORDER:
---   1) 01_bootstrap.sql   (as RDS master / admin user)
---   2) 02_schema.sql      (this file — as master or novacrm_admin)
---   3) backend: npm run prisma:generate && npm run prisma:seed
+-- APPLY (fresh RDS / empty instance) — as RDS master admin:
+--   mysql -h YOUR_RDS_ENDPOINT -P 3306 -u admin -p --ssl-mode=REQUIRED < database/rds/00_full_create.sql
 --
--- CLI example:
---   mysql -h YOUR_RDS_ENDPOINT -P 3306 -u admin -p --ssl-mode=REQUIRED \
---     < database/rds/01_bootstrap.sql
---   mysql -h YOUR_RDS_ENDPOINT -P 3306 -u novacrm_admin -p --ssl-mode=REQUIRED novacrm \
---     < database/rds/02_schema.sql
+-- Or from EC2:
+--   mysql -h chatbotdynamic-rds....rds.amazonaws.com -P 3306 -u admin -p --ssl-mode=REQUIRED < 00_full_create.sql
 --
--- Safe to re-run: CREATE TABLE IF NOT EXISTS
--- Do NOT use for wiping data. This script never DROP TABLE / DROP DATABASE.
+-- AFTER SCHEMA: seed users/roles/HMS from the API box:
+--   cd backend && npx prisma generate && npm run prisma:seed
+--
+-- SAFE TO RE-RUN on empty-ish DB: CREATE DATABASE IF NOT EXISTS + CREATE TABLE IF NOT EXISTS
+-- Does NOT DROP data. Ignore "Duplicate key name" (1061) on indexes section.
+--
+-- WARNING: Do NOT run the CREATE USER section if the user already exists — edit passwords first.
 -- =============================================================================
 
 SET NAMES utf8mb4;
@@ -27,8 +27,28 @@ SET FOREIGN_KEY_CHECKS = 0;
 SET sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION';
 SET time_zone = '+00:00';
 
+-- -----------------------------------------------------------------------------
+-- 1) DATABASE
+-- -----------------------------------------------------------------------------
+CREATE DATABASE IF NOT EXISTS `novacrm`
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+
 USE `novacrm`;
 
+-- -----------------------------------------------------------------------------
+-- 2) OPTIONAL APP USER (edit password; skip if user already exists)
+--    Uncomment and set a strong password, then GRANT.
+-- -----------------------------------------------------------------------------
+-- CREATE USER IF NOT EXISTS 'meister'@'%' IDENTIFIED BY 'CHANGE_ME_STRONG_PASSWORD';
+-- GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES, DROP
+--   ON `novacrm`.* TO 'meister'@'%';
+-- FLUSH PRIVILEGES;
+
+-- -----------------------------------------------------------------------------
+-- 3) ALL TABLES (52) — from Prisma schema
+-- -----------------------------------------------------------------------------
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `platform_admins` (
     `id` CHAR(36) NOT NULL,
     `name` VARCHAR(120) NOT NULL,
@@ -47,6 +67,7 @@ CREATE TABLE IF NOT EXISTS `platform_admins` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `business_categories` (
     `id` CHAR(36) NOT NULL,
     `code` VARCHAR(64) NOT NULL,
@@ -70,6 +91,7 @@ CREATE TABLE IF NOT EXISTS `business_categories` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `tenants` (
     `id` CHAR(36) NOT NULL,
     `code` VARCHAR(32) NOT NULL,
@@ -115,6 +137,7 @@ CREATE TABLE IF NOT EXISTS `tenants` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `tenant_modules` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -132,6 +155,7 @@ CREATE TABLE IF NOT EXISTS `tenant_modules` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `custom_field_definitions` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -156,6 +180,7 @@ CREATE TABLE IF NOT EXISTS `custom_field_definitions` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `feature_tips` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NULL,
@@ -173,6 +198,7 @@ CREATE TABLE IF NOT EXISTS `feature_tips` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `roles` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -189,6 +215,7 @@ CREATE TABLE IF NOT EXISTS `roles` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `users` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -196,6 +223,7 @@ CREATE TABLE IF NOT EXISTS `users` (
     `name` VARCHAR(120) NOT NULL,
     `email` VARCHAR(191) NOT NULL,
     `password_hash` VARCHAR(255) NOT NULL,
+    `temp_password` VARCHAR(128) NULL,
     `phone` VARCHAR(32) NULL,
     `avatar_url` VARCHAR(512) NULL,
     `status` ENUM('ACTIVE', 'INACTIVE', 'INVITED', 'LOCKED') NOT NULL DEFAULT 'INVITED',
@@ -215,6 +243,7 @@ CREATE TABLE IF NOT EXISTS `users` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `refresh_tokens` (
     `id` CHAR(36) NOT NULL,
     `user_id` CHAR(36) NULL,
@@ -232,6 +261,7 @@ CREATE TABLE IF NOT EXISTS `refresh_tokens` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `pipeline_stages` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -251,6 +281,7 @@ CREATE TABLE IF NOT EXISTS `pipeline_stages` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `lead_sources` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -265,6 +296,7 @@ CREATE TABLE IF NOT EXISTS `lead_sources` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `accounts` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -297,6 +329,7 @@ CREATE TABLE IF NOT EXISTS `accounts` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `contacts` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -330,14 +363,17 @@ CREATE TABLE IF NOT EXISTS `contacts` (
     INDEX `contacts_tenant_id_phone_normalized_idx`(`tenant_id`, `phone_normalized`),
     INDEX `contacts_tenant_id_email_idx`(`tenant_id`, `email`),
     INDEX `contacts_tenant_id_account_id_idx`(`tenant_id`, `account_id`),
+    INDEX `contacts_tenant_id_deleted_at_name_idx`(`tenant_id`, `deleted_at`, `name`),
     UNIQUE INDEX `contacts_tenant_id_customer_no_key`(`tenant_id`, `customer_no`),
     UNIQUE INDEX `contacts_tenant_id_customer_code_key`(`tenant_id`, `customer_code`),
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `leads` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
+    `lead_no` INTEGER NULL,
     `name` VARCHAR(120) NOT NULL,
     `email` VARCHAR(191) NULL,
     `phone` VARCHAR(32) NULL,
@@ -346,6 +382,7 @@ CREATE TABLE IF NOT EXISTS `leads` (
     `website` VARCHAR(255) NULL,
     `city` VARCHAR(100) NULL,
     `state` VARCHAR(100) NULL,
+    `area` VARCHAR(120) NULL,
     `country` CHAR(2) NOT NULL DEFAULT 'IN',
     `source_id` CHAR(36) NULL,
     `status` ENUM('NEW', 'CONTACTED', 'QUALIFIED', 'UNQUALIFIED', 'LOST', 'CONVERTED', 'DEMO') NOT NULL DEFAULT 'NEW',
@@ -366,11 +403,15 @@ CREATE TABLE IF NOT EXISTS `leads` (
 
     INDEX `leads_tenant_id_status_created_at_idx`(`tenant_id`, `status`, `created_at`),
     INDEX `leads_tenant_id_phone_normalized_idx`(`tenant_id`, `phone_normalized`),
-    INDEX `leads_tenant_id_assigned_to_id_idx`(`tenant_id`, `assigned_to_id`),
+    INDEX `leads_tenant_id_assigned_to_id_status_idx`(`tenant_id`, `assigned_to_id`, `status`),
     INDEX `leads_tenant_id_source_id_idx`(`tenant_id`, `source_id`),
+    INDEX `leads_tenant_id_area_idx`(`tenant_id`, `area`),
+    INDEX `leads_tenant_id_deleted_at_status_idx`(`tenant_id`, `deleted_at`, `status`),
+    UNIQUE INDEX `leads_tenant_id_lead_no_key`(`tenant_id`, `lead_no`),
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `deals` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -395,9 +436,11 @@ CREATE TABLE IF NOT EXISTS `deals` (
     INDEX `deals_tenant_id_stage_id_idx`(`tenant_id`, `stage_id`),
     INDEX `deals_tenant_id_owner_user_id_idx`(`tenant_id`, `owner_user_id`),
     INDEX `deals_tenant_id_expected_close_date_idx`(`tenant_id`, `expected_close_date`),
+    INDEX `deals_tenant_id_deleted_at_created_at_idx`(`tenant_id`, `deleted_at`, `created_at`),
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `activities` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -423,9 +466,12 @@ CREATE TABLE IF NOT EXISTS `activities` (
     INDEX `activities_tenant_id_contact_id_idx`(`tenant_id`, `contact_id`),
     INDEX `activities_tenant_id_lead_id_idx`(`tenant_id`, `lead_id`),
     INDEX `activities_tenant_id_type_status_idx`(`tenant_id`, `type`, `status`),
+    INDEX `activities_tenant_id_assigned_to_id_status_idx`(`tenant_id`, `assigned_to_id`, `status`),
+    INDEX `activities_tenant_id_status_scheduled_at_idx`(`tenant_id`, `status`, `scheduled_at`),
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `tickets` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -466,10 +512,17 @@ CREATE TABLE IF NOT EXISTS `tickets` (
     INDEX `tickets_tenant_id_status_priority_idx`(`tenant_id`, `status`, `priority`),
     INDEX `tickets_tenant_id_asset_id_idx`(`tenant_id`, `asset_id`),
     INDEX `tickets_tenant_id_next_due_date_idx`(`tenant_id`, `next_due_date`),
+    INDEX `tickets_tenant_id_assigned_to_id_status_idx`(`tenant_id`, `assigned_to_id`, `status`),
+    INDEX `tickets_tenant_id_contact_id_status_idx`(`tenant_id`, `contact_id`, `status`),
+    INDEX `tickets_tenant_id_created_at_idx`(`tenant_id`, `created_at`),
+    INDEX `tickets_tenant_id_sla_breached_status_idx`(`tenant_id`, `sla_breached`, `status`),
+    INDEX `tickets_tenant_id_payment_status_status_idx`(`tenant_id`, `payment_status`, `status`),
+    INDEX `tickets_tenant_id_deleted_at_status_idx`(`tenant_id`, `deleted_at`, `status`),
     UNIQUE INDEX `tickets_tenant_id_ticket_no_key`(`tenant_id`, `ticket_no`),
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `customer_assets` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -482,12 +535,15 @@ CREATE TABLE IF NOT EXISTS `customer_assets` (
     `model` VARCHAR(120) NULL,
     `serial_no` VARCHAR(120) NULL,
     `origin` ENUM('SOLD_BY_US', 'THIRD_PARTY') NOT NULL DEFAULT 'SOLD_BY_US',
-    `service_plan` ENUM('AMC', 'NON_AMC') NOT NULL DEFAULT 'NON_AMC',
+    `service_plan` ENUM('GC', 'NGC', 'AMC', 'NON_AMC') NOT NULL DEFAULT 'NON_AMC',
+    `warranty_end_date` DATE NULL,
     `amc_start_date` DATE NULL,
     `amc_end_date` DATE NULL,
+    `next_service_due_date` DATE NULL,
     `reminders_enabled` BOOLEAN NOT NULL DEFAULT true,
     `last_maint_reminder_at` DATETIME(3) NULL,
     `last_amc_reminder_at` DATETIME(3) NULL,
+    `last_service_reminder_at` DATETIME(3) NULL,
     `stamping_date` DATE NULL,
     `next_due_date` DATE NULL,
     `notes` TEXT NULL,
@@ -499,12 +555,15 @@ CREATE TABLE IF NOT EXISTS `customer_assets` (
     INDEX `customer_assets_tenant_id_contact_id_idx`(`tenant_id`, `contact_id`),
     INDEX `customer_assets_tenant_id_origin_idx`(`tenant_id`, `origin`),
     INDEX `customer_assets_tenant_id_next_due_date_idx`(`tenant_id`, `next_due_date`),
+    INDEX `customer_assets_tenant_id_next_service_due_date_idx`(`tenant_id`, `next_service_due_date`),
+    INDEX `customer_assets_tenant_id_warranty_end_date_idx`(`tenant_id`, `warranty_end_date`),
     INDEX `customer_assets_tenant_id_amc_start_date_idx`(`tenant_id`, `amc_start_date`),
     INDEX `customer_assets_tenant_id_amc_end_date_idx`(`tenant_id`, `amc_end_date`),
     INDEX `customer_assets_tenant_id_serial_no_idx`(`tenant_id`, `serial_no`),
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `spare_part_changes` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -533,6 +592,52 @@ CREATE TABLE IF NOT EXISTS `spare_part_changes` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
+CREATE TABLE IF NOT EXISTS `spare_part_items` (
+    `id` CHAR(36) NOT NULL,
+    `tenant_id` CHAR(36) NOT NULL,
+    `machine_family` ENUM('WEIGHING', 'BILLING') NOT NULL,
+    `name` VARCHAR(191) NOT NULL,
+    `part_code` VARCHAR(64) NULL,
+    `unit` VARCHAR(32) NOT NULL DEFAULT 'NOS',
+    `is_active` BOOLEAN NOT NULL DEFAULT true,
+    `custom_fields` JSON NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at` DATETIME(3) NULL,
+
+    INDEX `spare_part_items_tenant_id_machine_family_is_active_idx`(`tenant_id`, `machine_family`, `is_active`),
+    UNIQUE INDEX `spare_part_items_tenant_id_machine_family_name_key`(`tenant_id`, `machine_family`, `name`),
+    PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE IF NOT EXISTS `spare_stock_txns` (
+    `id` CHAR(36) NOT NULL,
+    `tenant_id` CHAR(36) NOT NULL,
+    `spare_part_id` CHAR(36) NOT NULL,
+    `txn_type` ENUM('IN', 'OUT') NOT NULL,
+    `quantity` DECIMAL(15, 3) NOT NULL,
+    `txn_date` DATE NOT NULL,
+    `supplier_name` VARCHAR(191) NULL,
+    `invoice_date` DATE NULL,
+    `invoice_no` VARCHAR(80) NULL,
+    `issued_to_user_id` CHAR(36) NULL,
+    `ticket_id` CHAR(36) NULL,
+    `notes` TEXT NULL,
+    `created_by_id` CHAR(36) NOT NULL,
+    `custom_fields` JSON NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at` DATETIME(3) NULL,
+
+    INDEX `spare_stock_txns_tenant_id_spare_part_id_txn_date_idx`(`tenant_id`, `spare_part_id`, `txn_date`),
+    INDEX `spare_stock_txns_tenant_id_txn_type_txn_date_idx`(`tenant_id`, `txn_type`, `txn_date`),
+    INDEX `spare_stock_txns_tenant_id_issued_to_user_id_idx`(`tenant_id`, `issued_to_user_id`),
+    PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `ticket_messages` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -548,6 +653,7 @@ CREATE TABLE IF NOT EXISTS `ticket_messages` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `notes` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -564,6 +670,7 @@ CREATE TABLE IF NOT EXISTS `notes` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `notifications` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -581,6 +688,7 @@ CREATE TABLE IF NOT EXISTS `notifications` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `product_categories` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -595,6 +703,7 @@ CREATE TABLE IF NOT EXISTS `product_categories` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `products` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -625,6 +734,7 @@ CREATE TABLE IF NOT EXISTS `products` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `warehouses` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -641,6 +751,7 @@ CREATE TABLE IF NOT EXISTS `warehouses` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `stock_levels` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -654,6 +765,7 @@ CREATE TABLE IF NOT EXISTS `stock_levels` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `stock_movements` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -672,15 +784,62 @@ CREATE TABLE IF NOT EXISTS `stock_movements` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
+CREATE TABLE IF NOT EXISTS `brands` (
+    `id` CHAR(36) NOT NULL,
+    `tenant_id` CHAR(36) NOT NULL,
+    `name` VARCHAR(120) NOT NULL,
+    `code` VARCHAR(32) NOT NULL,
+    `is_active` BOOLEAN NOT NULL DEFAULT true,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at` DATETIME(3) NULL,
+
+    INDEX `brands_tenant_id_name_idx`(`tenant_id`, `name`),
+    UNIQUE INDEX `brands_tenant_id_code_key`(`tenant_id`, `code`),
+    PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE IF NOT EXISTS `stock_receipts` (
+    `id` CHAR(36) NOT NULL,
+    `tenant_id` CHAR(36) NOT NULL,
+    `vendor_id` CHAR(36) NULL,
+    `brand_id` CHAR(36) NULL,
+    `product_id` CHAR(36) NOT NULL,
+    `warehouse_id` CHAR(36) NOT NULL,
+    `spec` VARCHAR(255) NULL,
+    `quantity` INTEGER NOT NULL,
+    `unit_amount` DECIMAL(15, 2) NOT NULL DEFAULT 0,
+    `invoice_no` VARCHAR(64) NULL,
+    `invoice_date` DATE NULL,
+    `received_date` DATE NOT NULL,
+    `notes` TEXT NULL,
+    `created_by_id` CHAR(36) NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at` DATETIME(3) NULL,
+
+    INDEX `stock_receipts_tenant_id_received_date_idx`(`tenant_id`, `received_date`),
+    INDEX `stock_receipts_tenant_id_vendor_id_idx`(`tenant_id`, `vendor_id`),
+    INDEX `stock_receipts_tenant_id_product_id_idx`(`tenant_id`, `product_id`),
+    PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `stock_units` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
     `product_id` CHAR(36) NOT NULL,
     `warehouse_id` CHAR(36) NOT NULL,
     `serial_no` VARCHAR(120) NOT NULL,
+    `hms_uniq_id` VARCHAR(40) NULL,
+    `receipt_id` CHAR(36) NULL,
+    `brand_id` CHAR(36) NULL,
+    `unit_cost` DECIMAL(15, 2) NULL,
     `stamping_date` DATE NULL,
     `notes` TEXT NULL,
-    `status` ENUM('IN_STOCK', 'DEMO', 'SOLD', 'RETURNED') NOT NULL DEFAULT 'IN_STOCK',
+    `status` ENUM('IN_STOCK', 'DEMO', 'RENTED', 'SOLD', 'RETURNED') NOT NULL DEFAULT 'IN_STOCK',
     `lead_id` CHAR(36) NULL,
     `contact_id` CHAR(36) NULL,
     `custom_fields` JSON NULL,
@@ -691,10 +850,16 @@ CREATE TABLE IF NOT EXISTS `stock_units` (
     INDEX `stock_units_tenant_id_product_id_status_idx`(`tenant_id`, `product_id`, `status`),
     INDEX `stock_units_tenant_id_warehouse_id_idx`(`tenant_id`, `warehouse_id`),
     INDEX `stock_units_tenant_id_lead_id_idx`(`tenant_id`, `lead_id`),
+    INDEX `stock_units_tenant_id_receipt_id_idx`(`tenant_id`, `receipt_id`),
+    INDEX `stock_units_tenant_id_brand_id_idx`(`tenant_id`, `brand_id`),
+    INDEX `stock_units_tenant_id_status_idx`(`tenant_id`, `status`),
+    INDEX `stock_units_tenant_id_deleted_at_status_idx`(`tenant_id`, `deleted_at`, `status`),
     UNIQUE INDEX `stock_units_tenant_id_serial_no_key`(`tenant_id`, `serial_no`),
+    UNIQUE INDEX `stock_units_tenant_id_hms_uniq_id_key`(`tenant_id`, `hms_uniq_id`),
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `vendors` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -713,6 +878,7 @@ CREATE TABLE IF NOT EXISTS `vendors` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `purchase_orders` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -737,6 +903,7 @@ CREATE TABLE IF NOT EXISTS `purchase_orders` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `purchase_order_lines` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -753,6 +920,7 @@ CREATE TABLE IF NOT EXISTS `purchase_order_lines` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `sales_orders` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -779,6 +947,7 @@ CREATE TABLE IF NOT EXISTS `sales_orders` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `sales_order_lines` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -795,6 +964,42 @@ CREATE TABLE IF NOT EXISTS `sales_order_lines` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
+CREATE TABLE IF NOT EXISTS `sales_requisitions` (
+    `id` CHAR(36) NOT NULL,
+    `tenant_id` CHAR(36) NOT NULL,
+    `req_number` VARCHAR(40) NOT NULL,
+    `lead_id` CHAR(36) NOT NULL,
+    `contact_id` CHAR(36) NULL,
+    `deal_id` CHAR(36) NULL,
+    `product_id` CHAR(36) NULL,
+    `stock_unit_id` CHAR(36) NULL,
+    `serial_no` VARCHAR(80) NULL,
+    `product_name` VARCHAR(191) NULL,
+    `qty` DECIMAL(15, 3) NOT NULL DEFAULT 1,
+    `advance_amount` DECIMAL(15, 2) NOT NULL DEFAULT 0,
+    `payment_notes` TEXT NULL,
+    `status` ENUM('DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'FULFILLED', 'CANCELLED') NOT NULL DEFAULT 'PENDING_APPROVAL',
+    `requested_by_id` CHAR(36) NOT NULL,
+    `approved_by_id` CHAR(36) NULL,
+    `approved_at` DATETIME(3) NULL,
+    `rejected_reason` VARCHAR(500) NULL,
+    `invoice_id` CHAR(36) NULL,
+    `shipped_at` DATETIME(3) NULL,
+    `notes` TEXT NULL,
+    `custom_fields` JSON NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at` DATETIME(3) NULL,
+
+    INDEX `sales_requisitions_tenant_id_status_created_at_idx`(`tenant_id`, `status`, `created_at`),
+    INDEX `sales_requisitions_tenant_id_lead_id_idx`(`tenant_id`, `lead_id`),
+    INDEX `sales_requisitions_tenant_id_stock_unit_id_idx`(`tenant_id`, `stock_unit_id`),
+    UNIQUE INDEX `sales_requisitions_tenant_id_req_number_key`(`tenant_id`, `req_number`),
+    PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `invoices` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -822,10 +1027,13 @@ CREATE TABLE IF NOT EXISTS `invoices` (
     INDEX `invoices_tenant_id_account_id_status_idx`(`tenant_id`, `account_id`, `status`),
     INDEX `invoices_tenant_id_due_date_status_idx`(`tenant_id`, `due_date`, `status`),
     INDEX `invoices_tenant_id_service_ticket_id_idx`(`tenant_id`, `service_ticket_id`),
+    INDEX `invoices_tenant_id_deleted_at_created_at_idx`(`tenant_id`, `deleted_at`, `created_at`),
+    INDEX `invoices_tenant_id_status_idx`(`tenant_id`, `status`),
     UNIQUE INDEX `invoices_tenant_id_invoice_number_key`(`tenant_id`, `invoice_number`),
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `invoice_lines` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -841,6 +1049,7 @@ CREATE TABLE IF NOT EXISTS `invoice_lines` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `payments` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -865,6 +1074,7 @@ CREATE TABLE IF NOT EXISTS `payments` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `employees` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -887,6 +1097,7 @@ CREATE TABLE IF NOT EXISTS `employees` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `integrations` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -902,6 +1113,7 @@ CREATE TABLE IF NOT EXISTS `integrations` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `whatsapp_conversations` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -922,6 +1134,7 @@ CREATE TABLE IF NOT EXISTS `whatsapp_conversations` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `whatsapp_messages` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -937,6 +1150,7 @@ CREATE TABLE IF NOT EXISTS `whatsapp_messages` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `automation_rules` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NOT NULL,
@@ -956,6 +1170,7 @@ CREATE TABLE IF NOT EXISTS `automation_rules` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `audit_logs` (
     `id` CHAR(36) NOT NULL,
     `tenant_id` CHAR(36) NULL,
@@ -975,6 +1190,7 @@ CREATE TABLE IF NOT EXISTS `audit_logs` (
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
 CREATE TABLE IF NOT EXISTS `number_sequences` (
     `tenant_id` CHAR(36) NOT NULL,
     `sequence_key` VARCHAR(40) NOT NULL,
@@ -986,13 +1202,164 @@ CREATE TABLE IF NOT EXISTS `number_sequences` (
     PRIMARY KEY (`tenant_id`, `sequence_key`)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
+CREATE TABLE IF NOT EXISTS `rental_agreements` (
+    `id` CHAR(36) NOT NULL,
+    `tenant_id` CHAR(36) NOT NULL,
+    `rental_no` VARCHAR(40) NOT NULL,
+    `status` ENUM('DRAFT', 'ACTIVE', 'OVERDUE', 'RETURNED', 'CANCELLED') NOT NULL DEFAULT 'DRAFT',
+    `product_id` CHAR(36) NOT NULL,
+    `stock_unit_id` CHAR(36) NOT NULL,
+    `contact_id` CHAR(36) NULL,
+    `account_id` CHAR(36) NULL,
+    `lead_id` CHAR(36) NULL,
+    `customer_name` VARCHAR(160) NOT NULL,
+    `customer_phone` VARCHAR(32) NULL,
+    `customer_email` VARCHAR(191) NULL,
+    `customer_company` VARCHAR(191) NULL,
+    `customer_address` VARCHAR(512) NULL,
+    `city` VARCHAR(80) NULL,
+    `state` VARCHAR(80) NULL,
+    `start_at` DATETIME(3) NOT NULL,
+    `expected_return_at` DATETIME(3) NULL,
+    `returned_at` DATETIME(3) NULL,
+    `daily_rate` DECIMAL(15, 2) NULL,
+    `monthly_rate` DECIMAL(15, 2) NULL,
+    `total_amount` DECIMAL(15, 2) NULL,
+    `deposit_amount` DECIMAL(15, 2) NULL,
+    `notes` TEXT NULL,
+    `return_notes` TEXT NULL,
+    `issued_by_id` CHAR(36) NULL,
+    `returned_by_id` CHAR(36) NULL,
+    `from_warehouse_id` CHAR(36) NULL,
+    `custom_fields` JSON NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+
+    INDEX `rental_agreements_tenant_id_status_start_at_idx`(`tenant_id`, `status`, `start_at`),
+    INDEX `rental_agreements_tenant_id_stock_unit_id_idx`(`tenant_id`, `stock_unit_id`),
+    INDEX `rental_agreements_tenant_id_contact_id_idx`(`tenant_id`, `contact_id`),
+    INDEX `rental_agreements_tenant_id_product_id_idx`(`tenant_id`, `product_id`),
+    UNIQUE INDEX `rental_agreements_tenant_id_rental_no_key`(`tenant_id`, `rental_no`),
+    PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE IF NOT EXISTS `team_channels` (
+    `id` CHAR(36) NOT NULL,
+    `tenant_id` CHAR(36) NOT NULL,
+    `type` ENUM('CHANNEL', 'DM') NOT NULL DEFAULT 'CHANNEL',
+    `name` VARCHAR(120) NOT NULL,
+    `slug` VARCHAR(160) NOT NULL,
+    `description` VARCHAR(255) NULL,
+    `is_default` BOOLEAN NOT NULL DEFAULT false,
+    `created_by_id` CHAR(36) NULL,
+    `last_message_at` DATETIME(3) NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+
+    INDEX `team_channels_tenant_id_type_last_message_at_idx`(`tenant_id`, `type`, `last_message_at`),
+    UNIQUE INDEX `team_channels_tenant_id_slug_key`(`tenant_id`, `slug`),
+    PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE IF NOT EXISTS `team_channel_members` (
+    `id` CHAR(36) NOT NULL,
+    `tenant_id` CHAR(36) NOT NULL,
+    `channel_id` CHAR(36) NOT NULL,
+    `user_id` CHAR(36) NOT NULL,
+    `last_read_at` DATETIME(3) NULL,
+    `pinned_at` DATETIME(3) NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    INDEX `team_channel_members_tenant_id_user_id_idx`(`tenant_id`, `user_id`),
+    UNIQUE INDEX `team_channel_members_channel_id_user_id_key`(`channel_id`, `user_id`),
+    PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE IF NOT EXISTS `team_messages` (
+    `id` CHAR(36) NOT NULL,
+    `tenant_id` CHAR(36) NOT NULL,
+    `channel_id` CHAR(36) NOT NULL,
+    `sender_id` CHAR(36) NOT NULL,
+    `body` TEXT NOT NULL,
+    `parent_id` CHAR(36) NULL,
+    `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    `deleted_at` DATETIME(3) NULL,
+
+    INDEX `team_messages_tenant_id_channel_id_created_at_idx`(`tenant_id`, `channel_id`, `created_at`),
+    INDEX `team_messages_tenant_id_parent_id_idx`(`tenant_id`, `parent_id`),
+    PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+
 SET FOREIGN_KEY_CHECKS = 1;
 
--- =============================================================================
--- DONE — schema created.
--- Next (from backend/):
---   export DATABASE_URL="mysql://novacrm_app:PASSWORD@YOUR_RDS:3306/novacrm?sslaccept=strict&connection_limit=10&pool_timeout=20"
---   npm run prisma:generate
---   npm run prisma:seed
--- See database/RDS_MYSQL_SETUP.md
--- =============================================================================
+-- -----------------------------------------------------------------------------
+-- 4) PERFORMANCE INDEXES (ignore Duplicate key name 1061 if already applied)
+-- -----------------------------------------------------------------------------
+-- Performance indexes for concurrent users (dashboard / lists / queues).
+-- Run against the novacrm database.
+-- Safe to re-run: ignore "Duplicate key name" (1061).
+-- Skip any statement that fails with "Table doesn't exist" (1146) — that feature
+-- was never migrated to this RDS; indexes are optional for missing tables.
+
+-- ========== Core CRM (run these) ==========
+
+ALTER TABLE `tickets` ADD INDEX `tickets_tenant_assigned_status_idx` (`tenant_id`, `assigned_to_id`, `status`);
+ALTER TABLE `tickets` ADD INDEX `tickets_tenant_contact_status_idx` (`tenant_id`, `contact_id`, `status`);
+ALTER TABLE `tickets` ADD INDEX `tickets_tenant_created_idx` (`tenant_id`, `created_at`);
+ALTER TABLE `tickets` ADD INDEX `tickets_tenant_sla_status_idx` (`tenant_id`, `sla_breached`, `status`);
+ALTER TABLE `tickets` ADD INDEX `tickets_tenant_deleted_status_idx` (`tenant_id`, `deleted_at`, `status`);
+
+ALTER TABLE `leads` ADD INDEX `leads_tenant_assigned_status_idx` (`tenant_id`, `assigned_to_id`, `status`);
+ALTER TABLE `leads` ADD INDEX `leads_tenant_deleted_status_idx` (`tenant_id`, `deleted_at`, `status`);
+
+ALTER TABLE `activities` ADD INDEX `activities_tenant_assigned_status_idx` (`tenant_id`, `assigned_to_id`, `status`);
+ALTER TABLE `activities` ADD INDEX `activities_tenant_status_sched_idx` (`tenant_id`, `status`, `scheduled_at`);
+
+ALTER TABLE `notifications` ADD INDEX `notifications_tenant_user_read_created_idx` (`tenant_id`, `user_id`, `is_read`, `created_at`);
+
+ALTER TABLE `contacts` ADD INDEX `contacts_tenant_deleted_name_idx` (`tenant_id`, `deleted_at`, `name`);
+
+-- ========== ERP / stock (only if table exists) ==========
+-- Check first: SHOW TABLES LIKE 'stock_units';
+-- ALTER TABLE `stock_units` ADD INDEX `stock_units_tenant_status_idx` (`tenant_id`, `status`);
+-- ALTER TABLE `stock_units` ADD INDEX `stock_units_tenant_deleted_status_idx` (`tenant_id`, `deleted_at`, `status`);
+-- ALTER TABLE `invoices` ADD INDEX `invoices_tenant_deleted_created_idx` (`tenant_id`, `deleted_at`, `created_at`);
+-- ALTER TABLE `invoices` ADD INDEX `invoices_tenant_status_idx` (`tenant_id`, `status`);
+-- ALTER TABLE `deals` ADD INDEX `deals_tenant_deleted_created_idx` (`tenant_id`, `deleted_at`, `created_at`);
+-- ALTER TABLE `stock_levels` ADD INDEX `stock_levels_tenant_idx` (`tenant_id`);
+
+
+-- -----------------------------------------------------------------------------
+-- 5) VERIFY
+-- -----------------------------------------------------------------------------
+SELECT COUNT(*) AS table_count
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = 'novacrm';
+-- Expect 52 tables for full master
+
+SHOW TABLES;
+
+SELECT COLUMN_NAME
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = 'novacrm' AND TABLE_NAME = 'users' AND COLUMN_NAME = 'temp_password';
+-- Expect: temp_password
+
+SELECT COLUMN_NAME
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = 'novacrm' AND TABLE_NAME = 'tickets' AND COLUMN_NAME = 'payment_status';
+-- Expect: payment_status
+
+-- -----------------------------------------------------------------------------
+-- 6) NEXT STEPS (not SQL)
+-- -----------------------------------------------------------------------------
+-- A) Point Render DATABASE_URL at this DB with connection_limit=3..5
+-- B) cd backend && npx prisma generate && npm run prisma:seed
+-- C) Set HMS logo if needed:
+--    UPDATE tenants SET logo_url = 'https://novacrms.vercel.app/hms-logo.png'
+--    WHERE slug = 'precision-scales-india';

@@ -333,9 +333,13 @@ export function SuppliersPage() {
                   {suppliers.map((v) => {
                     const city = (v.address as { city?: string } | null)?.city
                     return (
-                      <tr key={v.id} className="border-t border-border">
+                      <tr
+                        key={v.id}
+                        className="cursor-pointer border-t border-border hover:bg-muted/40"
+                        onClick={() => openEditSupplier(v)}
+                      >
                         <td className="px-4 py-3">
-                          <div className="font-medium">{v.name}</div>
+                          <div className="font-medium text-accent-blue hover:underline">{v.name}</div>
                           <div className="text-xs text-text-secondary">{v.email || '—'}</div>
                         </td>
                         <td className="px-4 py-3">{v.phone || '—'}</td>
@@ -344,7 +348,7 @@ export function SuppliersPage() {
                           {v.paymentTerms ? <Badge color="gray">{v.paymentTerms}</Badge> : '—'}
                         </td>
                         <td className="px-4 py-3">{city || '—'}</td>
-                        <td className="px-4 py-3">
+                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                           <div className="flex gap-1">
                             <Button
                               variant="ghost"
@@ -396,15 +400,21 @@ export function SuppliersPage() {
                 </thead>
                 <tbody>
                   {brands.map((b) => (
-                    <tr key={b.id} className="border-t border-border">
-                      <td className="px-4 py-3 font-medium">{b.name}</td>
+                    <tr
+                      key={b.id}
+                      className="cursor-pointer border-t border-border hover:bg-muted/40"
+                      onClick={() => openEditBrand(b)}
+                    >
+                      <td className="px-4 py-3 font-medium text-accent-blue hover:underline">
+                        {b.name}
+                      </td>
                       <td className="px-4 py-3 font-mono text-xs">{b.code || '—'}</td>
                       <td className="px-4 py-3">
                         <Badge color={b.isActive ? 'green' : 'gray'}>
                           {b.isActive ? 'Active' : 'Inactive'}
                         </Badge>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex gap-1">
                           <Button
                             variant="ghost"

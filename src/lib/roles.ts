@@ -11,9 +11,9 @@ export type TenantRoleCode =
   | 'WAREHOUSE'
   | string
 
-/** Company owner / admin — full analytics dashboard + ERP + users. */
+/** Company owner / admin / manager — full analytics dashboard + ERP + users. */
 export function isCompanyAdmin(role?: string | null): boolean {
-  return role === 'ADMIN'
+  return role === 'ADMIN' || role === 'MANAGER'
 }
 
 export function isServiceDesk(role?: string | null): boolean {
@@ -111,7 +111,7 @@ export function canAccessSaleTracking(role?: string | null): boolean {
  * Admin keeps the analytics dashboard; everyone else uses a focused home.
  */
 export function usesEmployeeWorkspace(role?: string | null): boolean {
-  return role !== 'ADMIN'
+  return !isCompanyAdmin(role)
 }
 
 /**

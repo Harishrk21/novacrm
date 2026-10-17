@@ -21,14 +21,23 @@ function parseRangeBounds(q: Request["query"]) {
   const range = String(q.range ?? "month");
   let from = new Date(now);
   let to = new Date(now);
+  to.setHours(23, 59, 59, 999);
 
   if (q.from) {
     const parsed = new Date(String(q.from));
     if (!Number.isNaN(parsed.getTime())) from = parsed;
-  } else if (range === "week") from.setDate(from.getDate() - 7);
-  else if (range === "quarter") from.setMonth(from.getMonth() - 3);
-  else if (range === "year") from.setFullYear(from.getFullYear() - 1);
-  else from.setMonth(from.getMonth() - 1);
+  } else if (range === "week") {
+    from.setDate(from.getDate() - 7);
+    from.setHours(0, 0, 0, 0);
+  } else if (range === "quarter") {
+    const qMonth = Math.floor(now.getMonth() / 3) * 3;
+    from = new Date(now.getFullYear(), qMonth, 1, 0, 0, 0, 0);
+  } else if (range === "year") {
+    from = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0);
+  } else {
+    // "This month" = calendar month start → now (not rolling 30 days)
+    from = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+  }
 
   if (q.to) {
     const parsed = new Date(String(q.to));
@@ -81,9 +90,33 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
     }
   }
 
-  // Cap concurrency — loading whole tables in one Promise.all used to exhaust
-  // Prisma's pool (P2024) and break unrelated pages like Leads on shared RDS.
+  // Cap concurrency — avoid exhausting the small RDS pool (P2024).
+  // Push assignee/source/status filters into SQL so we don't load the whole tenant then discard.
   const DB_CONCURRENCY = 2;
+  const leadWhere = {
+    tenantId: t,
+    deletedAt: null as null,
+    ...(filterAssignee ? { assignedToId: filterAssignee } : {}),
+    ...(filterSource ? { sourceId: filterSource } : {}),
+    ...(filterLeadStatus ? { status: filterLeadStatus as never } : {}),
+  };
+  const ticketWhere = {
+    tenantId: t,
+    deletedAt: null as null,
+    ...(filterAssignee ? { assignedToId: filterAssignee } : {}),
+    ...(filterTicketStatus ? { status: filterTicketStatus as never } : {}),
+  };
+  const dealWhere = {
+    tenantId: t,
+    deletedAt: null as null,
+    ...(filterAssignee ? { ownerUserId: filterAssignee } : {}),
+  };
+  const invoiceWhere = {
+    tenantId: t,
+    deletedAt: null as null,
+    ...(filterAssignee ? { createdById: filterAssignee } : {}),
+  };
+
   const [
     leadsRaw,
     deals,
@@ -96,7 +129,7 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
     [
       () =>
         prisma.lead.findMany({
-          where: { tenantId: t, deletedAt: null },
+          where: leadWhere,
           select: {
             id: true,
             status: true,
@@ -115,7 +148,7 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
         }),
       () =>
         prisma.deal.findMany({
-          where: { tenantId: t, deletedAt: null },
+          where: dealWhere,
           select: {
             id: true,
             name: true,
@@ -147,7 +180,7 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
         }),
       () =>
         prisma.ticket.findMany({
-          where: { tenantId: t, deletedAt: null },
+          where: ticketWhere,
           select: {
             id: true,
             ticketNo: true,
@@ -182,14 +215,18 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
     activities,
     invoicesRaw,
     products,
-    stock,
+    stockAgg,
     contactCount,
     stockUnitGroups,
   ] = await allPool(
     [
       () =>
         prisma.activity.findMany({
-          where: { tenantId: t, deletedAt: null },
+          where: {
+            tenantId: t,
+            deletedAt: null,
+            ...(filterAssignee ? { assignedToId: filterAssignee } : {}),
+          },
           orderBy: { createdAt: "desc" },
           take: 200,
           select: {
@@ -206,7 +243,7 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
         }),
       () =>
         prisma.invoice.findMany({
-          where: { tenantId: t, deletedAt: null },
+          where: invoiceWhere,
           select: {
             id: true,
             grandTotal: true,
@@ -220,9 +257,9 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
         }),
       () => prisma.product.count({ where: { tenantId: t, deletedAt: null } }),
       () =>
-        prisma.stockLevel.findMany({
+        prisma.stockLevel.aggregate({
           where: { tenantId: t },
-          select: { quantityOnHand: true, quantityReserved: true },
+          _sum: { quantityOnHand: true, quantityReserved: true },
         }),
       () => prisma.contact.count({ where: { tenantId: t, deletedAt: null } }),
       () =>
@@ -438,6 +475,31 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
   }
   const byIndustry = Object.entries(byIndustryMap).map(([name, value]) => ({ name, value }));
 
+  /** When money was collected: paid date, else close/resolve (legacy rows without paidAt). */
+  const serviceCollectedAt = (x: {
+    paymentStatus: string | null;
+    paidAt: Date | null;
+    closedAt: Date | null;
+    resolvedAt: Date | null;
+    updatedAt?: Date | null;
+  }) => {
+    const st = String(x.paymentStatus ?? "");
+    if (st !== "PAID" && st !== "PARTIAL") return null;
+    if (st === "PAID") return x.paidAt ?? x.closedAt ?? x.resolvedAt;
+    // PARTIAL: advances counted on paidAt if set, else last update / close
+    return x.paidAt ?? x.closedAt ?? x.resolvedAt ?? x.updatedAt ?? null;
+  };
+  const serviceCollectedAmount = (x: {
+    paymentStatus: string | null;
+    paymentTotal: unknown;
+    advanceAmount?: unknown;
+  }) => {
+    const st = String(x.paymentStatus ?? "");
+    if (st === "PAID") return Number(x.paymentTotal ?? 0);
+    if (st === "PARTIAL") return Number(x.advanceAmount ?? 0);
+    return 0;
+  };
+
   const months: Array<{ month: string; proforma: number; servicePaid: number }> = [];
   for (let i = 6; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
@@ -448,11 +510,10 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
       .reduce((s, x) => s + Number(x.grandTotal), 0);
     const servicePaid = tickets
       .filter((x) => {
-        if (String(x.paymentStatus) !== "PAID") return false;
-        const at = x.paidAt ?? x.closedAt ?? x.resolvedAt;
+        const at = serviceCollectedAt(x);
         return at != null && at >= d && at < next;
       })
-      .reduce((s, x) => s + Number(x.paymentTotal ?? 0), 0);
+      .reduce((s, x) => s + serviceCollectedAmount(x), 0);
     months.push({ month: label, proforma, servicePaid });
   }
 
@@ -476,7 +537,7 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
         : 0
       : Math.round(((dealsInRange.length - dealsPrev.length) / dealsPrev.length) * 100);
 
-  const stockUnits = stock.reduce((s, r) => s + Number(r.quantityOnHand), 0);
+  const stockUnits = Number(stockAgg._sum.quantityOnHand ?? 0);
   const stockByStatus = stockUnitGroups.map((g) => ({
     name: g.status,
     value: g._count._all,
@@ -500,11 +561,28 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
     .reduce((s, x) => s + Number(x.paymentTotal ?? 0), 0);
   const serviceCollectedInRange = tickets
     .filter((x) => {
-      if (String(x.paymentStatus) !== "PAID") return false;
-      const at = x.paidAt ?? x.closedAt ?? x.resolvedAt;
+      const at = serviceCollectedAt(x);
       return at != null && at >= from && at <= to;
     })
-    .reduce((s, x) => s + Number(x.paymentTotal ?? 0), 0);
+    .reduce((s, x) => s + serviceCollectedAmount(x), 0);
+  // Always calendar this month (independent of selected range) for admin snapshot
+  const calendarMonthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+  const calendarMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
+  const serviceCollectedThisMonth = tickets
+    .filter((x) => {
+      const at = serviceCollectedAt(x);
+      return at != null && at >= calendarMonthStart && at < calendarMonthEnd;
+    })
+    .reduce((s, x) => s + serviceCollectedAmount(x), 0);
+  const serviceJobsPaidThisMonth = tickets.filter((x) => {
+    const at = serviceCollectedAt(x);
+    return (
+      String(x.paymentStatus) === "PAID" &&
+      at != null &&
+      at >= calendarMonthStart &&
+      at < calendarMonthEnd
+    );
+  }).length;
 
   const enquiriesPending = leads.filter((l) =>
     ["NEW", "CONTACTED", "QUALIFIED"].includes(l.status),
@@ -810,6 +888,8 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
         .reduce((s, i) => s + Number(i.grandTotal), 0),
       serviceCollected,
       serviceCollectedInRange,
+      serviceCollectedThisMonth,
+      serviceJobsPaidThisMonth,
       products,
       tickets: tickets.length,
       ticketsInRange: ticketsInRange.length,

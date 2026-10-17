@@ -1,5 +1,5 @@
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react'
-import { Eye, Pencil, Trash2, X } from 'lucide-react'
+import { Download, Eye, Pencil, Trash2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 
@@ -63,6 +63,27 @@ export function ViewIconButton({
   return (
     <IconActionButton label={label} onClick={onClick} className="hover:text-accent-blue">
       <Eye size={16} />
+    </IconActionButton>
+  )
+}
+
+export function DownloadIconButton({
+  onClick,
+  label = 'Download',
+  disabled,
+}: {
+  onClick: () => void
+  label?: string
+  disabled?: boolean
+}) {
+  return (
+    <IconActionButton
+      label={label}
+      onClick={onClick}
+      disabled={disabled}
+      className="hover:text-accent-blue"
+    >
+      <Download size={16} />
     </IconActionButton>
   )
 }

@@ -58,6 +58,21 @@ export function assertCanClosePayment(opts: {
   }
 }
 
+/** Same rule as UI paymentSettledForComplete — PAID or free (₹0) before Mark complete. */
+export function assertCanCompletePayment(opts: {
+  paymentStatus: string;
+  paymentTotal: number;
+  advanceAmount: number;
+}) {
+  if (isFreeJob(opts.paymentTotal, opts.advanceAmount)) return;
+  if (opts.paymentStatus !== "PAID") {
+    throw new AppError(
+      "Mark the job paid fully (with payment method / proof) before marking complete",
+      400,
+    );
+  }
+}
+
 export function assertCanInvoice(opts: { status: string; paymentTotal: number; advanceAmount: number }) {
   if (opts.status !== "RESOLVED" && opts.status !== "CLOSED") {
     throw new AppError("Create a service invoice only after the job is marked complete (RESOLVED)", 400);

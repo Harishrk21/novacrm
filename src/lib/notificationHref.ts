@@ -1,48 +1,63 @@
 /** Resolve in-app destination for a notification row. */
-export function notificationHref(n: {
-  type?: string | null
-  entityType?: string | null
-  entityId?: string | null
-  href?: string | null
-}): string {
-  if (n.href) return String(n.href)
+export function notificationHref(
+  n: {
+    type?: string | null
+    entityType?: string | null
+    entityId?: string | null
+    href?: string | null
+  },
+  opts?: { role?: string | null },
+): string {
+  const rawHref = n.href ? String(n.href).trim() : ''
+  // API used to stub unknown types as /notifications — ignore that and resolve from type
+  const hrefIsStub = !rawHref || rawHref === '/notifications' || rawHref === '#'
 
   const type = String(n.type ?? '').toUpperCase()
   const entityType = String(n.entityType ?? '').toLowerCase()
   const entityId = n.entityId ? String(n.entityId) : ''
+  const role = String(opts?.role ?? '').toUpperCase()
+  const warehouseish =
+    role === 'WAREHOUSE' || role === 'ADMIN' || role === 'MANAGER'
+
+  // Prefer type/entity resolution for requisitions even if a bad href was stored
+  const isRequisition =
+    type === 'REQUISITION_PENDING' ||
+    type === 'REQUISITION_APPROVED' ||
+    type === 'REQUISITION_REJECTED' ||
+    type === 'REQUISITION_INVENTORY' ||
+    type === 'REQUISITION_SHIPPED' ||
+    type === 'REQUISITION_FULFILLED' ||
+    type === 'REQUISITION_SALE_DC' ||
+    type.includes('REQUISITION') ||
+    entityType === 'sales_requisition'
+
+  if (!hrefIsStub && !isRequisition) return rawHref
 
   const isLeadEntity =
     entityType === 'lead' || entityType === 'leads' || entityType === 'enquiry'
 
-  // Sales requisition lifecycle
-  if (
-    type === 'REQUISITION_PENDING' ||
-    type === 'REQUISITION_APPROVED' ||
-    type === 'REQUISITION_REJECTED' ||
-    entityType === 'sales_requisition'
-  ) {
+  // Sales requisition — approval / reject stay on sale-tracking
+  if (type === 'REQUISITION_PENDING' || type === 'REQUISITION_REJECTED') {
     if (entityId) return `/sale-tracking?queue=requisitions&reqId=${encodeURIComponent(entityId)}`
     return '/sale-tracking?queue=requisitions'
   }
 
-  // Inventory notified warehouse — sales still lands on the sale / requisitions
-  if (type === 'REQUISITION_INVENTORY') {
-    return isLeadEntity && entityId
-      ? `/sale-tracking/${entityId}`
-      : '/sale-tracking?queue=requisitions'
-  }
-
+  // Approved / inventory / fulfill — warehouse → releases; sales → requisitions / sale
   if (
+    type === 'REQUISITION_APPROVED' ||
+    type === 'REQUISITION_INVENTORY' ||
     type === 'REQUISITION_SHIPPED' ||
     type === 'REQUISITION_FULFILLED' ||
     type === 'REQUISITION_SALE_DC' ||
-    type.includes('REQUISITION')
+    type.includes('REQUISITION') ||
+    entityType === 'sales_requisition'
   ) {
+    if (warehouseish) return '/erp/releases'
     if (isLeadEntity && entityId) return `/sale-tracking/${entityId}`
-    if (entityId && entityType === 'sales_requisition') {
+    if (entityId) {
       return `/sale-tracking?queue=requisitions&reqId=${encodeURIComponent(entityId)}`
     }
-    return '/sale-tracking'
+    return '/sale-tracking?queue=requisitions'
   }
 
   // Follow-ups / day updates / lead status
@@ -92,6 +107,6 @@ export function notificationHref(n: {
     return '/erp/stock?view=demo'
   }
 
-  // Never leave Open with nowhere to go
-  return '/notifications'
+  // Unknown type — land on workqueue rather than reloading Notifications
+  return '/workqueue'
 }

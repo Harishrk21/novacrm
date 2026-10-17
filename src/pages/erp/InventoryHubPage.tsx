@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowDownToLine, ArrowUpFromLine, RotateCcw, Truck } from 'lucide-react'
+import {
+  ArrowDownToLine,
+  ArrowLeft,
+  ArrowUpFromLine,
+  MoreHorizontal,
+  RotateCcw,
+  Truck,
+} from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -24,6 +31,7 @@ import {
 import { GC_MONTH_OPTIONS } from '@/lib/hmsCoverage'
 import { downloadXlsx } from '@/lib/reportExport'
 import { productAttrs, truncateProductName } from '@/lib/productCatalog'
+import { preferMainWarehouseId, sortWarehousesForDropdown } from '@/lib/warehouseSort'
 import { expandSerialRange, bumpSerial } from '@/lib/stockSerial'
 import { filterServiceEngineers } from '@/lib/roles'
 import { useUIStore } from '@/store/uiStore'
@@ -35,7 +43,7 @@ type Category = 'MACHINE' | 'SPARE'
 type HubTab = 'catalog' | 'stock' | 'suppliers' | 'report'
 export type InventoryHubSection = HubTab
 type StockMode = 'add' | 'reduce'
-type StockView = 'onhand' | 'demo' | 'history' | 'reduce'
+type StockView = 'onhand' | 'demo' | 'history'
 type Family = 'WEIGHING' | 'BILLING'
 
 /** Machine types shown when adding / reducing stock (Cash Counting split out of OA). */
@@ -85,7 +93,9 @@ function demoDaysOut(iso?: string | null) {
 }
 
 function parseStockView(raw: string | null): StockView {
-  if (raw === 'reduce' || raw === 'history' || raw === 'demo') return raw
+  // Legacy ?view=reduce → single History tab (action filter handles reduce-only)
+  if (raw === 'history' || raw === 'reduce') return 'history'
+  if (raw === 'demo') return 'demo'
   return 'onhand'
 }
 
@@ -96,17 +106,25 @@ function monthBounds(year: number, month: number) {
   return { from, to }
 }
 
-function skuFromName(familyCode: string, industryCode: string, name: string) {
+function skuFromName(familyCode: string, industryCode: string, name: string, brand?: string) {
   const fam = familyCode.replaceAll('_', '').slice(0, 6)
   const ind = industryCode ? industryCode.replaceAll('_', '').slice(0, 4) : 'GEN'
+  const brandSlug = (brand ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 12)
   const slug = name
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 28)
-  const suffix = Date.now().toString(36).slice(-4).toUpperCase()
-  return `HMS-${fam}-${ind}-${slug || 'MODEL'}-${suffix}`
+  // Deterministic — unique key is (tenantId, sku); no random suffix so duplicates hit the DB.
+  return brandSlug
+    ? `HMS-${fam}-${ind}-${brandSlug}-${slug || 'MODEL'}`
+    : `HMS-${fam}-${ind}-${slug || 'MODEL'}`
 }
 
 /**
@@ -148,7 +166,10 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     customer: string
   } | null>(null)
   const [returnBusy, setReturnBusy] = useState(false)
-  const [histAction, setHistAction] = useState<'ALL' | 'ADD' | 'REDUCE'>('ALL')
+  const [histAction, setHistAction] = useState<'ALL' | 'ADD' | 'REDUCE'>(() =>
+    params.get('view') === 'reduce' ? 'REDUCE' : 'ALL',
+  )
+  const [stockRowMenuKey, setStockRowMenuKey] = useState<string | null>(null)
   const [histCategory, setHistCategory] = useState<'ALL' | Category>('ALL')
   const [histFrom, setHistFrom] = useState(() => {
     const d = new Date()
@@ -189,7 +210,9 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
   const [spares, setSpares] = useState<Array<Record<string, unknown>>>([])
   const [vendors, setVendors] = useState<Array<Record<string, unknown>>>([])
   const [brands, setBrands] = useState<Array<Record<string, unknown>>>([])
-  const [warehouses, setWarehouses] = useState<Array<{ id: string; name: string }>>([])
+  const [warehouses, setWarehouses] = useState<
+    Array<{ id: string; name: string; code?: string; isDefault?: boolean }>
+  >([])
   const [units, setUnits] = useState<Array<Record<string, unknown>>>([])
   const [filterQ, setFilterQ] = useState('')
 
@@ -312,15 +335,21 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       setSpares(workspace.spares ?? [])
       setVendors(workspace.vendors ?? [])
       setBrands(workspace.brands ?? [])
-      setWarehouses(
-        (workspace.warehouses ?? []).map((w) => ({ id: String(w.id), name: String(w.name) })),
+      const sortedWh = sortWarehousesForDropdown(
+        (workspace.warehouses ?? []).map((w) => ({
+          id: String(w.id),
+          name: String(w.name),
+          code: w.code != null ? String(w.code) : undefined,
+          isDefault: Boolean((w as { isDefault?: boolean }).isDefault),
+        })),
       )
+      setWarehouses(sortedWh)
       const inStock = (workspace.units ?? []).filter((u) => {
         const st = String(u.status)
         return st === 'IN_STOCK' || st === 'DEMO'
       })
       setUnits(inStock)
-      setWarehouseId((prev) => prev || (workspace.warehouses?.[0] ? String(workspace.warehouses[0].id) : ''))
+      setWarehouseId((prev) => prev || preferMainWarehouseId(sortedWh))
       const allUsers = (workspace.users ?? []).map((u) => ({
         id: String(u.id),
         name: String(u.name ?? ''),
@@ -410,9 +439,10 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     }
     if (params.get('category') === 'SPARE') setCategory('SPARE')
     if (params.get('category') === 'MACHINE') setCategory('MACHINE')
-    if (params.get('view') === 'history') setStockView('history')
-    else if (params.get('view') === 'reduce') setStockView('reduce')
-    else if (params.get('view') === 'demo') setStockView('demo')
+    if (params.get('view') === 'history' || params.get('view') === 'reduce') {
+      setStockView('history')
+      if (params.get('view') === 'reduce') setHistAction('REDUCE')
+    } else if (params.get('view') === 'demo') setStockView('demo')
     else if ((section === 'stock' || tab === 'stock') && params.get('view') !== 'history') {
       // keep current unless explicitly cleared via URL without view=
       if (!params.has('view') && params.get('open') !== 'move') {
@@ -622,25 +652,32 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
   }, [histAction, histCategory, histFrom, histTo, addToast])
 
   useEffect(() => {
-    if (tab === 'stock' && (stockView === 'history' || stockView === 'reduce')) {
+    if (tab === 'stock' && stockView === 'history') {
       void loadStockHistory()
     }
   }, [tab, stockView, loadStockHistory])
 
+  useEffect(() => {
+    if (!stockRowMenuKey) return
+    const close = () => setStockRowMenuKey(null)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('click', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [stockRowMenuKey])
+
   function setStockPageView(view: StockView) {
     setStockView(view)
+    setStockRowMenuKey(null)
     const next = new URLSearchParams(params)
-    if (view === 'history' || view === 'reduce' || view === 'demo') next.set('view', view)
+    if (view === 'history' || view === 'demo') next.set('view', view)
     else next.delete('view')
     setParams(next, { replace: true })
-    if (view === 'reduce') {
-      setHistAction('REDUCE')
-      const now = new Date()
-      const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10)
-      const end = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10)
-      setHistFrom(start)
-      setHistTo(end)
-    }
   }
 
   function downloadStockHistory() {
@@ -1092,6 +1129,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
           sublabel: `${p.sku ?? ''}${onHand ? ` · ${onHand} in stock` : ''}`,
         }
       })
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
   }, [products, stockMachineType, units])
 
   const spareOptions = useMemo(() => {
@@ -1103,6 +1141,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
         label: String(s.name),
         sublabel: `${s.machineFamily} · On hand: ${s.quantityOnHand ?? 0}`,
       }))
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
   }, [spares, sFamily, stockMachineType])
 
   const isWeighingStock = stockMachineType === 'WEIGHING_SCALES'
@@ -1127,16 +1166,25 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
   }, [previewHmsIds, hmsStart, qty])
 
   const engineerOptions = useMemo(
-    () => engineers.map((e) => ({ value: e.id, label: e.name })),
+    () =>
+      [...engineers]
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+        .map((e) => ({ value: e.id, label: e.name })),
     [engineers],
   )
 
   const vendorOptions = useMemo(
-    () => vendors.map((v) => ({ value: String(v.id), label: String(v.name) })),
+    () =>
+      vendors
+        .map((v) => ({ value: String(v.id), label: String(v.name) }))
+        .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })),
     [vendors],
   )
   const brandOptions = useMemo(
-    () => brands.map((b) => ({ value: String(b.id), label: String(b.name) })),
+    () =>
+      brands
+        .map((b) => ({ value: String(b.id), label: String(b.name) }))
+        .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })),
     [brands],
   )
 
@@ -1180,6 +1228,26 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     const name = mCustom.trim()
     if (!name) {
       addToast({ type: 'error', message: 'Type the model name' })
+      return
+    }
+    const brandKey = mBrand.trim().toLowerCase()
+    const nameKey = name.toLowerCase()
+    // Unique DB key is (tenantId, sku). Name is not unique — block obvious catalogue duplicates.
+    const duplicate = products.find((p) => {
+      if (editingProductId && String(p.id) === editingProductId) return false
+      if (String(p.name ?? '').trim().toLowerCase() !== nameKey) return false
+      const a = productAttrs(p)
+      const pBrand = String(a.brand ?? '').trim().toLowerCase()
+      if (brandKey) return pBrand === brandKey
+      return !pBrand
+    })
+    if (duplicate) {
+      addToast({
+        type: 'error',
+        message: brandKey
+          ? `Product “${name}” already exists for brand ${mBrand.trim()} (SKU ${String(duplicate.sku ?? '')}). Open it to edit instead of creating a duplicate.`
+          : `Product “${name}” already exists (SKU ${String(duplicate.sku ?? '')}). Open it to edit instead of creating a duplicate.`,
+      })
       return
     }
     // Match typed name to catalog SKU when possible; otherwise custom model under this type
@@ -1229,7 +1297,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       } else {
         await api.createProduct({
           name: truncateProductName(name),
-          sku: fromCatalog?.sku ?? skuFromName(mFamily, mIndustry, name),
+          sku: fromCatalog?.sku ?? skuFromName(mFamily, mIndustry, name, mBrand),
           productType: fromCatalog?.productType ?? 'GOODS',
           trackInventory: fromCatalog?.trackInventory ?? true,
           hsnSac: mHsn.trim() || null,
@@ -1786,7 +1854,10 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
         }
         breadcrumbs={[
           { label: APP_NAME },
-          { label: 'Inventory' },
+          {
+            label: 'Inventory',
+            to: tab === 'report' || tab === 'stock' ? '/erp/stock' : undefined,
+          },
           {
             label:
               tab === 'catalog'
@@ -1806,11 +1877,6 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
               <Link to="/erp/stock/report">
                 <Button variant="outline">Monthly report</Button>
               </Link>
-              {stockView === 'history' || stockView === 'reduce' ? (
-                <Button variant="outline" onClick={downloadStockHistory} disabled={histLoading}>
-                  Download report
-                </Button>
-              ) : null}
               <Link to="/erp/stock/move?mode=reduce">
                 <Button variant="outline">
                   <ArrowUpFromLine size={16} /> Reduce stock
@@ -1822,6 +1888,12 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                 </Button>
               </Link>
             </div>
+          ) : tab === 'report' ? (
+            <Link to="/erp/stock">
+              <Button variant="outline">
+                <ArrowLeft size={16} /> Back to stock
+              </Button>
+            </Link>
           ) : undefined
         }
       />
@@ -1829,13 +1901,11 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
         {tab === 'catalog'
           ? 'Click a row to edit. Filter by category or brand (HMS and others).'
           : tab === 'stock'
-            ? stockView === 'reduce'
-              ? 'Monthly reduce history — sale and demo (mapped customer), with HMS ID and serial. Download Excel.'
-              : stockView === 'history'
-                ? 'Add and reduce movements for machines and spares. Filter by date, then download Excel.'
-                : stockView === 'demo'
-                  ? 'Demo units currently out — monitor customer and days out. When the machine is back, return it to HMS stock.'
-                  : 'Click a row for details / edit. Use Demo to monitor units out, Reduce history for sale/demo reports.'
+            ? stockView === 'history'
+              ? 'Add and reduce movements for machines and spares. Filter by action/date, then download Excel.'
+              : stockView === 'demo'
+                ? 'Demo units currently out — monitor customer and days out. When the machine is back, return it to HMS stock.'
+                : 'Click a row for details / edit. Use Actions on a row to add or reduce stock for that item.'
             : tab === 'suppliers'
               ? 'Suppliers and brands in one place — brands are used on products and stock receive.'
               : 'Filter by machines, spares, and month — preview rows, then download Excel.'}
@@ -1846,8 +1916,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
           tabs={[
             { id: 'onhand', label: 'On hand' },
             { id: 'demo', label: 'Demo', count: demoUnits.length },
-            { id: 'reduce', label: 'Reduce history' },
-            { id: 'history', label: 'All history' },
+            { id: 'history', label: 'History' },
           ]}
           active={stockView}
           onChange={(id) => setStockPageView(parseStockView(id))}
@@ -2062,22 +2131,31 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                     value={mDesc}
                     onChange={(e) => setMDesc(e.target.value)}
                   />
-                  <div className="flex flex-wrap items-center gap-4 sm:col-span-2">
-                    <label className="flex items-center gap-2 text-sm">
-                      <Switch checked={mGc} onChange={setMGc} /> GC / warranty
-                    </label>
-                    {mGc ? (
-                      <Select
-                        label="GC months"
-                        value={mWarranty}
-                        onChange={(e) => setMWarranty(e.target.value)}
-                        options={[{ value: '', label: 'Months…' }, ...GC_MONTH_OPTIONS]}
-                      />
-                    ) : null}
-                    <label className="flex items-center gap-2 text-sm">
+                  <div className="flex flex-wrap items-start gap-x-6 gap-y-3 sm:col-span-2">
+                    <div className="min-w-[140px] space-y-2">
+                      <label className="flex items-center gap-2 text-sm">
+                        <Switch
+                          checked={mGc}
+                          onChange={(on) => {
+                            setMGc(on)
+                            if (!on) setMWarranty('')
+                          }}
+                        />{' '}
+                        GC / warranty
+                      </label>
+                      {mGc ? (
+                        <Select
+                          label="GC months"
+                          value={mWarranty}
+                          onChange={(e) => setMWarranty(e.target.value)}
+                          options={[{ value: '', label: 'Months… (optional)' }, ...GC_MONTH_OPTIONS]}
+                        />
+                      ) : null}
+                    </div>
+                    <label className="flex h-9 items-center gap-2 text-sm">
                       <Switch checked={mAmc} onChange={setMAmc} /> AMC
                     </label>
-                    <label className="flex items-center gap-2 text-sm">
+                    <label className="flex h-9 items-center gap-2 text-sm">
                       <Switch checked={mStamp} onChange={setMStamp} /> Requires stamping
                     </label>
                   </div>
@@ -2116,10 +2194,9 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
         </Card>
       ) : tab === 'stock' ? (
         <Card className="space-y-3 p-4">
-          {stockView === 'history' || stockView === 'reduce' ? (
+          {stockView === 'history' ? (
             <>
               <div className="flex flex-wrap items-end gap-2">
-                {stockView === 'history' ? (
                 <div className="w-[140px]">
                   <Select
                     label="Action"
@@ -2132,11 +2209,6 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                     ]}
                   />
                 </div>
-                ) : (
-                  <p className="pb-2 text-sm font-medium text-text-primary">
-                    Reduce history · this month by default
-                  </p>
-                )}
                 <div className="w-[140px]">
                   <Select
                     label="Category"
@@ -2293,6 +2365,25 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                         const phone = String(
                           cf.demoPhone ?? (u.contact as { phone?: string } | null)?.phone ?? '',
                         )
+                        const leadId =
+                          u.leadId != null
+                            ? String(u.leadId)
+                            : cf.leadId != null
+                              ? String(cf.leadId)
+                              : cf.demoLeadId != null
+                                ? String(cf.demoLeadId)
+                                : ''
+                        const contactId =
+                          (u.contact as { id?: string } | null)?.id ||
+                          (u.contactId != null ? String(u.contactId) : '')
+                        const customerLabel = customer
+                          ? `${code ? `${code} · ` : ''}${customer}`
+                          : ''
+                        const customerHref = leadId
+                          ? `/sale-tracking/${leadId}`
+                          : contactId
+                            ? `/contacts/${contactId}`
+                            : ''
                         const issuedAt = cf.demoIssuedAt ? String(cf.demoIssuedAt) : ''
                         const days = demoDaysOut(issuedAt)
                         const dc = String(cf.demoDcNo ?? '')
@@ -2307,9 +2398,20 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                               {serial || '—'}
                             </td>
                             <td className="px-3 py-2 text-text-secondary">
-                              {customer
-                                ? `${code ? `${code} · ` : ''}${customer}`
-                                : '—'}
+                              {customerLabel ? (
+                                customerHref ? (
+                                  <Link
+                                    to={customerHref}
+                                    className="text-accent-blue hover:underline"
+                                  >
+                                    {customerLabel}
+                                  </Link>
+                                ) : (
+                                  customerLabel
+                                )
+                              ) : (
+                                '—'
+                              )}
                             </td>
                             <td className="px-3 py-2 text-text-secondary">{phone || '—'}</td>
                             <td className="whitespace-nowrap px-3 py-2 text-text-secondary">
@@ -2396,6 +2498,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                     <th className="px-3 py-2.5 font-semibold">Brand / type</th>
                     <th className="px-3 py-2.5 font-semibold">SKU / code</th>
                     <th className="px-3 py-2.5 font-semibold">Detail</th>
+                    <th className="px-3 py-2.5 font-semibold">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2441,6 +2544,65 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                       </td>
                       <td className="px-3 py-2.5 text-text-secondary">
                         {row.kind === 'MACHINE' ? row.detail : row.qtyLabel}
+                      </td>
+                      <td
+                        className="relative px-3 py-2.5"
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                      >
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          aria-label={`Actions for ${row.name}`}
+                          aria-expanded={stockRowMenuKey === row.key}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setStockRowMenuKey((k) => (k === row.key ? null : row.key))
+                          }}
+                        >
+                          <MoreHorizontal size={14} />
+                          Actions
+                        </Button>
+                        {stockRowMenuKey === row.key ? (
+                          <div
+                            className="absolute right-3 z-20 mt-1 min-w-[140px] rounded-lg border border-border bg-card py-1 shadow-lg"
+                            role="menu"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-primary hover:bg-muted"
+                              onClick={() => {
+                                setStockRowMenuKey(null)
+                                openStockMove('add', {
+                                  category: row.kind,
+                                  productId: row.kind === 'MACHINE' ? row.id : undefined,
+                                  spareId: row.kind === 'SPARE' ? row.id : undefined,
+                                })
+                              }}
+                            >
+                              <ArrowDownToLine size={14} className="text-emerald-600" />
+                              Add
+                            </button>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-primary hover:bg-muted"
+                              onClick={() => {
+                                setStockRowMenuKey(null)
+                                openStockMove('reduce', {
+                                  category: row.kind,
+                                  productId: row.kind === 'MACHINE' ? row.id : undefined,
+                                  spareId: row.kind === 'SPARE' ? row.id : undefined,
+                                })
+                              }}
+                            >
+                              <ArrowUpFromLine size={14} className="text-red-600" />
+                              Reduce
+                            </button>
+                          </div>
+                        ) : null}
                       </td>
                     </tr>
                   ))}
@@ -2623,26 +2785,31 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                   />
                   <div>
                     <Input
-                      label="HMS Unique ID (start)"
+                      label={
+                        Math.max(1, Math.floor(Number(qty) || 1)) > 1
+                          ? 'HMS Unique ID (first)'
+                          : 'HMS Unique ID'
+                      }
                       value={hmsStart || (hmsPreviewDisplay[0] ?? '')}
                       onChange={(e) => {
                         setHmsStart(e.target.value)
                         setPreviewHmsIds([])
                       }}
-                      placeholder="Enter one ID — rest auto-fill by qty"
+                      placeholder="Next number loads automatically"
                     />
                     {hmsPreviewDisplay.length > 1 ? (
                       <p className="mt-1 text-xs text-text-secondary">
-                        Auto: {hmsPreviewDisplay[0]} → {hmsPreviewDisplay[hmsPreviewDisplay.length - 1]}{' '}
-                        ({hmsPreviewDisplay.length} IDs)
+                        This batch: {hmsPreviewDisplay[0]} →{' '}
+                        {hmsPreviewDisplay[hmsPreviewDisplay.length - 1]} (
+                        {hmsPreviewDisplay.length} IDs)
                       </p>
                     ) : hmsPreviewDisplay.length === 1 ? (
                       <p className="mt-1 text-xs text-text-secondary">
-                        Preview: {hmsPreviewDisplay[0]}
+                        Next available ID for this machine type.
                       </p>
                     ) : (
                       <p className="mt-1 text-xs text-text-secondary">
-                        Select model + qty to preview server IDs, or type a start ID
+                        Pick a model to load the next HMS Unique ID, or type one.
                       </p>
                     )}
                   </div>

@@ -11,7 +11,7 @@ import * as svc from "./rentals.service.js";
 
 const issueBody = z.object({
   stockUnitId: z.string().min(1).max(36),
-  contactId: z.string().min(1).max(36).nullable().optional(),
+  contactId: z.string().min(1).max(36),
   leadId: z.string().min(1).max(36).nullable().optional(),
   customerName: z.string().min(1).max(160),
   customerPhone: z.string().max(32).nullable().optional(),
@@ -23,6 +23,7 @@ const issueBody = z.object({
   startAt: z.string().min(1),
   expectedReturnAt: z.string().nullable().optional(),
   dailyRate: z.coerce.number().nonnegative().nullable().optional(),
+  monthlyRate: z.coerce.number().nonnegative().nullable().optional(),
   totalAmount: z.coerce.number().nonnegative().nullable().optional(),
   depositAmount: z.coerce.number().nonnegative().nullable().optional(),
   notes: z.string().max(2000).nullable().optional(),
@@ -30,6 +31,26 @@ const issueBody = z.object({
 
 const returnBody = z.object({
   notes: z.string().max(2000).nullable().optional(),
+});
+
+const cancelBody = z.object({
+  notes: z.string().max(2000).nullable().optional(),
+});
+
+const patchBody = z.object({
+  expectedReturnAt: z.string().nullable().optional(),
+  dailyRate: z.coerce.number().nonnegative().nullable().optional(),
+  monthlyRate: z.coerce.number().nonnegative().nullable().optional(),
+  totalAmount: z.coerce.number().nonnegative().nullable().optional(),
+  depositAmount: z.coerce.number().nonnegative().nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+  customerName: z.string().min(1).max(160).nullable().optional(),
+  customerPhone: z.string().max(32).nullable().optional(),
+  customerEmail: z.string().email().max(191).nullable().optional().or(z.literal("")),
+  customerCompany: z.string().max(191).nullable().optional(),
+  customerAddress: z.string().max(512).nullable().optional(),
+  city: z.string().max(80).nullable().optional(),
+  state: z.string().max(80).nullable().optional(),
 });
 
 const idParams = z.object({ id: z.string().min(1).max(36) });
@@ -68,6 +89,20 @@ rentalsRouter.post(
   },
 );
 
+rentalsRouter.patch(
+  "/:id",
+  requirePermission("inventory:write"),
+  validate(z.object({ body: patchBody, query: z.any(), params: idParams })),
+  async (q: Request, r: Response) => {
+    const body = patchBody.parse(q.body ?? {});
+    const data = await svc.patchRental(q.auth!.tenantId!, paramId(q), {
+      ...body,
+      customerEmail: body.customerEmail || null,
+    });
+    return success(r, data, "Rental updated");
+  },
+);
+
 rentalsRouter.post(
   "/:id/return",
   requirePermission("inventory:write"),
@@ -81,5 +116,21 @@ rentalsRouter.post(
       body.notes,
     );
     return success(r, data, "Rental returned — stock restored");
+  },
+);
+
+rentalsRouter.post(
+  "/:id/cancel",
+  requirePermission("inventory:write"),
+  validate(z.object({ body: cancelBody, query: z.any(), params: idParams })),
+  async (q: Request, r: Response) => {
+    const body = cancelBody.parse(q.body ?? {});
+    const data = await svc.cancelRental(
+      q.auth!.tenantId!,
+      q.auth!.userId!,
+      paramId(q),
+      body.notes,
+    );
+    return success(r, data, "Rental cancelled — stock restored");
   },
 );

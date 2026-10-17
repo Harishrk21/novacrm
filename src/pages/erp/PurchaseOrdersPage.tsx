@@ -13,6 +13,7 @@ import { Modal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError, num } from '@/lib/api'
+import { openPrintHtml } from '@/lib/openPrintHtml'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
 
@@ -152,10 +153,9 @@ function printPurchaseOrder(po: Record<string, unknown>, companyName = 'HMS Ente
   </div>
 </body></html>`
 
-  const win = window.open('', '_blank', 'noopener,noreferrer,width=900,height=1100')
-  if (!win) return
-  win.document.write(html)
-  win.document.close()
+  return openPrintHtml(html, {
+    filename: `${String(po.poNumber || 'purchase-order')}.html`,
+  }) !== false
 }
 
 export function PurchaseOrdersPage() {

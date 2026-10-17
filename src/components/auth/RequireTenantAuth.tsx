@@ -3,15 +3,21 @@ import { Navigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { getAuth } from '@/lib/api'
 import { SessionSkeleton } from '@/components/ui/Skeleton'
+import { rememberTenantSlug, tenantLoginPath } from '@/lib/lastTenantSlug'
 
 /** Ensures tenant CRM routes only load when a valid JWT session exists */
 export function RequireTenantAuth({ children }: { children: ReactNode }) {
   const location = useLocation()
   const kind = useAuthStore((s) => s.kind)
   const bootstrapped = useAuthStore((s) => s.bootstrapped)
+  const tenantSlug = useAuthStore((s) => s.user?.tenantSlug)
   const hydrateFromStorage = useAuthStore((s) => s.hydrateFromStorage)
   const refreshSession = useAuthStore((s) => s.refreshSession)
   const logout = useAuthStore((s) => s.logout)
+
+  useEffect(() => {
+    if (tenantSlug) rememberTenantSlug(tenantSlug)
+  }, [tenantSlug])
 
   useEffect(() => {
     void hydrateFromStorage()
@@ -48,7 +54,14 @@ export function RequireTenantAuth({ children }: { children: ReactNode }) {
   }
 
   if (kind !== 'tenant' || !getAuth()?.accessToken) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />
+    const from = `${location.pathname}${location.search || ''}`
+    return (
+      <Navigate
+        to={tenantLoginPath(tenantSlug)}
+        replace
+        state={{ from: from && from !== '/' ? from : undefined }}
+      />
+    )
   }
 
   return children

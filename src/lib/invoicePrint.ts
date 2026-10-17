@@ -1,4 +1,5 @@
-/** Tax invoice printable (browser Print → Save as PDF). Distinct from job-sheet receipt. */
+/** Proforma invoice printable (browser Print → Save as PDF). GST tax invoice stays in Tally. */
+import { openPrintHtml } from '@/lib/openPrintHtml'
 
 function escapeHtml(value: string) {
   return value
@@ -154,17 +155,9 @@ export function openPrintableInvoice(opts: InvoicePrintOpts): boolean {
   </div>
 </body></html>`
 
-  try {
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const win = window.open(url, '_blank')
-    if (!win) {
-      URL.revokeObjectURL(url)
-      return false
-    }
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
-    return true
-  } catch {
-    return false
-  }
+  return (
+    openPrintHtml(html, {
+      filename: `${opts.invoiceNumber || 'proforma'}.html`,
+    }) !== false
+  )
 }

@@ -40,6 +40,9 @@ const stampLineBody = z.object({
   stampingRequired: z.boolean(),
   stampingDate: z.string().nullable().optional(),
   nextDueDate: z.string().nullable().optional(),
+  stampingNumber: z.string().max(80).nullable().optional(),
+  /** A Jan–Mar · B Apr–Jun · C Jul–Sep · D Oct–Dec */
+  stampingQuarter: z.enum(["A", "B", "C", "D"]).nullable().optional(),
 });
 
 const stampingBody = z.object({

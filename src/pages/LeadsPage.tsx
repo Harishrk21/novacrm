@@ -155,8 +155,8 @@ export function LeadsPage() {
     Array<{ id: string; name: string; sku: string; salePrice?: number; taxPercent?: number; attributes?: Record<string, unknown> | null }>
   >([])
   const [createDemoUnits, setCreateDemoUnits] = useState<Array<{ id: string; serialNo: string; stampingDate?: string | null }>>([])
-  const [, setStampingGateOpen] = useState(false)
-  const [, setPendingStampUnitId] = useState('')
+  const [stampingGateOpen, setStampingGateOpen] = useState(false)
+  const [pendingStampUnitId, setPendingStampUnitId] = useState('')
   const [convertBusy, setConvertBusy] = useState(false)
   const [pickedContact, setPickedContact] = useState<ContactPick | null>(null)
   const [search, setSearch] = useState('')
@@ -245,7 +245,7 @@ export function LeadsPage() {
       // Product catalog for the enquiry form already comes from lookups.products.
       const [leads, lookups] = await Promise.all([
         api.leads({
-          limit: 200,
+          limit: 100,
           search: search || undefined,
           // Status / Completed filtered client-side so chips stay accurate
           ...(typeFilter ? { serviceType: typeFilter } : {}),
@@ -257,7 +257,7 @@ export function LeadsPage() {
               ? { assignedToId: ownerFilter }
               : {}),
         }),
-        api.lookups(),
+        api.lookups({ scope: 'full' }),
       ])
       let rows = leads.items ?? []
       if (!isSales && ownerFilter === 'unassigned') {
@@ -274,22 +274,36 @@ export function LeadsPage() {
       setSources(lookups.sources)
       setUsers(lookups.users)
       setStages(lookups.stages)
-      const byId = new Map(
-        (lookups.products ?? []).map((p) => [
-          p.id,
-          {
+      setProducts(
+        (lookups.products ?? [])
+          .map((p) => ({
             id: p.id,
             name: p.name,
             sku: p.sku,
             salePrice: num(p.salePrice),
             taxPercent: num(p.taxPercent),
             attributes: (p.attributes as Record<string, unknown> | null) ?? null,
-          },
-        ]),
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
       )
-      // Optional richer catalog for roles that can read /products (admin / warehouse)
+      if (!convertStageId && lookups.stages[0]) setConvertStageId(lookups.stages[0].id)
+      // Show list immediately — optional richer /products catalog in background
+      setLoading(false)
       try {
-        const productPage = await api.products({ limit: 200 })
+        const productPage = await api.products({ limit: 150 })
+        const byId = new Map(
+          (lookups.products ?? []).map((p) => [
+            p.id,
+            {
+              id: p.id,
+              name: p.name,
+              sku: p.sku,
+              salePrice: num(p.salePrice),
+              taxPercent: num(p.taxPercent),
+              attributes: (p.attributes as Record<string, unknown> | null) ?? null,
+            },
+          ]),
+        )
         for (const p of productPage.items ?? []) {
           const id = String(p.id)
           byId.set(id, {
@@ -301,16 +315,14 @@ export function LeadsPage() {
             attributes: (p.attributes as Record<string, unknown> | null) ?? null,
           })
         }
+        setProducts([...byId.values()].sort((a, b) => a.name.localeCompare(b.name)))
       } catch {
         /* sales executive: lookups catalog is enough */
       }
-      setProducts([...byId.values()].sort((a, b) => a.name.localeCompare(b.name)))
-      if (!convertStageId && lookups.stages[0]) setConvertStageId(lookups.stages[0].id)
     } catch (err) {
       const message = err instanceof ApiClientError ? err.message : 'Failed to load leads'
       setLoadError(message)
       addToast({ type: 'error', message })
-    } finally {
       setLoading(false)
     }
   }, [addToast, areaFilter, authUser?.id, convertStageId, isSales, ownerFilter, search, todayOnly, typeFilter])
@@ -2049,11 +2061,6 @@ export function LeadsPage() {
                     : 'Open / pending only — completed sales leave this list (Completed chip). You own lead & demo · convert notifies billing · warehouse/admin raise CRM proforma · GST invoice in Tally'}
                 </p>
               </div>
-              {canCreateLead ? (
-                <Button size="sm" className="shrink-0" onClick={() => openCreateEnquiry()}>
-                  <Plus size={14} /> New lead
-                </Button>
-              ) : null}
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5 border-t border-border pt-2">
               {[
@@ -2216,7 +2223,7 @@ export function LeadsPage() {
                     />
                   </div>
                 ) : null}
-                <table className="w-full min-w-[1080px] text-left text-sm">
+                <table className="w-full min-w-[1160px] text-left text-sm">
                   <thead className="sticky top-0 z-[1] border-b border-border bg-muted/95 text-[11px] uppercase tracking-wide text-text-secondary backdrop-blur">
                     <tr>
                       <th className="w-10 px-4 py-3">
@@ -2228,6 +2235,7 @@ export function LeadsPage() {
                         />
                       </th>
                       <th className="px-3 py-3 font-medium">Enquiry</th>
+                      <th className="whitespace-nowrap px-3 py-3 font-medium">Created</th>
                       <th className="min-w-[200px] px-3 py-3 font-medium">Customer</th>
                       <th className="min-w-[240px] px-3 py-3 font-medium">Customer ordered</th>
                       <th className="whitespace-nowrap px-3 py-3 font-medium">Quote</th>
@@ -2298,9 +2306,9 @@ export function LeadsPage() {
                                 </span>
                               )}
                             </div>
-                            <div className="mt-1 whitespace-nowrap text-[11px] text-text-secondary">
-                              {enquiryDate}
-                            </div>
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-3.5 align-top text-xs text-text-secondary">
+                            {enquiryDate}
                           </td>
                           <td className="px-3 py-3.5 align-top">
                             <div className="font-semibold leading-snug text-text-primary">
@@ -2480,6 +2488,24 @@ export function LeadsPage() {
             ? 'This lead will be permanently removed.'
             : 'Selected leads will be permanently removed.'
         }
+      />
+
+      <ConfirmModal
+        open={stampingGateOpen}
+        onClose={() => {
+          setStampingGateOpen(false)
+          setPendingStampUnitId('')
+        }}
+        title="Stamping required"
+        body="This demo serial needs govt. stamping before convert."
+        confirmLabel="Open stamping"
+        confirmVariant="primary"
+        onConfirm={() => {
+          setStampingGateOpen(false)
+          const unitId = pendingStampUnitId
+          setPendingStampUnitId('')
+          if (unitId) navigate(`/stamping?unitId=${encodeURIComponent(unitId)}`)
+        }}
       />
 
     </div>

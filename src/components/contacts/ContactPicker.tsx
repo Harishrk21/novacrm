@@ -23,8 +23,12 @@ type Props = {
   onSelect: (contact: ContactPick | null) => void
   error?: string
   className?: string
-  /** Where to return after creating a customer from “not found” */
+  /** Where to return after creating a customer from “not found” (used if onAddNew is omitted) */
   returnTo?: string
+  /**
+   * When set, “Add new customer” opens an in-page flow instead of navigating to Contacts.
+   */
+  onAddNew?: (prefill: { query: string }) => void
   /**
    * Sale enquiries: optional link to an existing customer only.
    * Do not create customers from here — prospects stay on the lead until convert.
@@ -46,6 +50,7 @@ export function ContactPicker({
   error,
   className,
   returnTo = '/tickets?open=1',
+  onAddNew,
   prospectMode = false,
 }: Props) {
   const navigate = useNavigate()
@@ -144,12 +149,16 @@ export function ContactPicker({
 
   function goAddCustomer() {
     const q = query.trim()
+    setOpen(false)
+    if (onAddNew) {
+      onAddNew({ query: q })
+      return
+    }
     const digits = q.replace(/\D/g, '')
     const looksPhone = digits.length >= 7
     const params = new URLSearchParams({ open: '1', returnTo })
     if (looksPhone) params.set('phone', q)
     else if (q) params.set('q', q)
-    setOpen(false)
     navigate(`/contacts?${params.toString()}`)
   }
 

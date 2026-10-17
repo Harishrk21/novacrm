@@ -29,12 +29,17 @@ function sortOpen(a: Row, b: Row) {
 
 function related(task: Row) {
   const cf = (task.customFields as Record<string, unknown> | null) ?? null
-  const ticketId = cf?.ticketId ? String(cf.ticketId) : ''
+  const ticketId = cf?.ticketId
+    ? String(cf.ticketId)
+    : cf?.ticket_id
+      ? String(cf.ticket_id)
+      : ''
   if (ticketId) return { to: `/tickets/${ticketId}`, label: 'Ticket' }
-  if (task.contactId) return { to: `/contacts/${task.contactId}`, label: 'Customer' }
-  if (task.accountId) return { to: `/accounts/${task.accountId}`, label: 'Account' }
   if (task.leadId) return { to: `/sale-tracking/${String(task.leadId)}`, label: 'Lead' }
-  return null
+  if (task.dealId) return { to: `/deals/${String(task.dealId)}`, label: 'Deal' }
+  if (task.contactId) return { to: `/contacts/${String(task.contactId)}`, label: 'Customer' }
+  if (task.accountId) return { to: `/accounts/${String(task.accountId)}`, label: 'Account' }
+  return { to: '/activities', label: 'Activity' }
 }
 
 export function MyTasksPage() {
@@ -272,7 +277,16 @@ export function MyTasksPage() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="font-semibold text-text-primary">{String(task.title)}</h3>
+                        {rel ? (
+                          <Link
+                            to={rel.to}
+                            className="font-semibold text-accent-blue hover:underline"
+                          >
+                            {String(task.title)}
+                          </Link>
+                        ) : (
+                          <h3 className="font-semibold text-text-primary">{String(task.title)}</h3>
+                        )}
                         <Badge color={activityStatusColor[String(task.status)] ?? 'slate'}>
                           {labelize(String(task.status))}
                         </Badge>

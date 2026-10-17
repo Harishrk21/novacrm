@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
+import { activityHref } from '@/lib/recordLinks'
 import { CalendarDays, Check, Clock, Mail, Pencil, Phone, Plus, RefreshCw, Users } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
@@ -60,6 +61,9 @@ type ActivityRow = {
   assignedToId?: string | null
   contactId?: string | null
   dealId?: string | null
+  leadId?: string | null
+  accountId?: string | null
+  customFields?: Record<string, unknown> | null
   assignee?: LookupUser | null
   contact?: LookupContact | null
   deal?: LookupDeal | null
@@ -74,8 +78,10 @@ export function ActivitiesPage() {
   const [date, setDate] = useState('')
   const [assigned, setAssigned] = useState(isAgent && authUser?.id ? authUser.id : '')
   const [modalOpen, setModalOpen] = useState(false)
+  const [editing, setEditing] = useState<ActivityRow | null>(null)
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
   const [busyDelete, setBusyDelete] = useState(false)
+  const [busySave, setBusySave] = useState(false)
   const [loading, setLoading] = useState(true)
   const [activities, setActivities] = useState<ActivityRow[]>([])
   const [users, setUsers] = useState<LookupUser[]>([])
@@ -124,6 +130,9 @@ export function ActivitiesPage() {
             assignedToId: (r.assignedToId as string) ?? null,
             contactId: (r.contactId as string) ?? null,
             dealId: (r.dealId as string) ?? null,
+            leadId: (r.leadId as string) ?? null,
+            accountId: (r.accountId as string) ?? null,
+            customFields: (r.customFields as Record<string, unknown>) ?? null,
             assignee: (r.assignee as LookupUser) ?? null,
             contact: (r.contact as LookupContact) ?? null,
             deal: (r.deal as LookupDeal) ?? null,
@@ -181,24 +190,33 @@ export function ActivitiesPage() {
     }
   }
 
-  const create = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const form = new FormData(event.currentTarget)
+  const parseActivityForm = (form: FormData) => {
     const linkType = String(form.get('linkType') ?? 'CONTACT')
     const linkedId = String(form.get('linkedId') ?? '') || undefined
     const scheduledRaw = String(form.get('scheduledAt') ?? '')
+    return {
+      type: String(form.get('type') ?? 'TASK'),
+      title: String(form.get('title') ?? '').trim(),
+      description: String(form.get('description') ?? '') || null,
+      status: String(form.get('status') ?? 'PENDING'),
+      scheduledAt: scheduledRaw ? new Date(scheduledRaw).toISOString() : null,
+      durationMinutes: Number(form.get('duration')) || null,
+      assignedToId: String(form.get('assignedToId') ?? '') || authUser?.id || null,
+      contactId: linkType === 'CONTACT' ? linkedId ?? null : null,
+      dealId: linkType === 'DEAL' ? linkedId ?? null : null,
+    }
+  }
+
+  const create = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const body = parseActivityForm(new FormData(event.currentTarget))
+    if (!body.title) {
+      addToast({ type: 'error', message: 'Title is required' })
+      return
+    }
+    setBusySave(true)
     try {
-      await api.createActivity({
-        type: String(form.get('type') ?? 'TASK'),
-        title: String(form.get('title') ?? ''),
-        description: String(form.get('description') ?? '') || null,
-        status: 'PENDING',
-        scheduledAt: scheduledRaw ? new Date(scheduledRaw).toISOString() : null,
-        durationMinutes: Number(form.get('duration')) || null,
-        assignedToId: String(form.get('assignedToId') ?? '') || authUser?.id || null,
-        contactId: linkType === 'CONTACT' ? linkedId ?? null : null,
-        dealId: linkType === 'DEAL' ? linkedId ?? null : null,
-      })
+      await api.createActivity({ ...body, status: 'PENDING' })
       setModalOpen(false)
       addToast({ type: 'success', message: 'Activity created' })
       await load()
@@ -207,6 +225,32 @@ export function ActivitiesPage() {
         type: 'error',
         message: e instanceof ApiClientError ? e.message : 'Could not create activity',
       })
+    } finally {
+      setBusySave(false)
+    }
+  }
+
+  const saveEdit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!editing) return
+    const body = parseActivityForm(new FormData(event.currentTarget))
+    if (!body.title) {
+      addToast({ type: 'error', message: 'Title is required' })
+      return
+    }
+    setBusySave(true)
+    try {
+      await api.updateActivity(editing.id, body)
+      setEditing(null)
+      addToast({ type: 'success', message: 'Activity updated' })
+      await load()
+    } catch (e) {
+      addToast({
+        type: 'error',
+        message: e instanceof ApiClientError ? e.message : 'Could not update activity',
+      })
+    } finally {
+      setBusySave(false)
     }
   }
 
@@ -243,10 +287,13 @@ export function ActivitiesPage() {
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh
             </Button>
             <Button
-              variant={modalOpen ? 'outline' : 'primary'}
-              onClick={() => setModalOpen((v) => !v)}
+              variant={modalOpen || editing ? 'outline' : 'primary'}
+              onClick={() => {
+                setEditing(null)
+                setModalOpen((v) => !v)
+              }}
             >
-              <Plus size={16} /> {modalOpen ? 'Close form' : 'Create Activity'}
+              <Plus size={16} /> {modalOpen || editing ? 'Close form' : 'Create Activity'}
             </Button>
           </div>
         }
@@ -254,12 +301,17 @@ export function ActivitiesPage() {
       <PageTip moduleKey="crm.activities" />
 
       <ActivityFormPanel
-        open={modalOpen}
+        key={editing ? `edit-${editing.id}` : `create-${returnContactId || 'new'}`}
+        open={modalOpen || Boolean(editing)}
+        mode={editing ? 'edit' : 'create'}
+        initial={editing}
+        busy={busySave}
         onClose={() => {
           setModalOpen(false)
+          setEditing(null)
           setReturnContactId('')
         }}
-        onCreate={create}
+        onSubmit={editing ? saveEdit : create}
         contacts={contacts}
         deals={deals}
         users={users}
@@ -363,14 +415,49 @@ export function ActivitiesPage() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="font-semibold text-text-primary">{activity.title}</h2>
+                    {(() => {
+                      const href = activityHref(activity as unknown as Record<string, unknown>)
+                      return href ? (
+                        <Link
+                          to={href}
+                          className="font-semibold text-accent-blue hover:underline"
+                        >
+                          {activity.title}
+                        </Link>
+                      ) : (
+                        <h2 className="font-semibold text-text-primary">{activity.title}</h2>
+                      )
+                    })()}
                     <Badge color={activityStatusColor[activity.status] ?? 'slate'}>
                       {labelize(activity.status)}
                     </Badge>
                   </div>
                   <p className="mt-1 text-sm text-text-secondary">
-                    {contact?.name ?? 'No contact'}
-                    {deal ? ` · ${deal.name}` : ''}
+                    {contact?.id ? (
+                      <Link
+                        to={`/contacts/${contact.id}`}
+                        className="text-accent-blue hover:underline"
+                      >
+                        {contact.name}
+                      </Link>
+                    ) : (
+                      (contact?.name ?? 'No contact')
+                    )}
+                    {deal?.id ? (
+                      <>
+                        {' · '}
+                        <Link
+                          to={`/deals/${deal.id}`}
+                          className="text-accent-blue hover:underline"
+                        >
+                          {deal.name}
+                        </Link>
+                      </>
+                    ) : deal ? (
+                      ` · ${deal.name}`
+                    ) : (
+                      ''
+                    )}
                   </p>
                 </div>
                 <div className="flex min-w-36 items-center gap-2 text-sm">
@@ -395,7 +482,10 @@ export function ActivitiesPage() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => addToast({ type: 'info', message: `Editing ${activity.title}` })}
+                    onClick={() => {
+                      setModalOpen(false)
+                      setEditing(activity)
+                    }}
                     aria-label="Edit activity"
                   >
                     <Pencil size={15} />
@@ -433,10 +523,21 @@ export function ActivitiesPage() {
   )
 }
 
+function toDatetimeLocalValue(iso?: string | null) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 function ActivityFormPanel({
   open,
   onClose,
-  onCreate,
+  onSubmit,
+  mode = 'create',
+  initial = null,
+  busy = false,
   deals,
   users,
   defaultAssigneeId,
@@ -444,54 +545,98 @@ function ActivityFormPanel({
 }: {
   open: boolean
   onClose: () => void
-  onCreate: (event: FormEvent<HTMLFormElement>) => void
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  mode?: 'create' | 'edit'
+  initial?: ActivityRow | null
+  busy?: boolean
   contacts: LookupContact[]
   deals: LookupDeal[]
   users: LookupUser[]
   defaultAssigneeId?: string
   initialContactId?: string
 }) {
-  const [linkType, setLinkType] = useState('CONTACT')
-  const [pickedContact, setPickedContact] = useState<ContactPick | null>(null)
-  const [linkedId, setLinkedId] = useState('')
+  const isEdit = mode === 'edit' && Boolean(initial)
+  const [linkType, setLinkType] = useState(
+    initial?.dealId ? 'DEAL' : 'CONTACT',
+  )
+  const [pickedContact, setPickedContact] = useState<ContactPick | null>(
+    initial?.contact
+      ? { id: initial.contact.id, name: initial.contact.name }
+      : null,
+  )
+  const [linkedId, setLinkedId] = useState(
+    initial?.dealId || initial?.contactId || initialContactId || '',
+  )
   const dealOptions = deals.map((item) => ({ value: item.id, label: item.name }))
 
   useEffect(() => {
     if (!open) return
+    if (isEdit && initial) {
+      setLinkType(initial.dealId ? 'DEAL' : 'CONTACT')
+      setLinkedId(initial.dealId || initial.contactId || '')
+      setPickedContact(
+        initial.contact ? { id: initial.contact.id, name: initial.contact.name } : null,
+      )
+      return
+    }
     if (initialContactId) {
       setLinkType('CONTACT')
       setLinkedId(initialContactId)
     }
-  }, [open, initialContactId])
+  }, [open, initialContactId, isEdit, initial])
 
   return (
     <FormPanel
       open={open}
       accent="amber"
       eyebrow="Tasks"
-      title="Create activity"
-      subtitle="Log a call, email, meeting or task and assign it to a teammate."
+      title={isEdit ? 'Edit activity' : 'Create activity'}
+      subtitle={
+        isEdit
+          ? 'Update type, schedule, assignee, or linked customer.'
+          : 'Log a call, email, meeting or task and assign it to a teammate.'
+      }
       onClose={onClose}
       footer={
         <>
           <FormPanelCancel onClick={onClose} />
-          <Button type="submit" form="create-activity-form">
-            Create activity
+          <Button type="submit" form="activity-form" disabled={busy}>
+            {busy ? 'Saving…' : isEdit ? 'Save changes' : 'Create activity'}
           </Button>
         </>
       }
     >
-      <form id="create-activity-form" onSubmit={onCreate} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <form id="activity-form" onSubmit={onSubmit} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Select
           label="Type"
           name="type"
-          defaultValue="TASK"
+          defaultValue={initial?.type || 'TASK'}
           options={(['CALL', 'EMAIL', 'MEETING', 'TASK'] as ActivityType[]).map((v) => ({
             value: v,
             label: labelize(v),
           }))}
         />
-        <Input label="Title" name="title" placeholder="Activity title" required className="lg:col-span-2" />
+        <Input
+          label="Title"
+          name="title"
+          placeholder="Activity title"
+          required
+          className="lg:col-span-2"
+          defaultValue={initial?.title || ''}
+        />
+        {isEdit ? (
+          <Select
+            label="Status"
+            name="status"
+            defaultValue={initial?.status || 'PENDING'}
+            options={['PENDING', 'COMPLETED', 'CANCELLED', 'OVERDUE'].map((v) => ({
+              value: v,
+              label: labelize(v),
+            }))}
+          />
+        ) : (
+          <input type="hidden" name="status" value="PENDING" />
+        )}
         <Select
           label="Link to"
           name="linkType"
@@ -535,25 +680,33 @@ function ActivityFormPanel({
             ]}
           />
         )}
-        <Input label="Date & time" name="scheduledAt" type="datetime-local" />
-        <Input label="Duration (minutes)" name="duration" type="number" min="0" />
+        <Input
+          label="Date & time"
+          name="scheduledAt"
+          type="datetime-local"
+          defaultValue={toDatetimeLocalValue(initial?.scheduledAt)}
+        />
+        <Input
+          label="Duration (minutes)"
+          name="duration"
+          type="number"
+          min="0"
+          defaultValue={initial?.durationMinutes != null ? String(initial.durationMinutes) : ''}
+        />
         <Select
           label="Assigned to"
           name="assignedToId"
-          defaultValue={defaultAssigneeId ?? users[0]?.id ?? ''}
+          defaultValue={initial?.assignedToId || defaultAssigneeId || users[0]?.id || ''}
           options={[
             { value: '', label: users.length ? 'Select assignee' : 'No users in database' },
             ...users.map((u) => ({ value: u.id, label: u.name })),
           ]}
         />
-        <label className="flex items-end gap-2 pb-2 text-sm font-medium text-text-secondary">
-          <input type="checkbox" className="h-4 w-4 accent-accent-blue" />
-          Send reminder
-        </label>
         <label className="text-sm font-medium text-text-secondary sm:col-span-2 lg:col-span-3">
           Description
           <textarea
             name="description"
+            defaultValue={initial?.description || ''}
             className="mt-1 min-h-28 w-full rounded-[8px] border border-border bg-card p-3 text-text-primary outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20"
           />
         </label>

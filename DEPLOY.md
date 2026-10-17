@@ -79,7 +79,8 @@ WHATSAPP_API_VERSION=v21.0
 Notes:
 - Set `CLIENT_URL` to your real Vercel URL after Step 2 (you can update it).
 - Free Render **sleeps** when idle — first request may take 30–60s (Meta webhook verify can time out if the service is cold; wake it with `/health` first).
-- Redis is optional; `REDIS_URL=none` is fine.
+- Redis is optional for local/dev (`REDIS_URL=none`). For production, set a real
+  `REDIS_URL` so `analytics:summary` and leads list cache hit (app fails open if Redis is down).
 - After deploy, configure Meta webhook to  
   `https://YOUR-API.onrender.com/api/integrations/whatsapp/cloud/webhook`  
   (see `docs/WHATSAPP_CLOUD_API_TEMPLATES.md`). Do **not** leave an ngrok/nginx tunnel URL in Meta for production.

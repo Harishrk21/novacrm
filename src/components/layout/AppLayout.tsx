@@ -51,11 +51,7 @@ export function AppLayout() {
 
   // Prefetch common routes + warm lookups cache so nav isn't double-waiting
   useEffect(() => {
-    const idle =
-      typeof window !== 'undefined' && 'requestIdleCallback' in window
-        ? window.requestIdleCallback
-        : (cb: () => void) => window.setTimeout(cb, 150)
-    const id = idle(() => {
+    const warm = () => {
       void import('@/pages/TicketsPage')
       void import('@/pages/WorkqueuePage')
       void import('@/pages/LeadsPage')
@@ -70,12 +66,14 @@ export function AppLayout() {
           .then(() => api.lookups({ scope: 'full' }))
           .catch(() => undefined)
       })
-    })
+    }
+    const useRic = typeof window !== 'undefined' && 'requestIdleCallback' in window
+    const idleId = useRic ? window.requestIdleCallback(warm) : window.setTimeout(warm, 150)
     return () => {
-      if (typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
-        window.cancelIdleCallback(id as number)
+      if (useRic && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleId)
       } else {
-        window.clearTimeout(id as number)
+        window.clearTimeout(idleId)
       }
     }
   }, [])

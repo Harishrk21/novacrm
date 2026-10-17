@@ -2102,7 +2102,7 @@ export function TicketsPage() {
                       <FlowStepBar
                         steps={createFlowSteps}
                         doneFlags={createFlowDone}
-                        onStepClick={(index, step) => {
+                        onStepClick={(_index, step) => {
                           if (step.key === 'pool') {
                             setFormTab('assign')
                             setFormGuide(null)

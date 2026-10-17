@@ -374,21 +374,35 @@ export async function create(t: string, user: string, d: any) {
 
     let subtotal = new Prisma.Decimal(0);
     let taxTotal = new Prisma.Decimal(0);
-    const lines = d.lines.map((x: any) => {
-      const base = new Prisma.Decimal(x.quantity).mul(x.unitPrice);
-      const tax = base.mul(x.taxPercent).div(100);
+    type DraftLine = {
+      id: string;
+      tenantId: string;
+      invoiceId: string;
+      productId: string | null;
+      stockUnitId: string | null;
+      description: string;
+      quantity: number | string | Prisma.Decimal;
+      unitPrice: number | string | Prisma.Decimal;
+      taxPercent: number | string | Prisma.Decimal;
+      lineTotal: Prisma.Decimal;
+    };
+    const lines: DraftLine[] = (d.lines as Array<Record<string, unknown>>).map((x) => {
+      const base = new Prisma.Decimal(x.quantity as Prisma.Decimal.Value).mul(
+        x.unitPrice as Prisma.Decimal.Value,
+      );
+      const tax = base.mul(x.taxPercent as Prisma.Decimal.Value).div(100);
       subtotal = subtotal.add(base);
       taxTotal = taxTotal.add(tax);
       return {
         id: newId(),
         tenantId: t,
         invoiceId: "",
-        productId: x.productId,
+        productId: (x.productId as string | null | undefined) ?? null,
         stockUnitId: x.stockUnitId ? String(x.stockUnitId) : null,
-        description: x.description,
-        quantity: x.quantity,
-        unitPrice: x.unitPrice,
-        taxPercent: x.taxPercent,
+        description: String(x.description ?? ""),
+        quantity: x.quantity as DraftLine["quantity"],
+        unitPrice: x.unitPrice as DraftLine["unitPrice"],
+        taxPercent: x.taxPercent as DraftLine["taxPercent"],
         lineTotal: base.add(tax),
       };
     });
@@ -446,7 +460,7 @@ export async function create(t: string, user: string, d: any) {
     });
 
     await tx.invoiceLine.createMany({
-      data: lines.map((x: any) => ({
+      data: lines.map((x) => ({
         id: x.id,
         tenantId: x.tenantId,
         invoiceId,

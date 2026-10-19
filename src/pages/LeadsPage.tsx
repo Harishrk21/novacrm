@@ -46,13 +46,11 @@ import {
   HMS_LEAD_PIPELINE,
   HMS_SERVICE_TYPES,
   HMS_WAY_OF_ENQUIRIES,
-  leadOrderedProducts,
   leadPipelineLabel,
   matchEnquirySourceId,
   type HmsServiceType,
 } from '@/lib/hmsLead'
 import { saleIsCompleted } from '@/lib/salesFlow'
-import { OrderedProductsList } from '@/components/sales/OrderedProductsList'
 
 /** Desk statuses — aligned with Zoho-style pipeline */
 const STATUS_OPTIONS = HMS_LEAD_PIPELINE.map((s) => ({
@@ -2211,7 +2209,7 @@ export function LeadsPage() {
                 }
               />
             ) : (
-              <div className="overflow-x-auto">
+              <div>
                 {isAdmin && selection.someSelected ? (
                   <div className="px-4 pt-3">
                     <BulkActionBar
@@ -2223,166 +2221,93 @@ export function LeadsPage() {
                     />
                   </div>
                 ) : null}
-                <table className="w-full min-w-[1160px] text-left text-sm">
-                  <thead className="sticky top-0 z-[1] border-b border-border bg-muted/95 text-[11px] uppercase tracking-wide text-text-secondary backdrop-blur">
-                    <tr>
-                      <th className="w-10 px-4 py-3">
-                        <SelectCheckbox
-                          checked={selection.allSelected}
-                          indeterminate={selection.someSelected && !selection.allSelected}
-                          onChange={selection.toggleAll}
-                          aria-label="Select all"
-                        />
-                      </th>
-                      <th className="px-3 py-3 font-medium">Enquiry</th>
-                      <th className="whitespace-nowrap px-3 py-3 font-medium">Created</th>
-                      <th className="min-w-[200px] px-3 py-3 font-medium">Customer</th>
-                      <th className="min-w-[240px] px-3 py-3 font-medium">Customer ordered</th>
-                      <th className="whitespace-nowrap px-3 py-3 font-medium">Quote</th>
-                      <th className="px-3 py-3 font-medium">Owner</th>
-                      <th className="px-3 py-3 font-medium">Status</th>
-                      <th className="px-4 py-3 font-medium">
-                        <span className="sr-only">Actions</span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleItems.map((lead, rowIdx) => {
-                      const id = String(lead.id)
-                      const cf = (lead.customFields as Record<string, unknown> | null) ?? {}
-                      const ordered = leadOrderedProducts(cf)
-                      const quoteTotal = Number(cf.salePaymentTotal ?? cf.budget ?? 0)
-                      const quoteAdvance = Number(cf.saleAdvanceAmount ?? 0)
-                      const enquiryDate = cf.enquiry_date
-                        ? formatDate(String(cf.enquiry_date))
-                        : lead.createdAt
-                          ? formatDate(String(lead.createdAt))
-                          : '—'
-                      const enquiryId = formatEnquiryId(lead)
-                      const areaLabel = String(lead.area ?? cf.area ?? '').trim()
-                      const stype = String(cf.serviceType ?? 'SALES')
-                      const st = String(lead.status)
-                      const canTriage =
-                        (isDesk || isAdmin) &&
-                        stype !== 'SALES' &&
-                        !['LOST', 'UNQUALIFIED', 'CONVERTED'].includes(st) &&
-                        !cf.serviceTicketId &&
-                        !cf.rentalAgreementId
-                      const busy = triageBusy === id
-                      const stripe = statusStripe(st)
-                      const handoffLabel =
-                        stype === 'RENTAL'
-                          ? 'Issue rental'
-                          : stype === 'STAMPING'
-                            ? 'Stamping'
-                            : 'Service job'
-                      return (
-                        <tr
-                          key={id}
-                          className={`st-row st-enter cursor-pointer border-b border-border border-l-4 last:border-b-0 ${stripe} hover:bg-muted/35`}
-                          style={{ animationDelay: `${Math.min(rowIdx, 12) * 35}ms` }}
-                          onClick={() => navigate(`/sale-tracking/${id}`)}
-                        >
-                          <td
-                            className="px-4 py-3.5 align-top"
-                            onClick={(e) => e.stopPropagation()}
-                          >
+
+                {/* Mobile / tablet cards */}
+                <ul className="divide-y divide-border md:hidden">
+                  {visibleItems.map((lead, rowIdx) => {
+                    const id = String(lead.id)
+                    const cf = (lead.customFields as Record<string, unknown> | null) ?? {}
+                    const enquiryDate = cf.enquiry_date
+                      ? formatDate(String(cf.enquiry_date))
+                      : lead.createdAt
+                        ? formatDate(String(lead.createdAt))
+                        : '—'
+                    const enquiryId = formatEnquiryId(lead)
+                    const areaLabel = String(lead.area ?? cf.area ?? '').trim()
+                    const stype = String(cf.serviceType ?? 'SALES')
+                    const st = String(lead.status)
+                    const canTriage =
+                      (isDesk || isAdmin) &&
+                      stype !== 'SALES' &&
+                      !['LOST', 'UNQUALIFIED', 'CONVERTED'].includes(st) &&
+                      !cf.serviceTicketId &&
+                      !cf.rentalAgreementId
+                    const busy = triageBusy === id
+                    const stripe = statusStripe(st)
+                    const handoffLabel =
+                      stype === 'RENTAL'
+                        ? 'Issue rental'
+                        : stype === 'STAMPING'
+                          ? 'Stamping'
+                          : 'Service job'
+                    return (
+                      <li
+                        key={id}
+                        className={`st-row st-enter cursor-pointer border-l-4 px-4 py-3.5 ${stripe} hover:bg-muted/35`}
+                        style={{ animationDelay: `${Math.min(rowIdx, 12) * 35}ms` }}
+                        onClick={() => navigate(`/sale-tracking/${id}`)}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div onClick={(e) => e.stopPropagation()} className="pt-0.5">
                             <SelectCheckbox
                               checked={selection.isSelected(id)}
                               onChange={() => selection.toggle(id)}
                               aria-label={`Select ${String(lead.name)}`}
                             />
-                          </td>
-                          <td className="px-3 py-3.5 align-top">
-                            <div className="font-mono text-xs font-bold text-accent-blue">
-                              {enquiryId}
-                            </div>
-                            <div className="mt-1">
-                              {stype !== 'SALES' ? (
-                                <Badge color="blue">{stype.replaceAll('_', ' ')}</Badge>
-                              ) : (
-                                <span className="text-[10px] font-medium uppercase tracking-wide text-text-secondary">
-                                  Sale
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="whitespace-nowrap px-3 py-3.5 align-top text-xs text-text-secondary">
-                            {enquiryDate}
-                          </td>
-                          <td className="px-3 py-3.5 align-top">
-                            <div className="font-semibold leading-snug text-text-primary">
-                              {String(lead.name)}
-                            </div>
-                            {lead.company ? (
-                              <div className="mt-0.5 text-xs text-text-secondary">
-                                {String(lead.company)}
+                          </div>
+                          <div className="min-w-0 flex-1 space-y-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="font-mono text-xs font-bold text-accent-blue">
+                                {enquiryId}
                               </div>
-                            ) : null}
-                            <div className="mt-1 tabular-nums text-xs text-text-secondary">
-                              {formatPhone(String(lead.phone || '')) || '—'}
-                            </div>
-                            {areaLabel ? (
-                              <div className="mt-1 text-[11px] text-text-secondary">
-                                Area · {areaLabel}
-                              </div>
-                            ) : null}
-                          </td>
-                          <td className="px-3 py-3.5 align-top">
-                            <OrderedProductsList products={ordered} />
-                          </td>
-                          <td className="whitespace-nowrap px-3 py-3.5 align-top">
-                            {quoteTotal > 0 ? (
-                              <div>
-                                <div className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
-                                  Total
-                                </div>
-                                <div className="tabular-nums text-sm font-semibold text-text-primary">
-                                  {formatCurrency(quoteTotal)}
-                                </div>
-                                {quoteAdvance > 0 ? (
-                                  <div className="mt-1 text-[11px] text-text-secondary">
-                                    Adv {formatCurrency(quoteAdvance)}
-                                  </div>
+                              <div className="flex flex-wrap items-center gap-1">
+                                {cf.saleCompletedAt ? (
+                                  <Badge color="green" solid>
+                                    Completed
+                                  </Badge>
+                                ) : (
+                                  <Badge color={leadStatusColor[st] ?? 'gray'} solid>
+                                    {statusLabel(st)}
+                                  </Badge>
+                                )}
+                                {stype !== 'SALES' ? (
+                                  <Badge color="blue">{stype.replaceAll('_', ' ')}</Badge>
                                 ) : null}
                               </div>
-                            ) : (
-                              <span className="text-xs text-text-secondary">No quote</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-3.5 align-top text-sm">
-                            {lead.assignedToId ? (
-                              <span className="font-medium text-text-primary">
-                                {userName[String(lead.assignedToId)] ?? '—'}
-                              </span>
-                            ) : (
-                              <span className="text-xs text-text-secondary">Unassigned</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-3.5 align-top">
-                            <div className="flex flex-col items-start gap-1">
-                              {cf.saleCompletedAt ? (
-                                <Badge color="green" solid>
-                                  Completed
-                                </Badge>
-                              ) : (
-                                <Badge color={leadStatusColor[st] ?? 'gray'} solid>
-                                  {statusLabel(st)}
-                                </Badge>
-                              )}
-                              {cf.verified === false && !cf.saleCompletedAt ? (
-                                <Badge color="amber">Unverified</Badge>
-                              ) : null}
-                              {cf.serviceTicketId ? <Badge color="green">Ticket</Badge> : null}
-                              {cf.rentalAgreementId ? <Badge color="blue">Rental</Badge> : null}
-                              {cf.serviceCompletedAt ? <Badge color="green">Job done</Badge> : null}
                             </div>
-                          </td>
-                          <td
-                            className="px-4 py-3.5 align-top"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <div className="flex flex-wrap items-center justify-end gap-1">
+                            <div>
+                              <div className="font-semibold text-text-primary">{String(lead.name)}</div>
+                              {lead.company ? (
+                                <div className="text-xs text-text-secondary">{String(lead.company)}</div>
+                              ) : null}
+                              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-text-secondary">
+                                <span className="tabular-nums">
+                                  {formatPhone(String(lead.phone || '')) || '—'}
+                                </span>
+                                <span>{enquiryDate}</span>
+                                {areaLabel ? <span>Area · {areaLabel}</span> : null}
+                              </div>
+                            </div>
+                            <div className="text-xs text-text-secondary">
+                              Owner ·{' '}
+                              {lead.assignedToId
+                                ? (userName[String(lead.assignedToId)] ?? '—')
+                                : 'Unassigned'}
+                            </div>
+                            <div
+                              className="flex flex-wrap items-center gap-1 pt-0.5"
+                              onClick={(e) => e.stopPropagation()}
+                            >
                               <ViewIconButton onClick={() => navigate(`/sale-tracking/${id}`)} />
                               {canTriage ? (
                                 <>
@@ -2401,24 +2326,22 @@ export function LeadsPage() {
                                   >
                                     NQ
                                   </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    disabled={busy}
-                                    onClick={() => void triageMark(id, 'LOST')}
-                                  >
-                                    Close
-                                  </Button>
                                 </>
                               ) : cf.rentalAgreementId ? (
-                                <Button size="sm" variant="outline" onClick={() => navigate('/rentals')}>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => navigate('/rentals')}
+                                >
                                   Open rentals
                                 </Button>
                               ) : cf.serviceTicketId ? (
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  onClick={() => navigate(`/tickets/${String(cf.serviceTicketId)}`)}
+                                  onClick={() =>
+                                    navigate(`/tickets/${String(cf.serviceTicketId)}`)
+                                  }
                                 >
                                   Open ticket
                                 </Button>
@@ -2430,12 +2353,210 @@ export function LeadsPage() {
                                 />
                               ) : null}
                             </div>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+                          </div>
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+
+                {/* Desktop table */}
+                <div className="hidden overflow-x-auto md:block">
+                  <table className="w-full text-left text-sm">
+                    <thead className="sticky top-0 z-[1] border-b border-border bg-muted/95 text-[11px] uppercase tracking-wide text-text-secondary backdrop-blur">
+                      <tr>
+                        <th className="w-10 px-4 py-3">
+                          <SelectCheckbox
+                            checked={selection.allSelected}
+                            indeterminate={selection.someSelected && !selection.allSelected}
+                            onChange={selection.toggleAll}
+                            aria-label="Select all"
+                          />
+                        </th>
+                        <th className="px-3 py-3 font-medium">Enquiry</th>
+                        <th className="whitespace-nowrap px-3 py-3 font-medium">Created</th>
+                        <th className="min-w-[200px] px-3 py-3 font-medium">Customer</th>
+                        <th className="px-3 py-3 font-medium">Owner</th>
+                        <th className="px-3 py-3 font-medium">Status</th>
+                        <th className="px-4 py-3 font-medium">
+                          <span className="sr-only">Actions</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleItems.map((lead, rowIdx) => {
+                        const id = String(lead.id)
+                        const cf = (lead.customFields as Record<string, unknown> | null) ?? {}
+                        const enquiryDate = cf.enquiry_date
+                          ? formatDate(String(cf.enquiry_date))
+                          : lead.createdAt
+                            ? formatDate(String(lead.createdAt))
+                            : '—'
+                        const enquiryId = formatEnquiryId(lead)
+                        const areaLabel = String(lead.area ?? cf.area ?? '').trim()
+                        const stype = String(cf.serviceType ?? 'SALES')
+                        const st = String(lead.status)
+                        const canTriage =
+                          (isDesk || isAdmin) &&
+                          stype !== 'SALES' &&
+                          !['LOST', 'UNQUALIFIED', 'CONVERTED'].includes(st) &&
+                          !cf.serviceTicketId &&
+                          !cf.rentalAgreementId
+                        const busy = triageBusy === id
+                        const stripe = statusStripe(st)
+                        const handoffLabel =
+                          stype === 'RENTAL'
+                            ? 'Issue rental'
+                            : stype === 'STAMPING'
+                              ? 'Stamping'
+                              : 'Service job'
+                        return (
+                          <tr
+                            key={id}
+                            className={`st-row st-enter cursor-pointer border-b border-border border-l-4 last:border-b-0 ${stripe} hover:bg-muted/35`}
+                            style={{ animationDelay: `${Math.min(rowIdx, 12) * 35}ms` }}
+                            onClick={() => navigate(`/sale-tracking/${id}`)}
+                          >
+                            <td
+                              className="px-4 py-3.5 align-top"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <SelectCheckbox
+                                checked={selection.isSelected(id)}
+                                onChange={() => selection.toggle(id)}
+                                aria-label={`Select ${String(lead.name)}`}
+                              />
+                            </td>
+                            <td className="px-3 py-3.5 align-top">
+                              <div className="font-mono text-xs font-bold text-accent-blue">
+                                {enquiryId}
+                              </div>
+                              <div className="mt-1">
+                                {stype !== 'SALES' ? (
+                                  <Badge color="blue">{stype.replaceAll('_', ' ')}</Badge>
+                                ) : (
+                                  <span className="text-[10px] font-medium uppercase tracking-wide text-text-secondary">
+                                    Sale
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-3.5 align-top text-xs text-text-secondary">
+                              {enquiryDate}
+                            </td>
+                            <td className="px-3 py-3.5 align-top">
+                              <div className="font-semibold leading-snug text-text-primary">
+                                {String(lead.name)}
+                              </div>
+                              {lead.company ? (
+                                <div className="mt-0.5 text-xs text-text-secondary">
+                                  {String(lead.company)}
+                                </div>
+                              ) : null}
+                              <div className="mt-1 tabular-nums text-xs text-text-secondary">
+                                {formatPhone(String(lead.phone || '')) || '—'}
+                              </div>
+                              {areaLabel ? (
+                                <div className="mt-1 text-[11px] text-text-secondary">
+                                  Area · {areaLabel}
+                                </div>
+                              ) : null}
+                            </td>
+                            <td className="px-3 py-3.5 align-top text-sm">
+                              {lead.assignedToId ? (
+                                <span className="font-medium text-text-primary">
+                                  {userName[String(lead.assignedToId)] ?? '—'}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-text-secondary">Unassigned</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-3.5 align-top">
+                              <div className="flex flex-col items-start gap-1">
+                                {cf.saleCompletedAt ? (
+                                  <Badge color="green" solid>
+                                    Completed
+                                  </Badge>
+                                ) : (
+                                  <Badge color={leadStatusColor[st] ?? 'gray'} solid>
+                                    {statusLabel(st)}
+                                  </Badge>
+                                )}
+                                {cf.verified === false && !cf.saleCompletedAt ? (
+                                  <Badge color="amber">Unverified</Badge>
+                                ) : null}
+                                {cf.serviceTicketId ? <Badge color="green">Ticket</Badge> : null}
+                                {cf.rentalAgreementId ? <Badge color="blue">Rental</Badge> : null}
+                                {cf.serviceCompletedAt ? (
+                                  <Badge color="green">Job done</Badge>
+                                ) : null}
+                              </div>
+                            </td>
+                            <td
+                              className="px-4 py-3.5 align-top"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <div className="flex flex-wrap items-center justify-end gap-1">
+                                <ViewIconButton onClick={() => navigate(`/sale-tracking/${id}`)} />
+                                {canTriage ? (
+                                  <>
+                                    <Button
+                                      size="sm"
+                                      disabled={busy}
+                                      onClick={() => void triageHandoff(lead)}
+                                    >
+                                      {handoffLabel}
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      disabled={busy}
+                                      onClick={() => void triageMark(id, 'UNQUALIFIED')}
+                                    >
+                                      NQ
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      disabled={busy}
+                                      onClick={() => void triageMark(id, 'LOST')}
+                                    >
+                                      Close
+                                    </Button>
+                                  </>
+                                ) : cf.rentalAgreementId ? (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => navigate('/rentals')}
+                                  >
+                                    Open rentals
+                                  </Button>
+                                ) : cf.serviceTicketId ? (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() =>
+                                      navigate(`/tickets/${String(cf.serviceTicketId)}`)
+                                    }
+                                  >
+                                    Open ticket
+                                  </Button>
+                                ) : null}
+                                {isAdmin ? (
+                                  <DeleteIconButton
+                                    disabled={busyDelete}
+                                    onClick={() => setConfirm({ ids: [id] })}
+                                  />
+                                ) : null}
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
           )}
         </Card>

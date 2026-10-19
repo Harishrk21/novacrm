@@ -82,6 +82,7 @@ function moduleGroup(key: string) {
   if (key.startsWith("crm.")) return "CRM" as const;
   if (key.startsWith("erp.")) return "ERP" as const;
   if (key.startsWith("engagement.")) return "ENGAGEMENT" as const;
+  if (key.startsWith("hr.")) return "SETTINGS" as const;
   if (key === "reports") return "REPORTS" as const;
   if (key === "settings") return "SETTINGS" as const;
   return "ENGAGEMENT" as const;
@@ -450,11 +451,38 @@ export async function setTenantUserPassword(tenantId: string, userId: string, ne
 }
 
 export async function setTenantModules(tenantId: string, modulesEnabled: Record<string, boolean>) {
-  const tenant = await prisma.tenant.findFirst({ where: { id: tenantId, deletedAt: null } });
+  const tenant = await prisma.tenant.findFirst({
+    where: { id: tenantId, deletedAt: null },
+    select: {
+      id: true,
+      attendanceEnabled: true,
+      attendanceTenantId: true,
+    },
+  });
   if (!tenant) throw notFound("Tenant");
+
+  const {
+    ATTENDANCE_MODULE_KEY,
+    provisionAttendanceForHmsTenant,
+    disableAttendanceForHmsTenant,
+  } = await import("../attendance/attendanceProvision.service.js");
+
+  const wantAttendance = Boolean(modulesEnabled[ATTENDANCE_MODULE_KEY]);
+  let attendance:
+    | import("../attendance/attendanceProvision.service.js").AttendanceProvisionResult
+    | null = null;
+
+  // Provision BEFORE flipping modules so a failed API call does not leave a half-on UI
+  if (wantAttendance) {
+    attendance = await provisionAttendanceForHmsTenant(tenantId);
+  }
+
   await prisma.tenant.update({
     where: { id: tenantId },
-    data: { modulesEnabled: modulesEnabled as object },
+    data: {
+      modulesEnabled: modulesEnabled as object,
+      ...(wantAttendance ? { attendanceEnabled: true } : {}),
+    },
   });
   const keys = Object.entries(modulesEnabled);
   for (const [i, [moduleKey, isEnabled]] of keys.entries()) {
@@ -472,7 +500,16 @@ export async function setTenantModules(tenantId: string, modulesEnabled: Record<
       },
     });
   }
-  return prisma.tenantModule.findMany({ where: { tenantId }, orderBy: { sortOrder: "asc" } });
+
+  if (!wantAttendance && (tenant.attendanceEnabled || tenant.attendanceTenantId)) {
+    attendance = await disableAttendanceForHmsTenant(tenantId);
+  }
+
+  const modules = await prisma.tenantModule.findMany({
+    where: { tenantId },
+    orderBy: { sortOrder: "asc" },
+  });
+  return { modules, attendance };
 }
 
 export { PLAN_CATALOG, listSubscriptionPacks };

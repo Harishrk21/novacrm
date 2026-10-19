@@ -15,6 +15,7 @@ export const MODULE_TOGGLE_OPTIONS: Array<{ key: string; label: string; group: s
   { key: 'erp.invoices', label: 'Proforma invoices', group: 'Inventory' },
   { key: 'engagement.whatsapp', label: 'WhatsApp', group: 'Engagement' },
   { key: 'engagement.emails', label: 'Emails', group: 'Engagement' },
+  { key: 'hr.attendance', label: 'Attendance', group: 'HR' },
   { key: 'reports', label: 'Reports', group: 'System' },
 ]
 

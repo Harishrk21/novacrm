@@ -87,5 +87,6 @@ export function pathToModuleKey(to: string): string | null {
   if (path.startsWith('/whatsapp')) return 'engagement.whatsapp'
   if (path.startsWith('/emails') || path.startsWith('/engagement')) return 'engagement.emails'
   if (path.startsWith('/reports')) return 'reports'
+  if (path.startsWith('/attendance')) return 'hr.attendance'
   return null
 }

@@ -17,6 +17,7 @@ export const ASSIGNABLE_MODULE_KEYS = [
   "erp.invoices",
   "engagement.whatsapp",
   "engagement.emails",
+  "hr.attendance",
   "reports",
 ] as const;
 

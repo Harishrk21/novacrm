@@ -565,7 +565,16 @@ export const api = {
       body: JSON.stringify({ inventoryAreas }),
     }),
   setTenantModules: (id: string, modulesEnabled: Record<string, boolean>) =>
-    apiFetch<unknown[]>(`/platform/tenants/${id}/modules`, {
+    apiFetch<{
+      modules: unknown[]
+      attendance: {
+        action: string
+        attendanceTenantId?: string
+        attendanceSlug?: string
+        inviteUrl?: string | null
+        message: string
+      } | null
+    }>(`/platform/tenants/${id}/modules`, {
       method: 'POST',
       body: JSON.stringify({ modulesEnabled }),
     }),
@@ -1490,6 +1499,26 @@ export const api = {
       '/integrations/whatsapp/cloud/test',
       { method: 'POST', body: JSON.stringify({ to }) },
     ),
+
+  /** Mint SSO ticket → Meister Attendance /sso URL (backend-only secret). */
+  launchAttendance: (opts?: { redirect?: string; embed?: boolean }) => {
+    const q = new URLSearchParams()
+    if (opts?.redirect) q.set('redirect', opts.redirect)
+    if (opts?.embed) q.set('embed', '1')
+    const qs = q.toString()
+    return apiFetch<{ url: string; expiresInSeconds: number; attendanceSlug: string }>(
+      `/integrations/attendance/launch${qs ? `?${qs}` : ''}`,
+    )
+  },
+
+  attendanceStatus: () =>
+    apiFetch<{
+      enabled: boolean
+      linked: boolean
+      attendanceSlug: string | null
+      attendanceTenantId: string | null
+      ssoConfigured: boolean
+    }>('/integrations/attendance/status'),
 
   uploadImage: async (file: File) => {
     const form = new FormData()

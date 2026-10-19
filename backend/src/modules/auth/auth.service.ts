@@ -99,7 +99,7 @@ export async function tenantLogin(
             ...(resolvedSlug ? { slug: resolvedSlug } : { code: codeRaw }),
             status: { in: ["ACTIVE", "TRIAL"] },
           },
-          select: { id: true, slug: true, name: true, branding: true },
+          select: { id: true, slug: true, name: true, branding: true, attendanceEnabled: true },
         })
       : Promise.resolve(null),
     prisma.user.findMany({
@@ -125,7 +125,7 @@ export async function tenantLogin(
         deletedAt: null,
         status: { in: ["ACTIVE", "TRIAL"] },
       },
-      select: { id: true, slug: true, name: true, branding: true },
+      select: { id: true, slug: true, name: true, branding: true, attendanceEnabled: true },
     });
     const activeSet = new Map(activeTenants.map((t) => [t.id, t]));
     const matches = candidates.filter((c) => activeSet.has(c.tenantId));
@@ -165,7 +165,7 @@ export async function tenantLogin(
       ? Promise.resolve(tenantRow)
       : prisma.tenant.findFirst({
           where: { id: user.tenantId },
-          select: { id: true, slug: true, name: true, branding: true },
+          select: { id: true, slug: true, name: true, branding: true, attendanceEnabled: true },
         }),
     issueRefresh({ userId: user.id }, meta),
     loadTenantEnabledModuleKeys(user.tenantId),
@@ -197,6 +197,7 @@ export async function tenantLogin(
       branding: tenantFresh?.branding ?? null,
       inventoryAreas: resolveInventoryAreas(user.preferences, role.code),
       allowedModules: resolveAllowedModules(user.preferences, role.code, tenantModuleKeys),
+      attendanceEnabled: Boolean(tenantFresh?.attendanceEnabled),
       kind: "tenant",
     },
   };
@@ -230,7 +231,14 @@ export async function me(auth: Express.Request["auth"]) {
   const [tenant, role, tenantModuleKeys] = await Promise.all([
     prisma.tenant.findFirst({
       where: { id: user.tenantId, deletedAt: null },
-      select: { id: true, name: true, slug: true, code: true, branding: true },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        code: true,
+        branding: true,
+        attendanceEnabled: true,
+      },
     }),
     prisma.role.findFirst({
       where: { id: user.roleId, tenantId: user.tenantId, deletedAt: null },
@@ -245,6 +253,7 @@ export async function me(auth: Express.Request["auth"]) {
     role,
     inventoryAreas: resolveInventoryAreas(preferences, role?.code),
     allowedModules: resolveAllowedModules(preferences, role?.code, tenantModuleKeys),
+    attendanceEnabled: Boolean(tenant?.attendanceEnabled),
   };
 }
 

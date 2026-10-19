@@ -23,6 +23,8 @@ interface AuthUser {
   inventoryAreas?: InventoryAreas
   /** Platform-enabled modules this employee may see (admin-assigned). */
   allowedModules?: AllowedModules
+  /** Company has Meister Attendance linked (tenants.attendance_enabled). */
+  attendanceEnabled?: boolean
   branding?: {
     palette?: string
     locked?: boolean
@@ -40,11 +42,13 @@ function tenantUserFromMe(payload: {
   avatarUrl?: string | null
   inventoryAreas?: InventoryAreas
   allowedModules?: AllowedModules
+  attendanceEnabled?: boolean
   tenant?: {
     id: string
     slug: string
     name: string
     branding?: AuthUser['branding']
+    attendanceEnabled?: boolean
   }
   role?: { code?: string; name?: string }
 }): AuthUser {
@@ -61,6 +65,9 @@ function tenantUserFromMe(payload: {
     branding: payload.tenant?.branding ?? null,
     inventoryAreas: resolveInventoryAreas(payload.inventoryAreas, payload.role?.code),
     allowedModules: payload.allowedModules,
+    attendanceEnabled: Boolean(
+      payload.attendanceEnabled ?? payload.tenant?.attendanceEnabled,
+    ),
   }
 }
 
@@ -140,6 +147,7 @@ export const useAuthStore = create<AuthState>()(
           branding?: AuthUser['branding']
           inventoryAreas?: InventoryAreas
           allowedModules?: AllowedModules
+          attendanceEnabled?: boolean
         }
         const resolvedSlug = loginUser.tenantSlug ?? tenantSlug
         rememberTenantSlug(resolvedSlug)
@@ -161,6 +169,7 @@ export const useAuthStore = create<AuthState>()(
               loginUser.role,
             ),
             allowedModules: loginUser.allowedModules,
+            attendanceEnabled: Boolean(loginUser.attendanceEnabled),
           },
           { accessToken: data.accessToken, refreshToken: data.refreshToken },
         )
@@ -205,7 +214,8 @@ export const useAuthStore = create<AuthState>()(
             prev.avatarUrl === next.avatarUrl &&
             prev.phone === next.phone &&
             JSON.stringify(prev.inventoryAreas) === JSON.stringify(next.inventoryAreas) &&
-            JSON.stringify(prev.allowedModules) === JSON.stringify(next.allowedModules)
+            JSON.stringify(prev.allowedModules) === JSON.stringify(next.allowedModules) &&
+            prev.attendanceEnabled === next.attendanceEnabled
           if (!same) {
             set({ kind: 'tenant', user: next, bootstrapped: true })
           } else if (!get().bootstrapped) {

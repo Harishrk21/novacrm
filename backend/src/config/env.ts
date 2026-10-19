@@ -69,6 +69,23 @@ const schema = z.object({
   JWT_REFRESH_EXPIRY: z.string().default("7d"),
   PLATFORM_ADMIN_EMAIL: z.string().email().default("admin@novacrm.com"),
   PLATFORM_ADMIN_PASSWORD: z.string().min(8).default("Admin@Nova2026"),
+  /** Meister Attendance SPA origin (local default; staging/prod Vercel URL later) */
+  ATTENDANCE_APP_URL: z.string().url().default("http://localhost:5173"),
+  /** Must match Attendance API SSO_AUDIENCE */
+  ATTENDANCE_SSO_AUDIENCE: z.string().min(1).default("attendance-platform"),
+  /** Attendance API base for platform provision (Phase 2) */
+  ATTENDANCE_API_URL: z.string().url().default("http://127.0.0.1:4000"),
+  /** Optional pre-minted platform JWT; else use email/password login */
+  ATTENDANCE_PLATFORM_TOKEN: z.string().default(""),
+  ATTENDANCE_PLATFORM_EMAIL: z.string().default(""),
+  ATTENDANCE_PLATFORM_PASSWORD: z.string().default(""),
+  /** Issuer prefix; new clients use `${prefix}:${attendanceSlug}` */
+  ATTENDANCE_SSO_ISSUER_PREFIX: z.string().min(1).default("hms-dashboard"),
+  /** When Attendance module turned off, also PATCH Attendance tenant status=suspended */
+  ATTENDANCE_SUSPEND_ON_DISABLE: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
 });
 const parsed = schema.safeParse(process.env);
 if (!parsed.success)

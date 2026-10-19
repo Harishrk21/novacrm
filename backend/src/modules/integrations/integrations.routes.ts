@@ -17,8 +17,65 @@ import {
   resolveTenantCloudCfg,
   upsertTenantWhatsAppCloud,
 } from '../whatsapp/cloudApi.js'
+import { buildAttendanceLaunchUrl } from '../attendance/attendance.service.js'
 
 export const integrationsRouter = Router()
+
+/** Seamless open into Meister Attendance (SSO ticket minted server-side). */
+integrationsRouter.get('/attendance/launch', authenticate, requireTenant, async (req, res, next) => {
+  try {
+    const tenantId = req.auth!.tenantId!
+    const userId = req.auth!.userId
+    const user = await prisma.user.findFirst({
+      where: { id: userId, tenantId, deletedAt: null, status: 'ACTIVE' },
+      select: { id: true, email: true, name: true },
+    })
+    if (!user) throw new AppError('User not found', 404)
+
+    const redirect = typeof req.query.redirect === 'string' ? req.query.redirect : '/'
+    const embed =
+      req.query.embed === '1' ||
+      req.query.embed === 'true' ||
+      String(req.query.embed).toLowerCase() === 'yes'
+
+    const result = await buildAttendanceLaunchUrl({
+      tenantId,
+      userId: user.id,
+      email: user.email,
+      name: user.name,
+      roleCode: req.auth!.role,
+      redirect,
+      embed,
+    })
+    return success(res, result)
+  } catch (e) {
+    next(e)
+  }
+})
+
+integrationsRouter.get('/attendance/status', authenticate, requireTenant, async (req, res, next) => {
+  try {
+    const tenantId = req.auth!.tenantId!
+    const tenant = await prisma.tenant.findFirst({
+      where: { id: tenantId, deletedAt: null },
+      select: {
+        attendanceEnabled: true,
+        attendanceSlug: true,
+        attendanceTenantId: true,
+        attendanceSsoIssuer: true,
+      },
+    })
+    return success(res, {
+      enabled: Boolean(tenant?.attendanceEnabled),
+      linked: Boolean(tenant?.attendanceTenantId || tenant?.attendanceSlug),
+      attendanceSlug: tenant?.attendanceSlug ?? null,
+      attendanceTenantId: tenant?.attendanceTenantId ?? null,
+      ssoConfigured: Boolean(tenant?.attendanceSsoIssuer),
+    })
+  } catch (e) {
+    next(e)
+  }
+})
 
 const askmeisterConnectSchema = z.object({
   body: z.object({

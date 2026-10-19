@@ -126,7 +126,7 @@ export const setTenantUserInventoryAreas = async (q: Request, r: Response) => {
 
 export const setModules = async (q: Request, r: Response) => {
   const id = paramId(q);
-  const rows = await s.setTenantModules(id, q.body.modulesEnabled);
+  const result = await s.setTenantModules(id, q.body.modulesEnabled);
   await writeAudit({
     ...meta(q),
     actorType: "PLATFORM_ADMIN",
@@ -135,9 +135,12 @@ export const setModules = async (q: Request, r: Response) => {
     entityType: "tenant",
     entityId: id,
     tenantId: id,
-    afterJson: q.body.modulesEnabled,
+    afterJson: {
+      modulesEnabled: q.body.modulesEnabled,
+      attendance: result.attendance,
+    },
   });
-  return success(r, rows, "Modules updated");
+  return success(r, result, "Modules updated");
 };
 
 export const listPlans = async (_q: Request, r: Response) =>

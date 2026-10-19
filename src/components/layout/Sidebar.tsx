@@ -38,6 +38,7 @@ import {
   Filter,
   AlertTriangle,
   ClipboardList,
+  Clock,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
@@ -297,6 +298,11 @@ export function Sidebar() {
   const role = authUser?.role
   const isAdmin = isCompanyAdmin(role)
   const displayRole = roleLabel(role)
+  const attendanceEnabled =
+    Boolean(authUser?.attendanceEnabled) || moduleOn('hr.attendance')
+  const attendanceNavItem: NavItem | null = attendanceEnabled
+    ? { to: '/attendance', icon: Clock, label: 'Attendance' }
+    : null
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({})
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
 
@@ -360,6 +366,7 @@ export function Sidebar() {
         { to: '/workqueue', icon: ListTodo, label: 'Workqueue' },
         { to: '/notifications', icon: Bell, label: 'Notifications' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
+        ...(attendanceNavItem ? [attendanceNavItem] : []),
         ...(moduleOn('reports')
           ? [{ to: '/reports', icon: BarChart3, label: 'Reports' } as NavItem]
           : []),
@@ -552,6 +559,7 @@ export function Sidebar() {
         { to: '/workqueue', icon: ListTodo, label: 'Workqueue' },
         { to: '/notifications', icon: Bell, label: 'Notifications' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
+        ...(attendanceNavItem ? [attendanceNavItem] : []),
       ],
     },
     {
@@ -644,6 +652,7 @@ export function Sidebar() {
         { to: '/workqueue', icon: ListTodo, label: 'Workqueue' },
         { to: '/notifications', icon: Bell, label: 'Notifications' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
+        ...(attendanceNavItem ? [attendanceNavItem] : []),
       ],
     },
     {
@@ -706,6 +715,7 @@ export function Sidebar() {
         { to: '/workqueue', icon: ListTodo, label: 'Workqueue' },
         { to: '/notifications', icon: Bell, label: 'Notifications' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
+        ...(attendanceNavItem ? [attendanceNavItem] : []),
       ],
     },
     {
@@ -758,6 +768,7 @@ export function Sidebar() {
         { to: '/', icon: LayoutDashboard, label: 'Dashboard', end: true },
         { to: '/notifications', icon: Bell, label: 'Notifications' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
+        ...(attendanceNavItem ? [attendanceNavItem] : []),
       ],
     },
     {
@@ -815,6 +826,7 @@ export function Sidebar() {
         { to: '/', icon: LayoutDashboard, label: 'Dashboard', end: true },
         { to: '/notifications', icon: Bell, label: 'Notifications' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
+        ...(attendanceNavItem ? [attendanceNavItem] : []),
       ],
     },
     {

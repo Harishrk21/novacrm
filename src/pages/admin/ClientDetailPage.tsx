@@ -239,9 +239,19 @@ export function ClientDetailPage() {
         logoUrl,
         ...(editPack ? { subscriptionPack: editPack } : {}),
       }
+      let attendanceNote: string | null = null
       if (liveMode) {
         await api.updateTenant(client.id, patch)
-        await api.setTenantModules(client.id, editModules)
+        const modsResult = await api.setTenantModules(client.id, editModules)
+        if (modsResult.attendance?.action === 'created') {
+          attendanceNote = modsResult.attendance.inviteUrl
+            ? `Attendance provisioned (${modsResult.attendance.attendanceSlug}). Invite: ${modsResult.attendance.inviteUrl}`
+            : `Attendance provisioned (${modsResult.attendance.attendanceSlug})`
+        } else if (modsResult.attendance?.action === 'disabled') {
+          attendanceNote = 'Attendance disabled for this client'
+        } else if (modsResult.attendance?.message) {
+          attendanceNote = modsResult.attendance.message
+        }
       }
       const nextRow: ClientRow = {
         ...client,
@@ -263,7 +273,12 @@ export function ClientDetailPage() {
         modulesEnabled: { ...editModules, settings: true },
       }
       patchClient(nextRow)
-      addToast({ type: 'success', message: 'Client configuration saved' })
+      addToast({
+        type: 'success',
+        message: attendanceNote
+          ? `Client saved — ${attendanceNote}`
+          : 'Client configuration saved',
+      })
     } catch (err) {
       addToast({ type: 'error', message: err instanceof Error ? err.message : 'Save failed' })
     } finally {

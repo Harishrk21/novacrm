@@ -24,6 +24,9 @@ const DashboardPage = lazy(() =>
 const HowNovaCrmWorksPage = lazy(() =>
   import('@/pages/HowNovaCrmWorksPage').then((m) => ({ default: m.HowNovaCrmWorksPage })),
 )
+const AttendanceLaunchPage = lazy(() =>
+  import('@/pages/AttendanceLaunchPage').then((m) => ({ default: m.AttendanceLaunchPage })),
+)
 const MyTasksPage = lazy(() =>
   import('@/pages/MyTasksPage').then((m) => ({ default: m.MyTasksPage })),
 )
@@ -176,6 +179,7 @@ export default function App() {
             <Route index element={<DashboardPage />} />
             <Route path="workqueue" element={<WorkqueuePage />} />
             <Route path="help" element={<HowNovaCrmWorksPage />} />
+            <Route path="attendance" element={<AttendanceLaunchPage />} />
             <Route path="my-tasks" element={<MyTasksPage />} />
             <Route path="sale-tracking" element={<LeadsPage />} />
             <Route path="sale-tracking/:id" element={<LeadDetailPage />} />

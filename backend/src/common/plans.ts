@@ -127,6 +127,7 @@ export function blankOnboardModules(): Record<string, boolean> {
     ...ALL_OFF_ERP,
     "engagement.whatsapp": false,
     "engagement.emails": false,
+    "hr.attendance": false,
     reports: false,
     settings: true,
   };

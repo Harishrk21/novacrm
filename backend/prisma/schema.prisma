@@ -305,12 +305,20 @@ model Tenant {
   terminology          Json?
   branding             Json?
   settings             Json?
+  /// Meister Attendance link — separate product DB; never merge user tables
+  attendanceEnabled    Boolean        @default(false) @map("attendance_enabled")
+  attendanceTenantId   String?        @map("attendance_tenant_id") @db.Char(36)
+  attendanceSlug       String?        @map("attendance_slug") @db.VarChar(64)
+  attendanceSsoIssuer  String?        @map("attendance_sso_issuer") @db.VarChar(200)
+  /// HS256 shared secret for SSO tickets — backend / Render only; never Vercel client env
+  attendanceSsoSecret  String?        @map("attendance_sso_secret") @db.Text
   createdByAdminId     String?        @map("created_by_admin_id") @db.Char(36)
   createdAt            DateTime       @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt            DateTime       @updatedAt @map("updated_at") @db.DateTime(3)
   deletedAt            DateTime?      @map("deleted_at") @db.DateTime(3)
   @@index([status])
   @@index([businessCategoryId])
+  @@index([attendanceSlug])
   @@map("tenants")
 }
 

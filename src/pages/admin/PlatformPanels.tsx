@@ -224,6 +224,13 @@ const ADDONS = [
     blurb: 'Outbound sequences and activity logging for sales follow-ups.',
   },
   {
+    id: 'attendance',
+    title: 'Meister Attendance',
+    icon: Shield,
+    module: 'hr.attendance',
+    blurb: 'Clock-in, leave, shifts — provisions a tenant in Attendance and SSO from HMS.',
+  },
+  {
     id: 'automation',
     title: 'Automation rules',
     icon: Bot,
@@ -276,13 +283,19 @@ export function AddonsPanel() {
     setBusy(true)
     try {
       const nextMods = { ...(client.modulesEnabled ?? {}), [addon.module]: true }
+      let note = `${addon.title} enabled on ${client.name}`
       if (liveMode) {
-        await api.setTenantModules(client.id, nextMods)
+        const result = await api.setTenantModules(client.id, nextMods)
+        if (result.attendance?.action === 'created') {
+          note = `${addon.title} enabled — Attendance tenant ${result.attendance.attendanceSlug} created`
+        } else if (result.attendance?.message) {
+          note = `${addon.title}: ${result.attendance.message}`
+        }
       }
       setClients((prev) =>
         prev.map((c) => (c.id === client.id ? { ...c, modulesEnabled: nextMods } : c)),
       )
-      addToast({ type: 'success', message: `${addon.title} enabled on ${client.name}` })
+      addToast({ type: 'success', message: note })
       navigate(`/admin/clients/${client.id}`)
     } catch (e) {
       addToast({

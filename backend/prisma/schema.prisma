@@ -312,6 +312,11 @@ model Tenant {
   attendanceSsoIssuer  String?        @map("attendance_sso_issuer") @db.VarChar(200)
   /// HS256 shared secret for SSO tickets — backend / Render only; never Vercel client env
   attendanceSsoSecret  String?        @map("attendance_sso_secret") @db.Text
+  /// Office GPS geofence for Attendance clock-in (synced to Attendance product)
+  attendanceGeofenceEnabled Boolean   @default(false) @map("attendance_geofence_enabled")
+  attendanceGeofenceLat     Decimal?  @map("attendance_geofence_lat") @db.Decimal(10, 7)
+  attendanceGeofenceLng     Decimal?  @map("attendance_geofence_lng") @db.Decimal(10, 7)
+  attendanceGeofenceRadiusM Int       @default(10) @map("attendance_geofence_radius_m")
   createdByAdminId     String?        @map("created_by_admin_id") @db.Char(36)
   createdAt            DateTime       @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt            DateTime       @updatedAt @map("updated_at") @db.DateTime(3)

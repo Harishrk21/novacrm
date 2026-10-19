@@ -38,6 +38,10 @@ const tenant = z.object({
   adminName: z.string().min(2).optional(),
   adminEmail: z.string().email(),
   adminPassword: z.string().min(8),
+  attendanceGeofenceEnabled: z.boolean().optional(),
+  attendanceGeofenceLat: z.number().min(-90).max(90).nullable().optional(),
+  attendanceGeofenceLng: z.number().min(-180).max(180).nullable().optional(),
+  attendanceGeofenceRadiusM: z.coerce.number().int().min(5).max(5000).optional(),
 });
 
 const category = z.object({
@@ -78,6 +82,10 @@ export const updateTenantSchema = z.object({
       website: z.string().optional(),
       gstin: z.string().optional(),
       logoUrl: z.string().max(512).nullable().optional(),
+      attendanceGeofenceEnabled: z.boolean().optional(),
+      attendanceGeofenceLat: z.number().min(-90).max(90).nullable().optional(),
+      attendanceGeofenceLng: z.number().min(-180).max(180).nullable().optional(),
+      attendanceGeofenceRadiusM: z.coerce.number().int().min(5).max(5000).optional(),
       addressLine1: z.string().max(255).optional(),
       addressLine2: z.string().max(255).optional(),
       postalCode: z.string().max(20).optional(),

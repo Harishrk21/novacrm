@@ -37,6 +37,10 @@ export type ClientRow = {
     loginTagline?: string
   } | null
   modulesEnabled?: Record<string, boolean> | null
+  attendanceGeofenceEnabled?: boolean
+  attendanceGeofenceLat?: number | string | null
+  attendanceGeofenceLng?: number | string | null
+  attendanceGeofenceRadiusM?: number | null
 }
 
 export type BusinessCategory = {

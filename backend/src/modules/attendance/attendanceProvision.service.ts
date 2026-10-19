@@ -165,6 +165,11 @@ export async function provisionAttendanceForHmsTenant(
       where: { id: tenantId },
       data: { attendanceEnabled: true },
     });
+    try {
+      await syncAttendanceGeofence(tenantId);
+    } catch {
+      /* optional */
+    }
     return {
       action: "already_linked",
       attendanceTenantId: tenant.attendanceTenantId,
@@ -297,6 +302,12 @@ export async function provisionAttendanceForHmsTenant(
     },
   });
 
+  try {
+    await syncAttendanceGeofence(tenantId);
+  } catch {
+    /* geofence sync is best-effort; client can re-save settings */
+  }
+
   return {
     action: "created",
     attendanceTenantId,
@@ -304,6 +315,36 @@ export async function provisionAttendanceForHmsTenant(
     inviteUrl: created.invite?.url ?? null,
     message: "Attendance tenant provisioned",
   };
+}
+
+/** Push office GPS geofence from Meister tenant → Attendance product. */
+export async function syncAttendanceGeofence(tenantId: string): Promise<void> {
+  const tenant = await prisma.tenant.findFirst({
+    where: { id: tenantId, deletedAt: null },
+    select: {
+      attendanceTenantId: true,
+      attendanceGeofenceEnabled: true,
+      attendanceGeofenceLat: true,
+      attendanceGeofenceLng: true,
+      attendanceGeofenceRadiusM: true,
+    },
+  });
+  if (!tenant?.attendanceTenantId) return;
+
+  const lat =
+    tenant.attendanceGeofenceLat != null ? Number(tenant.attendanceGeofenceLat) : null;
+  const lng =
+    tenant.attendanceGeofenceLng != null ? Number(tenant.attendanceGeofenceLng) : null;
+
+  await attendanceFetch(`/v1/platform/tenants/${tenant.attendanceTenantId}/geofence`, {
+    method: "PUT",
+    body: JSON.stringify({
+      enabled: !!tenant.attendanceGeofenceEnabled,
+      lat,
+      lng,
+      radiusM: tenant.attendanceGeofenceRadiusM || 10,
+    }),
+  });
 }
 
 /** Hide Attendance in HMS and optionally suspend the Attendance company. */

@@ -25,6 +25,12 @@ import {
   type ClientRow,
   type PlatformOutletContext,
 } from '@/pages/admin/platformTypes'
+import {
+  emptyGeofence,
+  GeofenceFields,
+  geofencePayload,
+  type GeofenceForm,
+} from '@/pages/admin/GeofenceFields'
 
 type DetailTab = 'overview' | 'login' | 'modules' | 'team' | 'plan'
 
@@ -101,6 +107,7 @@ export function ClientDetailPage() {
   const [editPlan, setEditPlan] = useState('STARTER')
   const [editMaxUsers, setEditMaxUsers] = useState('10')
   const [editPack, setEditPack] = useState('')
+  const [geofence, setGeofence] = useState<GeofenceForm>(emptyGeofence)
 
   const [teamUsers, setTeamUsers] = useState<TeamUser[]>([])
   const [teamLoading, setTeamLoading] = useState(false)
@@ -127,6 +134,12 @@ export function ClientDetailPage() {
     setEditPlan(c.plan || 'STARTER')
     setEditMaxUsers(String(c.maxUsers || 10))
     setEditPack(c.subscriptionPack ?? '')
+    setGeofence({
+      enabled: !!c.attendanceGeofenceEnabled,
+      lat: c.attendanceGeofenceLat != null ? String(c.attendanceGeofenceLat) : '',
+      lng: c.attendanceGeofenceLng != null ? String(c.attendanceGeofenceLng) : '',
+      radiusM: String(c.attendanceGeofenceRadiusM ?? 10),
+    })
     const base: Record<string, boolean> = {}
     for (const m of MODULE_TOGGLE_OPTIONS) base[m.key] = c.modulesEnabled?.[m.key] ?? false
     setEditModules(base)
@@ -209,6 +222,13 @@ export function ClientDetailPage() {
 
   async function saveDetail() {
     if (!client) return
+    let geo
+    try {
+      geo = geofencePayload(geofence)
+    } catch (err) {
+      addToast({ type: 'error', message: err instanceof Error ? err.message : 'Invalid geofence' })
+      return
+    }
     setSaving(true)
     try {
       const branding = {
@@ -238,6 +258,7 @@ export function ClientDetailPage() {
         branding,
         logoUrl,
         ...(editPack ? { subscriptionPack: editPack } : {}),
+        ...geo,
       }
       let attendanceNote: string | null = null
       if (liveMode) {
@@ -271,6 +292,7 @@ export function ClientDetailPage() {
         logoUrl,
         subscriptionPack: editPack || client.subscriptionPack,
         modulesEnabled: { ...editModules, settings: true },
+        ...geo,
       }
       patchClient(nextRow)
       addToast({
@@ -538,6 +560,7 @@ export function ClientDetailPage() {
               <Input label="Postal code" value={editPostal} onChange={(e) => setEditPostal(e.target.value)} />
               <Input label="GSTIN" value={editGstin} onChange={(e) => setEditGstin(e.target.value)} />
             </div>
+            <GeofenceFields value={geofence} onChange={setGeofence} idPrefix="client-geo" />
           </div>
         ) : null}
 

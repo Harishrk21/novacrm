@@ -48,6 +48,12 @@ import { MODULE_TOGGLE_OPTIONS, clientLoginUrl, clientLoginPath } from '@/lib/cl
 import { LoginPreview } from '@/components/auth/LoginPreview'
 import { MeisterLogo } from '@/components/MeisterLogo'
 import { PLATFORM_NAME, RESERVED_LOGIN_SLUGS } from '@/lib/branding'
+import {
+  emptyGeofence,
+  GeofenceFields,
+  geofencePayload,
+  type GeofenceForm,
+} from '@/pages/admin/GeofenceFields'
 import { ClientsWorkspace } from '@/pages/admin/ClientsWorkspace'
 import { ClientDetailPage } from '@/pages/admin/ClientDetailPage'
 import {
@@ -371,6 +377,14 @@ function AdminShell() {
               r.modulesEnabled && typeof r.modulesEnabled === 'object'
                 ? (r.modulesEnabled as Record<string, boolean>)
                 : null,
+            attendanceGeofenceEnabled: !!(r as { attendanceGeofenceEnabled?: boolean })
+              .attendanceGeofenceEnabled,
+            attendanceGeofenceLat:
+              (r as { attendanceGeofenceLat?: number | string | null }).attendanceGeofenceLat ?? null,
+            attendanceGeofenceLng:
+              (r as { attendanceGeofenceLng?: number | string | null }).attendanceGeofenceLng ?? null,
+            attendanceGeofenceRadiusM:
+              (r as { attendanceGeofenceRadiusM?: number | null }).attendanceGeofenceRadiusM ?? 10,
           })),
         )
         if (cats.length) {
@@ -1368,6 +1382,7 @@ function OverviewDashboard({
 
 function CreateCompanyPage() {
   const navigate = useNavigate()
+  const addToast = useUIStore((s) => s.addToast)
   const { categories, liveMode, createCompany } = useOutletContext<PlatformOutletContext>()
   const [name, setName] = useState('')
   const [code, setCode] = useState('')
@@ -1385,6 +1400,7 @@ function CreateCompanyPage() {
   const [adminName, setAdminName] = useState('Workspace Admin')
   const [adminEmail, setAdminEmail] = useState('')
   const [adminPassword, setAdminPassword] = useState('Demo@12345')
+  const [geofence, setGeofence] = useState<GeofenceForm>(emptyGeofence)
   const [palette, setPalette] = useState<ColorPalette>('ocean')
   const [logoUrl, setLogoUrl] = useState('')
   const [loginTagline, setLoginTagline] = useState('')
@@ -1446,6 +1462,7 @@ function CreateCompanyPage() {
     setAdminEmail('')
     setAdminPassword('Demo@12345')
     setAdminName('Workspace Admin')
+    setGeofence(emptyGeofence())
     setCategoryId(categories[0]?.id ?? '')
     setPalette('ocean')
     setAccent(PALETTES.ocean.accent)
@@ -1485,6 +1502,13 @@ function CreateCompanyPage() {
         ...(loginTagline.trim() ? { loginTagline: loginTagline.trim() } : {}),
       },
     }
+    let geo
+    try {
+      geo = geofencePayload(geofence)
+    } catch (err) {
+      addToast({ type: 'error', message: err instanceof Error ? err.message : 'Invalid geofence' })
+      return
+    }
     const payload = liveMode
       ? {
           name: row.name,
@@ -1511,6 +1535,7 @@ function CreateCompanyPage() {
           adminName: adminName.trim() || 'Workspace Admin',
           adminEmail: adminEmail.trim().toLowerCase(),
           adminPassword,
+          ...geo,
         }
       : undefined
     setSaving(true)
@@ -1647,6 +1672,7 @@ function CreateCompanyPage() {
                 onChange={(e) => setWebsite(e.target.value)}
               />
             </div>
+            <GeofenceFields value={geofence} onChange={setGeofence} idPrefix="create-geo" />
           </Card>
 
           <Card className="space-y-4 p-5">

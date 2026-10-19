@@ -76,6 +76,11 @@ type CreateTenantInput = {
   adminName?: string;
   adminEmail: string;
   adminPassword: string;
+  /** Office GPS for Attendance geofence (optional at create) */
+  attendanceGeofenceEnabled?: boolean;
+  attendanceGeofenceLat?: number | null;
+  attendanceGeofenceLng?: number | null;
+  attendanceGeofenceRadiusM?: number;
 };
 
 function moduleGroup(key: string) {
@@ -181,6 +186,12 @@ export async function createTenant(data: CreateTenantInput, adminId: string) {
         terminology: (category.terminology ?? {}) as object,
         branding: branding as object,
         logoUrl: data.logoUrl?.trim() || null,
+        attendanceGeofenceEnabled: !!data.attendanceGeofenceEnabled,
+        attendanceGeofenceLat:
+          data.attendanceGeofenceLat != null ? data.attendanceGeofenceLat : null,
+        attendanceGeofenceLng:
+          data.attendanceGeofenceLng != null ? data.attendanceGeofenceLng : null,
+        attendanceGeofenceRadiusM: data.attendanceGeofenceRadiusM ?? 10,
         settings: {
           template,
           subscriptionPack: subscriptionPack ?? planned.subscriptionPack ?? null,
@@ -539,6 +550,10 @@ export async function updateTenant(id: string, data: Record<string, unknown>) {
     "addressLine2",
     "postalCode",
     "country",
+    "attendanceGeofenceEnabled",
+    "attendanceGeofenceLat",
+    "attendanceGeofenceLng",
+    "attendanceGeofenceRadiusM",
   ];
   const patch: Record<string, unknown> = {};
   for (const key of allowed) {
@@ -577,6 +592,20 @@ export async function updateTenant(id: string, data: Record<string, unknown>) {
 
   if (patch.modulesEnabled && typeof patch.modulesEnabled === "object") {
     await setTenantModules(id, patch.modulesEnabled as Record<string, boolean>);
+  }
+
+  const geofenceTouched =
+    "attendanceGeofenceEnabled" in data ||
+    "attendanceGeofenceLat" in data ||
+    "attendanceGeofenceLng" in data ||
+    "attendanceGeofenceRadiusM" in data;
+  if (geofenceTouched) {
+    try {
+      const { syncAttendanceGeofence } = await import("../attendance/attendanceProvision.service.js");
+      await syncAttendanceGeofence(id);
+    } catch {
+      /* Attendance may not be linked yet */
+    }
   }
 
   try {

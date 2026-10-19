@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
@@ -126,15 +126,147 @@ function sectionHasActive(pathname: string, search: string, section: NavSection)
   return section.items.some((item) => pathMatchesItem(pathname, search, item))
 }
 
+/** Collapsed rail: one icon per nav group; opens a flyout of that group's links. */
+function CollapsedSectionIcon({ section }: { section: NavSection }) {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const active = sectionHasActive(location.pathname, location.search, section)
+  const SectionIcon = section.icon ?? section.items[0]?.icon ?? LayoutDashboard
+  const flyoutId = `nav-section-flyout-${section.label.replace(/\s+/g, '-')}`
+
+  useEffect(() => {
+    if (!open) return
+    function place() {
+      const el = btnRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      setPos({ top: r.top, left: r.right + 8 })
+    }
+    place()
+    function onDoc(e: MouseEvent) {
+      const target = e.target as Node
+      if (btnRef.current?.contains(target)) return
+      const menu = document.getElementById(flyoutId)
+      if (menu?.contains(target)) return
+      setOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open, flyoutId])
+
+  // Single-item groups (e.g. only Dashboard): go straight there
+  if (section.items.length === 1) {
+    const only = section.items[0]!
+    return (
+      <li>
+        <NavLink
+          to={only.to}
+          end={only.end}
+          title={section.label}
+          className={cn(
+            'group relative flex items-center justify-center rounded-lg px-2 py-[9px] text-[13px] font-medium transition-all duration-150',
+            active
+              ? 'bg-[color:var(--color-accent-blue)]/18 text-white shadow-[inset_3px_0_0_0_var(--color-accent-blue)]'
+              : 'text-sidebar-text hover:bg-white/[0.06] hover:text-white',
+          )}
+        >
+          <SectionIcon size={17} className="shrink-0 opacity-90" strokeWidth={1.75} />
+        </NavLink>
+      </li>
+    )
+  }
+
+  return (
+    <li>
+      <button
+        ref={btnRef}
+        type="button"
+        title={section.label}
+        aria-label={section.label}
+        aria-expanded={open}
+        onClick={() => {
+          const r = btnRef.current?.getBoundingClientRect()
+          if (r) setPos({ top: r.top, left: r.right + 8 })
+          setOpen((o) => !o)
+        }}
+        className={cn(
+          'group relative flex w-full items-center justify-center rounded-lg px-2 py-[9px] text-[13px] font-medium transition-all duration-150',
+          active || open
+            ? 'bg-[color:var(--color-accent-blue)]/18 text-white shadow-[inset_3px_0_0_0_var(--color-accent-blue)]'
+            : 'text-sidebar-text hover:bg-white/[0.06] hover:text-white',
+        )}
+      >
+        <SectionIcon size={17} className="shrink-0 opacity-90" strokeWidth={1.75} />
+      </button>
+
+      {open && pos
+        ? createPortal(
+            <div
+              id={flyoutId}
+              className="fixed z-[200] w-56 overflow-hidden rounded-lg border border-border bg-card py-1 shadow-[0_12px_40px_rgba(0,0,0,0.35)]"
+              style={{ top: pos.top, left: pos.left }}
+              role="menu"
+            >
+              <div className="border-b border-border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-secondary">
+                {section.label}
+              </div>
+              {section.items.map((item) => {
+                const itemActive = pathMatchesItem(
+                  location.pathname,
+                  location.search,
+                  item,
+                  section.items,
+                )
+                return (
+                  <button
+                    key={`${item.to}-${item.label}`}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpen(false)
+                      navigate(item.to)
+                    }}
+                    className={cn(
+                      'flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] transition-colors',
+                      itemActive
+                        ? 'bg-accent-blue/10 font-medium text-accent-blue'
+                        : 'text-text-primary hover:bg-muted',
+                    )}
+                  >
+                    <item.icon size={15} className="shrink-0 opacity-80" strokeWidth={1.75} />
+                    <span className="truncate">{item.label}</span>
+                  </button>
+                )
+              })}
+            </div>,
+            document.body,
+          )
+        : null}
+    </li>
+  )
+}
+
 function NavItemRow({
   item,
   isAdmin,
-  collapsed,
   siblings,
 }: {
   item: NavItem
   isAdmin: boolean
-  collapsed?: boolean
   siblings?: NavItem[]
 }) {
   const navigate = useNavigate()
@@ -176,26 +308,6 @@ function NavItemRow({
       document.removeEventListener('keydown', onKey)
     }
   }, [menuOpen, item.label])
-
-  if (collapsed) {
-    return (
-      <li>
-        <NavLink
-          to={item.to}
-          end={item.end}
-          title={item.label}
-          className={cn(
-            'group relative flex items-center justify-center rounded-lg px-2 py-[9px] text-[13px] font-medium transition-all duration-150',
-            active
-              ? 'bg-[color:var(--color-accent-blue)]/18 text-white shadow-[inset_3px_0_0_0_var(--color-accent-blue)]'
-              : 'text-sidebar-text hover:bg-white/[0.06] hover:text-white',
-          )}
-        >
-          <item.icon size={17} className="shrink-0 opacity-90" strokeWidth={1.75} />
-        </NavLink>
-      </li>
-    )
-  }
 
   return (
     <li ref={wrapRef} className="relative">
@@ -919,11 +1031,6 @@ export function Sidebar() {
     setOpenSections((prev) => ({ ...prev, [label]: !prev[label] }))
   }
 
-  const flatCollapsedItems = useMemo(
-    () => navSections.flatMap((s) => s.items),
-    [navSections],
-  )
-
   return (
     <aside
       className={cn(
@@ -958,14 +1065,8 @@ export function Sidebar() {
 
         {collapsed ? (
           <ul className="space-y-0.5 px-2">
-            {flatCollapsedItems.map((item) => (
-              <NavItemRow
-                key={`${item.to}-${item.label}`}
-                item={item}
-                isAdmin={isAdmin}
-                collapsed
-                siblings={flatCollapsedItems}
-              />
+            {navSections.map((section) => (
+              <CollapsedSectionIcon key={section.label} section={section} />
             ))}
           </ul>
         ) : (

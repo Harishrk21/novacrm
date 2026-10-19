@@ -186,7 +186,7 @@ export async function provisionAttendanceForHmsTenant(
           allowedOrigins: allowedOrigins(),
           defaultRole: "employee",
           autoProvision: true,
-          syncRole: false,
+          syncRole: true,
         }),
       },
     );
@@ -281,7 +281,7 @@ export async function provisionAttendanceForHmsTenant(
         allowedOrigins: allowedOrigins(),
         defaultRole: "employee",
         autoProvision: true,
-        syncRole: false,
+        syncRole: true,
       }),
     },
   );

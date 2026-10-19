@@ -1501,10 +1501,11 @@ export const api = {
     ),
 
   /** Mint SSO ticket → Meister Attendance /sso URL (backend-only secret). */
-  launchAttendance: (opts?: { redirect?: string; embed?: boolean }) => {
+  launchAttendance: (opts?: { redirect?: string; embed?: boolean; returnUrl?: string }) => {
     const q = new URLSearchParams()
     if (opts?.redirect) q.set('redirect', opts.redirect)
     if (opts?.embed) q.set('embed', '1')
+    if (opts?.returnUrl) q.set('returnUrl', opts.returnUrl)
     const qs = q.toString()
     return apiFetch<{ url: string; expiresInSeconds: number; attendanceSlug: string }>(
       `/integrations/attendance/launch${qs ? `?${qs}` : ''}`,

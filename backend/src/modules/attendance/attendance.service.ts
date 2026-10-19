@@ -22,6 +22,22 @@ export type AttendanceLaunchResult = {
  * Mint a one-time SSO ticket and return the Attendance /sso URL.
  * Secret stays on the HMS backend — never sent to the browser except inside the JWT.
  */
+/** Only allow return URLs back to known Meister frontends (open-redirect guard). */
+export function sanitizeHostReturnUrl(
+  raw: unknown,
+  allowedOrigins: string[],
+): string | undefined {
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  try {
+    const u = new URL(raw.trim());
+    if (u.protocol !== "https:" && u.protocol !== "http:") return undefined;
+    if (!allowedOrigins.includes(u.origin)) return undefined;
+    return `${u.origin}${u.pathname}${u.search}`;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function buildAttendanceLaunchUrl(opts: {
   tenantId: string;
   userId: string;
@@ -30,6 +46,8 @@ export async function buildAttendanceLaunchUrl(opts: {
   roleCode?: string;
   redirect?: string;
   embed?: boolean;
+  /** Absolute Meister URL to restore after Attendance (Back to dashboard). */
+  returnUrl?: string;
 }): Promise<AttendanceLaunchResult> {
   const tenant = await prisma.tenant.findFirst({
     where: { id: opts.tenantId, deletedAt: null },
@@ -76,6 +94,7 @@ export async function buildAttendanceLaunchUrl(opts: {
   url.searchParams.set("ticket", ticket);
   url.searchParams.set("redirect", opts.redirect?.startsWith("/") ? opts.redirect : "/");
   if (opts.embed) url.searchParams.set("embed", "1");
+  if (opts.returnUrl) url.searchParams.set("returnUrl", opts.returnUrl);
 
   return {
     url: url.toString(),

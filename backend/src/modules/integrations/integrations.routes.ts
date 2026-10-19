@@ -17,7 +17,11 @@ import {
   resolveTenantCloudCfg,
   upsertTenantWhatsAppCloud,
 } from '../whatsapp/cloudApi.js'
-import { buildAttendanceLaunchUrl } from '../attendance/attendance.service.js'
+import {
+  buildAttendanceLaunchUrl,
+  sanitizeHostReturnUrl,
+} from '../attendance/attendance.service.js'
+import { env } from '../../config/env.js'
 
 export const integrationsRouter = Router()
 
@@ -38,6 +42,22 @@ integrationsRouter.get('/attendance/launch', authenticate, requireTenant, async 
       req.query.embed === 'true' ||
       String(req.query.embed).toLowerCase() === 'yes'
 
+    const allowedOrigins = new Set<string>()
+    try {
+      allowedOrigins.add(new URL(env.CLIENT_URL).origin)
+    } catch {
+      /* ignore */
+    }
+    for (const header of [req.get('origin'), req.get('referer')]) {
+      if (!header) continue
+      try {
+        allowedOrigins.add(new URL(header).origin)
+      } catch {
+        /* ignore */
+      }
+    }
+    const returnUrl = sanitizeHostReturnUrl(req.query.returnUrl, [...allowedOrigins])
+
     const result = await buildAttendanceLaunchUrl({
       tenantId,
       userId: user.id,
@@ -46,6 +66,7 @@ integrationsRouter.get('/attendance/launch', authenticate, requireTenant, async 
       roleCode: req.auth!.role,
       redirect,
       embed,
+      returnUrl,
     })
     return success(res, result)
   } catch (e) {

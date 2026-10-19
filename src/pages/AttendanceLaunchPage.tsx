@@ -23,7 +23,11 @@ export function AttendanceLaunchPage() {
       try {
         const redirect = searchParams.get('redirect') || '/'
         const embed = searchParams.get('embed') === '1'
-        const { url } = await api.launchAttendance({ redirect, embed })
+        // Prefer explicit returnUrl from sidebar; else restore Meister home of this origin.
+        const returnUrl =
+          searchParams.get('returnUrl') ||
+          `${window.location.origin}/`
+        const { url } = await api.launchAttendance({ redirect, embed, returnUrl })
         if (cancelled) return
         window.location.assign(url)
       } catch (e) {

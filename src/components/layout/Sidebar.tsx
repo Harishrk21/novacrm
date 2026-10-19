@@ -300,8 +300,16 @@ export function Sidebar() {
   const displayRole = roleLabel(role)
   const attendanceEnabled =
     Boolean(authUser?.attendanceEnabled) || moduleOn('hr.attendance')
+  // Capture the screen the user is on so Attendance can offer "Back to dashboard".
+  const attendanceReturnPath = location.pathname.startsWith('/attendance')
+    ? '/'
+    : `${location.pathname}${location.search}`
   const attendanceNavItem: NavItem | null = attendanceEnabled
-    ? { to: '/attendance', icon: Clock, label: 'Attendance' }
+    ? {
+        to: `/attendance?returnUrl=${encodeURIComponent(`${window.location.origin}${attendanceReturnPath}`)}`,
+        icon: Clock,
+        label: 'Attendance',
+      }
     : null
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({})
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)

@@ -146,8 +146,13 @@ export function LowMachineStockAlert() {
       : `${lowProducts.length} machines out of stock`
 
   return (
+    // Absolute inside the main column (not viewport-fixed) so:
+    // - it sits to the right of the sidebar
+    // - page footers / import Next (higher local z) stay clickable
+    // - topbar menus (portaled z-120) still stack above
+    // Stay below Drawer backdrop (z-180) / panel (z-190).
     <div
-      className="pointer-events-none fixed bottom-14 right-4 z-[190] w-[min(100vw-2rem,22rem)] sm:right-5"
+      className="pointer-events-none absolute bottom-14 left-3 z-[40] w-[min(100%,22rem)] sm:left-4"
       role="status"
       aria-live="polite"
     >
@@ -162,6 +167,7 @@ export function LowMachineStockAlert() {
           type="button"
           className="flex w-full items-start gap-3 px-3.5 py-3 text-left transition hover:bg-amber-100/70 dark:hover:bg-amber-900/50"
           onClick={() => {
+            setDismissedKey(fingerprint)
             navigate('/erp/stock/move?mode=add')
           }}
         >
@@ -203,7 +209,10 @@ export function LowMachineStockAlert() {
           <button
             type="button"
             className="text-xs font-medium text-amber-900 underline-offset-2 hover:underline dark:text-amber-100"
-            onClick={() => navigate('/erp/stock')}
+            onClick={() => {
+              setDismissedKey(fingerprint)
+              navigate('/erp/stock')
+            }}
           >
             Open stock
           </button>

@@ -1,6 +1,18 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, Search } from 'lucide-react'
+import {
+  Plus,
+  Search,
+  Sparkles,
+  UserRound,
+  Package,
+  Wallet,
+  CalendarClock,
+  UserCheck,
+  MessageSquare,
+  ClipboardCheck,
+  Wrench,
+} from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ContactPicker, type ContactPick } from '@/components/contacts/ContactPicker'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
@@ -22,11 +34,18 @@ import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { useRowSelection } from '@/hooks/useRowSelection'
+import { usePagedRows } from '@/hooks/usePagedRows'
 import { useConfirmLeave } from '@/hooks/useDiscardGuard'
 import { api, ApiClientError, num } from '@/lib/api'
 import { firstError, validateLeadForm, type FieldErrors } from '@/lib/formValidation'
 import { formatCurrency, formatDate, formatPhone, cn } from '@/lib/utils'
 import { MissingBanner, sectionErrorClass } from '@/components/ui/MissingField'
+import {
+  ReviewRow,
+  ReviewSection,
+  VerticalFormShell,
+  type VerticalFormTab,
+} from '@/components/ui/VerticalFormTabs'
 import { indianMobileLocal, toStoredIndianMobile } from '@/lib/phoneIndia'
 import { productRequiresStamping } from '@/lib/productCatalog'
 import { useUIStore } from '@/store/uiStore'
@@ -42,6 +61,7 @@ import {
 import { productAttrs } from '@/lib/productCatalog'
 import { formatEnquiryId } from '@/lib/serviceId'
 import { TableSkeleton } from '@/components/ui/Skeleton'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 import {
   HMS_LEAD_PIPELINE,
   HMS_SERVICE_TYPES,
@@ -59,6 +79,50 @@ const STATUS_OPTIONS = HMS_LEAD_PIPELINE.map((s) => ({
 }))
 
 const ALL_STATUS_VALUES = STATUS_OPTIONS.map((s) => s.value)
+
+type LeadCreateStep =
+  | 'source'
+  | 'customer'
+  | 'opportunity'
+  | 'payment'
+  | 'followup'
+  | 'ownership'
+  | 'notes'
+  | 'review'
+
+function leadCreateSteps(serviceType: string): LeadCreateStep[] {
+  if (serviceType === 'SALES') {
+    return ['source', 'customer', 'opportunity', 'payment', 'followup', 'ownership', 'notes', 'review']
+  }
+  return ['source', 'customer', 'opportunity', 'review']
+}
+
+function leadStepFromErrorKey(key: string): LeadCreateStep {
+  if (key === 'enquiryWay' || key === 'enquiryDate' || key === 'serviceType') return 'source'
+  if (
+    key === 'name' ||
+    key === 'phone' ||
+    key === 'area' ||
+    key === 'email' ||
+    key === 'contactId'
+  ) {
+    return 'customer'
+  }
+  if (
+    key === 'productIds' ||
+    key === 'productId' ||
+    key === 'machineName' ||
+    key === 'machineType' ||
+    key === 'machineIssue' ||
+    key === 'clientCalledDate'
+  ) {
+    return 'opportunity'
+  }
+  if (key === 'familyCode' || key === 'industryCode' || key === 'demoSerialId' || key === 'assignedToId') {
+    return 'ownership'
+  }
+  return 'source'
+}
 
 function statusLabel(code: string) {
   return leadPipelineLabel(code)
@@ -182,6 +246,7 @@ export function LeadsPage() {
     ...emptyForm,
     assignedToId: '',
   }))
+  const [createStep, setCreateStep] = useState<LeadCreateStep>('source')
   const [dailyNote, setDailyNote] = useState('')
   const [dailyDate, setDailyDate] = useState(new Date().toISOString().slice(0, 10))
   const [, setDailySaving] = useState(false)
@@ -231,16 +296,25 @@ export function LeadsPage() {
     if (status) return items.filter((l) => String(l.status) === status && !saleIsCompleted(l))
     return items.filter((l) => !saleIsCompleted(l))
   }, [items, status])
+  const paged = usePagedRows(
+    visibleItems,
+    `${search}|${status}|${typeFilter}|${areaFilter}|${todayOnly}|${ownerFilter}`,
+  )
   const ids = useMemo(() => visibleItems.map((i) => String(i.id)), [visibleItems])
   const selection = useRowSelection(ids)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const lookupsReadyRef = useRef(false)
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    // Keep the list visible after create/save — only skeleton on first open
+    if (!silent) setLoading(true)
     setLoadError(null)
     try {
       // Leads + lookups only. Do NOT call /products here — sales roles lack products:view
       // and a failed Promise.all used to blank the whole "My enquiries" tab.
       // Product catalog for the enquiry form already comes from lookups.products.
+      const needLookups = !lookupsReadyRef.current
       const [leads, lookups] = await Promise.all([
         api.leads({
           limit: 100,
@@ -255,7 +329,7 @@ export function LeadsPage() {
               ? { assignedToId: ownerFilter }
               : {}),
         }),
-        api.lookups({ scope: 'full' }),
+        needLookups ? api.lookups({ scope: 'full' }) : Promise.resolve(null),
       ])
       let rows = leads.items ?? []
       if (!isSales && ownerFilter === 'unassigned') {
@@ -269,59 +343,64 @@ export function LeadsPage() {
           return tb - ta
         }),
       )
-      setSources(lookups.sources)
-      setUsers(lookups.users)
-      setStages(lookups.stages)
-      setProducts(
-        (lookups.products ?? [])
-          .map((p) => ({
-            id: p.id,
-            name: p.name,
-            sku: p.sku,
-            salePrice: num(p.salePrice),
-            taxPercent: num(p.taxPercent),
-            attributes: (p.attributes as Record<string, unknown> | null) ?? null,
-          }))
-          .sort((a, b) => a.name.localeCompare(b.name)),
-      )
-      if (!convertStageId && lookups.stages[0]) setConvertStageId(lookups.stages[0].id)
-      // Show list immediately — optional richer /products catalog in background
-      setLoading(false)
-      try {
-        const productPage = await api.products({ limit: 150 })
-        const byId = new Map(
-          (lookups.products ?? []).map((p) => [
-            p.id,
-            {
+      if (lookups) {
+        setSources(lookups.sources)
+        setUsers(lookups.users)
+        setStages(lookups.stages)
+        setProducts(
+          (lookups.products ?? [])
+            .map((p) => ({
               id: p.id,
               name: p.name,
               sku: p.sku,
               salePrice: num(p.salePrice),
               taxPercent: num(p.taxPercent),
               attributes: (p.attributes as Record<string, unknown> | null) ?? null,
-            },
-          ]),
+            }))
+            .sort((a, b) => a.name.localeCompare(b.name)),
         )
-        for (const p of productPage.items ?? []) {
-          const id = String(p.id)
-          byId.set(id, {
-            id,
-            name: String(p.name ?? ''),
-            sku: String(p.sku ?? ''),
-            salePrice: num(p.salePrice),
-            taxPercent: num(p.taxPercent),
-            attributes: (p.attributes as Record<string, unknown> | null) ?? null,
-          })
+        if (!convertStageId && lookups.stages[0]) setConvertStageId(lookups.stages[0].id)
+        lookupsReadyRef.current = true
+      }
+      // Show list immediately — optional richer /products catalog in background (first load only)
+      if (!silent) setLoading(false)
+      if (!silent && lookups) {
+        try {
+          const productPage = await api.products({ limit: 150 })
+          const byId = new Map(
+            (lookups.products ?? []).map((p) => [
+              p.id,
+              {
+                id: p.id,
+                name: p.name,
+                sku: p.sku,
+                salePrice: num(p.salePrice),
+                taxPercent: num(p.taxPercent),
+                attributes: (p.attributes as Record<string, unknown> | null) ?? null,
+              },
+            ]),
+          )
+          for (const p of productPage.items ?? []) {
+            const id = String(p.id)
+            byId.set(id, {
+              id,
+              name: String(p.name ?? ''),
+              sku: String(p.sku ?? ''),
+              salePrice: num(p.salePrice),
+              taxPercent: num(p.taxPercent),
+              attributes: (p.attributes as Record<string, unknown> | null) ?? null,
+            })
+          }
+          setProducts([...byId.values()].sort((a, b) => a.name.localeCompare(b.name)))
+        } catch {
+          /* sales executive: lookups catalog is enough */
         }
-        setProducts([...byId.values()].sort((a, b) => a.name.localeCompare(b.name)))
-      } catch {
-        /* sales executive: lookups catalog is enough */
       }
     } catch (err) {
       const message = err instanceof ApiClientError ? err.message : 'Failed to load leads'
       setLoadError(message)
       addToast({ type: 'error', message })
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast, areaFilter, authUser?.id, convertStageId, isSales, ownerFilter, search, todayOnly, typeFilter])
 
@@ -364,6 +443,7 @@ export function LeadsPage() {
 
   function openCreateEnquiry() {
     setPageTab('create')
+    setCreateStep('source')
     setForm({
       ...emptyForm,
       assignedToId: isSales && authUser?.id ? authUser.id : '',
@@ -382,7 +462,7 @@ export function LeadsPage() {
         type: 'success',
         message: next === 'UNQUALIFIED' ? 'Marked not qualified for service' : 'Marked closed / not interested',
       })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Update failed' })
     } finally {
@@ -415,7 +495,7 @@ export function LeadsPage() {
               ? `${res.enquiryId ?? formatEnquiryId(lead)} → stamping job (pick machine)`
               : `${res.enquiryId ?? formatEnquiryId(lead)} → service job (pick machine)`,
       })
-      await load()
+      await load({ silent: true })
       if (res.href) navigate(res.href)
     } catch (err) {
       addToast({
@@ -622,7 +702,7 @@ export function LeadsPage() {
         name: c.name || f.name,
         phone: indianMobileLocal(c.phone || c.mobile || f.phone),
         email: c.email || f.email,
-        company: f.company || c.name,
+        company: f.company,
       }))
     } else {
       setForm((f) => ({ ...f, contactId: '', customerType: 'NEW' }))
@@ -638,14 +718,82 @@ export function LeadsPage() {
     setPickedContact(null)
     setErrors({})
     setCreateDemoUnits([])
+    setCreateStep('source')
     if (searchParams.get('open') || searchParams.get('contactId')) {
       setSearchParams({}, { replace: true })
     }
   }
 
+  const createSteps = useMemo(
+    () => leadCreateSteps(form.serviceType),
+    [form.serviceType],
+  )
+  const createStepIdx = Math.max(0, createSteps.indexOf(createStep))
+  const onLeadReview = createStep === 'review'
+
+  // Keep current step valid when service type switches (sales ↔ service)
+  useEffect(() => {
+    if (!createSteps.includes(createStep)) {
+      setCreateStep(createSteps[0] ?? 'source')
+    }
+  }, [createSteps, createStep])
+
   const createOpen = pageTab === 'create'
-  const { requestLeave: requestLeaveCreate, dialog: leaveCreateDialog } = useConfirmLeave(
+  /** Cancel with a blank form must not ask to discard. */
+  const createDirty = useMemo(() => {
+    if (!createOpen) return false
+    const defaultService = isDesk ? 'SERVICE' : 'SALES'
+    const defaultAssigned = isSales && authUser?.id ? authUser.id : ''
+    return Boolean(
+      pickedContact ||
+        createDemoUnits.length > 0 ||
+        form.name.trim() ||
+        form.phone.trim() ||
+        form.email.trim() ||
+        form.company.trim() ||
+        form.enquiryWay.trim() ||
+        form.city.trim() ||
+        form.area.trim() ||
+        form.state.trim() ||
+        form.website.trim() ||
+        form.description.trim() ||
+        form.productInterest.trim() ||
+        form.productId ||
+        form.productIds.length > 0 ||
+        form.productSearch.trim() ||
+        form.familyCode ||
+        form.industryCode ||
+        form.demoSerialId ||
+        form.budget.trim() ||
+        form.paymentTotal.trim() ||
+        form.advanceAmount.trim() ||
+        form.followUpDate ||
+        form.reminderAt ||
+        form.timeline.trim() ||
+        form.tags.trim() ||
+        form.machineName.trim() ||
+        form.machineType.trim() ||
+        form.machineIssue.trim() ||
+        form.contactId ||
+        form.customerType === 'EXISTING' ||
+        form.serviceType !== defaultService ||
+        form.assignedToId !== defaultAssigned ||
+        form.status !== 'NEW' ||
+        form.score !== '40' ||
+        (form.enquiryDate && form.enquiryDate !== emptyForm.enquiryDate) ||
+        (form.clientCalledDate && form.clientCalledDate !== emptyForm.clientCalledDate),
+    )
+  }, [
     createOpen,
+    isDesk,
+    isSales,
+    authUser?.id,
+    pickedContact,
+    createDemoUnits,
+    form,
+  ])
+  const { requestLeave: requestLeaveCreate, dialog: leaveCreateDialog } = useConfirmLeave(
+    createDirty,
     'Lead form is open. Leave and discard your changes?',
   )
 
@@ -653,6 +801,7 @@ export function LeadsPage() {
     const queue = searchParams.get('queue')
     if (queue === 'requisitions' && canApproveReq) {
       setPageTab('requisitions')
+      // Keep reqId in the URL so RequisitionsPanel can scroll / open Sign
       return
     }
     if (queue === 'demo-updates' && isAdmin) {
@@ -690,6 +839,13 @@ export function LeadsPage() {
 
   async function createLead(e: FormEvent) {
     e.preventDefault()
+    // Wizard Next — only validate & save on the Review step
+    if (!onLeadReview) {
+      const next = createSteps[createStepIdx + 1]
+      if (next) setCreateStep(next)
+      return
+    }
+
     const nextErrors = validateLeadForm(form)
 
     if (!form.enquiryWay) nextErrors.enquiryWay = 'Select way of enquiries'
@@ -730,40 +886,19 @@ export function LeadsPage() {
         message: `Missing ${count} required field${count > 1 ? 's' : ''} — ${firstError(nextErrors)}`,
       })
       const firstKey = Object.keys(nextErrors)[0]!
-      const sectionId =
-        firstKey === 'enquiryWay' || firstKey === 'enquiryDate' || firstKey === 'serviceType'
-          ? 'lead-section-source'
-          : firstKey === 'name' ||
-              firstKey === 'phone' ||
-              firstKey === 'area' ||
-              firstKey === 'email' ||
-              firstKey === 'contactId'
-            ? 'lead-section-customer'
-            : firstKey === 'productIds' ||
-                firstKey === 'productId' ||
-                firstKey === 'machineName' ||
-                firstKey === 'machineType' ||
-                firstKey === 'machineIssue' ||
-                firstKey === 'clientCalledDate'
-              ? 'lead-section-opportunity'
-              : firstKey === 'familyCode' ||
-                  firstKey === 'industryCode' ||
-                  firstKey === 'demoSerialId'
-                ? 'lead-section-demo'
-                : firstKey === 'assignedToId'
-                  ? 'lead-section-ownership'
-                  : 'lead-field-' + firstKey
-      const el =
-        document.getElementById(`lead-field-${firstKey}`) ||
-        document.getElementById(sectionId) ||
-        document.getElementById('add-lead')
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      if (el) {
-        el.classList.add('ring-2', 'ring-red-500', 'ring-offset-2')
-        window.setTimeout(() => {
-          el.classList.remove('ring-2', 'ring-red-500', 'ring-offset-2')
-        }, 2600)
-      }
+      setCreateStep(leadStepFromErrorKey(firstKey))
+      window.setTimeout(() => {
+        const el =
+          document.getElementById(`lead-field-${firstKey}`) ||
+          document.getElementById('add-lead')
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        if (el) {
+          el.classList.add('ring-2', 'ring-red-500', 'ring-offset-2')
+          window.setTimeout(() => {
+            el.classList.remove('ring-2', 'ring-red-500', 'ring-offset-2')
+          }, 2600)
+        }
+      }, 60)
       return
     }
     // WhatsApp disabled for now — save enquiry / service handoff directly
@@ -906,7 +1041,7 @@ export function LeadsPage() {
       })
 
       closeCreateForm()
-      await load()
+      await load({ silent: true })
       navigate(`/sale-tracking/${leadId}`)
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Create failed' })
@@ -1170,7 +1305,7 @@ export function LeadsPage() {
       })
       if (selected && deleteIds.includes(String(selected.id))) setSelected(null)
       selection.clear()
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1229,7 +1364,7 @@ export function LeadsPage() {
             setPickedContact(null)
             setErrors({})
           }
-          if (createOpen) requestLeaveCreate(go)
+          if (createDirty) requestLeaveCreate(go)
           else go()
         }}
         tabs={[
@@ -1238,7 +1373,7 @@ export function LeadsPage() {
             ? [{ id: 'demo-updates', label: 'Daily updates', count: demoUpdateFeed.length }]
             : []),
           ...(canApproveReq
-            ? [{ id: 'requisitions', label: 'Requisitions' }]
+            ? [{ id: 'requisitions', label: 'Awaiting accept' }]
             : []),
           ...(canCreateLead ? [{ id: 'create', label: 'New lead' }] : []),
         ]}
@@ -1310,17 +1445,33 @@ export function LeadsPage() {
             accent="sky"
             eyebrow="My leads"
             title="New lead"
-            width={720}
+            width={820}
             storageKey="nova.drawer.leads.create"
+            dirty={createDirty}
             subtitle={
-              form.serviceType === 'SALES'
-                ? 'Sales: customer → products → follow-up. You own this until Won / Sales closed.'
-                : 'Service intake: customer + machine + issue + call date — auto-forwards to the service desk.'
+              onLeadReview
+                ? 'Review the summary — edit any section if needed, then save.'
+                : form.serviceType === 'SALES'
+                  ? 'Step through sales details, then review before saving.'
+                  : 'Step through service intake, then review before notifying the desk.'
             }
             onClose={closeCreateForm}
             footer={
               <>
                 <FormPanelCancel disabled={saving} />
+                {createStepIdx > 0 ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={saving}
+                    onClick={() => {
+                      const prev = createSteps[createStepIdx - 1]
+                      if (prev) setCreateStep(prev)
+                    }}
+                  >
+                    Back
+                  </Button>
+                ) : null}
                 <Button
                   type="submit"
                   form="add-lead"
@@ -1341,9 +1492,11 @@ export function LeadsPage() {
                 >
                   {saving
                     ? 'Saving…'
-                    : form.serviceType === 'SALES'
-                      ? 'Save lead'
-                      : 'Save & notify service desk'}
+                    : onLeadReview
+                      ? form.serviceType === 'SALES'
+                        ? 'Confirm & save lead'
+                        : 'Confirm & notify desk'
+                      : 'Next'}
                 </Button>
               </>
             }
@@ -1351,11 +1504,40 @@ export function LeadsPage() {
         <form id="add-lead" onSubmit={createLead} className="space-y-5" noValidate>
           {Object.keys(errors).length > 0 ? (
             <MissingBanner
-              message={`${Object.keys(errors).length} required field${Object.keys(errors).length > 1 ? 's' : ''} — highlighted in red below. ${firstError(errors)}`}
+              message={`${Object.keys(errors).length} required field${Object.keys(errors).length > 1 ? 's' : ''} — jump to the highlighted step. ${firstError(errors)}`}
             />
           ) : null}
 
+          <VerticalFormShell
+            tabs={
+              (
+                form.serviceType === 'SALES'
+                  ? [
+                      { id: 'source', label: 'Source', icon: Sparkles },
+                      { id: 'customer', label: 'Customer', icon: UserRound },
+                      { id: 'opportunity', label: 'Products', icon: Package },
+                      { id: 'payment', label: 'Payment', icon: Wallet },
+                      { id: 'followup', label: 'Follow-up', icon: CalendarClock },
+                      { id: 'ownership', label: 'Owner', icon: UserCheck },
+                      { id: 'notes', label: 'Notes', icon: MessageSquare },
+                      { id: 'review', label: 'Review', icon: ClipboardCheck },
+                    ]
+                  : [
+                      { id: 'source', label: 'Source', icon: Sparkles },
+                      { id: 'customer', label: 'Customer', icon: UserRound },
+                      { id: 'opportunity', label: 'Requirement', icon: Wrench },
+                      { id: 'review', label: 'Review', icon: ClipboardCheck },
+                    ]
+              ) as VerticalFormTab[]
+            }
+            active={createStep}
+            onChange={(id) => setCreateStep(id as LeadCreateStep)}
+            accent="sky"
+            title="Steps"
+          >
+
           {/* 1. Classification */}
+          {createStep === 'source' ? (
           <section
             id="lead-section-source"
             className={cn(
@@ -1364,7 +1546,7 @@ export function LeadsPage() {
             )}
           >
             <div className="mb-3">
-              <h3 className="text-sm font-semibold text-text-primary">1. Service &amp; enquiry source</h3>
+              <h3 className="text-sm font-semibold text-text-primary">Service &amp; enquiry source</h3>
               <p className="text-xs text-text-secondary">What kind of work is this, and how did the enquiry arrive?</p>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -1435,8 +1617,10 @@ export function LeadsPage() {
               </p>
             ) : null}
           </section>
+          ) : null}
 
           {/* 2. Customer */}
+          {createStep === 'customer' ? (
           <section
             id="lead-section-customer"
             className={cn(
@@ -1447,7 +1631,7 @@ export function LeadsPage() {
             )}
           >
             <div className="mb-3">
-              <h3 className="text-sm font-semibold text-text-primary">2. Customer details</h3>
+              <h3 className="text-sm font-semibold text-text-primary">Customer details</h3>
               <p className="text-xs text-text-secondary">
                 Search by name / phone / CUS-ID. If not found, choose <strong>Add new customer</strong> in
                 the dropdown — or type details below.
@@ -1463,6 +1647,16 @@ export function LeadsPage() {
                 returnTo="/sale-tracking?open=1"
                 prospectMode={form.serviceType === 'SALES'}
               />
+              {form.contactId ? (
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2.5 sm:col-span-2 lg:col-span-3">
+                  <div className="text-sm font-medium text-text-primary">{form.name || '—'}</div>
+                  <div className="mt-0.5 text-xs text-text-secondary">
+                    {[form.phone, form.email, form.company].filter(Boolean).join(' · ') ||
+                      'Linked customer'}
+                  </div>
+                </div>
+              ) : (
+                <>
               <Input
                 id="lead-field-name"
                 label="Customer name *"
@@ -1503,6 +1697,8 @@ export function LeadsPage() {
                 }}
                 hint="India (+91) — 10 digits"
               />
+                </>
+              )}
               <Input
                 label="City"
                 placeholder="Chennai"
@@ -1533,8 +1729,10 @@ export function LeadsPage() {
               />
             </div>
           </section>
+          ) : null}
 
           {/* 3. Opportunity / requirement */}
+          {createStep === 'opportunity' ? (
           <section
             id="lead-section-opportunity"
             className={cn(
@@ -1553,7 +1751,6 @@ export function LeadsPage() {
           >
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-text-primary">
-                3.{' '}
                 {form.serviceType === 'SALES'
                   ? 'Opportunity (products & pricing)'
                   : form.serviceType === 'RENTAL'
@@ -1741,12 +1938,13 @@ export function LeadsPage() {
               </div>
             )}
           </section>
+          ) : null}
 
           {/* 4. Sales payment — follows through sale → requisition → PI */}
-          {form.serviceType === 'SALES' ? (
+          {createStep === 'payment' && form.serviceType === 'SALES' ? (
             <section className="rounded-xl border border-border bg-muted/15 p-4">
               <div className="mb-3">
-                <h3 className="text-sm font-semibold text-text-primary">4. Payment</h3>
+                <h3 className="text-sm font-semibold text-text-primary">Payment</h3>
                 <p className="text-xs text-text-secondary">
                   Total, advance and due stay on this sale overview and carry into requisition / PI.
                 </p>
@@ -1790,10 +1988,10 @@ export function LeadsPage() {
           ) : null}
 
           {/* 5–7. Sales-only: follow-up, ownership/stage, notes */}
-          {form.serviceType === 'SALES' ? (
+          {createStep === 'followup' && form.serviceType === 'SALES' ? (
             <section className="rounded-xl border border-border bg-muted/15 p-4">
               <div className="mb-3">
-                <h3 className="text-sm font-semibold text-text-primary">5. Follow-up schedule</h3>
+                <h3 className="text-sm font-semibold text-text-primary">Follow-up schedule</h3>
                 <p className="text-xs text-text-secondary">
                   Creates a task on the assignee’s Workqueue and a bell notification. Reminder time
                   wins if both are set; otherwise the follow-up date is used (10:00).
@@ -1824,7 +2022,8 @@ export function LeadsPage() {
             </section>
           ) : null}
 
-          {form.serviceType === 'SALES' ? (
+          {createStep === 'ownership' && form.serviceType === 'SALES' ? (
+          <div className="space-y-4">
           <section
             id="lead-section-ownership"
             className={cn(
@@ -1833,7 +2032,7 @@ export function LeadsPage() {
             )}
           >
             <div className="mb-3">
-              <h3 className="text-sm font-semibold text-text-primary">6. Ownership &amp; stage</h3>
+              <h3 className="text-sm font-semibold text-text-primary">Ownership &amp; stage</h3>
               <p className="text-xs text-text-secondary">
                 Who owns this sale and where it is — including Won and Sales closed.
               </p>
@@ -1887,10 +2086,9 @@ export function LeadsPage() {
               </p>
             ) : null}
           </section>
-          ) : null}
 
           {/* Demo unit */}
-          {form.status === 'DEMO' && form.serviceType === 'SALES' ? (
+          {form.status === 'DEMO' ? (
             <section
               id="lead-section-demo"
               className={cn(
@@ -2001,11 +2199,13 @@ export function LeadsPage() {
               </div>
             </section>
           ) : null}
+          </div>
+          ) : null}
 
-          {form.serviceType === 'SALES' ? (
+          {createStep === 'notes' && form.serviceType === 'SALES' ? (
             <section className="rounded-xl border border-border bg-muted/15 p-4">
               <div className="mb-3">
-                <h3 className="text-sm font-semibold text-text-primary">7. Notes &amp; extras</h3>
+                <h3 className="text-sm font-semibold text-text-primary">Notes &amp; extras</h3>
                 <p className="text-xs text-text-secondary">
                   Optional tags, website, and first comment for your follow-up.
                 </p>
@@ -2036,6 +2236,147 @@ export function LeadsPage() {
               </div>
             </section>
           ) : null}
+
+          {createStep === 'review' ? (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-emerald-200/80 bg-emerald-50/60 px-3 py-2 text-sm text-emerald-950 dark:border-emerald-800/50 dark:bg-emerald-950/30 dark:text-emerald-100">
+                Overall summary of what you entered. Use <strong>Edit</strong> on any block to change it,
+                then come back here to save.
+              </div>
+              <ReviewSection title="Service & enquiry" onEdit={() => setCreateStep('source')}>
+                <ReviewRow
+                  label="Service"
+                  value={
+                    HMS_SERVICE_TYPES.find((t) => t.value === form.serviceType)?.label ??
+                    form.serviceType
+                  }
+                />
+                <ReviewRow
+                  label="Enquiry way"
+                  value={
+                    HMS_WAY_OF_ENQUIRIES.find((w) => w.code === form.enquiryWay)?.label ??
+                    form.enquiryWay
+                  }
+                />
+                <ReviewRow
+                  label="Enquiry date"
+                  value={form.enquiryDate ? formatDate(form.enquiryDate) : ''}
+                />
+              </ReviewSection>
+              <ReviewSection title="Customer" onEdit={() => setCreateStep('customer')}>
+                <ReviewRow label="Name" value={form.name} />
+                <ReviewRow label="Company" value={form.company} />
+                <ReviewRow
+                  label="Phone"
+                  value={form.phone ? formatPhone(toStoredIndianMobile(form.phone)) : ''}
+                />
+                <ReviewRow label="Email" value={form.email} />
+                <ReviewRow
+                  label="Area / city"
+                  value={[form.area, form.city, form.state].filter(Boolean).join(', ')}
+                />
+              </ReviewSection>
+              <ReviewSection
+                title={form.serviceType === 'SALES' ? 'Products' : 'Requirement'}
+                onEdit={() => setCreateStep('opportunity')}
+              >
+                {form.serviceType === 'SALES' ? (
+                  <>
+                    <ReviewRow
+                      label="Products"
+                      value={
+                        form.productIds
+                          .map((id) => productName[id] ?? id)
+                          .filter(Boolean)
+                          .join(', ') || form.productInterest
+                      }
+                    />
+                    <ReviewRow label="Notes" value={form.productInterest} />
+                    <ReviewRow label="Timeline" value={form.timeline} />
+                  </>
+                ) : (
+                  <>
+                    <ReviewRow label="Machine" value={form.machineName} />
+                    <ReviewRow label="Type" value={form.machineType} />
+                    <ReviewRow
+                      label="Called"
+                      value={form.clientCalledDate ? formatDate(form.clientCalledDate) : ''}
+                    />
+                    <ReviewRow label="Issue" value={form.machineIssue} />
+                  </>
+                )}
+              </ReviewSection>
+              {form.serviceType === 'SALES' ? (
+                <>
+                  <ReviewSection title="Payment" onEdit={() => setCreateStep('payment')}>
+                    <ReviewRow
+                      label="Total"
+                      value={
+                        form.paymentTotal || form.budget
+                          ? formatCurrency(Number(form.paymentTotal || form.budget) || 0)
+                          : ''
+                      }
+                    />
+                    <ReviewRow
+                      label="Advance"
+                      value={
+                        form.advanceAmount
+                          ? formatCurrency(Number(form.advanceAmount) || 0)
+                          : ''
+                      }
+                    />
+                    <ReviewRow
+                      label="Due"
+                      value={formatCurrency(
+                        Math.max(
+                          0,
+                          (Number(form.paymentTotal || form.budget) || 0) -
+                            (Number(form.advanceAmount) || 0),
+                        ),
+                      )}
+                    />
+                  </ReviewSection>
+                  <ReviewSection title="Follow-up" onEdit={() => setCreateStep('followup')}>
+                    <ReviewRow
+                      label="Next date"
+                      value={form.followUpDate ? formatDate(form.followUpDate) : ''}
+                    />
+                    <ReviewRow label="Reminder" value={form.reminderAt || ''} />
+                  </ReviewSection>
+                  <ReviewSection title="Ownership" onEdit={() => setCreateStep('ownership')}>
+                    <ReviewRow
+                      label="Executive"
+                      value={
+                        salesOptions.find((o) => o.value === form.assignedToId)?.label ??
+                        form.assignedToId
+                      }
+                    />
+                    <ReviewRow label="Stage" value={statusLabel(form.status)} />
+                    {form.status === 'DEMO' ? (
+                      <>
+                        <ReviewRow label="Demo family" value={form.familyCode} />
+                        <ReviewRow label="Demo machine" value={productName[form.productId]} />
+                        <ReviewRow
+                          label="Demo serial"
+                          value={
+                            createDemoUnits.find((u) => u.id === form.demoSerialId)?.serialNo ??
+                            form.demoSerialId
+                          }
+                        />
+                      </>
+                    ) : null}
+                  </ReviewSection>
+                  <ReviewSection title="Notes" onEdit={() => setCreateStep('notes')}>
+                    <ReviewRow label="Website" value={form.website} />
+                    <ReviewRow label="Tags" value={form.tags} />
+                    <ReviewRow label="Comments" value={form.description} />
+                  </ReviewSection>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
+          </VerticalFormShell>
         </form>
           </FormPanel>
         </>
@@ -2186,7 +2527,7 @@ export function LeadsPage() {
           </Card>
 
           <Card padding={false} className="st-enter st-delay-4 overflow-hidden">
-            {loading ? (
+            {loading && items.length === 0 ? (
               <TableSkeleton rows={8} />
             ) : loadError && items.length === 0 ? (
               <EmptyState
@@ -2224,7 +2565,7 @@ export function LeadsPage() {
 
                 {/* Mobile / tablet cards */}
                 <ul className="divide-y divide-border md:hidden">
-                  {visibleItems.map((lead, rowIdx) => {
+                  {paged.rows.map((lead, rowIdx) => {
                     const id = String(lead.id)
                     const cf = (lead.customFields as Record<string, unknown> | null) ?? {}
                     const enquiryDate = cf.enquiry_date
@@ -2384,7 +2725,7 @@ export function LeadsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {visibleItems.map((lead, rowIdx) => {
+                      {paged.rows.map((lead, rowIdx) => {
                         const id = String(lead.id)
                         const cf = (lead.customFields as Record<string, unknown> | null) ?? {}
                         const enquiryDate = cf.enquiry_date
@@ -2557,6 +2898,11 @@ export function LeadsPage() {
                     </tbody>
                   </table>
                 </div>
+                <PaginationBar
+                  page={paged.page}
+                  total={paged.total}
+                  onPageChange={paged.setPage}
+                />
               </div>
           )}
         </Card>

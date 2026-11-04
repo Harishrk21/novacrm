@@ -1,4 +1,11 @@
-import { createContext, useCallback, useContext, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from './Button'
 import { Drawer } from './Drawer'
@@ -25,10 +32,17 @@ interface FormPanelProps {
   /** Persist resized width (default shared form-panel key) */
   storageKey?: string
   /**
-   * When true (default), sidebar/route navigation and drawer close ask to discard.
+   * When true (default), sidebar/route navigation and drawer close ask to discard
+   * only after the user has edited the form (or when `dirty` is true).
    * Set false for read-only drawers.
    */
   guardUnsaved?: boolean
+  /**
+   * When set, discard confirm only runs if dirty.
+   * When omitted, dirty is auto-detected from form input/change events
+   * (Cancel with no edits closes immediately — no discard prompt).
+   */
+  dirty?: boolean
   /** Message shown in the discard dialog */
   unsavedReason?: string
 }
@@ -37,7 +51,8 @@ const FormPanelCloseCtx = createContext<(() => void) | null>(null)
 
 /**
  * Right-side drawer form.
- * While open, blocks sidebar / route changes with a Discard changes? dialog.
+ * While open with unsaved edits, blocks sidebar / route changes with a Discard dialog.
+ * Cancel / close with no edits closes immediately.
  */
 export function FormPanel({
   open,
@@ -53,15 +68,26 @@ export function FormPanel({
   maxWidth = 960,
   storageKey = 'nova.drawer.formPanel',
   guardUnsaved = true,
-  unsavedReason = 'You have a form open. Leaving will discard your changes.',
+  dirty,
+  unsavedReason = 'You have unsaved changes. Leaving will discard them.',
 }: FormPanelProps) {
-  const guardActive = guardUnsaved && open
+  const [touched, setTouched] = useState(false)
+  useEffect(() => {
+    if (!open) setTouched(false)
+  }, [open])
+
+  const hasEdits = dirty !== undefined ? dirty : touched
+  const guardActive = guardUnsaved && open && hasEdits
   useDiscardGuard(guardActive, unsavedReason)
   const { requestLeave, dialog } = useConfirmLeave(guardActive, unsavedReason)
 
   const guardedClose = useCallback(() => {
     requestLeave(onClose)
   }, [requestLeave, onClose])
+
+  const markTouched = useCallback(() => {
+    setTouched(true)
+  }, [])
 
   return (
     <FormPanelCloseCtx.Provider value={guardedClose}>
@@ -90,7 +116,12 @@ export function FormPanel({
           ) : undefined
         }
       >
-        <div className={cn('p-5', bodyClassName)}>{children}</div>
+        <div
+          className={cn('p-5', bodyClassName)}
+          onChange={dirty === undefined ? markTouched : undefined}
+        >
+          {children}
+        </div>
       </Drawer>
       {dialog}
     </FormPanelCloseCtx.Provider>

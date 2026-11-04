@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   DndContext,
@@ -31,6 +31,8 @@ import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
 import { useRowSelection } from '@/hooks/useRowSelection'
+import { usePagedRows } from '@/hooks/usePagedRows'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 import { api, ApiClientError, num } from '@/lib/api'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
@@ -89,6 +91,7 @@ export function DealsPage() {
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
   const [busyDelete, setBusyDelete] = useState(false)
 
+  const paged = usePagedRows(deals, deals.length)
   const dealIds = useMemo(() => deals.map((d) => d.id), [deals])
   const selection = useRowSelection(dealIds)
 
@@ -97,16 +100,20 @@ export function DealsPage() {
     useSensor(KeyboardSensor),
   )
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const lookupsReadyRef = useRef(false)
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
+      const needLookups = !lookupsReadyRef.current
       const [pipeline, dealsRes, lookups] = await Promise.all([
         api.dealsPipeline(),
         api.deals({
           limit: 200,
           ...(isAgent && authUser?.id ? { ownerUserId: authUser.id } : {}),
         }),
-        api.lookups(),
+        needLookups ? api.lookups() : Promise.resolve(null),
       ])
       setStages(pipeline)
       setDeals(
@@ -124,21 +131,24 @@ export function DealsPage() {
           description: d.description ? String(d.description) : null,
         })),
       )
-      setContacts(lookups.contacts)
-      setAccounts(lookups.accounts)
-      setUsers(lookups.users)
-      setForm((f) => ({
-        ...f,
-        stageId: f.stageId || pipeline[0]?.id || '',
-        ownerUserId: f.ownerUserId || lookups.users[0]?.id || '',
-      }))
+      if (lookups) {
+        setContacts(lookups.contacts)
+        setAccounts(lookups.accounts)
+        setUsers(lookups.users)
+        setForm((f) => ({
+          ...f,
+          stageId: f.stageId || pipeline[0]?.id || '',
+          ownerUserId: f.ownerUserId || lookups.users[0]?.id || '',
+        }))
+        lookupsReadyRef.current = true
+      }
     } catch (err) {
       addToast({
         type: 'error',
         message: err instanceof ApiClientError ? err.message : 'Failed to load deals',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast, authUser?.id, isAgent])
 
@@ -251,7 +261,7 @@ export function DealsPage() {
         description: '',
       }))
       addToast({ type: 'success', message: 'Deal created in pipeline' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -266,7 +276,7 @@ export function DealsPage() {
     try {
       await api.deleteDeal(id)
       addToast({ type: 'success', message: `${name} removed` })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -284,7 +294,7 @@ export function DealsPage() {
         message: deleteIds.length === 1 ? 'Deleted' : `${deleteIds.length} deleted`,
       })
       selection.clear()
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -480,7 +490,7 @@ export function DealsPage() {
         ))}
       </div>
 
-      {loading ? (
+      {loading && deals.length === 0 ? (
         <PageSkeleton cards={4} rows={5} />
       ) : view === 'kanban' ? (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(e) => void handleDragEnd(e)}>
@@ -552,7 +562,7 @@ export function DealsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {deals.map((deal) => (
+                    {paged.rows.map((deal) => (
                       <tr
                         key={deal.id}
                         className="cursor-pointer border-t border-border hover:bg-surface"
@@ -608,6 +618,7 @@ export function DealsPage() {
                   </tbody>
                 </table>
               </div>
+              <PaginationBar page={paged.page} total={paged.total} onPageChange={paged.setPage} />
             </div>
           )}
         </Card>

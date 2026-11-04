@@ -2034,6 +2034,7 @@ ticketsRouter.post("/:id/messages", requirePermission("tickets:write"), validate
   const id = paramId(q);
   const ticket = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
   if (!ticket) throw notFound("Ticket");
+  assertCanAccessTicket(q.auth?.role, q.auth?.userId, ticket, { forWrite: true });
   const user = await prisma.user.findFirst({ where: { id: q.auth!.userId!, tenantId: t } });
   if (!user) throw new AppError("User required", 401);
   const msg = await prisma.ticketMessage.create({

@@ -26,9 +26,10 @@ export function DealDetailPage() {
   }>({ contacts: [], accounts: [], users: [] })
   const [loading, setLoading] = useState(true)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!id) return
-    setLoading(true)
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const [row, pipeline, meta] = await Promise.all([
         api.getDeal(id),
@@ -39,9 +40,9 @@ export function DealDetailPage() {
       setStages(pipeline)
       setLookups({ contacts: meta.contacts, accounts: meta.accounts, users: meta.users })
     } catch {
-      setDeal(null)
+      if (!silent) setDeal(null)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [id])
 
@@ -64,7 +65,7 @@ export function DealDetailPage() {
     }
   }
 
-  if (loading) return <DetailSkeleton />
+  if (loading && !deal) return <DetailSkeleton />
   if (!deal) {
     return (
       <EmptyState

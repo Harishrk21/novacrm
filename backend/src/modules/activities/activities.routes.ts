@@ -150,6 +150,43 @@ activitiesRouter.post("/", requirePermission("activities:write"), validate(creat
     },
   });
 
+  // Day-of reminder for the assignee (workqueue tasks / calls / meetings from any login)
+  if (d.scheduledAt && assigneeId) {
+    try {
+      const start = new Date();
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 1);
+      const dueToday = d.scheduledAt >= start && d.scheduledAt < end;
+      const overdue = d.scheduledAt < start;
+      if (dueToday || overdue) {
+        const { createNotifications } = await import("../notifications/notify.service.js");
+        const kind =
+          d.type === "CALL" || d.type === "WHATSAPP"
+            ? "Call"
+            : d.type === "MEETING" || d.type === "DEMO" || d.type === "VISIT"
+              ? "Meeting"
+              : "Task";
+        await createNotifications(
+          [
+            {
+              tenantId: t,
+              userId: assigneeId,
+              title: overdue ? `${kind} overdue` : `${kind} due today`,
+              message: d.title.trim().slice(0, 200),
+              type: "ACTIVITY_DUE_TODAY",
+              entityType: "activity",
+              entityId: row.id,
+            },
+          ],
+          q,
+        );
+      }
+    } catch {
+      /* non-fatal */
+    }
+  }
+
   // Keep sale follow-up date in sync so Workqueue → Follow-ups lists this lead
   if (d.leadId && d.scheduledAt) {
     try {
@@ -217,6 +254,13 @@ activitiesRouter.patch("/:id", requirePermission("activities:write"), validate(u
     where: { id, tenantId: t, deletedAt: null },
   });
   if (!existing) throw notFound("Activity");
+  if (
+    isScopedEmployeeRole(q.auth?.role) &&
+    existing.assignedToId &&
+    existing.assignedToId !== q.auth!.userId
+  ) {
+    throw new AppError("You can only edit tasks assigned to you", 403);
+  }
   const updated = await prisma.activity.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data,
@@ -288,6 +332,17 @@ activitiesRouter.post("/:id/complete", requirePermission("activities:write"), va
 activitiesRouter.delete("/:id", requirePermission("activities:delete"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
+  const existing = await prisma.activity.findFirst({
+    where: { id, tenantId: t, deletedAt: null },
+  });
+  if (!existing) throw notFound("Activity");
+  if (
+    isScopedEmployeeRole(q.auth?.role) &&
+    existing.assignedToId &&
+    existing.assignedToId !== q.auth!.userId
+  ) {
+    throw new AppError("You can only delete tasks assigned to you", 403);
+  }
   const updated = await prisma.activity.updateMany({
     where: { id, tenantId: t, deletedAt: null },
     data: { deletedAt: new Date() },

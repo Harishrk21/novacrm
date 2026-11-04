@@ -35,6 +35,7 @@ import {
   YAxis,
 } from 'recharts'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { DueTodayRemindersCard } from '@/components/dashboard/DueTodayRemindersCard'
 import { Avatar } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -347,6 +348,11 @@ export function AdminAnalyticsDashboard() {
 
       <AskDashboardPanel range={range} />
 
+      <DueTodayRemindersCard
+        title="My due today"
+        subtitle="Calls, tasks & meetings you created in Workqueue — due today or overdue for your admin login"
+      />
+
       {/* Live status + POV switcher */}
       <div className="overflow-hidden rounded-[12px] border border-border bg-card shadow-[var(--shadow-card)]">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-gradient-to-r from-[#0B1F3A] to-[#1e3a5f] px-4 py-3 text-white">
@@ -629,19 +635,24 @@ function OverviewPov({
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Panel
-          title="Waiting for approval"
-          subtitle="Sales requisitions pending your sign-off"
+          title={`Awaiting accept${pendingReqCount ? ` (${pendingReqCount})` : ''}`}
+          subtitle="Sales requisitions waiting for your Accept"
+          className={
+            pendingReqCount > 0
+              ? 'border-red-400/70 bg-red-50/40 dark:border-red-500/40 dark:bg-red-950/20'
+              : undefined
+          }
           action={
             <Link
               to="/sale-tracking?queue=requisitions"
-              className="text-xs font-medium text-amber-700 hover:underline dark:text-amber-300"
+              className="text-xs font-medium text-red-700 hover:underline dark:text-red-300"
             >
               Open queue →
             </Link>
           }
         >
           {pendingReqCount === 0 ? (
-            <EmptyHint>No requisitions waiting for approval</EmptyHint>
+            <EmptyHint>No requisitions waiting for accept</EmptyHint>
           ) : (
             <div className="space-y-2">
               {pendingRequisitions.slice(0, 8).map((r) => {
@@ -666,7 +677,7 @@ function OverviewPov({
                         ? `/sale-tracking/${leadId}`
                         : `/sale-tracking?queue=requisitions&reqId=${encodeURIComponent(id)}`
                     }
-                    className="flex items-start justify-between gap-2 rounded-[8px] border border-amber-200/80 bg-amber-50/50 px-3 py-2 text-sm transition hover:border-amber-400 dark:border-amber-900/50 dark:bg-amber-950/30"
+                    className="flex items-start justify-between gap-2 rounded-[8px] border border-red-300/80 bg-red-50/80 px-3 py-2 text-sm transition hover:border-red-500 dark:border-red-800/60 dark:bg-red-950/40 dark:hover:bg-red-950/55"
                   >
                     <div className="min-w-0">
                       <div className="truncate font-medium">
@@ -682,7 +693,9 @@ function OverviewPov({
                           .join(' · ')}
                       </div>
                     </div>
-                    <Badge color="amber">Waiting</Badge>
+                    <Badge color="red" solid>
+                      Accept
+                    </Badge>
                   </Link>
                 )
               })}
@@ -796,10 +809,10 @@ function OverviewPov({
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricTile
           to="/sale-tracking?queue=requisitions"
-          label="Requisitions waiting"
+          label="Awaiting accept"
           value={String(pendingReqCount)}
-          hint="Sales requisitions · waiting for approval"
-          tone="amber"
+          hint="Sales requisitions · waiting for your Accept"
+          tone="rose"
           icon={<CheckSquare size={16} />}
         />
         <MetricTile

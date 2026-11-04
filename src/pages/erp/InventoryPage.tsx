@@ -30,7 +30,9 @@ import { Input } from '@/components/ui/Input'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 import { ProductImage } from '@/components/ProductImage'
+import { usePagedRows } from '@/hooks/usePagedRows'
 import { api, ApiClientError, num } from '@/lib/api'
 import {
   productRequiresStamping,
@@ -401,7 +403,7 @@ export function InventoryPage() {
     return product ? productRequiresStamping(product) : false
   }, [viewUnit, productMap])
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (_opts?: { silent?: boolean }) => {
     setStockAccessDenied(false)
     setStockLoadError(null)
     if (!invAreas.machines) {
@@ -584,7 +586,7 @@ export function InventoryPage() {
           message: `Serial ${returnConfirm.serialNo} returned — back in stock`,
         })
       }
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -697,6 +699,11 @@ export function InventoryPage() {
     }
     return [...map.values()].sort((a, b) => (a.product?.name ?? '').localeCompare(b.product?.name ?? ''))
   }, [filteredUnits, productMap])
+
+  const groupsPaged = usePagedRows(
+    groups,
+    `${filterProductId}|${filterFamily}|${filterIndustry}|${filterWarehouseId}|${filterStatus}|${filterQ}|${filterStampFrom}|${filterStampTo}`,
+  )
 
   const drillGroup = useMemo(
     () => (drillProductId ? groups.find((g) => g.productId === drillProductId) ?? null : null),
@@ -956,7 +963,7 @@ export function InventoryPage() {
       setReceiveOpen(false)
       setTab('list')
       setDrillProductId(addedProductId)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1051,7 +1058,7 @@ export function InventoryPage() {
               : 'Stock unit updated',
       })
       setEditUnit(null)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Update failed' })
     } finally {
@@ -1589,8 +1596,16 @@ export function InventoryPage() {
                       </thead>
                       <tbody>
                         {drillGroup.units.map((row) => (
-                          <tr key={row.id} className="border-t border-border">
-                            <td className="px-4 py-3 font-mono text-xs font-semibold">
+                          <tr
+                            key={row.id}
+                            className="cursor-pointer border-t border-border hover:bg-muted/40"
+                            onClick={() => {
+                              setEditUnit(null)
+                              setReceiveOpen(false)
+                              setViewUnit(row)
+                            }}
+                          >
+                            <td className="px-4 py-3 font-mono text-xs font-semibold text-accent-blue">
                               {row.hmsUniqId || '—'}
                             </td>
                             <td className="px-4 py-3 font-mono font-semibold">{row.serialNo}</td>
@@ -1616,7 +1631,7 @@ export function InventoryPage() {
                                 {row.status.replace('_', ' ')}
                               </Badge>
                             </td>
-                            <td className="px-4 py-3">
+                            <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                               <div className="flex gap-1">
                                 <Button
                                   variant="ghost"
@@ -1690,7 +1705,7 @@ export function InventoryPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {groups.map((g) => {
+                      {groupsPaged.rows.map((g) => {
                         const showStamping = g.product ? productRequiresStamping(g.product) : false
                         const meta = productCatalogMeta(productAttrs(g.product ?? {}))
                         return (
@@ -1751,6 +1766,11 @@ export function InventoryPage() {
                       })}
                     </tbody>
                   </table>
+                  <PaginationBar
+                    page={groupsPaged.page}
+                    total={groupsPaged.total}
+                    onPageChange={groupsPaged.setPage}
+                  />
                 </div>
               )}
             </Card>

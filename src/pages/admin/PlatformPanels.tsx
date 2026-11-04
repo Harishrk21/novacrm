@@ -921,12 +921,13 @@ export function TipsLibraryPanel() {
     isActive: true,
   })
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
     if (!liveMode) {
-      setLoading(false)
+      if (!silent) setLoading(false)
       return
     }
-    setLoading(true)
+    if (!silent) setLoading(true)
     try {
       const rows = await api.listPlatformTips(true)
       setTips(rows)
@@ -936,7 +937,7 @@ export function TipsLibraryPanel() {
         message: e instanceof ApiClientError ? e.message : 'Failed to load tips',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [liveMode, addToast])
 
@@ -985,7 +986,7 @@ export function TipsLibraryPanel() {
         addToast({ type: 'success', message: 'Tip created' })
       }
       setOpen(false)
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -1001,7 +1002,7 @@ export function TipsLibraryPanel() {
     try {
       await api.deletePlatformTip(id)
       addToast({ type: 'success', message: 'Tip deleted' })
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -1023,7 +1024,7 @@ export function TipsLibraryPanel() {
           <Plus size={16} /> New tip
         </Button>
       </div>
-      {loading ? (
+      {loading && tips.length === 0 ? (
         <Card>Loading…</Card>
       ) : tips.length === 0 ? (
         <Card className="text-sm text-text-secondary">

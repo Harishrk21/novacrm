@@ -41,14 +41,16 @@ export function inventoryAreasFromPreferences(preferences: unknown): InventoryAr
 /**
  * Resolved visibility for a user.
  * - Explicit preferences.inventoryAreas wins (admin can still restrict).
+ * - Service engineers default to none until admin assigns areas.
  * - Otherwise full access — teams use self-control on which stock they touch.
  */
 export function resolveInventoryAreas(
   preferences: unknown,
-  _roleCode?: string | null,
+  roleCode?: string | null,
 ): InventoryAreas {
   const explicit = inventoryAreasFromPreferences(preferences);
   if (explicit) return explicit;
+  if (roleCode === "SERVICE_ENGINEER") return { ...NO_INVENTORY_AREAS };
   return { ...ALL_INVENTORY_AREAS };
 }
 

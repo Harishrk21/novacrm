@@ -468,6 +468,8 @@ export async function setTenantModules(tenantId: string, modulesEnabled: Record<
       id: true,
       attendanceEnabled: true,
       attendanceTenantId: true,
+      attendanceSsoSecret: true,
+      attendanceSsoIssuer: true,
     },
   });
   if (!tenant) throw notFound("Tenant");
@@ -479,13 +481,23 @@ export async function setTenantModules(tenantId: string, modulesEnabled: Record<
   } = await import("../attendance/attendanceProvision.service.js");
 
   const wantAttendance = Boolean(modulesEnabled[ATTENDANCE_MODULE_KEY]);
+  const alreadyLinked = Boolean(
+    tenant.attendanceTenantId && tenant.attendanceSsoSecret && tenant.attendanceSsoIssuer,
+  );
   let attendance:
     | import("../attendance/attendanceProvision.service.js").AttendanceProvisionResult
     | null = null;
 
-  // Provision BEFORE flipping modules so a failed API call does not leave a half-on UI
-  if (wantAttendance) {
+  // Only hit Attendance API when linking for the first time (or repairing SSO).
+  // Re-saving modules on an already-linked client used to re-sync geofence every time.
+  if (wantAttendance && !alreadyLinked) {
     attendance = await provisionAttendanceForHmsTenant(tenantId);
+  } else if (wantAttendance && alreadyLinked) {
+    attendance = {
+      action: "already_linked",
+      attendanceTenantId: tenant.attendanceTenantId ?? undefined,
+      message: "Attendance already linked",
+    };
   }
 
   await prisma.tenant.update({
@@ -495,21 +507,26 @@ export async function setTenantModules(tenantId: string, modulesEnabled: Record<
       ...(wantAttendance ? { attendanceEnabled: true } : {}),
     },
   });
+
   const keys = Object.entries(modulesEnabled);
-  for (const [i, [moduleKey, isEnabled]] of keys.entries()) {
-    await prisma.tenantModule.upsert({
-      where: { tenantId_moduleKey: { tenantId, moduleKey } },
-      update: { isEnabled },
-      create: {
-        id: newId(),
-        tenantId,
-        moduleKey,
-        moduleGroup: moduleGroup(moduleKey),
-        label: moduleKey.split(".").at(-1)!.replaceAll("_", " "),
-        isEnabled,
-        sortOrder: i,
-      },
-    });
+  if (keys.length) {
+    await prisma.$transaction(
+      keys.map(([moduleKey, isEnabled], i) =>
+        prisma.tenantModule.upsert({
+          where: { tenantId_moduleKey: { tenantId, moduleKey } },
+          update: { isEnabled, sortOrder: i },
+          create: {
+            id: newId(),
+            tenantId,
+            moduleKey,
+            moduleGroup: moduleGroup(moduleKey),
+            label: moduleKey.split(".").at(-1)!.replaceAll("_", " "),
+            isEnabled,
+            sortOrder: i,
+          },
+        }),
+      ),
+    );
   }
 
   if (!wantAttendance && (tenant.attendanceEnabled || tenant.attendanceTenantId)) {
@@ -570,21 +587,30 @@ export async function updateTenant(id: string, data: Record<string, unknown>) {
   }
 
   const pack = data.subscriptionPack;
-  if (typeof pack === "string" && pack in { SALES: 1, SALES_INVENTORY: 1, HMS_FULL: 1 }) {
+  const prevSettings =
+    tenant.settings && typeof tenant.settings === "object" && !Array.isArray(tenant.settings)
+      ? (tenant.settings as Record<string, unknown>)
+      : {};
+  const currentPack =
+    typeof prevSettings.subscriptionPack === "string" ? prevSettings.subscriptionPack : null;
+  const validPack =
+    typeof pack === "string" && pack in { SALES: 1, SALES_INVENTORY: 1, HMS_FULL: 1 };
+  // Only rebuild modules from pack when the pack actually changes (or modules explicitly sent).
+  // Re-sending the same pack on every Save previously re-ran setTenantModules + Attendance sync.
+  if (validPack) {
+    const packChanged = pack !== currentPack;
     const planned = modulesForPlan((patch.plan as string) ?? tenant.plan, {
       subscriptionPack: pack,
       override: (patch.modulesEnabled as Record<string, boolean> | undefined) ?? undefined,
     });
-    patch.modulesEnabled = planned.modules;
-    const prevSettings =
-      tenant.settings && typeof tenant.settings === "object" && !Array.isArray(tenant.settings)
-        ? (tenant.settings as Record<string, unknown>)
-        : {};
     patch.settings = {
       ...prevSettings,
       subscriptionPack: pack,
       planFeatures: planned.features,
     };
+    if (packChanged || "modulesEnabled" in data) {
+      patch.modulesEnabled = planned.modules;
+    }
   }
 
   const r = await prisma.tenant.updateMany({ where: { id, deletedAt: null }, data: patch });
@@ -600,11 +626,25 @@ export async function updateTenant(id: string, data: Record<string, unknown>) {
     "attendanceGeofenceLng" in data ||
     "attendanceGeofenceRadiusM" in data;
   if (geofenceTouched) {
-    try {
-      const { syncAttendanceGeofence } = await import("../attendance/attendanceProvision.service.js");
-      await syncAttendanceGeofence(id);
-    } catch {
-      /* Attendance may not be linked yet */
+    const sameGeofence =
+      Boolean(data.attendanceGeofenceEnabled) === Boolean(tenant.attendanceGeofenceEnabled) &&
+      (data.attendanceGeofenceLat == null
+        ? tenant.attendanceGeofenceLat == null
+        : Number(data.attendanceGeofenceLat) === Number(tenant.attendanceGeofenceLat)) &&
+      (data.attendanceGeofenceLng == null
+        ? tenant.attendanceGeofenceLng == null
+        : Number(data.attendanceGeofenceLng) === Number(tenant.attendanceGeofenceLng)) &&
+      Number(data.attendanceGeofenceRadiusM ?? 10) ===
+        Number(tenant.attendanceGeofenceRadiusM ?? 10);
+    if (!sameGeofence) {
+      try {
+        const { syncAttendanceGeofence } = await import(
+          "../attendance/attendanceProvision.service.js"
+        );
+        await syncAttendanceGeofence(id);
+      } catch {
+        /* Attendance may not be linked yet */
+      }
     }
   }
 

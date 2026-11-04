@@ -101,8 +101,9 @@ export function SparePartsPanel({
   const allowMutate = canEdit && !readOnly
   const machineLocked = Boolean(fixedAssetId)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const [parts, lookups, assetRes] = await Promise.all([
         api.spareParts({
@@ -149,7 +150,7 @@ export function SparePartsPanel({
         message: err instanceof ApiClientError ? err.message : 'Could not load spare parts',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [
     addToast,
@@ -254,7 +255,7 @@ export function SparePartsPanel({
       else await api.createSparePart(body)
       addToast({ type: 'success', message: editId ? 'Spare part updated' : 'Spare part recorded' })
       setFormOpen(false)
-      await load()
+      await load({ silent: true })
       onTicketUpdated?.()
     } catch (err) {
       addToast({
@@ -270,7 +271,7 @@ export function SparePartsPanel({
     try {
       await api.deleteSparePart(id)
       addToast({ type: 'success', message: 'Deleted' })
-      await load()
+      await load({ silent: true })
       onTicketUpdated?.()
     } catch (err) {
       addToast({
@@ -361,7 +362,7 @@ export function SparePartsPanel({
               </div>
             ) : null}
 
-            {loading ? (
+            {loading && rows.length === 0 ? (
               <TableSkeleton rows={5} />
             ) : filtered.length === 0 ? (
               <EmptyState

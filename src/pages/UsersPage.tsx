@@ -19,6 +19,8 @@ import { PhoneInput } from '@/components/ui/PhoneInput'
 import { ConfirmModal, Modal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
 import { useRowSelection } from '@/hooks/useRowSelection'
+import { usePagedRows } from '@/hooks/usePagedRows'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 import { api, ApiClientError, num } from '@/lib/api'
 import { TENANT_ROLE_OPTIONS } from '@/lib/roles'
 import { formatCurrency, formatDateTime } from '@/lib/utils'
@@ -30,6 +32,7 @@ import {
 import {
   EMPLOYEE_MODULE_OPTIONS,
   defaultAllowedModules,
+  defaultAllowedModulesForRole,
   resolveAllowedModules,
   type AllowedModules,
 } from '@/lib/userModules'
@@ -103,25 +106,25 @@ function defaultAreasForRole(roleCode: string) {
   if (roleCode === 'ADMIN' || roleCode === 'MANAGER' || roleCode === 'WAREHOUSE') {
     return { invMachines: true, invSparesBilling: true, invSparesWeighing: true }
   }
-  // Desk / sales / engineers need product catalog + serial stock for demos, tickets, PIs.
+  // Sales / desk often need machine catalog for demos & tickets — engineer starts with none
+  // until admin enables Stock / Inventory modules (and areas) explicitly.
   if (
     roleCode === 'SALES_EXECUTIVE' ||
     roleCode === 'AGENT' ||
-    roleCode === 'SERVICE_DESK' ||
-    roleCode === 'SERVICE_ENGINEER'
+    roleCode === 'SERVICE_DESK'
   ) {
     return { invMachines: true, invSparesBilling: false, invSparesWeighing: false }
   }
   return { invMachines: false, invSparesBilling: false, invSparesWeighing: false }
 }
 
-const emptyForm = (tenantKeys: string[] = []): FormState => ({
+const emptyForm = (tenantKeys: string[] = [], roleCode = 'WAREHOUSE'): FormState => ({
   name: '',
   email: '',
   password: 'Demo@12345',
   phone: '',
   avatarUrl: '',
-  roleCode: 'WAREHOUSE',
+  roleCode,
   status: 'ACTIVE',
   employeeCode: '',
   department: '',
@@ -129,8 +132,8 @@ const emptyForm = (tenantKeys: string[] = []): FormState => ({
   joinDate: '',
   salary: '',
   notes: '',
-  ...defaultAreasForRole('WAREHOUSE'),
-  allowedModules: defaultAllowedModules(tenantKeys),
+  ...defaultAreasForRole(roleCode),
+  allowedModules: defaultAllowedModulesForRole(roleCode, tenantKeys),
 })
 
 function formFromUser(u: TeamUser, tenantKeys: string[]): FormState {
@@ -210,6 +213,7 @@ export function UsersPage() {
     })
   }, [items, filterRole, filterStatus, filterQ])
 
+  const paged = usePagedRows(filtered, `${filterRole}|${filterStatus}|${filterQ}`)
   const ids = useMemo(() => filtered.map((u) => u.id), [filtered])
   const selection = useRowSelection(ids)
 
@@ -222,8 +226,9 @@ export function UsersPage() {
     return map
   }, [items])
 
-  async function load() {
-    setLoading(true)
+  async function load(opts?: { silent?: boolean }) {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const res = await api.listUsers()
       setData(res as UsersPayload)
@@ -233,7 +238,7 @@ export function UsersPage() {
         message: err instanceof ApiClientError ? err.message : 'Failed to load users',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -380,7 +385,7 @@ export function UsersPage() {
       }
       setFormOpen(false)
       setEditingId(null)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -401,7 +406,7 @@ export function UsersPage() {
       })
       selection.clear()
       if (viewUser && deleteIds.includes(viewUser.id)) setViewUser(null)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -502,10 +507,16 @@ export function UsersPage() {
           setForm((f) => ({
             ...f,
             roleCode,
-            ...(formMode === 'create' ? defaultAreasForRole(roleCode) : {}),
-            ...(roleCode === 'ADMIN'
-              ? { allowedModules: defaultAllowedModules(tenantModuleKeys) }
-              : {}),
+            // On create, role change resets modules + inventory areas to role defaults.
+            // On edit, only ADMIN forces all-on; otherwise keep admin’s custom ticks.
+            ...(formMode === 'create'
+              ? {
+                  ...defaultAreasForRole(roleCode),
+                  allowedModules: defaultAllowedModulesForRole(roleCode, tenantModuleKeys),
+                }
+              : roleCode === 'ADMIN'
+                ? { allowedModules: defaultAllowedModules(tenantModuleKeys) }
+                : {}),
           }))
         }}
         options={ROLE_OPTIONS}
@@ -525,11 +536,12 @@ export function UsersPage() {
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
             <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
-              App access — what they can see
+              App access — enable / disable modules
             </div>
             <p className="mt-1 text-xs text-text-secondary">
-              Only modules your platform admin enabled for this company. Tick to show in their
-              sidebar; untick to hide.
+              Tick to show in their sidebar (and unlock routes); untick to hide. Defaults follow the
+              role — e.g. service engineers start without Inventory until you enable Stock /
+              Products here.
             </p>
           </div>
           {form.roleCode !== 'ADMIN' && assignableModuleOptions.length > 0 ? (
@@ -612,11 +624,11 @@ export function UsersPage() {
 
       <div className="sm:col-span-2 rounded-[10px] border border-border bg-muted/20 p-3">
         <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
-          Inventory visibility
+          Inventory areas (fine-tune)
         </div>
         <p className="mt-1 text-xs text-text-secondary">
-          Within stock access — which lists this person can see. Fine-tune after enabling Stock /
-          Inventory above.
+          Only applies after you enable <strong>Products</strong> / <strong>Stock / Inventory</strong> in
+          App access above. Leave all off for field engineers who should not see Inventory.
         </p>
         <div className="mt-3 space-y-2">
           {(
@@ -814,7 +826,7 @@ export function UsersPage() {
               onDelete={() => setConfirm({ ids: selection.selectedIds })}
             />
           ) : null}
-          {loading ? (
+          {loading && items.length === 0 ? (
             <TableSkeleton rows={8} className="p-4" />
           ) : (
           <div className="overflow-x-auto">
@@ -845,7 +857,7 @@ export function UsersPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((user) => (
+                {paged.rows.map((user) => (
                   <tr
                     key={user.id}
                     className="cursor-pointer border-t border-border hover:bg-muted/40"
@@ -909,6 +921,9 @@ export function UsersPage() {
                 )}
               </tbody>
             </table>
+            {!loading && filtered.length > 0 ? (
+              <PaginationBar page={paged.page} total={paged.total} onPageChange={paged.setPage} />
+            ) : null}
           </div>
           )}
         </div>

@@ -15,6 +15,8 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { useRowSelection } from '@/hooks/useRowSelection'
+import { usePagedRows } from '@/hooks/usePagedRows'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 import { api, ApiClientError } from '@/lib/api'
 import { assetOriginShort, isThirdPartyOrigin } from '@/lib/assetOrigin'
 import { formatDate, formatPhone } from '@/lib/utils'
@@ -109,19 +111,20 @@ export function AmcPage() {
   const [busyDelete, setBusyDelete] = useState(false)
   const [busyConvert, setBusyConvert] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const res = await api.assets({ limit: 200 })
       setRows(res.items ?? [])
     } catch (err) {
-      setRows([])
+      if (!silent) setRows([])
       addToast({
         type: 'error',
         message: err instanceof ApiClientError ? err.message : 'Could not load machines',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast])
 
@@ -191,6 +194,7 @@ export function AmcPage() {
             ? upcomingServiceRows.map((x) => x.row)
             : upcomingAmcRenewalRows.map((x) => x.row)
 
+  const paged = usePagedRows(list, `${tab}|${originFilter}`)
   const ids = useMemo(() => list.map((i) => String(i.id)), [list])
   const selection = useRowSelection(ids)
 
@@ -217,7 +221,7 @@ export function AmcPage() {
       })
       addToast({ type: 'success', message: 'Converted to AMC (1 year)' })
       setConvertId(null)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -237,7 +241,7 @@ export function AmcPage() {
         message: deleteIds.length === 1 ? 'Deleted' : `${deleteIds.length} deleted`,
       })
       selection.clear()
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -459,7 +463,7 @@ export function AmcPage() {
         onChange={(id) => setTab(id as PlanTab)}
       />
 
-      {loading ? (
+      {loading && rows.length === 0 ? (
         <div className="mt-4"><TableSkeleton rows={7} /></div>
       ) : list.length === 0 ? (
         <Card className="mt-4">
@@ -503,13 +507,23 @@ export function AmcPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {list.map((a) => {
+                  {paged.rows.map((a) => {
                     const id = String(a.id)
                     const contact = a.contact as { id?: string } | null | undefined
                     const contactId = contact?.id ? String(contact.id) : a.contactId ? String(a.contactId) : ''
                     return (
-                      <tr key={id} className="border-t border-border">
-                        <td className="px-4 py-3">
+                      <tr
+                        key={id}
+                        className={
+                          contactId
+                            ? 'cursor-pointer border-t border-border hover:bg-surface'
+                            : 'border-t border-border'
+                        }
+                        onClick={() => {
+                          if (contactId) navigate(`/contacts/${contactId}`)
+                        }}
+                      >
+                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                           <SelectCheckbox
                             checked={selection.isSelected(id)}
                             onChange={() => selection.toggle(id)}
@@ -517,7 +531,7 @@ export function AmcPage() {
                           />
                         </td>
                         {renderRowCells(a)}
-                        <td className="px-4 py-3">
+                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center gap-1">
                             {contactId ? (
                               <ViewIconButton onClick={() => navigate(`/contacts/${contactId}`)} />
@@ -554,6 +568,7 @@ export function AmcPage() {
                 </tbody>
               </table>
             </div>
+            <PaginationBar page={paged.page} total={paged.total} onPageChange={paged.setPage} />
           </div>
         </Card>
       )}

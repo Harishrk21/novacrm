@@ -37,7 +37,9 @@ import { filterServiceEngineers } from '@/lib/roles'
 import { useUIStore } from '@/store/uiStore'
 import { APP_NAME } from '@/lib/branding'
 import { TableSkeleton } from '@/components/ui/Skeleton'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 import { ConfirmModal } from '@/components/ui/Modal'
+import { usePagedRows } from '@/hooks/usePagedRows'
 
 type Category = 'MACHINE' | 'SPARE'
 type HubTab = 'catalog' | 'stock' | 'suppliers' | 'report'
@@ -203,6 +205,13 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
   const [editUnitSerial, setEditUnitSerial] = useState('')
   const [editUnitNotes, setEditUnitNotes] = useState('')
   const [editingUnitId, setEditingUnitId] = useState<string | null>(null)
+  /** Snapshot of spare fields when stock-detail drawer opened — skip discard if unchanged. */
+  const [spareDetailBaseline, setSpareDetailBaseline] = useState<{
+    family: Family
+    name: string
+    code: string
+    unit: string
+  } | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -326,8 +335,9 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     [mFamily, mIndustry],
   )
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       // One workspace call instead of 7 remote round-trips to US-East RDS
       const workspace = await api.inventoryWorkspace()
@@ -363,7 +373,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
         message: e instanceof ApiClientError ? e.message : 'Could not load inventory',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast])
 
@@ -392,7 +402,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
         message: `${returnConfirm.label} is back in HMS stock`,
       })
       setReturnConfirm(null)
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -737,7 +747,10 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     void api
       .previewHmsUniqIds({ productId, quantity: n })
       .then((ids) => {
-        if (!cancelled) setPreviewHmsIds(Array.isArray(ids) ? ids.map(String) : [])
+        if (cancelled) return
+        const list = Array.isArray(ids) ? ids.map(String) : []
+        setPreviewHmsIds(list)
+        if (list.length) setHmsStart(list[0] ?? '')
       })
       .catch(() => {
         if (!cancelled) setPreviewHmsIds([])
@@ -761,18 +774,24 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     setEditingUnitId(null)
     setEditUnitSerial('')
     setEditUnitNotes('')
+    setSpareDetailBaseline(null)
     setStockDetailOpen(true)
   }
 
   function openSpareStockDetail(s: Record<string, unknown>) {
+    const family = (String(s.machineFamily) === 'BILLING' ? 'BILLING' : 'WEIGHING') as Family
+    const name = String(s.name ?? '')
+    const code = s.partCode != null ? String(s.partCode) : ''
+    const unit = s.unit != null ? String(s.unit) : 'pcs'
     setEditingSpareStockId(String(s.id))
     setEditingMachineProductId(null)
     setEditingUnitId(null)
-    setSFamily((String(s.machineFamily) === 'BILLING' ? 'BILLING' : 'WEIGHING') as Family)
-    setSName(String(s.name ?? ''))
-    setSCode(s.partCode != null ? String(s.partCode) : '')
-    setSUnit(s.unit != null ? String(s.unit) : 'pcs')
+    setSFamily(family)
+    setSName(name)
+    setSCode(code)
+    setSUnit(unit)
     setSpareId(String(s.id))
+    setSpareDetailBaseline({ family, name, code, unit })
     setStockDetailOpen(true)
   }
 
@@ -781,6 +800,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     setEditingMachineProductId(null)
     setEditingSpareStockId(null)
     setEditingUnitId(null)
+    setSpareDetailBaseline(null)
   }
 
   async function saveSpareStockDetail() {
@@ -799,7 +819,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       })
       addToast({ type: 'success', message: 'Spare updated' })
       closeStockDetail()
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -820,7 +840,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       })
       addToast({ type: 'success', message: 'Unit updated' })
       setEditingUnitId(null)
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -1047,6 +1067,25 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     return row ?? null
   }, [stockRows, editingMachineProductId])
 
+  const stockDetailDirty = useMemo(() => {
+    if (editingUnitId) return true
+    if (!editingSpareStockId || !spareDetailBaseline) return false
+    return (
+      sFamily !== spareDetailBaseline.family ||
+      sName !== spareDetailBaseline.name ||
+      sCode !== spareDetailBaseline.code ||
+      sUnit !== spareDetailBaseline.unit
+    )
+  }, [
+    editingUnitId,
+    editingSpareStockId,
+    spareDetailBaseline,
+    sFamily,
+    sName,
+    sCode,
+    sUnit,
+  ])
+
   const catalogRows = useMemo(() => {
     const q = filterQ.trim().toLowerCase()
     const brandQ = brandFilter.trim().toLowerCase()
@@ -1115,6 +1154,12 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
             }))
     return [...machineRows, ...spareRows].sort((a, b) => a.name.localeCompare(b.name))
   }, [products, spares, filterQ, listFilter, brandFilter])
+
+  const catalogPaged = usePagedRows(
+    catalogRows,
+    `${filterQ}|${listFilter}|${brandFilter}`,
+  )
+  const stockPaged = usePagedRows(stockRows, `${filterQ}|${stockListFilter}`)
 
   const productOptions = useMemo(() => {
     return products
@@ -1309,7 +1354,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       setMCustom('')
 
       closeProductDrawer()
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -1347,7 +1392,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       setSName('')
       setSCode('')
       closeProductDrawer()
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -1390,7 +1435,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       setBrandFormName('')
       setBrandFormCode('')
       setEditingBrandId(null)
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -1472,7 +1517,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       setPreviewHmsIds([])
       setQty('1')
       closeStockMove()
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -1531,7 +1576,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       setSpareId('')
       setSpareUniqStart('')
       closeStockMove()
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -1575,7 +1620,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       setReduceReason('')
       closeStockMove()
       closeStockDetail()
-      await load()
+      await load({ silent: true })
       await loadReduceHistory()
     } catch (e) {
       addToast({
@@ -1612,7 +1657,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       setSupName('')
       setSupPhone('')
       setSupGstin('')
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -1940,7 +1985,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
         />
       ) : null}
 
-      {loading ? (
+      {loading && products.length === 0 && units.length === 0 ? (
         <TableSkeleton rows={6} />
       ) : tab === 'catalog' ? (
         <Card className="space-y-3 p-4">
@@ -1993,7 +2038,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                   </tr>
                 </thead>
                 <tbody>
-                  {catalogRows.map((row) => (
+                  {catalogPaged.rows.map((row) => (
                     <tr
                       key={row.key}
                       role="button"
@@ -2029,6 +2074,11 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                   ))}
                 </tbody>
               </table>
+              <PaginationBar
+                page={catalogPaged.page}
+                total={catalogPaged.total}
+                onPageChange={catalogPaged.setPage}
+              />
             </div>
           )}
 
@@ -2498,11 +2548,13 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                     <th className="px-3 py-2.5 font-semibold">Brand / type</th>
                     <th className="px-3 py-2.5 font-semibold">SKU / code</th>
                     <th className="px-3 py-2.5 font-semibold">Detail</th>
-                    <th className="px-3 py-2.5 font-semibold">Actions</th>
+                    <th className="sticky right-0 z-[2] bg-muted/95 px-3 py-2.5 font-semibold shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.12)]">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {stockRows.map((row) => (
+                  {stockPaged.rows.map((row) => (
                     <tr
                       key={row.key}
                       role="button"
@@ -2546,7 +2598,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                         {row.kind === 'MACHINE' ? row.detail : row.qtyLabel}
                       </td>
                       <td
-                        className="relative px-3 py-2.5"
+                        className="sticky right-0 z-[1] bg-card px-3 py-2.5 shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.12)]"
                         onClick={(e) => e.stopPropagation()}
                         onKeyDown={(e) => e.stopPropagation()}
                       >
@@ -2608,6 +2660,11 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                   ))}
                 </tbody>
               </table>
+              <PaginationBar
+                page={stockPaged.page}
+                total={stockPaged.total}
+                onPageChange={stockPaged.setPage}
+              />
             </div>
           )}
             </>
@@ -3029,6 +3086,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
           <FormPanel
             open={stockDetailOpen}
             onClose={closeStockDetail}
+            dirty={stockDetailDirty}
             title={
               editingSpareStockId
                 ? 'Edit spare stock'
@@ -3365,11 +3423,19 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
         </Card>
       ) : (
         <Card className="space-y-4 p-4">
-          <div>
-            <h2 className="text-sm font-semibold">Stock report</h2>
-            <p className="text-xs text-text-secondary">
-              Filter machine-wise, spare-wise, and month-wise — preview on screen, then download Excel
-            </p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">Stock report</h2>
+              <p className="text-xs text-text-secondary">
+                Filter machine-wise, spare-wise, and month-wise — preview on screen, then download
+                Excel
+              </p>
+            </div>
+            <Link to="/erp/stock">
+              <Button variant="outline" size="sm">
+                <ArrowLeft size={14} /> Back
+              </Button>
+            </Link>
           </div>
           <div className="flex flex-wrap items-end gap-3">
             <div className="w-[200px]">

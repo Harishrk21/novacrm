@@ -16,6 +16,147 @@ const OPEN_STATUSES = ["DRAFT", "PENDING_APPROVAL", "APPROVED"] as const;
 
 let tableReady = false;
 
+type ReleaseOrderLineDraft = {
+  label: string;
+  qty: number;
+  productId?: string;
+};
+
+/** Build ordered products from lead custom fields (multi-select on create lead). */
+function orderLinesFromLeadCf(cf: Record<string, unknown>): ReleaseOrderLineDraft[] {
+  const interested = Array.isArray(cf.interested_products)
+    ? (cf.interested_products as Array<Record<string, unknown>>)
+    : null;
+  if (interested?.length) {
+    return interested.map((p, i) => ({
+      label: String(p.name ?? p.label ?? `Product ${i + 1}`).trim() || `Product ${i + 1}`,
+      qty: Math.max(1, Math.floor(Number(p.qty ?? p.quantity ?? 1)) || 1),
+      productId: p.id != null ? String(p.id) : undefined,
+    }));
+  }
+  const joined = String(
+    cf.interested_product_name ?? cf.demoProductName ?? cf.product_interest ?? "",
+  ).trim();
+  if (!joined) return [];
+  const parts = joined
+    .split(/[,;/|]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length > 1) {
+    return parts.map((label) => ({ label, qty: 1 }));
+  }
+  return [
+    {
+      label: parts[0] || joined,
+      qty: 1,
+      productId: cf.interested_product_id ? String(cf.interested_product_id) : undefined,
+    },
+  ];
+}
+
+function orderLinesQty(lines: ReleaseOrderLineDraft[]): number {
+  return lines.reduce((sum, line) => sum + Math.max(1, line.qty), 0);
+}
+
+/** Units that must be reduced before a multi-product sale is fully released. */
+function releaseMachinesNeeded(
+  row: { qty?: number | null; productName?: string | null },
+  cf: Record<string, unknown>,
+): number {
+  const nameParts = String(row.productName || "")
+    .split(/[,;/|]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const rawOrder = Array.isArray(cf.orderLines)
+    ? (cf.orderLines as Array<Record<string, unknown>>)
+    : Array.isArray(cf.saleProducts)
+      ? (cf.saleProducts as Array<Record<string, unknown>>)
+      : Array.isArray(cf.interested_products)
+        ? (cf.interested_products as Array<Record<string, unknown>>)
+        : null;
+  const fromOrder = rawOrder?.length
+    ? rawOrder.reduce(
+        (sum, line) =>
+          sum + Math.max(1, Math.floor(Number(line.qty ?? line.quantity ?? 1)) || 1),
+        0,
+      )
+    : 0;
+  const fromStamp =
+    Array.isArray(cf.stampLines) && cf.stampLines.length > 0 ? cf.stampLines.length : 0;
+  const fromCf =
+    typeof cf.machinesNeeded === "number" && Number.isFinite(cf.machinesNeeded)
+      ? Math.max(0, Number(cf.machinesNeeded))
+      : 0;
+  return Math.max(1, fromOrder, fromStamp, fromCf, Number(row.qty) || 0, nameParts.length);
+}
+
+/**
+ * Persist orderLines from the sale lead when missing (old REQ only kept first product).
+ * Safe to call before fulfill / DC / stamp.
+ */
+async function ensureRequisitionOrderLines(
+  t: string,
+  row: {
+    id: string;
+    leadId?: string | null;
+    qty?: unknown;
+    productName?: string | null;
+    customFields?: unknown;
+  },
+) {
+  const cf =
+    row.customFields && typeof row.customFields === "object" && !Array.isArray(row.customFields)
+      ? (row.customFields as Record<string, unknown>)
+      : {};
+  const existing = Array.isArray(cf.orderLines)
+    ? (cf.orderLines as Array<Record<string, unknown>>)
+    : Array.isArray(cf.saleProducts)
+      ? (cf.saleProducts as Array<Record<string, unknown>>)
+      : [];
+  if (existing.length > 1) return row;
+  if (existing.length === 1 && releaseMachinesNeeded(row, cf) > 1) {
+    /* keep going — may still need lead products */
+  }
+
+  let lines: ReleaseOrderLineDraft[] = [];
+  if (row.leadId) {
+    const lead = await prisma.lead.findFirst({
+      where: { id: String(row.leadId), tenantId: t, deletedAt: null },
+      select: { customFields: true },
+    });
+    if (lead) lines = orderLinesFromLeadCf(leadCf(lead));
+  }
+  if (lines.length <= 1) {
+    const parts = String(row.productName || "")
+      .split(/[,;/|]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (parts.length > 1) {
+      lines = parts.map((label) => ({ label, qty: 1 }));
+    }
+  }
+  if (lines.length <= 1) return row;
+
+  const needed = orderLinesQty(lines);
+  const productName = lines.map((l) => l.label).join(", ");
+  return prisma.salesRequisition.update({
+    where: { id: row.id },
+    data: {
+      qty: Math.max(Number(row.qty) || 1, needed),
+      productName,
+      customFields: {
+        ...cf,
+        orderLines: lines,
+        saleProducts: lines,
+        machinesNeeded: needed,
+        interested_products: Array.isArray(cf.interested_products)
+          ? cf.interested_products
+          : lines.map((l) => ({ id: l.productId ?? null, name: l.label, qty: l.qty })),
+      } as Prisma.InputJsonValue,
+    },
+  });
+}
+
 function mapSaleMachineType(
   attrs: unknown,
   weighing: boolean,
@@ -425,6 +566,7 @@ const leadSelect = {
   area: true,
   leadNo: true,
   status: true,
+  customFields: true,
 } as const;
 
 const contactSelect = {
@@ -502,11 +644,56 @@ export async function hydrateRequisitions(tenantId: string, rows: Array<Record<s
     const productId = row.productId ? String(row.productId) : "";
     const requestedById = row.requestedById ? String(row.requestedById) : "";
     const approvedById = row.approvedById ? String(row.approvedById) : "";
+    const lead = leadId ? leadMap[leadId] ?? null : null;
+    const cf =
+      row.customFields && typeof row.customFields === "object" && !Array.isArray(row.customFields)
+        ? { ...(row.customFields as Record<string, unknown>) }
+        : {};
+    const hasOrder =
+      (Array.isArray(cf.orderLines) && cf.orderLines.length > 1) ||
+      (Array.isArray(cf.saleProducts) && (cf.saleProducts as unknown[]).length > 1);
+    if (!hasOrder && lead) {
+      const fromLead = orderLinesFromLeadCf(leadCf(lead));
+      if (fromLead.length > 1) {
+        cf.orderLines = fromLead;
+        cf.saleProducts = fromLead;
+        cf.machinesNeeded = orderLinesQty(fromLead);
+        if (!Array.isArray(cf.interested_products)) {
+          cf.interested_products = fromLead.map((l) => ({
+            id: l.productId ?? null,
+            name: l.label,
+            qty: l.qty,
+          }));
+        }
+      }
+    }
+    const needed = releaseMachinesNeeded(
+      { qty: Number(row.qty ?? 1), productName: row.productName ? String(row.productName) : null },
+      cf,
+    );
     return {
       ...row,
+      customFields: cf,
+      productName:
+        Array.isArray(cf.orderLines) && (cf.orderLines as ReleaseOrderLineDraft[]).length > 1
+          ? (cf.orderLines as ReleaseOrderLineDraft[]).map((l) => l.label).join(", ")
+          : row.productName,
       advanceAmount: Number(row.advanceAmount ?? 0),
-      qty: Number(row.qty ?? 1),
-      lead: leadId ? leadMap[leadId] ?? null : null,
+      qty: Math.max(Number(row.qty ?? 1), needed),
+      lead: lead
+        ? {
+            id: lead.id,
+            name: lead.name,
+            company: lead.company,
+            phone: lead.phone,
+            email: lead.email,
+            city: lead.city,
+            state: lead.state,
+            area: lead.area,
+            leadNo: lead.leadNo,
+            status: lead.status,
+          }
+        : null,
       contact: contactId ? contactMap[contactId] ?? null : null,
       product: productId ? productMap[productId] ?? null : null,
       requestedByName: requestedById ? userMap[requestedById]?.name ?? null : null,
@@ -667,6 +854,18 @@ export async function submit(t: string, userId: string, data: SubmitInput, req?:
     productName = String(cf.demoProductName ?? cf.interested_product_name);
   }
 
+  // Multi-product sales: keep every interested product on the requisition
+  const orderLines = orderLinesFromLeadCf(cf);
+  if (orderLines.length) {
+    productName = orderLines.map((l) => l.label).join(", ");
+    if (!productId && orderLines[0]?.productId) productId = orderLines[0].productId;
+  }
+  const machinesNeeded = Math.max(
+    orderLinesQty(orderLines),
+    data.qty != null && Number.isFinite(Number(data.qty)) ? Number(data.qty) : 0,
+    1,
+  );
+
   if (stockUnitId) {
     const unit = await prisma.stockUnit.findFirst({
       where: { id: stockUnitId, tenantId: t, deletedAt: null },
@@ -686,7 +885,7 @@ export async function submit(t: string, userId: string, data: SubmitInput, req?:
     }
   }
 
-  if (!productId && !stockUnitId) {
+  if (!productId && !stockUnitId && orderLines.length === 0) {
     throw new AppError("Select a product or serial before submitting the requisition", 400);
   }
 
@@ -721,7 +920,7 @@ export async function submit(t: string, userId: string, data: SubmitInput, req?:
         stockUnitId: stockUnitId || null,
         serialNo: serialNo || null,
         productName: productName || null,
-        qty: data.qty ?? 1,
+        qty: machinesNeeded,
         advanceAmount,
         paymentNotes: data.paymentNotes?.trim() || null,
         notes: data.notes?.trim() || null,
@@ -734,6 +933,20 @@ export async function submit(t: string, userId: string, data: SubmitInput, req?:
           salePaymentTotal: paymentTotal || null,
           saleAdvanceAmount: advanceAmount || null,
           saleDueAmount: Math.max(0, paymentTotal - advanceAmount),
+          ...(orderLines.length
+            ? {
+                orderLines,
+                saleProducts: orderLines,
+                machinesNeeded,
+                interested_products: Array.isArray(cf.interested_products)
+                  ? cf.interested_products
+                  : orderLines.map((l) => ({
+                      id: l.productId ?? null,
+                      name: l.label,
+                      qty: l.qty,
+                    })),
+              }
+            : { machinesNeeded }),
         },
       },
     });
@@ -763,6 +976,9 @@ export async function approve(t: string, id: string, userId: string, req?: Reque
   if (row.status !== "PENDING_APPROVAL") {
     throw new AppError(`Only pending requisitions can be approved (now ${row.status})`, 409);
   }
+
+  // Backfill multi-product lines from the lead before inventory sees the release
+  await ensureRequisitionOrderLines(t, row);
 
   const updated = await prisma.salesRequisition.update({
     where: { id },
@@ -996,13 +1212,14 @@ export async function recordStamping(
   },
 ) {
   await ensureSalesRequisitionsTable();
-  const row = await prisma.salesRequisition.findFirst({
+  let row = await prisma.salesRequisition.findFirst({
     where: { id, tenantId: t, deletedAt: null },
   });
   if (!row) throw notFound("Sales requisition");
   if (row.status !== "APPROVED") {
     throw new AppError("Only approved requisitions can confirm stamping", 409);
   }
+  row = (await ensureRequisitionOrderLines(t, row)) as typeof row;
 
   const cf =
     row.customFields && typeof row.customFields === "object" && !Array.isArray(row.customFields)
@@ -1029,7 +1246,7 @@ export async function recordStamping(
   };
 
   if (body.lines?.length) {
-    stampLines = body.lines.map((l) => {
+    const incoming = body.lines.map((l) => {
       const required = Boolean(l.stampingRequired);
       const date = l.stampingDate?.trim() || null;
       if (required && !date) {
@@ -1046,6 +1263,47 @@ export async function recordStamping(
         confirmed: true,
       };
     });
+    // Merge by label so multi-product Release & ship can confirm one product at a time
+    const existing = Array.isArray(cf.stampLines)
+      ? (cf.stampLines as Array<Record<string, unknown>>)
+      : [];
+    const byLabel = new Map<string, (typeof incoming)[number]>();
+    for (const prev of existing) {
+      const label = String(prev.label ?? "").trim();
+      if (!label) continue;
+      byLabel.set(label.toLowerCase(), {
+        label,
+        stampingRequired: Boolean(prev.stampingRequired),
+        stampingDate: prev.stampingDate ? String(prev.stampingDate) : null,
+        nextDueDate: prev.nextDueDate ? String(prev.nextDueDate) : null,
+        stampingNumber: prev.stampingNumber ? String(prev.stampingNumber) : null,
+        stampingQuarter: normalizeQuarter(
+          prev.stampingQuarter != null ? String(prev.stampingQuarter) : null,
+        ),
+        confirmed: Boolean(prev.confirmed),
+      });
+    }
+    for (const line of incoming) {
+      byLabel.set(line.label.toLowerCase(), line);
+    }
+    const orderHints = [
+      ...incoming.map((l) => l.label),
+      ...existing.map((p) => String(p.label ?? "").trim()).filter(Boolean),
+    ];
+    const seen = new Set<string>();
+    stampLines = [];
+    for (const label of orderHints) {
+      const key = label.toLowerCase();
+      if (seen.has(key)) continue;
+      const rowLine = byLabel.get(key);
+      if (!rowLine) continue;
+      seen.add(key);
+      stampLines.push(rowLine);
+    }
+    for (const [key, rowLine] of byLabel) {
+      if (seen.has(key)) continue;
+      stampLines.push(rowLine);
+    }
   } else if (typeof body.stampingRequired === "boolean") {
     const required = body.stampingRequired;
     const date = body.stampingDate?.trim() || null;
@@ -1118,6 +1376,9 @@ export async function recordStamping(
     hmsUniqId = stamped.hmsUniqId ?? null;
   }
 
+  const allLinesConfirmed =
+    stampLines.length > 0 && stampLines.every((l) => l.confirmed);
+
   const updated = await prisma.salesRequisition.update({
     where: { id },
     data: {
@@ -1126,11 +1387,20 @@ export async function recordStamping(
       ...(productId ? { productId } : {}),
       customFields: {
         ...cf,
-        stampingConfirmedAt: new Date().toISOString(),
-        stampingConfirmedById: userId,
-        stampingRequired: anyRequired,
-        stampingSkipped: !anyRequired,
-        stampingDone: anyRequired,
+        // Only mark the whole requisition stamped when every product line is confirmed
+        ...(allLinesConfirmed
+          ? {
+              stampingConfirmedAt: new Date().toISOString(),
+              stampingConfirmedById: userId,
+              stampingRequired: anyRequired,
+              stampingSkipped: !anyRequired,
+              stampingDone: anyRequired,
+            }
+          : {
+              stampingConfirmedAt: null,
+              stampingSkipped: false,
+              stampingDone: false,
+            }),
         stampingDate: primaryDate,
         nextDueDate: primaryEnd,
         stampLines,
@@ -1222,7 +1492,7 @@ export async function fulfill(
   req?: Request,
 ) {
   await ensureSalesRequisitionsTable();
-  const row = await prisma.salesRequisition.findFirst({
+  let row = await prisma.salesRequisition.findFirst({
     where: { id, tenantId: t, deletedAt: null },
   });
   if (!row) throw notFound("Sales requisition");
@@ -1230,6 +1500,7 @@ export async function fulfill(
     throw new AppError("Only approved requisitions can be fulfilled by inventory", 409);
   }
   if (!row.contactId) throw new AppError("Requisition has no customer contact", 400);
+  row = (await ensureRequisitionOrderLines(t, row)) as typeof row;
 
   const stockUnitId = body.stockUnitId?.trim() || row.stockUnitId;
   if (!stockUnitId) {
@@ -1366,19 +1637,7 @@ export async function fulfill(
     reducedAt: new Date().toISOString(),
   };
   const releaseLines = [...existingRelease, releaseLine];
-  const nameParts = String(row.productName || "")
-    .split(/[,;/|]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const needed = Math.max(
-    1,
-    Array.isArray(cf.stampLines) && cf.stampLines.length > 0
-      ? cf.stampLines.length
-      : 0,
-    typeof cf.machinesNeeded === "number" ? Number(cf.machinesNeeded) : 0,
-    Number(row.qty) || 0,
-    nameParts.length,
-  );
+  const needed = releaseMachinesNeeded(row, cf);
   const allDone = releaseLines.length >= needed;
 
   const updated = await prisma.salesRequisition.update({
@@ -1499,13 +1758,14 @@ export async function createSaleDeliveryChallan(
   req?: Request,
 ) {
   await ensureSalesRequisitionsTable();
-  const row = await prisma.salesRequisition.findFirst({
+  let row = await prisma.salesRequisition.findFirst({
     where: { id, tenantId: t, deletedAt: null },
   });
   if (!row) throw notFound("Sales requisition");
   if (row.status !== "FULFILLED" && row.status !== "APPROVED") {
     throw new AppError("Approve the sale release before creating a delivery challan", 409);
   }
+  row = (await ensureRequisitionOrderLines(t, row)) as typeof row;
 
   const cf =
     row.customFields && typeof row.customFields === "object" && !Array.isArray(row.customFields)
@@ -1533,6 +1793,13 @@ export async function createSaleDeliveryChallan(
     : [];
   if (!releaseLines.length && !row.stockUnitId && !row.serialNo) {
     throw new AppError("Reduce stock for at least one machine before creating the delivery challan", 400);
+  }
+  const neededForDc = releaseMachinesNeeded(row, cf);
+  if (releaseLines.length < neededForDc) {
+    throw new AppError(
+      `Reduce all products before creating the delivery challan (${releaseLines.length}/${neededForDc} done)`,
+      400,
+    );
   }
 
   // Hydrate serial / HMS from stock units so DC always prints identities
@@ -1959,18 +2226,16 @@ export async function markShipped(t: string, id: string, userId: string, req?: R
   const releaseLines = Array.isArray(cf.releaseLines)
     ? (cf.releaseLines as unknown[])
     : [];
-  const nameParts = String(row.productName || "")
-    .split(/[,;/|]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const needed = Math.max(
-    1,
-    Array.isArray(cf.stampLines) ? cf.stampLines.length : 0,
-    typeof cf.machinesNeeded === "number" ? Number(cf.machinesNeeded) : 0,
-    Number(row.qty) || 0,
-    nameParts.length,
-  );
-  const allStockOut = releaseLines.length >= needed || Boolean(cf.stockReducedAt);
+  const needed = releaseMachinesNeeded(row, cf);
+  const allStockOut =
+    releaseLines.length >= needed ||
+    (needed <= 1 && Boolean(cf.stockReducedAt) && releaseLines.length > 0);
+  if (!allStockOut) {
+    throw new AppError(
+      `Reduce all products before ready to ship (${releaseLines.length}/${needed} done)`,
+      409,
+    );
+  }
 
   const updated = await prisma.salesRequisition.update({
     where: { id },

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import {
   Bell,
@@ -131,6 +132,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
 
   const searchRef = useRef<HTMLDivElement>(null)
   const notifRef = useRef<HTMLDivElement>(null)
+  const notifPanelRef = useRef<HTMLDivElement>(null)
   const avatarRef = useRef<HTMLDivElement>(null)
   const paletteRef = useRef<HTMLDivElement>(null)
   const createRef = useRef<HTMLDivElement>(null)
@@ -190,7 +192,14 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
     const handler = (e: MouseEvent) => {
       const t = e.target as Node
       if (searchRef.current && !searchRef.current.contains(t)) setSearchOpen(false)
-      if (notifRef.current && !notifRef.current.contains(t)) setNotifOpen(false)
+      // Panel is portaled to body — check both the bell trigger and the panel
+      if (
+        notifRef.current &&
+        !notifRef.current.contains(t) &&
+        !notifPanelRef.current?.contains(t)
+      ) {
+        setNotifOpen(false)
+      }
       if (avatarRef.current && !avatarRef.current.contains(t)) setAvatarOpen(false)
       if (paletteRef.current && !paletteRef.current.contains(t)) setPaletteOpen(false)
       if (createRef.current && !createRef.current.contains(t)) setCreateOpen(false)
@@ -334,7 +343,8 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
   return (
     <header
       className={cn(
-        'zcrm-topbar flex shrink-0 items-center gap-3 border-b border-border bg-card/95 px-3 backdrop-blur sm:px-4',
+        // Above page sticky columns (workqueue Action, inventory, bulk bars) on every role/login
+        'zcrm-topbar relative z-[100] flex shrink-0 items-center gap-3 border-b border-border bg-card/95 px-3 backdrop-blur sm:px-4',
         fieldShell ? 'h-12 pt-[env(safe-area-inset-top)]' : 'h-14',
       )}
     >
@@ -379,7 +389,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
           className="h-9 w-full rounded-full border border-border bg-muted/70 pl-9 pr-3 text-[13px] text-text-primary outline-none transition-all duration-150 placeholder:text-text-secondary focus:border-[color:var(--color-accent-blue)] focus:bg-card focus:ring-2 focus:ring-[color:var(--color-accent-blue)]/25"
         />
         {searchOpen && search.trim().length >= 2 && (
-          <div className="absolute left-0 right-0 top-full z-50 mt-1.5 max-h-96 overflow-y-auto rounded-xl border border-border bg-card shadow-[var(--shadow-hover)]">
+          <div className="absolute left-0 right-0 top-full z-[110] mt-1.5 max-h-96 overflow-y-auto rounded-xl border border-border bg-card shadow-[var(--shadow-hover)]">
             {searching ? (
               <div className="p-3">
                 <BlockSkeleton lines={4} className="p-0" />
@@ -428,7 +438,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
           </div>
         )}
         {searchOpen && search.trim().length > 0 && search.trim().length < 2 ? (
-          <div className="absolute left-0 right-0 top-full z-50 mt-1.5 rounded-xl border border-border bg-card p-3 text-sm text-text-secondary shadow-md">
+          <div className="absolute left-0 right-0 top-full z-[110] mt-1.5 rounded-xl border border-border bg-card p-3 text-sm text-text-secondary shadow-md">
             Type at least 2 characters…
           </div>
         ) : null}
@@ -447,7 +457,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
               <Plus size={18} strokeWidth={2.5} />
             </button>
             {createOpen ? (
-              <div className="absolute right-0 top-full z-50 mt-1.5 w-56 overflow-hidden rounded-xl border border-border bg-card py-1 shadow-[var(--shadow-hover)]">
+              <div className="absolute right-0 top-full z-[110] mt-1.5 w-56 overflow-hidden rounded-xl border border-border bg-card py-1 shadow-[var(--shadow-hover)]">
                 <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-secondary">
                   Quick create
                 </div>
@@ -490,7 +500,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
             <Palette size={18} />
           </button>
           {paletteOpen && (
-            <div className="absolute right-0 top-full z-50 mt-1 w-80 rounded-[12px] border border-border bg-card p-3 shadow-[var(--shadow-hover)]">
+            <div className="absolute right-0 top-full z-[120] mt-1 w-80 rounded-[12px] border border-border bg-card p-3 shadow-[var(--shadow-hover)] isolate">
               <div className="mb-1 text-sm font-semibold text-text-primary">Color palette</div>
               <p className="mb-3 text-xs text-text-secondary">
                 Background, cards, sidebar and accents change together
@@ -559,102 +569,116 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
               </span>
             )}
           </button>
-          {notifOpen && (
-            <div
-              className={cn(
-                // Mobile: almost full width under the bell; desktop: wider readable panel
-                'fixed inset-x-3 top-[3.25rem] z-[60] mx-auto max-h-[min(70vh,28rem)] w-auto max-w-md overflow-hidden rounded-xl border border-border bg-card shadow-xl sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mx-0 sm:mt-1 sm:w-[22.5rem] sm:max-w-none',
-                bellPulse && 'ring-2 ring-accent-blue/40',
-              )}
-            >
-              <div className="space-y-2 border-b border-border bg-card px-3 py-2.5 sm:px-3.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-semibold text-text-primary">Notifications</span>
+          {notifOpen && typeof document !== 'undefined'
+            ? createPortal(
+                <>
                   <button
                     type="button"
-                    className="shrink-0 rounded-md px-2 py-1 text-[11px] text-text-secondary hover:bg-muted hover:text-text-primary"
-                    title={soundOn ? 'Turn notification sound off' : 'Turn notification sound on'}
-                    aria-pressed={soundOn}
-                    onClick={() => {
-                      void import('@/lib/notificationSound').then(
-                        ({
-                          isNotificationSoundEnabled,
-                          setNotificationSoundEnabled,
-                          playNotificationBell,
-                        }) => {
-                          const next = !isNotificationSoundEnabled()
-                          setNotificationSoundEnabled(next)
-                          setSoundOn(next)
-                          if (next) playNotificationBell()
-                          addToast({
-                            type: 'success',
-                            message: next ? 'Notification sound on' : 'Notification sound off',
-                          })
-                        },
-                      )
-                    }}
+                    aria-label="Dismiss notifications"
+                    className="fixed inset-0 z-[115] cursor-default bg-transparent"
+                    onClick={() => setNotifOpen(false)}
+                  />
+                  <div
+                    ref={notifPanelRef}
+                    className={cn(
+                      // Portaled + fixed so sticky page columns never paint through the panel
+                      'fixed inset-x-3 top-[3.25rem] z-[120] mx-auto max-h-[min(70vh,28rem)] w-auto max-w-md overflow-hidden rounded-xl border border-border bg-card shadow-xl sm:inset-x-auto sm:right-4 sm:top-14 sm:mx-0 sm:w-[22.5rem] sm:max-w-none',
+                      bellPulse && 'ring-2 ring-accent-blue/40',
+                    )}
+                    role="dialog"
+                    aria-label="Notifications"
                   >
-                    Sound: {soundOn ? 'On' : 'Off'}
-                  </button>
-                </div>
-                {notifs.length > 0 ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    <button
-                      type="button"
-                      className="inline-flex min-h-[30px] items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px] font-medium text-accent-blue hover:bg-muted"
-                      onClick={() => userId && markAllRead(userId)}
-                    >
-                      <CheckCheck size={12} /> Mark all read
-                    </button>
-                    <button
-                      type="button"
-                      className="inline-flex min-h-[30px] items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px] font-medium text-accent-red hover:bg-muted"
-                      title="Clear all notifications"
-                      onClick={() => {
-                        void clearAll().then(() => {
-                          addToast({ type: 'success', message: 'All notifications cleared' })
-                        })
-                      }}
-                    >
-                      <Trash2 size={12} /> Clear all
-                    </button>
+                    <div className="space-y-2 border-b border-border bg-card px-3 py-2.5 sm:px-3.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-semibold text-text-primary">Notifications</span>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded-md px-2 py-1 text-[11px] text-text-secondary hover:bg-muted hover:text-text-primary"
+                          title={soundOn ? 'Turn notification sound off' : 'Turn notification sound on'}
+                          aria-pressed={soundOn}
+                          onClick={() => {
+                            void import('@/lib/notificationSound').then(
+                              ({
+                                isNotificationSoundEnabled,
+                                setNotificationSoundEnabled,
+                                playNotificationBell,
+                              }) => {
+                                const next = !isNotificationSoundEnabled()
+                                setNotificationSoundEnabled(next)
+                                setSoundOn(next)
+                                if (next) playNotificationBell()
+                                addToast({
+                                  type: 'success',
+                                  message: next ? 'Notification sound on' : 'Notification sound off',
+                                })
+                              },
+                            )
+                          }}
+                        >
+                          Sound: {soundOn ? 'On' : 'Off'}
+                        </button>
+                      </div>
+                      {notifs.length > 0 ? (
+                        <div className="flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            className="inline-flex min-h-[30px] items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px] font-medium text-accent-blue hover:bg-muted"
+                            onClick={() => userId && markAllRead(userId)}
+                          >
+                            <CheckCheck size={12} /> Mark all read
+                          </button>
+                          <button
+                            type="button"
+                            className="inline-flex min-h-[30px] items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px] font-medium text-accent-red hover:bg-muted"
+                            title="Clear all notifications"
+                            onClick={() => {
+                              void clearAll().then(() => {
+                                addToast({ type: 'success', message: 'All notifications cleared' })
+                              })
+                            }}
+                          >
+                            <Trash2 size={12} /> Clear all
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="max-h-[min(52vh,20rem)] overflow-y-auto overscroll-contain bg-card">
+                      {notifs.length === 0 ? (
+                        <div className="p-6 text-center text-sm text-text-secondary">
+                          No notifications yet. Ticket updates for your role appear here.
+                        </div>
+                      ) : (
+                        notifs.slice(0, 12).map((n) => (
+                          <NotificationItem
+                            key={n.id}
+                            n={n}
+                            density="compact"
+                            onOpen={() => {
+                              if (userId) void markRead(n.id, userId)
+                              setNotifOpen(false)
+                              navigate(resolveOpenPath(n, { role: authUser?.role }))
+                            }}
+                            onClear={() => {
+                              void clearOne(n.id)
+                            }}
+                          />
+                        ))
+                      )}
+                    </div>
+                    <div className="border-t border-border bg-card px-3 py-2.5">
+                      <Link
+                        to="/notifications"
+                        className="block rounded-md py-1.5 text-center text-xs font-semibold text-accent-blue hover:bg-muted"
+                        onClick={() => setNotifOpen(false)}
+                      >
+                        View all notifications
+                      </Link>
+                    </div>
                   </div>
-                ) : null}
-              </div>
-              <div className="max-h-[min(52vh,20rem)] overflow-y-auto overscroll-contain bg-card">
-                {notifs.length === 0 ? (
-                  <div className="p-6 text-center text-sm text-text-secondary">
-                    No notifications yet. Ticket updates for your role appear here.
-                  </div>
-                ) : (
-                  notifs.slice(0, 12).map((n) => (
-                    <NotificationItem
-                      key={n.id}
-                      n={n}
-                      density="compact"
-                      onOpen={() => {
-                        if (userId) void markRead(n.id, userId)
-                        setNotifOpen(false)
-                        navigate(resolveOpenPath(n, { role: authUser?.role }))
-                      }}
-                      onClear={() => {
-                        void clearOne(n.id)
-                      }}
-                    />
-                  ))
-                )}
-              </div>
-              <div className="border-t border-border bg-card px-3 py-2.5">
-                <Link
-                  to="/notifications"
-                  className="block rounded-md py-1.5 text-center text-xs font-semibold text-accent-blue hover:bg-muted"
-                  onClick={() => setNotifOpen(false)}
-                >
-                  View all notifications
-                </Link>
-              </div>
-            </div>
-          )}
+                </>,
+                document.body,
+              )
+            : null}
         </div>
 
         {!fieldShell ? (
@@ -685,7 +709,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
             ) : null}
           </button>
           {avatarOpen && (
-            <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-[8px] border border-border bg-card py-1 shadow-[0_4px_12px_rgba(0,0,0,0.12)]">
+            <div className="absolute right-0 top-full z-[110] mt-1 w-56 rounded-[8px] border border-border bg-card py-1 shadow-[0_4px_12px_rgba(0,0,0,0.12)]">
               <div className="border-b border-border px-3 py-2">
                 <div className="truncate text-sm font-semibold">{displayName}</div>
                 <div className="truncate text-xs text-text-secondary">{authUser?.email ?? ''}</div>

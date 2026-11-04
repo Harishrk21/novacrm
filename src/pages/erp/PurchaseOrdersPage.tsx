@@ -12,6 +12,8 @@ import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
+import { PaginationBar } from '@/components/ui/PaginationBar'
+import { usePagedRows } from '@/hooks/usePagedRows'
 import { api, ApiClientError, num } from '@/lib/api'
 import { openPrintHtml } from '@/lib/openPrintHtml'
 import { formatCurrency, formatDate } from '@/lib/utils'
@@ -191,7 +193,13 @@ export function PurchaseOrdersPage() {
   const [lines, setLines] = useState<LineDraft[]>([newLine()])
   const [saving, setSaving] = useState(false)
 
-  const load = useCallback(async () => {
+  const filteredPos = useMemo(
+    () => items.filter((po) => !statusFilter || String(po.status) === statusFilter),
+    [items, statusFilter],
+  )
+  const paged = usePagedRows(filteredPos, statusFilter)
+
+  const load = useCallback(async (_opts?: { silent?: boolean }) => {
     try {
       const [pos, vendorRows, lookups] = await Promise.all([
         api.purchaseOrders({ limit: 100 }),
@@ -269,7 +277,7 @@ export function PurchaseOrdersPage() {
       })) as Record<string, unknown>
       addToast({ type: 'success', message: 'Purchase order created' })
       setLines([newLine()])
-      await load()
+      await load({ silent: true })
       setTab('orders')
       const full = await api.getPurchaseOrder(String(created.id))
       setDetail(full)
@@ -307,7 +315,7 @@ export function PurchaseOrdersPage() {
       }
       await api.receivePurchaseOrder(poId, payload)
       addToast({ type: 'success', message: 'Goods received — stock updated' })
-      await load()
+      await load({ silent: true })
       if (detailOpen) await openPo(poId)
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Receive failed' })
@@ -380,7 +388,7 @@ export function PurchaseOrdersPage() {
               </button>
             ))}
           </div>
-          {items.filter((po) => !statusFilter || String(po.status) === statusFilter).length === 0 ? (
+          {filteredPos.length === 0 ? (
             <EmptyState
               title="No purchase orders"
               subtitle="Add a vendor, then create a multi-line PO."
@@ -402,13 +410,17 @@ export function PurchaseOrdersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {items
-                    .filter((po) => !statusFilter || String(po.status) === statusFilter)
-                    .map((po) => {
+                  {paged.rows.map((po) => {
                     const vendor = po.vendor as { name?: string } | null
                     return (
-                      <tr key={String(po.id)} className="border-t border-border hover:bg-surface">
-                        <td className="px-4 py-3 font-mono text-xs font-semibold">{String(po.poNumber)}</td>
+                      <tr
+                        key={String(po.id)}
+                        className="cursor-pointer border-t border-border hover:bg-surface"
+                        onClick={() => void openPo(String(po.id))}
+                      >
+                        <td className="px-4 py-3 font-mono text-xs font-semibold text-accent-blue">
+                          {String(po.poNumber)}
+                        </td>
                         <td className="px-4 py-3">{vendor?.name ?? '—'}</td>
                         <td className="px-4 py-3">{po.orderDate ? formatDate(String(po.orderDate)) : '—'}</td>
                         <td className="px-4 py-3">
@@ -420,7 +432,7 @@ export function PurchaseOrdersPage() {
                         <td className="px-4 py-3">{formatCurrency(num(po.subtotal))}</td>
                         <td className="px-4 py-3">{formatCurrency(num(po.taxTotal))}</td>
                         <td className="px-4 py-3 font-semibold">{formatCurrency(num(po.grandTotal))}</td>
-                        <td className="px-4 py-3">
+                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                           <div className="flex flex-wrap gap-1">
                             <Button variant="ghost" size="sm" onClick={() => void openPo(String(po.id))}>
                               <Eye size={14} />
@@ -456,6 +468,7 @@ export function PurchaseOrdersPage() {
                   })}
                 </tbody>
               </table>
+              <PaginationBar page={paged.page} total={paged.total} onPageChange={paged.setPage} />
             </div>
           )}
         </Card>

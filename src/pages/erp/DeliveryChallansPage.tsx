@@ -45,8 +45,9 @@ export function DeliveryChallansPage() {
   const [pickedReqId, setPickedReqId] = useState('')
   const [creating, setCreating] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const data = await api.deliveryChallans()
       setRows(Array.isArray(data) ? data : [])
@@ -56,7 +57,7 @@ export function DeliveryChallansPage() {
         message: e instanceof ApiClientError ? e.message : 'Could not load delivery challans',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast])
 
@@ -141,7 +142,7 @@ export function DeliveryChallansPage() {
       })
       if (challan) openPrintableDeliveryChallan(challan, APP_NAME)
       setNewDcOpen(false)
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -232,7 +233,7 @@ export function DeliveryChallansPage() {
           </div>
         </div>
 
-        {loading ? (
+        {loading && rows.length === 0 ? (
           <TableSkeleton rows={6} />
         ) : filtered.length === 0 ? (
           <p className="rounded-lg border border-dashed border-border px-4 py-10 text-center text-sm text-text-secondary">

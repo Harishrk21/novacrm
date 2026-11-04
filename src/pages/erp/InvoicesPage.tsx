@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Navigate, useSearchParams } from 'react-router-dom'
 import { Download, Eye, Plus, Trash2 } from 'lucide-react'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
@@ -13,6 +13,8 @@ import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
+import { PaginationBar } from '@/components/ui/PaginationBar'
+import { usePagedRows } from '@/hooks/usePagedRows'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
@@ -333,6 +335,7 @@ export function InvoicesPage() {
     gstin: '',
   })
   const [statusFilter, setStatusFilter] = useState('')
+  const paged = usePagedRows(items, statusFilter)
   const [statusBusy, setStatusBusy] = useState(false)
   const [tab, setTab] = useState<'list' | 'create' | 'upload'>('list')
   const [invoiceKind, setInvoiceKind] = useState<'SALES' | 'SERVICE'>('SALES')
@@ -626,61 +629,92 @@ export function InvoicesPage() {
     }
   }
 
-  const load = useCallback(async () => {
+  const invoiceMetaReadyRef = useRef(false)
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
     try {
-      const [inv, lookups, accountsRes, tenant, unitsInStock, unitsDemo] = await Promise.all([
+      // Settle independently — sales can open proformas even if a secondary lookup 403s
+      // Silent refresh after save skips heavy stock/lookups fan-out
+      const needMeta = !invoiceMetaReadyRef.current
+      const [invR, lookupsR, accountsR, tenantR, unitsInStockR, unitsDemoR] = await Promise.allSettled([
         api.invoices({ limit: 50, status: statusFilter || undefined }),
-        api.lookups(),
-        api.accounts({ limit: 100 }),
-        api.myTenant(),
-        api.stockUnits({ status: 'IN_STOCK', limit: 200 }),
-        api.stockUnits({ status: 'DEMO', limit: 200 }),
+        needMeta ? api.lookups() : Promise.resolve(null),
+        needMeta ? api.accounts({ limit: 100 }) : Promise.resolve(null),
+        needMeta ? api.myTenant() : Promise.resolve(null),
+        needMeta && !silent
+          ? api.stockUnits({ status: 'IN_STOCK', limit: 200 })
+          : Promise.resolve([]),
+        needMeta && !silent
+          ? api.stockUnits({ status: 'DEMO', limit: 200 })
+          : Promise.resolve([]),
       ])
+      if (invR.status !== 'fulfilled') {
+        throw invR.reason instanceof Error ? invR.reason : new Error('Failed to load invoices')
+      }
+      const inv = invR.value
+      const lookups =
+        lookupsR.status === 'fulfilled' && lookupsR.value
+          ? lookupsR.value
+          : { contacts: [] as Array<{ id: string; name: string; accountId?: string }>, products: [] as Array<Record<string, unknown>> }
+      const accountsRes =
+        accountsR.status === 'fulfilled' && accountsR.value
+          ? accountsR.value
+          : { items: [] as Array<Record<string, unknown>> }
+      const tenant =
+        tenantR.status === 'fulfilled' && tenantR.value ? tenantR.value : {}
+      const unitsInStock =
+        unitsInStockR.status === 'fulfilled' ? unitsInStockR.value : []
+      const unitsDemo = unitsDemoR.status === 'fulfilled' ? unitsDemoR.value : []
+
       setItems(inv.items ?? [])
-      setAccounts(
-        ((accountsRes.items ?? []) as Array<Record<string, unknown>>).map((a) => ({
-          id: String(a.id),
-          name: String(a.name),
-          city: a.city ? String(a.city) : undefined,
-          state: a.state ? String(a.state) : undefined,
-          phone: a.phone ? String(a.phone) : undefined,
-          email: a.email ? String(a.email) : undefined,
-          gstin: a.gstin ? String(a.gstin) : undefined,
-        })),
-      )
-      setContacts(lookups.contacts)
-      setProducts(
-        lookups.products.map((p) => ({
-          id: p.id,
-          name: p.name,
-          sku: p.sku,
-          salePrice: num(p.salePrice),
-          taxPercent: num(p.taxPercent),
-          attributes: (p.attributes as Record<string, unknown> | null | undefined) ?? null,
-        })),
-      )
-      const mapUnit = (u: Record<string, unknown>): StockUnitOption => ({
-        id: String(u.id),
-        productId: String(u.productId),
-        serialNo: String(u.serialNo),
-        status: String(u.status),
-        hmsUniqId: u.hmsUniqId ? String(u.hmsUniqId) : null,
-        stampingDate: (u.stampingDate as string | null) ?? null,
-        warehouse: (u.warehouse as { name?: string } | null) ?? null,
-      })
-      const inStock = ((unitsInStock as Array<Record<string, unknown>>) ?? []).map(mapUnit)
-      const demo = ((unitsDemo as Array<Record<string, unknown>>) ?? []).map(mapUnit)
-      setStockUnits([...inStock, ...demo])
-      const tRow = tenant as Record<string, unknown>
-      setSeller({
-        name: String(tRow.name ?? 'HMS Enterprises'),
-        email: tRow.email ? String(tRow.email) : '',
-        phone: tRow.phone ? String(tRow.phone) : '',
-        address: [tRow.addressLine1, tRow.city, tRow.state, tRow.postalCode, tRow.country]
-          .filter(Boolean)
-          .join(', '),
-        gstin: tRow.gstin ? String(tRow.gstin) : '',
-      })
+      if (needMeta) {
+        setAccounts(
+          ((accountsRes.items ?? []) as Array<Record<string, unknown>>).map((a) => ({
+            id: String(a.id),
+            name: String(a.name),
+            city: a.city ? String(a.city) : undefined,
+            state: a.state ? String(a.state) : undefined,
+            phone: a.phone ? String(a.phone) : undefined,
+            email: a.email ? String(a.email) : undefined,
+            gstin: a.gstin ? String(a.gstin) : undefined,
+          })),
+        )
+        setContacts(lookups.contacts ?? [])
+        setProducts(
+          (lookups.products ?? []).map((p) => ({
+            id: String(p.id),
+            name: String(p.name),
+            sku: p.sku != null ? String(p.sku) : undefined,
+            salePrice: num(p.salePrice),
+            taxPercent: num(p.taxPercent),
+            attributes: (p.attributes as Record<string, unknown> | null | undefined) ?? null,
+          })),
+        )
+        const mapUnit = (u: Record<string, unknown>): StockUnitOption => ({
+          id: String(u.id),
+          productId: String(u.productId),
+          serialNo: String(u.serialNo),
+          status: String(u.status),
+          hmsUniqId: u.hmsUniqId ? String(u.hmsUniqId) : null,
+          stampingDate: (u.stampingDate as string | null) ?? null,
+          warehouse: (u.warehouse as { name?: string } | null) ?? null,
+        })
+        const inStock = ((unitsInStock as Array<Record<string, unknown>>) ?? []).map(mapUnit)
+        const demo = ((unitsDemo as Array<Record<string, unknown>>) ?? []).map(mapUnit)
+        setStockUnits([...inStock, ...demo])
+        const tRow = tenant as Record<string, unknown>
+        setSeller({
+          name: String(tRow.name ?? 'HMS Enterprises'),
+          email: tRow.email ? String(tRow.email) : '',
+          phone: tRow.phone ? String(tRow.phone) : '',
+          address: [tRow.addressLine1, tRow.city, tRow.state, tRow.postalCode, tRow.country]
+            .filter(Boolean)
+            .join(', '),
+          gstin: tRow.gstin ? String(tRow.gstin) : '',
+        })
+        invoiceMetaReadyRef.current = true
+      }
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Failed to load invoices' })
     }
@@ -718,7 +752,7 @@ export function InvoicesPage() {
                 : `Proforma set to ${status}`,
       })
       setDetail(updated)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1291,7 +1325,7 @@ export function InvoicesPage() {
         notes: '',
       })
       setTab('list')
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1414,7 +1448,7 @@ export function InvoicesPage() {
               ? 'Proforma created for this sale — linked to stock release'
               : 'Proforma created',
       })
-      await load()
+      await load({ silent: true })
       setDetail(created)
       setPreviewOpen(true)
     } catch (err) {
@@ -1740,7 +1774,7 @@ export function InvoicesPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {items.map((inv) => (
+                    {paged.rows.map((inv) => (
                       <tr
                         key={String(inv.id)}
                         className="cursor-pointer border-t border-border hover:bg-surface"
@@ -1830,6 +1864,7 @@ export function InvoicesPage() {
                     ))}
                   </tbody>
                 </table>
+                <PaginationBar page={paged.page} total={paged.total} onPageChange={paged.setPage} />
               </div>
             )}
           </Card>

@@ -20,6 +20,12 @@ import {
   Phone,
   CalendarClock,
   ImagePlus,
+  LayoutDashboard,
+  Stamp,
+  Wrench,
+  Package,
+  MessageSquare,
+  type LucideIcon,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { TicketStatusPill } from '@/components/ui/TicketStatusProgress'
@@ -138,6 +144,132 @@ function TicketDetailGroup({
   )
 }
 
+type TicketDetailTabItem = {
+  id: string
+  label: string
+  count?: number
+  icon: LucideIcon
+  /** Soft amber when a required step still needs attention */
+  alert?: boolean
+  /** Stronger pulse after Mark complete blocked on this tab */
+  attention?: boolean
+}
+
+/** Vertical section nav (desktop) + horizontal chips (mobile) */
+function TicketDetailTabNav({
+  tabs,
+  active,
+  onChange,
+  accentViolet = false,
+}: {
+  tabs: TicketDetailTabItem[]
+  active: string
+  onChange: (id: string) => void
+  accentViolet?: boolean
+}) {
+  const activeBar = accentViolet ? 'border-violet-600 text-violet-700 dark:text-violet-300' : 'border-accent-blue text-accent-blue'
+  const activeBg = accentViolet
+    ? 'bg-violet-50 dark:bg-violet-950/40'
+    : 'bg-accent-soft'
+
+  return (
+    <>
+      <div
+        className="flex gap-1 overflow-x-auto border-b border-border px-2 py-2 md:hidden"
+        role="tablist"
+        aria-label="Ticket sections"
+      >
+        {tabs.map((tab) => {
+          const Icon = tab.icon
+          const isActive = tab.id === active
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => onChange(tab.id)}
+              className={cn(
+                'inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition',
+                isActive
+                  ? accentViolet
+                    ? 'bg-violet-600 text-white'
+                    : 'bg-accent-blue text-white'
+                  : tab.attention
+                    ? 'bg-red-600 text-white ring-2 ring-red-400/60 animate-pulse'
+                    : tab.alert
+                      ? 'bg-amber-100 text-amber-950 dark:bg-amber-950/50 dark:text-amber-100'
+                      : 'bg-muted text-text-secondary hover:text-text-primary',
+              )}
+            >
+              <Icon size={13} className="opacity-80" />
+              {tab.label}
+              {typeof tab.count === 'number' ? (
+                <span className="tabular-nums opacity-80">{tab.count}</span>
+              ) : null}
+              {tab.alert || tab.attention ? (
+                <span className="text-[10px] font-bold uppercase tracking-wide opacity-90">!</span>
+              ) : null}
+            </button>
+          )
+        })}
+      </div>
+
+      <nav
+        className="hidden w-44 shrink-0 self-stretch border-r border-border bg-muted/20 md:block lg:w-48"
+        aria-label="Ticket sections"
+        role="tablist"
+      >
+        <div className="border-b border-border px-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-text-secondary">
+          Sections
+        </div>
+        <ul className="py-1">
+          {tabs.map((tab) => {
+            const Icon = tab.icon
+            const isActive = tab.id === active
+            return (
+              <li key={tab.id}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  onClick={() => onChange(tab.id)}
+                  className={cn(
+                    'flex w-full items-center gap-2 border-l-2 px-3 py-2.5 text-left text-sm transition',
+                    isActive
+                      ? cn(activeBar, activeBg, 'font-semibold')
+                      : tab.attention
+                        ? 'border-red-500 bg-red-50 font-semibold text-red-800 ring-1 ring-inset ring-red-300 animate-pulse dark:bg-red-950/40 dark:text-red-100 dark:ring-red-800'
+                        : tab.alert
+                          ? 'border-amber-400 bg-amber-50/80 text-amber-950 dark:bg-amber-950/30 dark:text-amber-100'
+                          : 'border-transparent text-text-primary hover:bg-muted/60',
+                  )}
+                >
+                  <Icon size={14} className="shrink-0 opacity-70" />
+                  <span className="min-w-0 flex-1 truncate">{tab.label}</span>
+                  {typeof tab.count === 'number' ? (
+                    <span className="tabular-nums text-[11px] text-text-secondary">{tab.count}</span>
+                  ) : null}
+                  {tab.alert || tab.attention ? (
+                    <span
+                      className={cn(
+                        'rounded px-1 text-[10px] font-bold uppercase',
+                        tab.attention ? 'bg-red-600 text-white' : 'bg-amber-500 text-white',
+                      )}
+                    >
+                      Due
+                    </span>
+                  ) : null}
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      </nav>
+    </>
+  )
+}
+
 export function TicketDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -201,6 +333,31 @@ export function TicketDetailPage() {
   const [evidenceBusy, setEvidenceBusy] = useState(false)
   /** Stamping: Mark complete unlocks only after Save stamp result */
   const [stampResultSaved, setStampResultSaved] = useState(false)
+  /** Detail body — tabs keep stamping / service jobs readable */
+  type DetailTab = 'overview' | 'customer' | 'work' | 'parts' | 'payment' | 'notes'
+  const [detailTab, setDetailTab] = useState<DetailTab>('overview')
+  /** After Mark complete blocked — which tab to pulse (clears when requirement met) */
+  const [tabAttention, setTabAttention] = useState<DetailTab | null>(null)
+
+  const goToTicketSection = useCallback((sectionId: string) => {
+    const map: Record<string, DetailTab> = {
+      'section-stamp-result': 'work',
+      'section-day-notes': 'work',
+      'section-work-type': 'work',
+      'section-payment': 'payment',
+      'section-spares': 'parts',
+      'section-assignment': 'overview',
+    }
+    const tab = map[sectionId] ?? 'overview'
+    setDetailTab(tab)
+    if (tab === 'payment' || tab === 'work') setTabAttention(tab)
+    window.setTimeout(() => {
+      document.getElementById(sectionId)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      })
+    }, 60)
+  }, [])
 
   const engineers = useMemo(() => filterServiceEngineers(users), [users])
   const engineerOptions = useMemo(
@@ -212,18 +369,25 @@ export function TicketDetailPage() {
     [engineers],
   )
 
+  const lookupsLoadedRef = useRef(false)
+
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!id) return
     const silent = Boolean(opts?.silent)
+    // Never flash the full-page skeleton once we already have the ticket on screen
     if (!silent) setLoading(true)
     try {
+      const needLookups = !lookupsLoadedRef.current
       const [row, lookups] = await Promise.all([
         api.getTicket(id),
-        api.lookups({ scope: 'core' }),
+        needLookups ? api.lookups({ scope: 'core' }) : Promise.resolve(null),
       ])
       setTicket(row)
-      setUsers(lookups.users)
-      // On background poll, do not wipe in-progress payment / issue edits
+      if (lookups) {
+        setUsers(lookups.users)
+        lookupsLoadedRef.current = true
+      }
+      // On background / post-save refresh, do not wipe in-progress payment / issue edits
       if (!silent) {
         const cf = (row.customFields as Record<string, unknown>) ?? {}
         const legal = (cf.stampingLegal as Record<string, unknown> | undefined) ?? {}
@@ -341,7 +505,8 @@ export function TicketDetailPage() {
       setTicket((prev) => ({ ...(prev ?? {}), ...updated }))
       if (successMsg) addToast({ type: 'success', message: successMsg })
       if (updated.whatsapp) handleWhatsappResult(updated.whatsapp, 'complete')
-      await load()
+      // Soft refresh only — avoid full-page skeleton after every Save
+      void load({ silent: true })
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Update failed' })
     } finally {
@@ -349,14 +514,21 @@ export function TicketDetailPage() {
     }
   }
 
-  /** Paid in full, or free job (₹0). Uses saved ticket amounts only — ignore unsaved draft typing. */
+  /**
+   * Mark complete requires no due balance: PAID in full, or free job (₹0 / ₹0).
+   * Uses saved ticket amounts only — ignore unsaved draft typing.
+   */
   function paymentSettledForComplete() {
     const total = num(ticket?.paymentTotal)
     const adv = num(ticket?.advanceAmount)
-    const bal = num(ticket?.balanceDue)
+    const balRaw = num(ticket?.balanceDue)
+    const bal = Number.isFinite(balRaw) ? Math.max(0, balRaw) : Math.max(0, total - adv)
     const paid = String(ticket?.paymentStatus ?? '') === 'PAID'
     const free = total <= 0 && adv <= 0
-    return { ok: paid || free, paid, free, total, adv, bal }
+    const noDue = bal <= 0 && (paid || free || (total > 0 && adv >= total))
+    // Strict product rule: PAID status or free job — advance covering total still needs Mark paid
+    const ok = free || (paid && bal <= 0)
+    return { ok, paid, free, noDue, total, adv, bal }
   }
 
   function askComplete(nextStatus: 'RESOLVED' | 'CLOSED' = 'RESOLVED') {
@@ -382,10 +554,7 @@ export function TicketDetailPage() {
         type: 'error',
         message: 'Enter today’s stamping date (and next due / valid till), then Save stamp result',
       })
-      document.getElementById('section-stamp-result')?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center',
-      })
+      goToTicketSection('section-stamp-result')
       return
     }
     if (nextStatus === 'RESOLVED' && needsStampResult && !stampResultSaved) {
@@ -393,10 +562,7 @@ export function TicketDetailPage() {
         type: 'error',
         message: 'Save stamp result first — then Mark complete appears at the top',
       })
-      document.getElementById('section-stamp-result')?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center',
-      })
+      goToTicketSection('section-stamp-result')
       return
     }
     if (nextStatus === 'RESOLVED' && isEngineer && !isAdmin && !needsStampResult) {
@@ -410,17 +576,16 @@ export function TicketDetailPage() {
           type: 'error',
           message: 'Add at least one daily tracking note before marking complete',
         })
-        document.getElementById('section-day-notes')?.scrollIntoView({
-          behavior: 'smooth',
-          block: 'center',
-        })
+        goToTicketSection('section-day-notes')
         return
       }
     }
-    // Mark complete + Approve & close both require payment confirmed (or free job)
+    // Mark complete + Approve & close both require payment confirmed (or free job) — every role
     const pay = paymentSettledForComplete()
     if (!pay.ok) {
       const payStatus = String(ticket?.paymentStatus ?? 'UNPAID')
+      setTabAttention('payment')
+      goToTicketSection('section-payment')
       focusFirstMissing(
         [
           {
@@ -429,8 +594,8 @@ export function TicketDetailPage() {
             ok: false,
             message:
               payStatus === 'PARTIAL' || pay.bal > 0
-                ? 'Payment incomplete — balance still due. Mark paid fully before Mark complete.'
-                : 'Payment missing — enter Total payment, then Mark paid fully (full amount) before Mark complete.',
+                ? 'Payment incomplete — balance still due. Collect full amount (₹0 due) before Mark complete.'
+                : 'Payment required — enter Total, collect so balance is ₹0, then Mark paid fully before Mark complete.',
           },
         ],
         setFieldErrors,
@@ -439,11 +604,12 @@ export function TicketDetailPage() {
         type: 'error',
         message:
           payStatus === 'PARTIAL' || pay.bal > 0
-            ? `Payment incomplete — ₹${pay.bal.toLocaleString('en-IN')} still due. Mark paid fully first.`
-            : 'Payment missing — Mark paid fully (full amount) before Mark complete. Scrolled to Payment.',
+            ? `Payment incomplete — ₹${pay.bal.toLocaleString('en-IN')} still due. Open Payment tab and clear the balance.`
+            : 'Payment not settled — open the highlighted Payment tab, fill amounts with ₹0 due, then Mark paid fully.',
       })
       return
     }
+    setTabAttention(null)
     setCompleteStatus(nextStatus)
     setCompleteOpen(true)
   }
@@ -599,7 +765,7 @@ export function TicketDetailPage() {
         addToast({ type: 'warning', message: String(updated.invoiceError) })
       }
       if (sendWhatsApp) handleWhatsappResult(updated.whatsapp, 'paid')
-      await load()
+      void load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -695,7 +861,7 @@ export function TicketDetailPage() {
       const updated = await api.createTicketInvoice(id)
       if (updated.invoice) setLastInvoice(updated.invoice as Record<string, unknown>)
       handleWhatsappResult(updated.whatsapp, 'paid')
-      await load()
+      void load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -714,7 +880,7 @@ export function TicketDetailPage() {
       const updated = await api.createTicketInvoice(id)
       if (updated.invoice) setLastInvoice(updated.invoice as Record<string, unknown>)
       handleWhatsappResult(updated.whatsapp, 'invoice')
-      await load()
+      void load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -806,7 +972,7 @@ export function TicketDetailPage() {
           })
         }
       }
-      await load()
+      void load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -856,10 +1022,7 @@ export function TicketDetailPage() {
     const stamp = editDraft.stampingDate.trim()
     if (!stamp) {
       addToast({ type: 'error', message: 'Enter stamping date before saving' })
-      document.getElementById('section-stamp-result')?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center',
-      })
+      goToTicketSection('section-stamp-result')
       return
     }
     const due = editDraft.nextDueDate.trim() || addOneYearIso(stamp)
@@ -980,7 +1143,7 @@ export function TicketDetailPage() {
     try {
       await api.addTicketMessage(id, { content: message.trim() })
       setMessage('')
-      await load()
+      void load({ silent: true })
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Message failed' })
     }
@@ -1095,7 +1258,7 @@ export function TicketDetailPage() {
           /* non-blocking */
         }
       }
-      await load()
+      void load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1317,7 +1480,7 @@ export function TicketDetailPage() {
   void sendPaymentDue
   void addVisitEntry
 
-  if (loading) return <DetailSkeleton />
+  if (loading && !ticket) return <DetailSkeleton />
   if (!ticket) {
     return (
       <EmptyState
@@ -1504,64 +1667,155 @@ export function TicketDetailPage() {
           ? formatDate(String(ticket.nextDueDate))
           : '—',
     },
+    // Warranty only when Coverage (sold-by-us plan) is not already shown
+    ...(outsideMachine || !asset?.servicePlan
+      ? [
+          {
+            label: 'Warranty',
+            value: assetCf.warrantyType
+              ? `${String(assetCf.warrantyType)}${assetCf.warrantyUntil ? ` until ${formatDate(String(assetCf.warrantyUntil))}` : ''}`
+              : '—',
+          },
+        ]
+      : []),
+  ]
+
+  const payGate = paymentSettledForComplete()
+  const workGateAlert =
+    isOpen &&
+    (isStampingJob
+      ? !stampResultSaved || !editDraft.stampingDate.trim()
+      : isEngineer && !isAdmin && dayNotes.length === 0)
+  const paymentGateAlert = Boolean(showPayment && isOpen && !payGate.ok)
+
+  // Clear pulse once the blocking requirement is met
+  useEffect(() => {
+    if (tabAttention === 'payment' && payGate.ok) setTabAttention(null)
+    if (tabAttention === 'work' && !workGateAlert) setTabAttention(null)
+  }, [tabAttention, payGate.ok, workGateAlert])
+
+  const detailTabs: TicketDetailTabItem[] = [
+    { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+    { id: 'customer', label: 'Customer', icon: UserRound },
     {
-      label: 'Warranty',
-      value: assetCf.warrantyType
-        ? `${String(assetCf.warrantyType)}${assetCf.warrantyUntil ? ` until ${formatDate(String(assetCf.warrantyUntil))}` : ''}`
-        : '—',
+      id: 'work',
+      label: isStampingJob ? 'Stamp & work' : 'Work',
+      icon: isStampingJob ? Stamp : Wrench,
+      ...(workGateAlert ? { alert: true } : {}),
+      ...(tabAttention === 'work' ? { attention: true } : {}),
+    },
+    ...(contact && (isAdmin || isEngineer)
+      ? [{ id: 'parts', label: 'Parts', icon: Package }]
+      : []),
+    ...(showPayment
+      ? [
+          {
+            id: 'payment',
+            label: 'Payment',
+            icon: Wallet,
+            ...(paymentGateAlert ? { alert: true } : {}),
+            ...(tabAttention === 'payment' ? { attention: true } : {}),
+          },
+        ]
+      : []),
+    {
+      id: 'notes',
+      label: 'Notes',
+      icon: MessageSquare,
+      ...(messages.length ? { count: messages.length } : {}),
     },
   ]
 
-  const ticketOverview = (
-    <>
-      <div className="flex flex-wrap items-center gap-3">
-        <Button variant="ghost" onClick={() => navigate('/tickets')}>
-          <ArrowLeft size={16} /> Back
-        </Button>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="font-mono text-xl font-semibold tracking-tight text-text-primary sm:text-2xl">
-              {ticketLabel}
-            </h1>
-            <TicketStatusPill status={status} />
-            {showPayment ? (
-              <Badge color={isPaid ? 'green' : paymentStatus === 'PARTIAL' ? 'amber' : 'gray'}>
-                {labelize(paymentStatus)}
-              </Badge>
-            ) : null}
-            {breached ? <Badge color="red">SLA overdue</Badge> : null}
-          </div>
-          <p className="mt-0.5 truncate text-sm text-text-secondary">
-            {String(ticket.subject)}
-            {contact?.name ? ` · ${contact.name}` : ''}
-          </p>
-          <p className="mt-0.5 text-[11px] text-text-secondary">
-            Created{' '}
-            <span className="font-medium text-text-primary">
-              {ticket.createdAt ? formatDate(String(ticket.createdAt)) : '—'}
-            </span>
-            {status === 'CLOSED' || ticket.closedAt ? (
-              <>
-                {' · '}Closed{' '}
-                <span className="font-medium text-text-primary">
-                  {ticket.closedAt ? formatDate(String(ticket.closedAt)) : '—'}
-                </span>
-              </>
-            ) : null}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" disabled={busy} onClick={() => void load()}>
-            Refresh
-          </Button>
-          {(isDesk || isAdmin) && (
-            <Link to="/tickets?open=1">
-              <Button variant="outline">New ticket</Button>
-            </Link>
-          )}
-        </div>
-      </div>
+  const detailTabNav = (
+    <TicketDetailTabNav
+      tabs={detailTabs}
+      active={detailTab}
+      onChange={(id) => {
+        setDetailTab(id as DetailTab)
+        if (id === tabAttention) {
+          /* keep attention until requirement met */
+        }
+      }}
+      accentViolet={isStampingJob}
+    />
+  )
 
+  const paymentRequiredBanner =
+    paymentGateAlert ? (
+      <div
+        className={cn(
+          'rounded-xl border px-3 py-2.5 text-sm',
+          tabAttention === 'payment'
+            ? 'border-red-400 bg-red-50 text-red-950 ring-2 ring-red-400/50 dark:border-red-700 dark:bg-red-950/40 dark:text-red-100'
+            : 'border-amber-300 bg-amber-50 text-amber-950 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100',
+        )}
+      >
+        <div className="font-semibold">
+          Payment must be settled before Mark complete
+        </div>
+        <p className="mt-0.5 text-xs leading-relaxed opacity-90">
+          {payGate.bal > 0
+            ? `Balance still due: ${formatCurrency(payGate.bal)}. Collect so due is ₹0, then Mark paid fully.`
+            : payGate.total > 0 && !payGate.paid
+              ? 'Amounts look covered — click Mark paid fully so status becomes Paid (no due balance).'
+              : 'Enter Total payment (use ₹0 for a free job), collect with ₹0 due, then Mark paid fully.'}
+        </p>
+      </div>
+    ) : null
+
+  const ticketHeader = (
+    <div className="flex flex-wrap items-center gap-3">
+      <Button variant="ghost" onClick={() => navigate('/tickets')}>
+        <ArrowLeft size={16} /> Back
+      </Button>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="font-mono text-xl font-semibold tracking-tight text-text-primary sm:text-2xl">
+            {ticketLabel}
+          </h1>
+          <TicketStatusPill status={status} />
+          {showPayment ? (
+            <Badge color={isPaid ? 'green' : paymentStatus === 'PARTIAL' ? 'amber' : 'gray'}>
+              {labelize(paymentStatus)}
+            </Badge>
+          ) : null}
+          {isStampingJob ? <Badge color="purple">Stamping</Badge> : null}
+          {breached ? <Badge color="red">SLA overdue</Badge> : null}
+        </div>
+        <p className="mt-0.5 truncate text-sm text-text-secondary">
+          {String(ticket.subject)}
+          {contact?.name ? ` · ${contact.name}` : ''}
+        </p>
+        <p className="mt-0.5 text-[11px] text-text-secondary">
+          Created{' '}
+          <span className="font-medium text-text-primary">
+            {ticket.createdAt ? formatDate(String(ticket.createdAt)) : '—'}
+          </span>
+          {status === 'CLOSED' || ticket.closedAt ? (
+            <>
+              {' · '}Closed{' '}
+              <span className="font-medium text-text-primary">
+                {ticket.closedAt ? formatDate(String(ticket.closedAt)) : '—'}
+              </span>
+            </>
+          ) : null}
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" disabled={busy} onClick={() => void load()}>
+          Refresh
+        </Button>
+        {(isDesk || isAdmin) && (
+          <Link to="/tickets?open=1">
+            <Button variant="outline">New ticket</Button>
+          </Link>
+        )}
+      </div>
+    </div>
+  )
+
+  const overviewStatusPanel = (
+    <div className="space-y-4">
       <Card className="p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
@@ -1625,20 +1879,29 @@ export function TicketDetailPage() {
               : 'Sold by us — renewal / re-stamp on an HMS machine.'}
           </p>
           <p className="mt-1 text-xs text-text-secondary">
-            Desk can Take &amp; start (or assign an engineer). After verification, enter stamp date +
-            next due / valid till, then Mark complete — machine register updates automatically.
+            After verification, open <strong>Stamp &amp; work</strong> to enter stamp date + next due,
+            then Mark complete — machine register updates automatically.
             {!outsideMachine && asset?.nextDueDate
               ? ` Current valid till on file: ${formatDate(String(asset.nextDueDate))}.`
               : ''}
           </p>
+          {isOpen ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-3"
+              onClick={() => goToTicketSection('section-stamp-result')}
+            >
+              Open stamp result →
+            </Button>
+          ) : null}
         </Card>
       ) : null}
+    </div>
+  )
 
-      <TicketDetailGroup
-        title="Customer & machine"
-        hint="Who the job is for · which unit"
-        defaultOpen
-      >
+  const customerMachinePanel = (
+    <div className="space-y-4">
       <div className="grid gap-4 xl:grid-cols-2">
         <div className="space-y-4">
           <Card className="overflow-hidden p-0">
@@ -1746,25 +2009,15 @@ export function TicketDetailPage() {
                 <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary">
                   Timing
                 </div>
-                <div className="mt-1 grid gap-2 sm:grid-cols-2">
-                  <div>
-                    <div className="text-[10px] text-text-secondary">SLA due</div>
-                    <div className={`text-sm font-medium text-text-primary ${breached ? 'text-accent-red' : ''}`}>
-                      {ticket.slaDueAt ? formatDateTime(String(ticket.slaDueAt)) : '—'}
-                      {breached ? ' · overdue' : ''}
-                    </div>
+                <div className="mt-1">
+                  <div className="text-[10px] text-text-secondary">SLA due</div>
+                  <div className={`text-sm font-medium text-text-primary ${breached ? 'text-accent-red' : ''}`}>
+                    {ticket.slaDueAt ? formatDateTime(String(ticket.slaDueAt)) : '—'}
+                    {breached ? ' · overdue' : ''}
                   </div>
-                  <div>
-                    <div className="text-[10px] text-text-secondary">Stamping / next due</div>
-                    <div className="text-sm font-medium text-text-primary">
-                      {ticket.stampingDate || asset?.stampingDate
-                        ? formatDate(String(ticket.stampingDate || asset?.stampingDate))
-                        : '—'}
-                      {ticket.nextDueDate || asset?.nextDueDate
-                        ? ` → ${formatDate(String(ticket.nextDueDate || asset?.nextDueDate))}`
-                        : ''}
-                    </div>
-                  </div>
+                  <p className="mt-1 text-[11px] text-text-secondary">
+                    Stamp dates live on the machine card above.
+                  </p>
                 </div>
               </div>
             </div>
@@ -1944,8 +2197,7 @@ export function TicketDetailPage() {
           </div>
         )}
       </div>
-      </TicketDetailGroup>
-    </>
+    </div>
   )
 
   const ticketDialogs = (
@@ -2164,18 +2416,13 @@ export function TicketDetailPage() {
                     type="button"
                     className="mt-1 text-xs font-medium text-accent-blue hover:underline"
                     onClick={() =>
-                      document
-                        .getElementById(
-                          isStampingJob && !stampResultSaved
-                            ? 'section-stamp-result'
-                            : !payReady
-                              ? 'section-payment'
-                              : 'section-day-notes',
-                        )
-                        ?.scrollIntoView({
-                          behavior: 'smooth',
-                          block: 'start',
-                        })
+                      goToTicketSection(
+                        isStampingJob && !stampResultSaved
+                          ? 'section-stamp-result'
+                          : !payReady
+                            ? 'section-payment'
+                            : 'section-day-notes',
+                      )
                     }
                   >
                     {isStampingJob && !stampResultSaved
@@ -2212,18 +2459,13 @@ export function TicketDetailPage() {
                 type="button"
                 className="mt-1 text-xs font-medium text-accent-blue hover:underline"
                 onClick={() =>
-                  document
-                    .getElementById(
-                      isStampingJob && !stampResultSaved
-                        ? 'section-stamp-result'
-                        : !payReady
-                          ? 'section-payment'
-                          : 'section-day-notes',
-                    )
-                    ?.scrollIntoView({
-                      behavior: 'smooth',
-                      block: 'center',
-                    })
+                  goToTicketSection(
+                    isStampingJob && !stampResultSaved
+                      ? 'section-stamp-result'
+                      : !payReady
+                        ? 'section-payment'
+                        : 'section-day-notes',
+                  )
                 }
               >
                 {isStampingJob && !stampResultSaved
@@ -2254,7 +2496,18 @@ export function TicketDetailPage() {
           </Card>
         ) : null}
 
-        {ticketOverview}
+        {ticketHeader}
+
+        <div className="flex min-h-[480px] flex-col overflow-hidden rounded-xl border border-border bg-card md:flex-row">
+          {detailTabNav}
+          <div className="min-w-0 flex-1 space-y-4 p-3 sm:p-4 md:p-5">
+
+        {detailTab === 'overview' ? overviewStatusPanel : null}
+
+        {detailTab === 'customer' ? customerMachinePanel : null}
+
+        {detailTab === 'work' ? (
+          <div className="space-y-4">
 
         {isStampingJob && isOpen ? (
           <Card
@@ -2458,8 +2711,10 @@ export function TicketDetailPage() {
             </div>
           ) : null}
         </Card>
+          </div>
+        ) : null}
 
-        {contact ? (
+        {detailTab === 'parts' && contact ? (
           <div id="section-spares" className="scroll-mt-24">
             <SparePartsPanel
               contactId={contact.id}
@@ -2473,9 +2728,9 @@ export function TicketDetailPage() {
                     }`
                   : undefined
               }
-              onTicketUpdated={() => void load()}
+              onTicketUpdated={() => void load({ silent: true })}
               collapsible
-              defaultOpen={Boolean(cf.alsoSpareParts)}
+              defaultOpen
               canEdit={isAdmin || isEngineer}
               defaultUnderWarranty={
                 coverageChargeHints({
@@ -2496,8 +2751,8 @@ export function TicketDetailPage() {
           </div>
         ) : null}
 
-        <div className={`grid gap-4 ${showPayment ? 'lg:grid-cols-2' : ''}`}>
-          <Card className="overflow-hidden p-0">
+        {detailTab === 'overview' ? (
+          <Card id="section-assignment" className="overflow-hidden p-0">
             <div className="border-b border-border bg-surface/70 px-4 py-2.5">
               <h2 className="text-sm font-semibold text-text-primary">Assignment</h2>
             </div>
@@ -2529,9 +2784,18 @@ export function TicketDetailPage() {
               </div>
             </div>
           </Card>
+        ) : null}
 
-          {showPayment ? (
-            <Card id="section-payment" className="scroll-mt-24 overflow-hidden p-0">
+        {detailTab === 'payment' && showPayment ? (
+          <div className="space-y-3">
+            {paymentRequiredBanner}
+            <Card
+              id="section-payment"
+              className={cn(
+                'scroll-mt-24 overflow-hidden p-0',
+                tabAttention === 'payment' && 'ring-2 ring-red-400 ring-offset-2',
+              )}
+            >
               <div className="flex items-center justify-between border-b border-border bg-surface/70 px-4 py-2.5">
                 <h2 className="text-sm font-semibold text-text-primary">Payment</h2>
                 <Badge color={isPaid ? 'green' : paymentStatus === 'PARTIAL' ? 'amber' : 'gray'}>
@@ -2555,9 +2819,15 @@ export function TicketDetailPage() {
                     onChange={(e) => setPayDraft({ ...payDraft, advanceAmount: e.target.value })}
                   />
                   <div className="rounded-[8px] border border-border bg-surface px-3 py-2">
-                    <div className="text-xs text-text-secondary">Balance (auto)</div>
-                    <div className="text-lg font-bold text-accent-amber">
+                    <div className="text-xs text-text-secondary">Balance / due (auto)</div>
+                    <div
+                      className={cn(
+                        'text-lg font-bold',
+                        balancePreview > 0 ? 'text-accent-red' : 'text-emerald-600',
+                      )}
+                    >
                       {formatCurrency(balancePreview)}
+                      {balancePreview <= 0 ? ' · no due' : ' · due'}
                     </div>
                   </div>
                 </div>
@@ -2587,7 +2857,8 @@ export function TicketDetailPage() {
                       <Wallet size={16} /> Save payment
                     </Button>
                     <p className="text-xs text-text-secondary">
-                      Charge / advance anytime — assign not required. Desk marks paid and closes.
+                      Mark complete stays locked until balance is ₹0 and status is Paid (or free ₹0
+                      job). Desk can Mark paid fully after collection.
                     </p>
                   </>
                 ) : (
@@ -2601,9 +2872,10 @@ export function TicketDetailPage() {
                 )}
               </div>
             </Card>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
 
+        {detailTab === 'notes' ? (
         <Card className="overflow-hidden p-0">
           <div className="border-b border-border bg-muted/40 px-4 py-3 sm:px-5">
             <h2 className="text-sm font-semibold text-text-primary">Team notes</h2>
@@ -2647,6 +2919,10 @@ export function TicketDetailPage() {
             </div>
           </div>
         </Card>
+        ) : null}
+
+          </div>
+        </div>
 
         {ticketDialogs}
       </div>
@@ -2655,7 +2931,15 @@ export function TicketDetailPage() {
 
   return (
     <div className="w-full space-y-6">
-      {ticketOverview}
+      {ticketHeader}
+
+      <div className="flex min-h-[520px] flex-col overflow-hidden rounded-xl border border-border bg-card md:flex-row">
+        {detailTabNav}
+        <div className="min-w-0 flex-1 space-y-4 p-3 sm:p-4 md:p-5">
+
+      {detailTab === 'overview' ? (
+        <div className="space-y-4">
+          {overviewStatusPanel}
 
       {isStampingJob &&
       stampResultSaved &&
@@ -2914,13 +3198,24 @@ export function TicketDetailPage() {
           </div>
         </div>
       </TicketDetailGroup>
+        </div>
+      ) : null}
 
-      {showPayment ? (
+      {detailTab === 'customer' ? customerMachinePanel : null}
+
+      {detailTab === 'payment' && showPayment ? (
+        <div
+          className={cn(
+            'space-y-3',
+            tabAttention === 'payment' && 'rounded-xl ring-2 ring-red-400 ring-offset-2',
+          )}
+        >
+        {paymentRequiredBanner}
         <TicketDetailGroup
           id="section-payment"
           title="Payment"
-          hint="Collect anytime — assign not required"
-          defaultOpen={!isPaid}
+          hint="Must be ₹0 due + Paid (or free ₹0) before Mark complete"
+          defaultOpen
         >
           <div
             className={`scroll-mt-24 space-y-3 ${sectionErrorClass(Boolean(fieldErrors.paymentTotal || fieldErrors.paymentMethod || fieldErrors.paymentReference || fieldErrors.paymentProofUrl))}`}
@@ -3084,19 +3379,16 @@ export function TicketDetailPage() {
               </div>
               <p className="mt-3 text-xs text-text-secondary">
                 {isPaid
-                  ? 'Paid — you can invoice or WhatsApp the customer.'
-                  : 'Enter charge anytime after the ticket is created. Assigning an engineer is separate.'}
+                  ? 'Paid — Mark complete is unlocked (when work steps are done).'
+                  : 'Balance must be ₹0 and Mark paid fully before Mark complete on any role.'}
               </p>
           </div>
         </TicketDetailGroup>
+        </div>
       ) : null}
 
-      <TicketDetailGroup
-        title="Work, approval & progress"
-        hint="Stamp · mark complete · day notes · timeline"
-        defaultOpen={isOpen || status === 'RESOLVED'}
-      >
-
+      {detailTab === 'work' ? (
+      <div className="space-y-4">
       {isStampingJob && isOpen ? (
         <Card
           id="section-stamp-result"
@@ -3404,16 +3696,16 @@ export function TicketDetailPage() {
             </ol>
           )}
           <p className="mt-3 text-xs text-text-secondary">
-            Day notes (Step 4) and visits from the engineer appear here. Use <strong>Assign to</strong> below to
+            Day notes (Step 4) and visits from the engineer appear here. Use <strong>Assign to</strong> on Overview to
             reassign if the current engineer cannot finish.
           </p>
         </Card>
       ) : null}
+      </div>
+      ) : null}
 
-      </TicketDetailGroup>
-
-      {/* Assignment — separate from payment (payment is above, always on) */}
-      {(isAdmin || isEngineer || isDesk) ? (
+      {/* Assignment — Overview tab */}
+      {detailTab === 'overview' && (isAdmin || isEngineer || isDesk) ? (
       <TicketDetailGroup
         id="section-assignment"
         title="Assignment"
@@ -3555,12 +3847,12 @@ export function TicketDetailPage() {
       </TicketDetailGroup>
       ) : null}
 
-      {contact && isAdmin ? (
+      {detailTab === 'parts' && contact && isAdmin ? (
         <TicketDetailGroup
           id="section-spares"
           title="Spare parts"
           hint={cf.alsoSpareParts ? 'Stamping + spares on this visit' : 'Parts used on this job'}
-          defaultOpen={Boolean(cf.alsoSpareParts)}
+          defaultOpen
         >
           {cf.alsoSpareParts ? (
             <p className="mb-2 text-xs text-amber-800 dark:text-amber-200">
@@ -3580,7 +3872,7 @@ export function TicketDetailPage() {
                   }`
                 : undefined
             }
-            onTicketUpdated={() => void load()}
+            onTicketUpdated={() => void load({ silent: true })}
             collapsible
             defaultOpen={Boolean(cf.alsoSpareParts)}
             canEdit
@@ -3597,7 +3889,8 @@ export function TicketDetailPage() {
         </TicketDetailGroup>
       ) : null}
 
-      <TicketDetailGroup title="Team notes" hint="Internal only — not sent to customer" defaultOpen={false}>
+      {detailTab === 'notes' ? (
+      <TicketDetailGroup title="Team notes" hint="Internal only — not sent to customer" defaultOpen>
       <Card className="overflow-hidden border-0 p-0 shadow-none">
         <div className="border-b border-border bg-muted/40 px-4 py-3 sm:px-5">
           <h3 className="text-sm font-semibold text-text-primary">Internal conversation</h3>
@@ -3643,6 +3936,10 @@ export function TicketDetailPage() {
         </div>
       </Card>
       </TicketDetailGroup>
+      ) : null}
+
+        </div>
+      </div>
 
       {ticketDialogs}
     </div>

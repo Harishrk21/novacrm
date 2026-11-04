@@ -12,6 +12,8 @@ import { useAuthStore } from '@/store/authStore'
 import { useNotificationsStore } from '@/store/notificationsStore'
 import { useUIStore } from '@/store/uiStore'
 import { TableSkeleton } from '@/components/ui/Skeleton'
+import { PaginationBar } from '@/components/ui/PaginationBar'
+import { usePagedRows } from '@/hooks/usePagedRows'
 
 type NotifTab = 'active' | 'unread' | 'expired'
 
@@ -57,6 +59,7 @@ export function NotificationsPage() {
     if (!typeFilter) return base
     return base.filter((n) => (n.type ?? n.kind).includes(typeFilter))
   }, [tab, activeItems, unreadItems, expiredItems, typeFilter])
+  const paged = usePagedRows(filtered, `${tab}|${typeFilter}`)
 
   const types = useMemo(() => {
     const source =
@@ -165,25 +168,28 @@ export function NotificationsPage() {
             }
           />
         ) : (
-          <ul className="divide-y divide-border">
-            {filtered.map((n) => {
-              const expired = isExpiredNotification(n)
-              return (
-                <li key={n.id}>
-                  <NotificationItem
-                    n={n}
-                    density="comfortable"
-                    expired={expired}
-                    showTypeBadge
-                    onOpen={() => openNotification(n)}
-                    onClear={() => {
-                      void clearOne(n.id)
-                    }}
-                  />
-                </li>
-              )
-            })}
-          </ul>
+          <>
+            <ul className="divide-y divide-border">
+              {paged.rows.map((n) => {
+                const expired = isExpiredNotification(n)
+                return (
+                  <li key={n.id}>
+                    <NotificationItem
+                      n={n}
+                      density="comfortable"
+                      expired={expired}
+                      showTypeBadge
+                      onOpen={() => openNotification(n)}
+                      onClear={() => {
+                        void clearOne(n.id)
+                      }}
+                    />
+                  </li>
+                )
+              })}
+            </ul>
+            <PaginationBar page={paged.page} total={paged.total} onPageChange={paged.setPage} />
+          </>
         )}
       </Card>
     </div>

@@ -242,7 +242,29 @@ export function ClientDetailPage() {
           : {}),
       }
       const logoUrl = editLogoUrl.trim() || null
-      const patch = {
+
+      // Only send pack / geofence / modules when they actually changed — otherwise every
+      // Save re-runs attendance provision + N module upserts (very slow).
+      const packChanged = Boolean(editPack) && editPack !== (client.subscriptionPack ?? '')
+      const prevGeo = {
+        attendanceGeofenceEnabled: !!client.attendanceGeofenceEnabled,
+        attendanceGeofenceLat:
+          client.attendanceGeofenceLat != null ? Number(client.attendanceGeofenceLat) : null,
+        attendanceGeofenceLng:
+          client.attendanceGeofenceLng != null ? Number(client.attendanceGeofenceLng) : null,
+        attendanceGeofenceRadiusM: Number(client.attendanceGeofenceRadiusM ?? 10),
+      }
+      const geofenceChanged =
+        prevGeo.attendanceGeofenceEnabled !== geo.attendanceGeofenceEnabled ||
+        prevGeo.attendanceGeofenceLat !== geo.attendanceGeofenceLat ||
+        prevGeo.attendanceGeofenceLng !== geo.attendanceGeofenceLng ||
+        prevGeo.attendanceGeofenceRadiusM !== geo.attendanceGeofenceRadiusM
+
+      const modulesChanged = MODULE_TOGGLE_OPTIONS.some(
+        (m) => Boolean(editModules[m.key]) !== Boolean(client.modulesEnabled?.[m.key]),
+      )
+
+      const patch: Record<string, unknown> = {
         name: editName.trim() || client.name,
         email: editEmail.trim() || undefined,
         phone: editPhone.trim() || undefined,
@@ -257,26 +279,31 @@ export function ClientDetailPage() {
         maxUsers: Number(editMaxUsers) || 10,
         branding,
         logoUrl,
-        ...(editPack ? { subscriptionPack: editPack } : {}),
-        ...geo,
+        ...(packChanged ? { subscriptionPack: editPack } : {}),
+        ...(geofenceChanged ? geo : {}),
       }
       let attendanceNote: string | null = null
       if (liveMode) {
         await api.updateTenant(client.id, patch)
-        const modsResult = await api.setTenantModules(client.id, editModules)
-        if (modsResult.attendance?.action === 'created') {
-          attendanceNote = modsResult.attendance.inviteUrl
-            ? `Attendance provisioned (${modsResult.attendance.attendanceSlug}). Invite: ${modsResult.attendance.inviteUrl}`
-            : `Attendance provisioned (${modsResult.attendance.attendanceSlug})`
-        } else if (modsResult.attendance?.action === 'disabled') {
-          attendanceNote = 'Attendance disabled for this client'
-        } else if (modsResult.attendance?.message) {
-          attendanceNote = modsResult.attendance.message
+        if (modulesChanged) {
+          const modsResult = await api.setTenantModules(client.id, editModules)
+          if (modsResult.attendance?.action === 'created') {
+            attendanceNote = modsResult.attendance.inviteUrl
+              ? `Attendance provisioned (${modsResult.attendance.attendanceSlug}). Invite: ${modsResult.attendance.inviteUrl}`
+              : `Attendance provisioned (${modsResult.attendance.attendanceSlug})`
+          } else if (modsResult.attendance?.action === 'disabled') {
+            attendanceNote = 'Attendance disabled for this client'
+          } else if (
+            modsResult.attendance?.message &&
+            modsResult.attendance.action !== 'already_linked'
+          ) {
+            attendanceNote = modsResult.attendance.message
+          }
         }
       }
       const nextRow: ClientRow = {
         ...client,
-        name: patch.name,
+        name: String(patch.name),
         email: editEmail.trim() || undefined,
         phone: editPhone.trim() || undefined,
         city: editCity.trim() || '—',

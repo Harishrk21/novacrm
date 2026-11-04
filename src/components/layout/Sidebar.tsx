@@ -56,6 +56,9 @@ import {
   isWarehouse,
   roleLabel,
 } from '@/lib/roles'
+import { can, type Permission } from '@/lib/permissions'
+import { pathToModuleKey } from '@/lib/userModules'
+import { hasAnyInventoryArea, resolveInventoryAreas } from '@/lib/inventoryAreas'
 import { APP_NAME } from '@/lib/branding'
 
 type NavQuickAction = {
@@ -64,6 +67,8 @@ type NavQuickAction = {
   icon?: typeof LayoutDashboard
   /** Only company admins see this */
   adminOnly?: boolean
+  /** If set, only roles with this permission see the action */
+  permission?: Permission
 }
 
 type NavItem = {
@@ -81,6 +86,18 @@ type NavSection = {
   icon?: typeof Briefcase
   collapsible?: boolean
   items: NavItem[]
+}
+
+function filterQuickActions(
+  actions: NavQuickAction[] | undefined,
+  role: string | null | undefined,
+) {
+  const isAdmin = isCompanyAdmin(role)
+  return (actions ?? []).filter((a) => {
+    if (a.adminOnly && !isAdmin) return false
+    if (a.permission && !can(role, a.permission)) return false
+    return true
+  })
 }
 
 function pathMatchesItem(
@@ -124,6 +141,28 @@ function pathMatchesItem(
 
 function sectionHasActive(pathname: string, search: string, section: NavSection) {
   return section.items.some((item) => pathMatchesItem(pathname, search, item))
+}
+
+/** Drop links the employee’s allowedModules (and inventory areas) do not grant. */
+function filterNavByModules(
+  sections: NavSection[],
+  moduleOn: (key: string, fallback?: boolean) => boolean,
+  inventoryUnlocked: boolean,
+): NavSection[] {
+  return sections
+    .map((section) => {
+      const items = section.items.filter((item) => {
+        const key = pathToModuleKey(item.to)
+        if (!key) return true
+        if (!moduleOn(key)) return false
+        // Stock routes need at least one inventory area assigned
+        if (key === 'erp.inventory' && !inventoryUnlocked) return false
+        return true
+      })
+      if (items.length === 0) return null
+      return { ...section, items }
+    })
+    .filter((s): s is NavSection => Boolean(s))
 }
 
 /** Collapsed rail: one icon per nav group; opens a flyout of that group's links. */
@@ -276,7 +315,8 @@ function NavItemRow({
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null)
   const wrapRef = useRef<HTMLLIElement>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
-  const actions = (item.quickActions ?? []).filter((a) => !a.adminOnly || isAdmin)
+  const role = useAuthStore((s) => s.user?.role)
+  const actions = filterQuickActions(item.quickActions, role)
 
   useEffect(() => {
     if (!menuOpen) return
@@ -438,14 +478,14 @@ export function Sidebar() {
 
   const contactsActions: NavQuickAction[] = [
     { label: 'Create Contact', to: '/contacts?open=1', icon: UserPlus },
-    { label: 'Import Contacts', to: '/contacts?tab=import', icon: Upload, adminOnly: true },
+    { label: 'Import Contacts', to: '/contacts?tab=import', icon: Upload, permission: 'contacts:import' },
     { label: 'With machines', to: '/contacts?filter=machines', icon: Package },
     { label: 'Open service jobs', to: '/contacts?filter=openJobs', icon: Ticket },
   ]
 
   const leadsActions: NavQuickAction[] = [
     { label: 'New lead', to: '/sale-tracking?open=1', icon: Plus },
-    { label: 'Pending requisitions', to: '/sale-tracking?queue=requisitions', icon: Filter },
+    { label: 'Awaiting accept', to: '/sale-tracking?queue=requisitions', icon: AlertTriangle },
     { label: 'My leads', to: '/sale-tracking', icon: Filter },
   ]
 
@@ -691,7 +731,7 @@ export function Sidebar() {
           to: '/tickets',
           icon: Ticket,
           label: 'Service tickets',
-          quickActions: ticketsActions.filter((a) => !a.adminOnly),
+          quickActions: ticketsActions,
         },
         { to: '/tickets?open=1&job=service', icon: Plus, label: 'New service ticket' },
         {
@@ -740,7 +780,7 @@ export function Sidebar() {
           to: '/contacts',
           icon: Users,
           label: 'Contacts',
-          quickActions: contactsActions.filter((a) => !a.adminOnly),
+          quickActions: contactsActions,
         },
       ],
     },
@@ -785,13 +825,14 @@ export function Sidebar() {
           icon: Ticket,
           label: 'My tickets',
           quickActions: [
-            { label: 'Open to accept', to: '/workqueue', icon: ListTodo },
-            { label: 'In progress', to: '/tickets?queue=progress', icon: ListTodo },
+            { label: 'Ready to accept', to: '/tickets?queue=awaiting', icon: AlertTriangle },
+            { label: 'My jobs', to: '/tickets', icon: ListTodo },
             { label: 'Spare parts log', to: '/spare-parts', icon: Wrench },
           ],
         },
         { to: '/spare-parts', icon: Wrench, label: 'Spare parts' },
         { to: '/service-reports', icon: FileText, label: 'Service reports' },
+        { to: '/my-tasks', icon: CheckSquare, label: 'My tasks' },
       ],
     },
     {
@@ -853,12 +894,26 @@ export function Sidebar() {
           to: '/contacts',
           icon: Users,
           label: 'Contacts',
-          quickActions: contactsActions.filter((a) => !a.adminOnly),
+          quickActions: contactsActions,
         },
+        ...(moduleOn('crm.deals')
+          ? [{ to: '/deals', icon: ClipboardList, label: 'Deals' } as NavItem]
+          : []),
         ...(moduleOn('erp.invoices')
           ? [{ to: '/erp/invoices', icon: FileText, label: 'Proforma invoices' } as NavItem]
           : []),
       ],
+    },
+    {
+      label: 'Activities',
+      icon: CalendarDays,
+      collapsible: true,
+      items: moduleOn('crm.activities')
+        ? [
+            { to: '/activities', icon: Phone, label: 'Calls & tasks' },
+            { to: '/my-tasks', icon: CheckSquare, label: 'My tasks' },
+          ]
+        : [],
     },
     {
       label: 'Inventory',
@@ -886,6 +941,7 @@ export function Sidebar() {
       collapsible: false,
       items: [
         { to: '/', icon: LayoutDashboard, label: 'Dashboard', end: true },
+        { to: '/workqueue', icon: ListTodo, label: 'Workqueue' },
         { to: '/notifications', icon: Bell, label: 'Notifications' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
         ...(attendanceNavItem ? [attendanceNavItem] : []),
@@ -925,7 +981,7 @@ export function Sidebar() {
           to: '/contacts',
           icon: Users,
           label: 'Contacts',
-          quickActions: contactsActions.filter((a) => !a.adminOnly),
+          quickActions: contactsActions,
         },
       ],
     },
@@ -944,6 +1000,7 @@ export function Sidebar() {
       collapsible: false,
       items: [
         { to: '/', icon: LayoutDashboard, label: 'Dashboard', end: true },
+        { to: '/workqueue', icon: ListTodo, label: 'Workqueue' },
         { to: '/notifications', icon: Bell, label: 'Notifications' },
         { to: '/help', icon: BookOpen, label: 'How it works' },
         ...(attendanceNavItem ? [attendanceNavItem] : []),
@@ -958,14 +1015,15 @@ export function Sidebar() {
           to: '/tickets',
           icon: Ticket,
           label: 'My Tickets',
-          quickActions: ticketsActions.filter((a) => !a.adminOnly),
+          quickActions: ticketsActions,
         },
         { to: '/my-tasks', icon: CheckSquare, label: 'My Tasks' },
+        { to: '/activities', icon: Phone, label: 'Calls & tasks' },
         {
           to: '/contacts',
           icon: Users,
           label: 'Contacts',
-          quickActions: contactsActions.filter((a) => !a.adminOnly),
+          quickActions: contactsActions,
         },
       ],
     },
@@ -977,7 +1035,10 @@ export function Sidebar() {
     },
   ]
 
-  const navSections = isAdmin
+  const inventoryAreas = resolveInventoryAreas(authUser?.inventoryAreas, role)
+  const inventoryUnlocked = isAdmin || hasAnyInventoryArea(inventoryAreas)
+
+  const rawNav = isAdmin
     ? adminNav
     : isServiceDesk(role)
       ? deskNav
@@ -988,6 +1049,8 @@ export function Sidebar() {
           : isWarehouse(role)
             ? warehouseNav
             : fallbackNav
+
+  const navSections = filterNavByModules(rawNav, moduleOn, inventoryUnlocked)
 
   useEffect(() => {
     setOpenSections((prev) => {
@@ -1034,22 +1097,47 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        'zcrm-sidebar flex h-full flex-col border-r border-white/5 bg-sidebar-bg text-sidebar-text transition-all duration-150',
+        'zcrm-sidebar relative z-[90] flex h-full flex-col border-r border-white/5 bg-sidebar-bg text-sidebar-text transition-all duration-150',
         collapsed ? 'w-[68px]' : 'w-[248px]',
       )}
     >
-      <div className={cn('flex h-14 items-center border-b border-white/8 px-3', collapsed && 'justify-center px-2')}>
+      <div
+        className={cn(
+          'flex h-14 shrink-0 items-center gap-1 border-b border-white/8 px-2',
+          collapsed ? 'justify-center' : 'justify-between px-3',
+        )}
+      >
         {collapsed ? (
-          <img
-            src="/hms-logo.png"
-            alt={APP_NAME}
-            className="h-8 w-auto max-w-[44px] object-contain object-left"
-            draggable={false}
-          />
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            className="flex flex-col items-center gap-0.5 rounded-lg px-1.5 py-1 text-sidebar-text transition-colors duration-150 hover:bg-white/[0.06] hover:text-white"
+            title="Expand sidebar"
+            aria-label="Expand sidebar"
+          >
+            <img
+              src="/hms-logo.png"
+              alt={APP_NAME}
+              className="h-7 w-auto max-w-[36px] object-contain"
+              draggable={false}
+            />
+            <ChevronRight size={14} className="text-white/70" />
+          </button>
         ) : (
-          <div className="min-w-0 px-1 py-1">
-            <HmsLogo size="sm" />
-          </div>
+          <>
+            <div className="min-w-0 flex-1 px-1 py-1">
+              <HmsLogo size="sm" />
+            </div>
+            <button
+              type="button"
+              onClick={toggleSidebar}
+              className="flex size-8 shrink-0 items-center justify-center rounded-lg text-sidebar-text transition-colors duration-150 hover:bg-white/[0.08] hover:text-white"
+              title="Collapse sidebar"
+              aria-label="Collapse sidebar"
+            >
+              <ChevronLeft size={18} />
+            </button>
+          </>
         )}
       </div>
 
@@ -1146,14 +1234,7 @@ export function Sidebar() {
         )}
       </nav>
 
-      <div className="border-t border-white/8 p-2">
-        <button
-          onClick={toggleSidebar}
-          className="mb-1 flex w-full items-center justify-center rounded-lg py-2 text-sidebar-text transition-colors duration-150 hover:bg-white/[0.06] hover:text-white"
-          title={collapsed ? 'Expand' : 'Collapse'}
-        >
-          {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-        </button>
+      <div className="shrink-0 border-t border-white/8 p-2">
         <div className={cn('mb-1 flex items-center gap-2.5 rounded-lg p-2', collapsed && 'justify-center')}>
           <Avatar name={displayName} src={authUser?.avatarUrl} size="sm" />
           {!collapsed && (

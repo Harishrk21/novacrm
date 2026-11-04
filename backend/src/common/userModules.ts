@@ -60,9 +60,65 @@ export async function loadTenantEnabledModuleKeys(tenantId: string): Promise<str
   return [...ASSIGNABLE_MODULE_KEYS];
 }
 
+/** Role-based defaults when admin has not saved an explicit module pack yet. */
+export function defaultAllowedModulesForRole(
+  roleCode: string | null | undefined,
+  tenantEnabled: string[],
+): AllowedModules {
+  if (roleCode === "ADMIN" || roleCode === "MANAGER") {
+    return clampAllowedModules(null, tenantEnabled);
+  }
+  const on = new Set<string>();
+  switch (roleCode) {
+    case "WAREHOUSE":
+      ["crm.contacts", "erp.products", "erp.inventory", "erp.purchase_orders", "erp.invoices"].forEach(
+        (k) => on.add(k),
+      );
+      break;
+    case "SALES_EXECUTIVE":
+    case "AGENT":
+      [
+        "crm.leads",
+        "crm.contacts",
+        "crm.accounts",
+        "crm.deals",
+        "crm.activities",
+        "erp.products",
+        "erp.invoices",
+        "engagement.whatsapp",
+      ].forEach((k) => on.add(k));
+      break;
+    case "SERVICE_DESK":
+      [
+        "crm.contacts",
+        "crm.tickets",
+        "crm.amc",
+        "crm.stamping",
+        "crm.rentals",
+        "erp.products",
+        "engagement.whatsapp",
+      ].forEach((k) => on.add(k));
+      break;
+    case "SERVICE_ENGINEER":
+      ["crm.contacts", "crm.tickets", "hr.attendance", "engagement.whatsapp"].forEach((k) =>
+        on.add(k),
+      );
+      break;
+    default:
+      ["crm.contacts", "crm.tickets"].forEach((k) => on.add(k));
+  }
+  const out: AllowedModules = {};
+  for (const key of tenantEnabled) {
+    if (key === "settings") continue;
+    out[key] = on.has(key);
+  }
+  return out;
+}
+
 /**
  * Clamp employee modules to what platform granted the tenant.
  * Settings is never stored here (always allowed).
+ * When input is null, every tenant key is ON (admin / "select all").
  */
 export function clampAllowedModules(
   input: AllowedModules | null | undefined,
@@ -85,7 +141,7 @@ export function clampAllowedModules(
  * Resolved sidebar/API visibility for a user.
  * - ADMIN: all tenant-enabled modules
  * - Explicit preferences.allowedModules (clamped) otherwise
- * - Legacy (no prefs): all tenant-enabled modules on
+ * - No prefs yet: role defaults (engineers do not get Inventory until admin enables)
  */
 export function resolveAllowedModules(
   preferences: unknown,
@@ -96,6 +152,9 @@ export function resolveAllowedModules(
     return clampAllowedModules(null, tenantEnabled);
   }
   const explicit = allowedModulesFromPreferences(preferences);
+  if (!explicit) {
+    return defaultAllowedModulesForRole(roleCode, tenantEnabled);
+  }
   return clampAllowedModules(explicit, tenantEnabled);
 }
 

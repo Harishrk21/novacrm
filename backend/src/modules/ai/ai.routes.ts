@@ -998,10 +998,215 @@ const IMPORT_FIELDS = [
 const mapImportSchema = z.object({
   body: z.object({
     headers: z.array(z.string().max(120)).min(1).max(80),
-    sampleRows: z.array(z.record(z.unknown())).max(5).optional(),
+    sampleRows: z.array(z.record(z.unknown())).max(8).optional(),
     kind: z.enum(["sales", "service"]).optional(),
   }),
 });
+
+type ImportField = (typeof IMPORT_FIELDS)[number];
+
+function cellStr(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "number" && Number.isFinite(v)) return String(Math.trunc(v));
+  return String(v).trim();
+}
+
+/** Compact per-column samples for heuristics + AI (arbitrary client headers). */
+function columnSamples(
+  headers: string[],
+  rows: Array<Record<string, unknown>>,
+  limit = 5,
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const h of headers) {
+    const seen = new Set<string>();
+    const vals: string[] = [];
+    for (const row of rows) {
+      const s = cellStr(row[h]);
+      if (!s || seen.has(s)) continue;
+      seen.add(s);
+      vals.push(s.length > 80 ? `${s.slice(0, 77)}…` : s);
+      if (vals.length >= limit) break;
+    }
+    out[h] = vals;
+  }
+  return out;
+}
+
+function looksPhone(s: string): boolean {
+  const d = s.replace(/\D/g, "");
+  return d.length === 10 || (d.length === 12 && d.startsWith("91")) || (d.length === 11 && d.startsWith("0"));
+}
+
+function looksEmail(s: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+
+function looksPincode(s: string): boolean {
+  return /^\d{6}$/.test(s.replace(/\s/g, ""));
+}
+
+function looksDate(s: string): boolean {
+  if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(s)) return true;
+  if (/^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$/.test(s)) return true;
+  if (/^\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}$/.test(s)) return true;
+  const t = Date.parse(s);
+  return Number.isFinite(t) && /\d{4}|\d{1,2}[-/]\d{1,2}/.test(s);
+}
+
+function looksMachineType(s: string): boolean {
+  return /^(weighing|billing|ccm|cctv|biometric|paper[_\s-]?shredder|other)$/i.test(s.trim());
+}
+
+function looksOrigin(s: string): boolean {
+  return /^(sold[_\s-]?by[_\s-]?us|third[_\s-]?party|outside|hms|own)$/i.test(s.trim());
+}
+
+function looksServicePlan(s: string): boolean {
+  return /^(gc|ngc|amc|non[_\s-]?amc)$/i.test(s.trim());
+}
+
+function looksQty(s: string): boolean {
+  return /^[1-9]\d{0,2}$/.test(s) && Number(s) <= 500;
+}
+
+function looksSerial(s: string): boolean {
+  // Alphanumeric codes typical of machine serials / HMS ids — not pure 10-digit phones
+  if (looksPhone(s) || looksPincode(s) || looksDate(s)) return false;
+  return /^[A-Za-z0-9][A-Za-z0-9\-_/]{4,24}$/.test(s) && /[A-Za-z]/.test(s) && /\d/.test(s);
+}
+
+function majority(samples: string[], pred: (s: string) => boolean, minRatio = 0.6): boolean {
+  if (!samples.length) return false;
+  const hit = samples.filter(pred).length;
+  return hit / samples.length >= minRatio;
+}
+
+function inferFieldFromValues(samples: string[], kind?: "sales" | "service"): ImportField | null {
+  if (!samples.length) return null;
+  if (majority(samples, looksEmail)) return "email";
+  if (majority(samples, looksPhone)) return kind === "service" ? "phone" : "mobile";
+  if (majority(samples, looksPincode)) return "pincode";
+  if (majority(samples, looksMachineType)) return "machineType";
+  if (majority(samples, looksOrigin)) return "origin";
+  if (majority(samples, looksServicePlan)) return "servicePlan";
+  if (majority(samples, looksDate)) {
+    return kind === "service" ? "nextServiceDueDate" : "warrantyEndDate";
+  }
+  if (majority(samples, looksSerial, 0.5)) return "serialNo";
+  if (majority(samples, looksQty, 0.8) && samples.every((s) => s.length <= 3)) return "quantity";
+  return null;
+}
+
+function heuristicMapHeader(header: string, kind?: "sales" | "service"): ImportField | null {
+  const h = header.trim().toLowerCase().replace(/[_\-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (/^(customer|shop|company|client|party|firm)?\s*name$|^name$|customer name|shop name|party name|firm name|account name|dealer name/.test(h))
+    return "name";
+  if (/whatsapp|wa\b|w\.?\s*a\.?/.test(h)) return "whatsapp";
+  if (/mobile|cell|mob\b|cellphone/.test(h)) return "mobile";
+  if (/^phone$|phone no|phone number|contact no|contact number|tel\b|telephone|landline/.test(h)) return "phone";
+  if (/e-?mail/.test(h)) return "email";
+  if (/door|door no|door number|door#|house no|plot/.test(h)) return "doorNo";
+  if (/street|road|address line 1|addr1|^address$|addr\b/.test(h)) return "street";
+  if (/building|complex|tower|apartment|flat/.test(h)) return "buildingName";
+  if (/^area$|locality|colony|nagar|taluk/.test(h)) return "area";
+  if (/^city$|town|district/.test(h)) return "city";
+  if (/^state$|province/.test(h)) return "state";
+  if (/pin|postal|zip/.test(h)) return "pincode";
+  if (/landmark|near|opposite/.test(h)) return "landmark";
+  if (/description|remarks|notes$|comment/.test(h) && !/machine|service|sale|amc|stamp/.test(h))
+    return "description";
+  if (/machine sold|machine name|product name|equipment name|asset name|^machine$|^product$|item name/.test(h))
+    return "machineName";
+  if (/machine type|product type|equipment type|category|product category/.test(h)) return "machineType";
+  if (/serial|sr no|srno|s\/n|hms id|hms uniq|unique id|sno\b/.test(h)) return "serialNo";
+  if (/^model$|model no|model name|model code/.test(h)) return "model";
+  if (/^qty$|^quantity$|no of units|no of machines|units|nos\b|count$/.test(h)) return "quantity";
+  if (/capacity|cap\b/.test(h)) return "capacity";
+  if (/accuracy|class\b/.test(h)) return "accuracy";
+  if (/platform|platter/.test(h)) return "platformSize";
+  if (/origin|sold by|third party|outside|source type/.test(h)) return "origin";
+  if (kind === "service" && /service type|amc type|coverage|service plan/.test(h)) return "servicePlan";
+  if (kind === "sales" && /coverage|warranty type|gc|ngc|service plan/.test(h)) return "servicePlan";
+  if (/amc|service plan|service type|coverage/.test(h)) return "servicePlan";
+  if (/warranty|gc end|guarantee end|warranty end|warranty till/.test(h)) return "warrantyEndDate";
+  if (/amc start|amc from|amc begin|amc commence/.test(h)) return "amcStartDate";
+  if (/amc end|amc to|amc till|amc expiry|amc expire/.test(h)) return "amcEndDate";
+  if (/next service|service due|next amc/.test(h)) return "nextServiceDueDate";
+  if (/stamping date|stamp date|last stamp|last stamping/.test(h)) return "stampingDate";
+  if (/next due|due date|next stamp|stamp valid|valid till|stamp till/.test(h)) return "nextDueDate";
+  if (/machine note|machine remark|sale notes|service notes|item notes/.test(h)) return "machineNotes";
+  return null;
+}
+
+/** Header + sample-value heuristic. One CRM field per column; highest-confidence wins conflicts. */
+function heuristicMapColumns(
+  headers: string[],
+  samples: Record<string, string[]>,
+  kind?: "sales" | "service",
+): Record<string, ImportField | null> {
+  type Cand = { header: string; field: ImportField; score: number };
+  const cands: Cand[] = [];
+
+  for (const h of headers) {
+    const vals = samples[h] ?? [];
+    const byName = heuristicMapHeader(h, kind);
+    const byVal = inferFieldFromValues(vals, kind);
+    if (byName) {
+      // Header match is strong; bump if values agree
+      const agree = byVal === byName || (byName === "mobile" && byVal === "phone") || (byName === "phone" && byVal === "mobile");
+      cands.push({ header: h, field: byName, score: agree ? 100 : byVal && byVal !== byName ? 70 : 90 });
+    } else if (byVal) {
+      cands.push({ header: h, field: byVal, score: 75 });
+    } else if (vals.length && majority(vals, (s) => s.length >= 3 && !looksPhone(s) && !looksEmail(s) && /[A-Za-z]{3}/.test(s), 0.8)) {
+      // Likely a free-text name/shop column with a vague header (Cust, Party, Firm…)
+      const vague = /cust|party|firm|client|shop|dealer|account|org|business/i.test(h);
+      if (vague) cands.push({ header: h, field: "name", score: 60 });
+    }
+  }
+
+  cands.sort((a, b) => b.score - a.score);
+  const used = new Set<string>();
+  const mapping: Record<string, ImportField | null> = {};
+  for (const h of headers) mapping[h] = null;
+  for (const c of cands) {
+    if (used.has(c.field) || mapping[c.header]) continue;
+    mapping[c.header] = c.field;
+    used.add(c.field);
+  }
+
+  // Prefer mobile over phone when only one phone-like column exists
+  const phoneCols = headers.filter((h) => mapping[h] === "phone" || mapping[h] === "mobile");
+  if (phoneCols.length === 1 && mapping[phoneCols[0]!] === "phone" && kind !== "service") {
+    mapping[phoneCols[0]!] = "mobile";
+  }
+
+  return mapping;
+}
+
+function mergeImportMappings(
+  headers: string[],
+  base: Record<string, string | null>,
+  overlay: Record<string, string | null>,
+): Record<string, string | null> {
+  const allowed = new Set<string>(IMPORT_FIELDS as unknown as string[]);
+  const used = new Set<string>();
+  const next: Record<string, string | null> = {};
+  for (const h of headers) next[h] = null;
+
+  // Overlay (AI) first, then fill gaps from base — unique fields only
+  for (const source of [overlay, base]) {
+    for (const h of headers) {
+      if (next[h]) continue;
+      const raw = source[h];
+      const field = raw && allowed.has(raw) ? raw : null;
+      if (!field || used.has(field)) continue;
+      next[h] = field;
+      used.add(field);
+    }
+  }
+  return next;
+}
 
 async function mapCustomerImport(req: Request, res: Response) {
   const { headers, sampleRows = [], kind } = req.body as {
@@ -1010,114 +1215,88 @@ async function mapCustomerImport(req: Request, res: Response) {
     kind?: "sales" | "service";
   };
 
-  const heuristic: Record<string, string | null> = {};
-  for (const h of headers) {
-    heuristic[h] = heuristicMapHeader(h, kind);
-  }
+  const samples = columnSamples(headers, sampleRows.slice(0, 8), 5);
+  const heuristic = heuristicMapColumns(headers, samples, kind);
 
-  let mapping = heuristic;
+  let mapping: Record<string, string | null> = { ...heuristic };
   let usedAi = false;
   let model: string | null = null;
-  let note = "Mapped with column-name rules. Review before importing.";
+  let note = "Mapped from your column names and sample cell values. Review before importing.";
+
   const register =
     kind === "service"
-      ? "SERVICE register (AMC, stamping, next service, outside/repair machines)"
+      ? "SERVICE (AMC / stamping / outside machines)"
       : kind === "sales"
-        ? "SALES register (machines HMS sold, GC/warranty, sale serials)"
-        : "customer + machine import";
+        ? "SALES (sold machines, GC/NGC, serials)"
+        : "customer + machine";
+
+  const columnDigest = headers.map((h) => ({
+    header: h,
+    samples: samples[h] ?? [],
+    guess: heuristic[h],
+  }));
+
+  const needsAi =
+    !Object.values(heuristic).includes("name") ||
+    !(Object.values(heuristic).includes("mobile") || Object.values(heuristic).includes("phone")) ||
+    headers.some((h) => !heuristic[h]);
 
   try {
-    const prompt = `You map spreadsheet columns for HMS Enterprises CRM ${register}.
-Allowed target fields (use exact keys, or null if no match):
-${IMPORT_FIELDS.join(", ")}
+    // Compact digest — sample values matter more than fancy headers; keep prompt small for speed
+    const prompt = `Map arbitrary ${register} spreadsheet columns to HMS CRM fields.
+Client files use ANY headers — rely on SAMPLE VALUES, not only header text.
+Allowed fields (exact keys or null): ${IMPORT_FIELDS.join(", ")}
 
-Rules:
-- name = customer / shop / company name (required)
-- phone or mobile = primary phone (required). Prefer mobile for mobiles.
-- CRITICAL: same phone number in a Sales file and a Service file = ONE customer. Map phone/mobile carefully so later imports club onto the existing record.
-- Machine identity: serialNo = one physical unit (re-import skips that serial). Same model + quantity without serial = multiple units, not a duplicate.
-- quantity = how many identical units when serial is blank. Ignore quantity when serialNo is present.
-- Machine fields map to machine(s) on the same row (machineName, machineType, serialNo, model, quantity, etc.)
+Must map: name (shop/customer), and mobile OR phone (10-digit contact).
+Each field at most once. Skip irrelevant columns (null).
 ${
   kind === "service"
-    ? `- This is a SERVICE file: prefer AMC / stamping / nextServiceDueDate / nextDueDate. origin may be THIRD_PARTY (outside) or SOLD_BY_US (HMS machine coming for service).
-- servicePlan: AMC | NGC | NON_AMC (GC is rare on service registers).`
-    : `- This is a SALES file: prefer sold machines, serialNo, warrantyEndDate, origin SOLD_BY_US, servicePlan GC / NGC.
-- stampingDate may still appear on weighing sales.`
+    ? "SERVICE: AMC/stamping dates, origin THIRD_PARTY|SOLD_BY_US, servicePlan AMC|NGC|NON_AMC."
+    : "SALES: serialNo, warrantyEndDate, origin SOLD_BY_US, servicePlan GC|NGC."
 }
-- origin: SOLD_BY_US vs THIRD_PARTY / outside
-- servicePlan: GC | NGC | AMC | NON_AMC
-- Do not invent columns. Only map from the given headers.
-- Return JSON only: { "mapping": { "<header>": "<field|null>" }, "notes": "short tip" }
+Infer from values: phones→mobile/phone, emails→email, 6-digit→pincode, WEIGHING/BILLING→machineType, GC/AMC→servicePlan, serial-like codes→serialNo, dates→date fields.
 
-Headers: ${JSON.stringify(headers)}
-Sample rows: ${JSON.stringify(sampleRows.slice(0, 3))}
-`;
-    const raw = await callGemini(prompt, { maxTokens: 1500 });
+Columns JSON: ${JSON.stringify(columnDigest)}
+Return JSON only: {"mapping":{"<exact header>":"<field|null>"},"notes":"one short tip"}`;
+
+    const raw = await callGemini(prompt, {
+      maxTokens: needsAi ? 1200 : 900,
+      timeoutMs: needsAi ? 14_000 : 10_000,
+      retries: 1,
+    });
     const parsed = parseJsonLoose<{
       mapping?: Record<string, unknown>;
       notes?: string;
     }>(raw);
     if (parsed.mapping && typeof parsed.mapping === "object") {
+      const aiMap: Record<string, string | null> = {};
       const allowed = new Set<string>(IMPORT_FIELDS as unknown as string[]);
-      const next: Record<string, string | null> = {};
       for (const h of headers) {
         const v = parsed.mapping[h];
         const field = v == null || v === "" ? null : String(v);
-        next[h] = field && allowed.has(field) ? field : heuristic[h] ?? null;
+        aiMap[h] = field && allowed.has(field) ? field : null;
       }
-      mapping = next;
+      // Prefer AI where it mapped; keep heuristic for gaps / invalid AI picks
+      mapping = mergeImportMappings(headers, heuristic, aiMap);
       usedAi = true;
       model = geminiModelName();
-      note = parsed.notes ? String(parsed.notes) : "AI mapped your columns. Review before importing.";
+      note = parsed.notes
+        ? String(parsed.notes)
+        : "AI mapped columns using your sample values. Review before importing.";
     }
   } catch {
-    // Gemini optional — keep heuristic
     note =
-      "AI mapping unavailable — used column-name rules. Rename headers to match the sample template for best results.";
+      "AI mapping unavailable — used column names + sample values. Check Field mapping before import.";
   }
 
-  return success(res, { mapping, usedAi, model, notes: note, fields: IMPORT_FIELDS, kind: kind ?? null });
-}
-
-function heuristicMapHeader(header: string, kind?: "sales" | "service"): string | null {
-  const h = header.trim().toLowerCase().replace(/[_\-]+/g, " ");
-  if (/^(customer|shop|company|client)?\s*name$|^name$|customer name|shop name/.test(h)) return "name";
-  if (/whatsapp|wa\b/.test(h)) return "whatsapp";
-  if (/mobile|cell/.test(h)) return "mobile";
-  if (/^phone$|phone no|phone number|contact no|contact number/.test(h)) return "phone";
-  if (/e-?mail/.test(h)) return "email";
-  if (/door|door no|door number|door#/.test(h)) return "doorNo";
-  if (/street|road|address line 1|addr1/.test(h)) return "street";
-  if (/building|complex|tower/.test(h)) return "buildingName";
-  if (/^area$|locality|colony|nagar/.test(h)) return "area";
-  if (/^city$|town|district/.test(h)) return "city";
-  if (/^state$/.test(h)) return "state";
-  if (/pin|postal|zip/.test(h)) return "pincode";
-  if (/landmark|near/.test(h)) return "landmark";
-  if (/description|remarks|notes$/.test(h) && !/machine|service|sale/.test(h)) return "description";
-  if (/machine sold|machine name|product name|equipment name|asset name|^machine$/.test(h))
-    return "machineName";
-  if (/machine type|product type|equipment type|category/.test(h)) return "machineType";
-  if (/serial|sr no|srno|s\/n|hms id/.test(h)) return "serialNo";
-  if (/^model$|model no|model name/.test(h)) return "model";
-  if (/^qty$|^quantity$|no of units|no of machines|units|nos\b/.test(h)) return "quantity";
-  if (/capacity|cap\b/.test(h)) return "capacity";
-  if (/accuracy|class/.test(h)) return "accuracy";
-  if (/platform|platter/.test(h)) return "platformSize";
-  if (/origin|sold by|third party|outside/.test(h)) return "origin";
-  if (kind === "service" && /service type|amc|coverage|service plan/.test(h)) return "servicePlan";
-  if (kind === "sales" && /coverage|warranty type|gc|ngc|service plan/.test(h)) return "servicePlan";
-  if (/amc|service plan|service type|coverage/.test(h)) return "servicePlan";
-  if (/warranty|gc end|guarantee end/.test(h)) return "warrantyEndDate";
-  if (/amc start|amc from|amc begin/.test(h)) return "amcStartDate";
-  if (/amc end|amc to|amc till|amc expiry/.test(h)) return "amcEndDate";
-  if (/next service|service due/.test(h)) return "nextServiceDueDate";
-  if (/stamping date|stamp date|last stamp/.test(h)) return "stampingDate";
-  if (/next due|due date|next stamp|stamp valid|valid till/.test(h)) return "nextDueDate";
-  if (/machine note|machine remark|sale notes|service notes/.test(h)) return "machineNotes";
-  if (/^address$/.test(h)) return "street";
-  return null;
+  return success(res, {
+    mapping,
+    usedAi,
+    model,
+    notes: note,
+    fields: IMPORT_FIELDS,
+    kind: kind ?? null,
+  });
 }
 
 export const aiRouter = Router();

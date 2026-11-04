@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   Bell,
@@ -57,6 +57,7 @@ import {
   resolveSaleRelease,
   saleAllStepsDone,
   saleIsCompleted,
+  salePaymentSettled,
   saleReadyForProforma,
   salesStepBlockers,
   salesStepDoneFlags,
@@ -170,40 +171,53 @@ export function LeadDetailPage() {
   const [leadUpdateNote, setLeadUpdateNote] = useState('')
   const [leadUpdateSaving, setLeadUpdateSaving] = useState(false)
 
-  const load = useCallback(async () => {
+  const metaLoadedRef = useRef(false)
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!id) return
-    setLoading(true)
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
+      const needMeta = !metaLoadedRef.current
       const [row, lookups, productPage, reqRow, actPage] = await Promise.all([
         api.getLead(id),
-        api.lookups(),
-        api.products({ limit: 200 }).catch(() => ({ items: [] as Record<string, unknown>[] })),
+        needMeta ? api.lookups() : Promise.resolve(null),
+        needMeta
+          ? api.products({ limit: 200 }).catch(() => ({ items: [] as Record<string, unknown>[] }))
+          : Promise.resolve(null),
         api.getRequisitionByLead(id).catch(() => null),
         api.activities({ leadId: id, limit: 50 }).catch(() => ({ items: [] as Record<string, unknown>[] })),
       ])
       setLead(row)
       setRequisition((reqRow as SalesRequisitionRow | null) ?? null)
       setActivities((actPage.items ?? []) as Array<Record<string, unknown>>)
-      setUsers(lookups.users ?? [])
-      setStages(lookups.stages ?? [])
-      setProducts(
-        (productPage.items ?? []).map((p) => ({
-          id: String(p.id),
-          name: String(p.name),
-          sku: String(p.sku ?? ''),
-          attributes: (p.attributes as Record<string, unknown> | null) ?? null,
-        })),
-      )
-      const firstStage = lookups.stages?.[0]?.id ?? ''
-      setConvertStageId((prev) => prev || firstStage)
+      if (lookups) {
+        setUsers(lookups.users ?? [])
+        setStages(lookups.stages ?? [])
+        const firstStage = lookups.stages?.[0]?.id ?? ''
+        setConvertStageId((prev) => prev || firstStage)
+      }
+      if (productPage) {
+        setProducts(
+          (productPage.items ?? []).map((p) => ({
+            id: String(p.id),
+            name: String(p.name),
+            sku: String(p.sku ?? ''),
+            attributes: (p.attributes as Record<string, unknown> | null) ?? null,
+          })),
+        )
+      }
+      if (needMeta) metaLoadedRef.current = true
     } catch (err) {
-      addToast({
-        type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Could not load lead',
-      })
-      setLead(null)
+      if (!silent) {
+        addToast({
+          type: 'error',
+          message: err instanceof ApiClientError ? err.message : 'Could not load lead',
+        })
+        setLead(null)
+      }
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast, id])
 
@@ -252,6 +266,10 @@ export function LeadDetailPage() {
   )
   const saleStepsComplete = saleAllStepsDone(salesFlags)
   const saleCompleted = saleIsCompleted(lead)
+  const salePay = useMemo(
+    () => salePaymentSettled(lead, requisition),
+    [lead, requisition],
+  )
   const releaseSnapshot = resolveSaleRelease(lead, requisition)
   const readyForPi = saleReadyForProforma(lead, requisition)
   const proformaHref =
@@ -681,7 +699,7 @@ export function LeadDetailPage() {
         })
         setDetailTab('overview')
         setRelatedSection('requisition')
-        await load()
+        await load({ silent: true })
         return
       } else {
         addToast({
@@ -692,7 +710,7 @@ export function LeadDetailPage() {
 
       const nextLead = (result as { lead?: Record<string, unknown> }).lead
       if (nextLead) setLead(nextLead)
-      else await load()
+      else await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -876,7 +894,7 @@ export function LeadDetailPage() {
           ? `Converted — ${reqErr}`
           : 'Converted — sales requisition submitted for admin sign-off',
       })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -954,7 +972,7 @@ export function LeadDetailPage() {
       })
       setRequisition(row as SalesRequisitionRow)
       addToast({ type: 'success', message: 'Requisition sent to admin for sign-off' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -975,7 +993,7 @@ export function LeadDetailPage() {
         type: 'success',
         message: 'Signed — sales can now notify inventory',
       })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -995,7 +1013,7 @@ export function LeadDetailPage() {
       setRejectOpen(false)
       setRejectReason('')
       addToast({ type: 'success', message: 'Requisition rejected' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1018,7 +1036,7 @@ export function LeadDetailPage() {
           ? 'Stock reduced, machine on customer, ready to ship — raise proforma when ready'
           : 'Stock reduced — machine added to customer. Create sale DC / proforma next',
       })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1036,7 +1054,7 @@ export function LeadDetailPage() {
       const row = await api.shipRequisition(String(requisition.id))
       setRequisition(row as SalesRequisitionRow)
       addToast({ type: 'success', message: 'Marked ready to ship' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1049,10 +1067,25 @@ export function LeadDetailPage() {
 
   async function markSaleComplete() {
     if (!lead?.id) return
+    const pay = salePaymentSettled(lead, requisition)
+    if (!pay.ok) {
+      document.getElementById('section-payment')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      })
+      addToast({
+        type: 'error',
+        message:
+          pay.due > 0
+            ? `Payment pending — ₹${pay.due.toLocaleString('en-IN')} still due. Settle the balance before Mark sale complete.`
+            : 'Payment pending — record Total / Advance (due must be ₹0) before Mark sale complete.',
+      })
+      return
+    }
     if (!saleStepsComplete) {
       addToast({
         type: 'error',
-        message: 'Finish all progress steps (including PI/payment) before marking complete',
+        message: 'Finish all progress steps (including settled PI/payment) before marking complete',
       })
       return
     }
@@ -1101,7 +1134,7 @@ export function LeadDetailPage() {
       setPayNote('')
       setPayAmount('')
       addToast({ type: 'success', message: 'Payment follow-up saved' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1119,7 +1152,7 @@ export function LeadDetailPage() {
       const row = await api.notifyRequisitionInventory(String(requisition.id))
       setRequisition(row as SalesRequisitionRow)
       addToast({ type: 'success', message: 'Inventory notified — they will stamp (if weighing) then reduce stock' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1142,7 +1175,7 @@ export function LeadDetailPage() {
       try {
         await api.statusLead(String(lead.id), next)
         addToast({ type: 'success', message: 'Marked not qualified for service' })
-        await load()
+        await load({ silent: true })
       } catch (err) {
         addToast({
           type: 'error',
@@ -1179,7 +1212,7 @@ export function LeadDetailPage() {
               : `${res.enquiryId ?? formatEnquiryId(lead)} → pick / add machine, then create service ticket`,
       })
       if (res.href) navigate(res.href)
-      else await load()
+      else await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1190,7 +1223,7 @@ export function LeadDetailPage() {
     }
   }
 
-  if (loading) {
+  if (loading && !lead) {
     return <DetailSkeleton />
   }
 
@@ -1243,7 +1276,7 @@ export function LeadDetailPage() {
       const row = await api.createRequisitionDeliveryChallan(String(requisition.id))
       setRequisition(row as SalesRequisitionRow)
       addToast({ type: 'success', message: 'Sale delivery challan created' })
-      await load()
+      await load({ silent: true })
       const cfRow =
         row.customFields && typeof row.customFields === 'object'
           ? (row.customFields as Record<string, unknown>)
@@ -1468,6 +1501,13 @@ export function LeadDetailPage() {
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-sm font-semibold text-text-primary">Sale progress</h2>
               {saleCompleted ? <Badge color="green">Completed</Badge> : null}
+              {!saleCompleted && salePay.pending ? (
+                <Badge color="amber">
+                  {salePay.due > 0
+                    ? `Payment pending · ₹${salePay.due.toLocaleString('en-IN')} due`
+                    : 'Payment pending'}
+                </Badge>
+              ) : null}
               {!saleCompleted && saleStepsComplete ? (
                 <Badge color="blue">All steps done</Badge>
               ) : null}
@@ -1475,9 +1515,13 @@ export function LeadDetailPage() {
             <p className="mt-0.5 text-xs text-text-secondary">
               {saleCompleted
                 ? `Sale completed${cf.saleCompletedAt ? ` · ${formatDate(String(cf.saleCompletedAt))}` : ''}`
-                : saleStepsComplete
-                  ? 'All progress steps done — mark sale complete when PI/payment is settled'
-                  : `Step ${salesActiveStep + 1} of ${SALES_FLOW_STEPS.length}`}
+                : salePay.pending
+                  ? salePay.due > 0
+                    ? `Payment pending — ₹${salePay.due.toLocaleString('en-IN')} still due. Settle payment before Mark sale complete.`
+                    : 'Payment pending — record and settle PI/payment (due ₹0) before Mark sale complete.'
+                  : saleStepsComplete
+                    ? 'All progress steps done — payment settled. You can mark sale complete.'
+                    : `Step ${salesActiveStep + 1} of ${SALES_FLOW_STEPS.length}`}
               {requisition?.reqNumber
                 ? ` · ${requisition.reqNumber} (${String(requisition.status ?? '').replaceAll('_', ' ')})`
                 : ''}
@@ -1500,8 +1544,13 @@ export function LeadDetailPage() {
             ) : null}
             {canReqApprove && requisition?.status === 'PENDING_APPROVAL' ? (
               <>
-                <Button size="sm" disabled={reqBusy} onClick={() => setSaleConfirm('approve')}>
-                  Approve & sign
+                <Button
+                  size="sm"
+                  className="bg-red-600 text-white hover:bg-red-700"
+                  disabled={reqBusy}
+                  onClick={() => setSaleConfirm('approve')}
+                >
+                  Accept
                 </Button>
                 <Button size="sm" variant="outline" disabled={reqBusy} onClick={() => setRejectOpen(true)}>
                   Reject
@@ -1535,9 +1584,32 @@ export function LeadDetailPage() {
                 Create proforma
               </Button>
             ) : null}
-            {canReqWrite && saleStepsComplete && !saleCompleted ? (
+            {canReqWrite && saleStepsComplete && !saleCompleted && salePay.ok ? (
               <Button size="sm" disabled={reqBusy} onClick={() => void markSaleComplete()}>
                 Mark sale complete
+              </Button>
+            ) : null}
+            {canReqWrite && !saleCompleted && salePay.pending && salesFlags.slice(0, 6).every(Boolean) ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  document.getElementById('section-payment')?.scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center',
+                  })
+                  addToast({
+                    type: 'error',
+                    message:
+                      salePay.due > 0
+                        ? `Payment pending — ₹${salePay.due.toLocaleString('en-IN')} still due`
+                        : 'Payment pending — settle PI/payment first',
+                  })
+                }}
+              >
+                {salePay.due > 0
+                  ? `Payment pending · ₹${salePay.due.toLocaleString('en-IN')}`
+                  : 'Payment pending'}
               </Button>
             ) : null}
           </div>
@@ -1910,12 +1982,32 @@ export function LeadDetailPage() {
           ) : null}
 
           {relatedSection === 'requisition' ? (
-            <Card id="section-requisition" className="scroll-mt-24 space-y-4 p-5">
+            <Card
+              id="section-requisition"
+              className={cn(
+                'scroll-mt-24 space-y-4 p-5',
+                requisition?.status === 'PENDING_APPROVAL' &&
+                  'border-red-400/70 bg-red-50/50 dark:border-red-500/40 dark:bg-red-950/25',
+              )}
+            >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <h2 className="text-sm font-semibold text-text-primary">Sales requisition</h2>
+                  <h2
+                    className={cn(
+                      'text-sm font-semibold',
+                      requisition?.status === 'PENDING_APPROVAL'
+                        ? 'text-red-800 dark:text-red-200'
+                        : 'text-text-primary',
+                    )}
+                  >
+                    {requisition?.status === 'PENDING_APPROVAL'
+                      ? 'Awaiting accept'
+                      : 'Sales requisition'}
+                  </h2>
                   <p className="mt-0.5 text-xs text-text-secondary">
-                    Admin signs → notify inventory → they confirm stamping & reduce stock. Sales raises PI after ready to ship.
+                    {requisition?.status === 'PENDING_APPROVAL'
+                      ? 'This sale is waiting for your Accept before inventory can be notified.'
+                      : 'Admin accepts → notify inventory → they confirm stamping & reduce stock. Sales raises PI after ready to ship.'}
                   </p>
                 </div>
                 {requisition?.reqNumber ? (
@@ -1925,10 +2017,15 @@ export function LeadDetailPage() {
                         ? 'green'
                         : requisition.status === 'REJECTED'
                           ? 'red'
-                          : 'amber'
+                          : requisition.status === 'PENDING_APPROVAL'
+                            ? 'red'
+                            : 'amber'
                     }
+                    solid={requisition.status === 'PENDING_APPROVAL'}
                   >
-                    {requisition.reqNumber} · {String(requisition.status ?? '').replaceAll('_', ' ')}
+                    {requisition.status === 'PENDING_APPROVAL'
+                      ? `${requisition.reqNumber} · Awaiting accept`
+                      : `${requisition.reqNumber} · ${String(requisition.status ?? '').replaceAll('_', ' ')}`}
                   </Badge>
                 ) : (
                   <Badge color="gray">Not submitted</Badge>
@@ -1936,34 +2033,10 @@ export function LeadDetailPage() {
               </div>
               <dl className="grid gap-3 rounded-lg border border-border bg-muted/20 p-3 sm:grid-cols-2">
                 <div>
-                  <dt className="text-[11px] text-text-secondary">Customer</dt>
-                  <dd className="mt-0.5 text-sm font-medium">{String(lead.name)}</dd>
-                </div>
-                <div>
                   <dt className="text-[11px] text-text-secondary">Serial / HMS</dt>
                   <dd className="mt-0.5 font-mono text-xs">
                     {inventoryRelease.serialNo || String(cf.demoSerialNo ?? '—')}
                     {inventoryRelease.hmsUniqId ? ` · HMS ${inventoryRelease.hmsUniqId}` : ''}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-[11px] text-text-secondary">Payment</dt>
-                  <dd className="mt-0.5 text-sm font-medium">
-                    Total {formatCurrency(Number(cf.salePaymentTotal ?? cf.budget ?? 0))}
-                    {' · '}
-                    Adv{' '}
-                    {formatCurrency(
-                      Number(requisition?.advanceAmount ?? cf.saleAdvanceAmount ?? 0),
-                    )}
-                    {' · '}
-                    Due{' '}
-                    {formatCurrency(
-                      Math.max(
-                        0,
-                        Number(cf.salePaymentTotal ?? cf.budget ?? 0) -
-                          Number(requisition?.advanceAmount ?? cf.saleAdvanceAmount ?? 0),
-                      ),
-                    )}
                   </dd>
                 </div>
                 <div>
@@ -2063,32 +2136,37 @@ export function LeadDetailPage() {
                 </p>
               ) : null}
               <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-3">
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <Input
-                    label="Total ₹"
-                    type="number"
-                    value={saleTotal}
-                    onChange={(e) => setSaleTotal(e.target.value)}
-                    placeholder="0"
-                  />
-                  <Input
-                    label="Advance ₹"
-                    type="number"
-                    value={saleAdvance}
-                    onChange={(e) => {
-                      setSaleAdvance(e.target.value)
-                      setPayAmount(e.target.value)
-                    }}
-                    placeholder="0"
-                  />
-                  <div className="rounded-[8px] border border-border bg-card px-3 py-2">
-                    <div className="text-xs text-text-secondary">Due (auto)</div>
-                    <div className="text-lg font-bold text-accent-amber">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm text-text-primary">
+                    <span className="text-xs font-medium uppercase tracking-wide text-text-secondary">
+                      Payment (from Payment card)
+                    </span>
+                    <div className="mt-0.5 font-medium">
+                      Total {formatCurrency(Number(saleTotal) || 0)}
+                      {' · '}
+                      Adv {formatCurrency(Number(saleAdvance) || 0)}
+                      {' · '}
+                      Due{' '}
                       {formatCurrency(
                         Math.max(0, (Number(saleTotal) || 0) - (Number(saleAdvance) || 0)),
                       )}
                     </div>
                   </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setRelatedSection('overview')
+                      window.requestAnimationFrame(() => {
+                        document.getElementById('section-payment')?.scrollIntoView({
+                          behavior: 'smooth',
+                          block: 'start',
+                        })
+                      })
+                    }}
+                  >
+                    Edit payment
+                  </Button>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
                   <Input
@@ -2097,22 +2175,13 @@ export function LeadDetailPage() {
                     onChange={(e) => setPayNote(e.target.value)}
                     placeholder="Advance received / follow-up…"
                   />
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      disabled={paySaving}
-                      onClick={() => void saveSalePayment()}
-                    >
-                      {paySaving ? 'Saving…' : 'Save payment'}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      disabled={reqBusy || !requisition?.id || !payNote.trim()}
-                      onClick={() => void savePaymentNote()}
-                    >
-                      Add follow-up
-                    </Button>
-                  </div>
+                  <Button
+                    variant="outline"
+                    disabled={reqBusy || !requisition?.id || !payNote.trim()}
+                    onClick={() => void savePaymentNote()}
+                  >
+                    Add follow-up
+                  </Button>
                 </div>
               </div>
               {saleChallan ? (
@@ -2146,8 +2215,12 @@ export function LeadDetailPage() {
                 ) : null}
                 {canReqApprove && requisition?.status === 'PENDING_APPROVAL' ? (
                   <>
-                    <Button disabled={reqBusy} onClick={() => setSaleConfirm('approve')}>
-                      Approve & sign
+                    <Button
+                      className="bg-red-600 text-white hover:bg-red-700"
+                      disabled={reqBusy}
+                      onClick={() => setSaleConfirm('approve')}
+                    >
+                      Accept
                     </Button>
                     <Button variant="outline" disabled={reqBusy} onClick={() => setRejectOpen(true)}>
                       Reject
@@ -2403,11 +2476,21 @@ export function LeadDetailPage() {
       <Card id="section-payment" className="scroll-mt-24 space-y-3 p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold text-text-primary">Payment</h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold text-text-primary">Payment</h2>
+              {!saleCompleted && salePay.due > 0 ? (
+                <Badge color="amber">Payment pending</Badge>
+              ) : null}
+              {!saleCompleted && salePay.ok ? (
+                <Badge color="green">Settled</Badge>
+              ) : null}
+            </div>
             <p className="mt-0.5 text-xs text-text-secondary">
               {isWh
                 ? 'Sales desk sets total / advance. Inventory sees the same figures on DC.'
-                : 'Set from enquiry — Total / Advance / Due follow the whole sale (requisition & PI).'}
+                : salePay.due > 0
+                  ? `Payment pending — ₹${salePay.due.toLocaleString('en-IN')} still due. Mark sale complete stays blocked until due is ₹0.`
+                  : 'Set from enquiry — Total / Advance / Due follow the whole sale (requisition & PI).'}
             </p>
           </div>
           {!isWh ? (
@@ -2502,9 +2585,7 @@ export function LeadDetailPage() {
             <tbody className="divide-y divide-border">
               {[
                 ['Lead Owner', executiveName],
-                ['Lead Name', String(lead.name)],
                 ['Company', String(lead.company ?? '—')],
-                ['Phone', lead.phone ? formatPhone(String(lead.phone)) : '—'],
                 ['Email', String(lead.email ?? '—')],
                 ['Service type', serviceTypeLabel],
                 ['Way of enquiry / Lead Source', enquiryWayLabel],
@@ -2515,14 +2596,6 @@ export function LeadDetailPage() {
                     ? 'Linked existing customer'
                     : String(cf.customer_type ?? 'New prospect'),
                 ],
-                [
-                  'Payment',
-                  Number(cf.salePaymentTotal ?? cf.budget ?? 0) > 0 ||
-                  Number(cf.saleAdvanceAmount ?? 0) > 0
-                    ? `Total ${formatCurrency(Number(cf.salePaymentTotal ?? cf.budget ?? 0))} · Adv ${formatCurrency(Number(cf.saleAdvanceAmount ?? 0))} · Due ${formatCurrency(Math.max(0, Number(cf.salePaymentTotal ?? cf.budget ?? 0) - Number(cf.saleAdvanceAmount ?? 0)))}`
-                    : '—',
-                ],
-                ['Area', String(cf.area ?? '—')],
                 ['Requirement', String(cf.requirement ?? '—')],
                 ['Buy timeline', String(cf.timeline ?? '—')],
                 [
@@ -3012,9 +3085,9 @@ export function LeadDetailPage() {
       <ConfirmModal
         open={saleConfirm === 'approve'}
         onClose={() => setSaleConfirm(null)}
-        title="Approve & sign this sale?"
+        title="Accept this requisition?"
         body="Confirms the sales requisition. Sales can then notify inventory to release stock. Continue?"
-        confirmLabel={reqBusy ? 'Signing…' : 'Approve & sign'}
+        confirmLabel={reqBusy ? 'Accepting…' : 'Accept & sign'}
         confirmVariant="primary"
         onConfirm={() => void approveReq()}
       />

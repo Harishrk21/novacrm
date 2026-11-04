@@ -66,13 +66,17 @@ export function parseHmsUniqSeq(
     .trim()
     .toUpperCase();
   if (!raw) return null;
-  const re = new RegExp(
-    `^${year}-${familyShort.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)$`,
-    "i",
-  );
-  const m = raw.match(re);
-  if (!m?.[1]) return null;
-  const n = Number.parseInt(m[1], 10);
+  const fam = familyShort.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const exact = raw.match(new RegExp(`^${year}-${fam}-(\\d+)$`, "i"));
+  if (exact?.[1]) {
+    const n = Number.parseInt(exact[1], 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  // Prefixed / legacy IDs — use last YEAR-FAMILY-SEQ occurrence
+  const loose = [...raw.matchAll(new RegExp(`${year}-${fam}-(\\d+)`, "gi"))];
+  const last = loose[loose.length - 1];
+  if (!last?.[1]) return null;
+  const n = Number.parseInt(last[1], 10);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 

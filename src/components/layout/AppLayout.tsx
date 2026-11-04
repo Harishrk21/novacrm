@@ -81,11 +81,12 @@ export function AppLayout() {
   return (
     <div className="flex h-full overflow-hidden bg-surface">
       {!fieldShell ? <Sidebar /> : null}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="relative z-0 flex min-w-0 flex-1 flex-col">
         <Topbar fieldShell={fieldShell} />
         <main
           className={cn(
-            'min-w-0 flex-1 overflow-x-hidden overflow-y-auto bg-surface p-3 sm:p-4 lg:p-5',
+            // Keep page sticky cells below topbar menus (z-100) / portaled overlays
+            'relative z-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto bg-surface p-3 sm:p-4 lg:p-5',
             fieldShell && 'pb-[calc(4.5rem+env(safe-area-inset-bottom))]',
           )}
         >
@@ -93,12 +94,13 @@ export function AppLayout() {
           {/* No pathname key — remounting every visit forced full skeleton + refetch */}
           <Outlet />
         </main>
+        {/* Inside content column so it clears the sidebar and does not cover chrome menus */}
+        <LowMachineStockAlert />
         {!fieldShell ? <AppFooterBar /> : null}
       </div>
       {fieldShell ? <FieldBottomNav /> : null}
       <HowItWorksDrawer />
       <ToastContainer />
-      <LowMachineStockAlert />
       <UnsavedBeforeUnload />
     </div>
   )

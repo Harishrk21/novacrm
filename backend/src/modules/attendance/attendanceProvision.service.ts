@@ -161,15 +161,14 @@ export async function provisionAttendanceForHmsTenant(
 
   // Already fully linked (Phase 1 map or prior provision)
   if (tenant.attendanceTenantId && tenant.attendanceSsoSecret && tenant.attendanceSsoIssuer) {
-    await prisma.tenant.update({
-      where: { id: tenantId },
-      data: { attendanceEnabled: true },
-    });
-    try {
-      await syncAttendanceGeofence(tenantId);
-    } catch {
-      /* optional */
+    if (!tenant.attendanceEnabled) {
+      await prisma.tenant.update({
+        where: { id: tenantId },
+        data: { attendanceEnabled: true },
+      });
     }
+    // Do not sync geofence here — that belongs on geofence field changes only.
+    // Calling it on every module save made platform admin "Save" feel hung.
     return {
       action: "already_linked",
       attendanceTenantId: tenant.attendanceTenantId,

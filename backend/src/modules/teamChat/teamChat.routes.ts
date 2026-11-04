@@ -59,12 +59,22 @@ async function ensureDefaultChannels(tenantId: string, userId: string) {
   }
 }
 
+/** Add the user to a channel (DM open / channel create only). */
 async function ensureMembership(tenantId: string, channelId: string, userId: string) {
   await prisma.teamChannelMember.upsert({
     where: { channelId_userId: { channelId, userId } },
     create: { id: newId(), tenantId, channelId, userId },
     update: {},
   });
+}
+
+/** Read/post/pin require existing membership — never auto-join by channel id. */
+async function requireMembership(channelId: string, userId: string) {
+  const mem = await prisma.teamChannelMember.findUnique({
+    where: { channelId_userId: { channelId, userId } },
+  });
+  if (!mem) throw new AppError("You are not a member of this channel", 403);
+  return mem;
 }
 
 function dmSlug(a: string, b: string) {
@@ -314,7 +324,7 @@ teamChatRouter.get(
     const id = paramId(q);
     const ch = await prisma.teamChannel.findFirst({ where: { id, tenantId: t } });
     if (!ch) throw notFound("Channel");
-    await ensureMembership(t, id, uid);
+    await requireMembership(id, uid);
 
     const limit = Math.min(100, Number(q.query.limit ?? 50) || 50);
     const parentId = q.query.parentId ? String(q.query.parentId) : null;
@@ -387,7 +397,7 @@ teamChatRouter.post(
     const { body, parentId } = postMessageBody.parse(q.body);
     const ch = await prisma.teamChannel.findFirst({ where: { id, tenantId: t } });
     if (!ch) throw notFound("Channel");
-    await ensureMembership(t, id, uid);
+    await requireMembership(id, uid);
 
     if (parentId) {
       const parent = await prisma.teamMessage.findFirst({
@@ -448,11 +458,8 @@ teamChatRouter.post(
     const id = paramId(q);
     const ch = await prisma.teamChannel.findFirst({ where: { id, tenantId: t } });
     if (!ch) throw notFound("Channel");
-    await ensureMembership(t, id, uid);
-    const mem = await prisma.teamChannelMember.findUnique({
-      where: { channelId_userId: { channelId: id, userId: uid } },
-    });
-    const pinnedAt = mem?.pinnedAt ? null : new Date();
+    const mem = await requireMembership(id, uid);
+    const pinnedAt = mem.pinnedAt ? null : new Date();
     await prisma.teamChannelMember.update({
       where: { channelId_userId: { channelId: id, userId: uid } },
       data: { pinnedAt },

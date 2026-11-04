@@ -159,15 +159,8 @@ export function salesStepDoneFlags(input: {
 
   const release = resolveSaleRelease(lead, input.requisition)
   const requisitionApproved = ['APPROVED', 'FULFILLED'].includes(release.status)
-  const paymentDone =
-    Boolean(release.invoiceId) ||
-    Boolean(cf.saleCompletedAt) ||
-    Number(cf.salePaymentTotal ?? cf.budget ?? 0) > 0 ||
-    Number(release.advanceAmount) > 0 ||
-    Boolean(release.paymentNotes) ||
-    Boolean(cf.lastPaymentFollowupAt) ||
-    (Array.isArray(input.requisition?.customFields?.paymentFollowups) &&
-      (input.requisition!.customFields!.paymentFollowups as unknown[]).length > 0)
+  // PI / Payment step is done only when balance due is ₹0 (not merely “advance recorded”)
+  const paymentDone = salePaymentSettled(lead, input.requisition).ok
 
   return [
     hasEnquiry,
@@ -178,6 +171,55 @@ export function salesStepDoneFlags(input: {
     release.shipped,
     paymentDone,
   ]
+}
+
+/** Total / advance / due for a sale (requisition advance preferred over lead CF). */
+export function salePaymentBalance(
+  lead: Record<string, unknown> | null | undefined,
+  requisition?: SalesRequisitionRow | null,
+): { total: number; advance: number; due: number } {
+  const cf =
+    lead?.customFields && typeof lead.customFields === 'object' && !Array.isArray(lead.customFields)
+      ? (lead.customFields as Record<string, unknown>)
+      : {}
+  const release = resolveSaleRelease(lead, requisition)
+  const total = Math.max(0, Number(cf.salePaymentTotal ?? cf.budget ?? 0) || 0)
+  const advance = Math.max(0, Number(release.advanceAmount) || 0)
+  const due = Math.max(0, total - advance)
+  return { total, advance, due }
+}
+
+/**
+ * Payment settled for Mark sale complete:
+ * - already completed sales stay settled
+ * - otherwise payment must be tracked AND due must be ₹0
+ */
+export function salePaymentSettled(
+  lead: Record<string, unknown> | null | undefined,
+  requisition?: SalesRequisitionRow | null,
+): { ok: boolean; total: number; advance: number; due: number; pending: boolean } {
+  const cf =
+    lead?.customFields && typeof lead.customFields === 'object' && !Array.isArray(lead.customFields)
+      ? (lead.customFields as Record<string, unknown>)
+      : {}
+  const { total, advance, due } = salePaymentBalance(lead, requisition)
+  if (cf.saleCompletedAt) {
+    return { ok: true, total, advance, due: 0, pending: false }
+  }
+  const release = resolveSaleRelease(lead, requisition)
+  const followups = requisition?.customFields?.paymentFollowups
+  const paymentTracked =
+    Boolean(release.invoiceId) ||
+    Boolean(cf.invoiceId) ||
+    Boolean(cf.saleInvoiceId) ||
+    total > 0 ||
+    advance > 0 ||
+    Boolean(release.paymentNotes) ||
+    Boolean(cf.lastPaymentFollowupAt) ||
+    (Array.isArray(followups) && followups.length > 0)
+
+  const pending = due > 0 || !paymentTracked
+  return { ok: paymentTracked && due === 0, total, advance, due, pending }
 }
 
 export function saleAllStepsDone(flags: boolean[]): boolean {
@@ -278,9 +320,17 @@ export function salesStepBlockers(
       case 5:
         missing.push('Inventory must mark ready to ship')
         break
-      case 6:
-        missing.push('Record PI / payment (total or advance) on this sale')
+      case 6: {
+        const pay = salePaymentSettled(input.lead ?? null, input.requisition)
+        if (pay.due > 0) {
+          missing.push(
+            `Payment pending — ₹${pay.due.toLocaleString('en-IN')} still due (settle before Mark sale complete)`,
+          )
+        } else {
+          missing.push('Record PI / payment (total + settle due to ₹0) on this sale')
+        }
         break
+      }
       default:
         break
     }

@@ -4,11 +4,36 @@ import { timeAgo, cn } from '@/lib/utils'
 import type { AppNotification } from '@/store/notificationsStore'
 
 function typeColor(type: string) {
+  if (
+    type.includes('AVAILABLE') ||
+    type.includes('CLAIMABLE') ||
+    type === 'REQUISITION_PENDING' ||
+    type.includes('REQUISITION_PENDING')
+  ) {
+    return 'red' as const
+  }
   if (type.includes('PENDING') || type.includes('CREATED')) return 'amber' as const
   if (type.includes('ASSIGNED') || type.includes('REASSIGNED')) return 'blue' as const
   if (type.includes('CLOSED') || type.includes('APPROV')) return 'green' as const
   if (type.includes('PROGRESS')) return 'purple' as const
   return 'gray' as const
+}
+
+function isReadyToAcceptNotif(type: string) {
+  const t = type.toUpperCase()
+  return (
+    t.includes('TICKET_AVAILABLE') ||
+    t.includes('CLAIMABLE') ||
+    t.includes('OPEN_POOL') ||
+    t === 'REQUISITION_PENDING' ||
+    t.includes('REQUISITION_PENDING')
+  )
+}
+
+function readyToAcceptLabel(type: string) {
+  const t = type.toUpperCase()
+  if (t.includes('REQUISITION')) return 'Awaiting accept'
+  return 'Ready to accept'
 }
 
 export type NotificationItemProps = {
@@ -32,6 +57,7 @@ export function NotificationItem({
 }: NotificationItemProps) {
   const unread = !n.isRead && !expired
   const live = Boolean(n.ephemeral || n.id.startsWith('live-'))
+  const readyToAccept = isReadyToAcceptNotif(n.type ?? n.kind)
   const pad = density === 'comfortable' ? 'px-3.5 py-3 sm:px-4' : 'px-3 py-2.5'
 
   return (
@@ -41,7 +67,10 @@ export function NotificationItem({
       className={cn(
         'group w-full cursor-pointer border-b border-border text-left transition-colors last:border-b-0',
         'hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none',
-        unread && 'border-l-[3px] border-l-accent-blue bg-muted/40',
+        unread && !readyToAccept && 'border-l-[3px] border-l-accent-blue bg-muted/40',
+        readyToAccept &&
+          !expired &&
+          'border-l-[3px] border-l-red-600 bg-red-50/80 hover:bg-red-50 dark:bg-red-950/30 dark:hover:bg-red-950/45',
         expired && 'opacity-85',
         pad,
       )}
@@ -60,7 +89,10 @@ export function NotificationItem({
               <div className="flex flex-wrap items-center gap-1.5">
                 {unread ? (
                   <span
-                    className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent-blue"
+                    className={cn(
+                      'mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full',
+                      readyToAccept ? 'bg-red-600' : 'bg-accent-blue',
+                    )}
                     aria-hidden
                   />
                 ) : null}
@@ -72,8 +104,16 @@ export function NotificationItem({
                 >
                   {n.title}
                 </h3>
+                {readyToAccept && !expired ? (
+                  <Badge color="red" solid className="!px-1.5 !py-0 text-[10px]">
+                    {readyToAcceptLabel(n.type ?? n.kind)}
+                  </Badge>
+                ) : null}
                 {unread ? (
-                  <Badge color="blue" className="!px-1.5 !py-0 text-[10px]">
+                  <Badge
+                    color={readyToAccept ? 'red' : 'blue'}
+                    className="!px-1.5 !py-0 text-[10px]"
+                  >
                     New
                   </Badge>
                 ) : null}

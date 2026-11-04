@@ -39,8 +39,9 @@ export function WhatsAppCloudPanel({ compact }: { compact?: boolean }) {
   const [tenantVerify, setTenantVerify] = useState('')
   const [tenantWaba, setTenantWaba] = useState('')
 
-  async function load() {
-    setLoading(true)
+  async function load(opts?: { silent?: boolean }) {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const res = await api.whatsappCloudStatus()
       setStatus(res)
@@ -50,7 +51,7 @@ export function WhatsAppCloudPanel({ compact }: { compact?: boolean }) {
         message: err instanceof ApiClientError ? err.message : 'Could not load WhatsApp Cloud status',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -99,7 +100,7 @@ export function WhatsAppCloudPanel({ compact }: { compact?: boolean }) {
       addToast({ type: 'success', message: 'Company WhatsApp credentials saved (this tenant only)' })
       setTenantToken('')
       setShowTenantForm(false)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -164,7 +165,7 @@ export function WhatsAppCloudPanel({ compact }: { compact?: boolean }) {
           </div>
         )}
 
-        {loading ? (
+        {loading && !status ? (
           <BlockSkeleton lines={5} className="p-0" />
         ) : status ? (
           <>

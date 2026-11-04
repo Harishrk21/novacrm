@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import { authenticate } from "../../middleware/auth.middleware.js";
 import { requireTenant } from "../../middleware/tenant.middleware.js";
+import { requirePermission } from "../../middleware/permissions.middleware.js";
 import { validate } from "../../middleware/validate.middleware.js";
 import { success } from "../../common/utils/response.js";
 import { paramId } from "../../common/utils/params.js";
@@ -95,7 +96,7 @@ function serialize(row: {
 export const assetsRouter = Router();
 assetsRouter.use(authenticate, requireTenant);
 
-assetsRouter.get("/", async (q: Request, r: Response) => {
+assetsRouter.get("/", requirePermission("assets:view"), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const p = pagination(q.query);
   const where: Record<string, unknown> = { tenantId: t, deletedAt: null };
@@ -167,7 +168,7 @@ assetsRouter.get("/", async (q: Request, r: Response) => {
   );
 });
 
-assetsRouter.post("/", validate(createSchema), async (q: Request, r: Response) => {
+assetsRouter.post("/", requirePermission("assets:write"), validate(createSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const d = q.body as z.infer<typeof body>;
   const contact = await prisma.contact.findFirst({
@@ -235,7 +236,7 @@ assetsRouter.post("/", validate(createSchema), async (q: Request, r: Response) =
   return success(r, serialize(row), "Machine saved", 201);
 });
 
-assetsRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) => {
+assetsRouter.get("/:id", requirePermission("assets:view"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const row = await prisma.customerAsset.findFirst({ where: { id, tenantId: t, deletedAt: null } });
@@ -244,7 +245,7 @@ assetsRouter.get("/:id", validate(idSchema), async (q: Request, r: Response) => 
   return success(r, serialize(row));
 });
 
-assetsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Response) => {
+assetsRouter.patch("/:id", requirePermission("assets:write"), validate(updateSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const existing = await prisma.customerAsset.findFirst({ where: { id, tenantId: t, deletedAt: null } });
@@ -327,7 +328,7 @@ assetsRouter.patch("/:id", validate(updateSchema), async (q: Request, r: Respons
   return success(r, serialize(row), "Machine updated");
 });
 
-assetsRouter.delete("/:id", validate(idSchema), async (q: Request, r: Response) => {
+assetsRouter.delete("/:id", requirePermission("assets:delete"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const updated = await prisma.customerAsset.updateMany({

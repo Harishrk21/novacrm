@@ -1,16 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { CheckCircle2, Clock3, Filter, RefreshCw } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
 import { Badge, activityStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import {
+  BulkActionBar,
+  DeleteIconButton,
+  SelectCheckbox,
+} from '@/components/ui/BulkSelect'
 import { Card } from '@/components/ui/Card'
+import { ConfirmModal } from '@/components/ui/Modal'
 import { api, ApiClientError, isTenantSession, num } from '@/lib/api'
 import { cn, formatDateTime, timeAgo } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { isSalesDesk } from '@/lib/roles'
+import { can } from '@/lib/permissions'
+import { useRowSelection } from '@/hooks/useRowSelection'
+import { usePagedRows } from '@/hooks/usePagedRows'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 
 type Row = Record<string, unknown>
@@ -43,23 +53,28 @@ function related(task: Row) {
 }
 
 export function MyTasksPage() {
+  const navigate = useNavigate()
   const user = useAuthStore((s) => s.user)
   const salesDesk = isSalesDesk(user?.role)
+  const canDelete = can(user?.role, 'activities:delete')
   const addToast = useUIStore((s) => s.addToast)
   const [items, setItems] = useState<Row[]>([])
   const [tickets, setTickets] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<Tab>('open')
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [busyDelete, setBusyDelete] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<{ ids: string[] } | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [outcome, setOutcome] = useState('')
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!isTenantSession() || !user?.id) {
       setLoading(false)
       return
     }
-    setLoading(true)
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       // Sales desk has no tickets:view — activities only
       const [page, ticketPage] = await Promise.all([
@@ -80,7 +95,7 @@ export function MyTasksPage() {
         message: e instanceof ApiClientError ? e.message : 'Failed to load tasks',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast, salesDesk, user?.id])
 
@@ -110,6 +125,48 @@ export function MyTasksPage() {
   )
 
   const visible = tab === 'open' ? openItems : tab === 'done' ? doneItems : items
+  const paged = usePagedRows(visible, tab)
+  const visibleIds = useMemo(() => visible.map((t) => String(t.id)), [visible])
+  const selection = useRowSelection(visibleIds)
+
+  async function runDelete(deleteIds: string[]) {
+    if (!deleteIds.length) return
+    setBusyDelete(true)
+    let ok = 0
+    let failed = 0
+    let lastError = ''
+    try {
+      for (const id of deleteIds) {
+        try {
+          await api.deleteActivity(id)
+          ok += 1
+        } catch (e) {
+          failed += 1
+          lastError = e instanceof ApiClientError ? e.message : 'Could not delete'
+        }
+      }
+      if (ok > 0) {
+        addToast({
+          type: 'success',
+          message: ok === 1 ? 'Deleted' : `${ok} deleted`,
+        })
+        selection.clear()
+        await load({ silent: true })
+      }
+      if (failed > 0) {
+        addToast({
+          type: 'error',
+          message:
+            ok > 0
+              ? `${failed} could not be deleted${lastError ? `: ${lastError}` : ''}`
+              : lastError || 'Could not delete',
+        })
+      }
+    } finally {
+      setBusyDelete(false)
+      setDeleteConfirm(null)
+    }
+  }
 
   async function markComplete(task: Row) {
     const id = String(task.id)
@@ -122,7 +179,7 @@ export function MyTasksPage() {
       addToast({ type: 'success', message: `Completed: ${String(task.title)}` })
       setExpanded(null)
       setOutcome('')
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -245,7 +302,18 @@ export function MyTasksPage() {
           ))}
         </div>
 
-        {loading ? (
+        {canDelete && selection.someSelected ? (
+          <div className="border-b border-border px-4 pt-3">
+            <BulkActionBar
+              count={selection.selectedCount}
+              noun="task"
+              busy={busyDelete}
+              onClear={selection.clear}
+              onDelete={() => setDeleteConfirm({ ids: selection.selectedIds })}
+            />
+          </div>
+        ) : null}
+        {loading && items.length === 0 ? (
           <TableSkeleton rows={6} />
         ) : !visible.length ? (
           <div className="p-10 text-center">
@@ -267,26 +335,54 @@ export function MyTasksPage() {
           </div>
         ) : (
           <ul className="divide-y divide-border">
-            {visible.map((task) => {
+            {canDelete && visible.length > 0 ? (
+              <li className="flex items-center gap-3 bg-muted/40 px-4 py-2">
+                <SelectCheckbox
+                  checked={selection.allSelected}
+                  indeterminate={selection.someSelected && !selection.allSelected}
+                  onChange={selection.toggleAll}
+                  aria-label="Select all"
+                />
+                <span className="text-xs font-medium text-text-secondary">Select all</span>
+              </li>
+            ) : null}
+            {paged.rows.map((task) => {
               const id = String(task.id)
               const isOpen = ['PENDING', 'OVERDUE'].includes(String(task.status))
               const rel = related(task)
               const isExpanded = expanded === id
               return (
-                <li key={id} className="px-4 py-4">
+                <li
+                  key={id}
+                  role={rel ? 'link' : undefined}
+                  tabIndex={rel ? 0 : undefined}
+                  className={cn('px-4 py-4', rel && 'cursor-pointer hover:bg-surface/80')}
+                  onClick={() => {
+                    if (rel) navigate(rel.to)
+                  }}
+                  onKeyDown={(e) => {
+                    if (rel && (e.key === 'Enter' || e.key === ' ')) {
+                      e.preventDefault()
+                      navigate(rel.to)
+                    }
+                  }}
+                >
                   <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
+                      {canDelete ? (
+                        <div className="pt-1" onClick={(e) => e.stopPropagation()}>
+                          <SelectCheckbox
+                            checked={selection.isSelected(id)}
+                            onChange={() => selection.toggle(id)}
+                            aria-label={`Select ${String(task.title)}`}
+                          />
+                        </div>
+                      ) : null}
+                      <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        {rel ? (
-                          <Link
-                            to={rel.to}
-                            className="font-semibold text-accent-blue hover:underline"
-                          >
-                            {String(task.title)}
-                          </Link>
-                        ) : (
-                          <h3 className="font-semibold text-text-primary">{String(task.title)}</h3>
-                        )}
+                        <h3 className={cn('font-semibold', rel ? 'text-accent-blue' : 'text-text-primary')}>
+                          {String(task.title)}
+                        </h3>
                         <Badge color={activityStatusColor[String(task.status)] ?? 'slate'}>
                           {labelize(String(task.status))}
                         </Badge>
@@ -304,38 +400,46 @@ export function MyTasksPage() {
                         </span>
                         {task.durationMinutes != null ? <span>{num(task.durationMinutes)} min</span> : null}
                         <span>Updated {timeAgo(String(task.updatedAt ?? task.createdAt))}</span>
-                        {rel ? (
-                          <Link to={rel.to} className="text-accent-blue hover:underline">
-                            Open {rel.label}
-                          </Link>
-                        ) : null}
+                        {rel ? <span className="text-accent-blue">Open {rel.label}</span> : null}
+                      </div>
                       </div>
                     </div>
-                    {isOpen ? (
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            setExpanded(isExpanded ? null : id)
-                            setOutcome('')
-                          }}
-                        >
-                          {isExpanded ? 'Cancel' : 'Complete…'}
-                        </Button>
-                        <Button
-                          size="sm"
-                          disabled={busyId === id}
-                          onClick={() => void markComplete(task)}
-                        >
-                          <CheckCircle2 size={14} />
-                          {busyId === id ? 'Saving…' : 'Mark complete'}
-                        </Button>
-                      </div>
-                    ) : null}
+                    <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
+                      {isOpen ? (
+                        <>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setExpanded(isExpanded ? null : id)
+                              setOutcome('')
+                            }}
+                          >
+                            {isExpanded ? 'Cancel' : 'Complete…'}
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={busyId === id}
+                            onClick={() => void markComplete(task)}
+                          >
+                            <CheckCircle2 size={14} />
+                            {busyId === id ? 'Saving…' : 'Mark complete'}
+                          </Button>
+                        </>
+                      ) : null}
+                      {canDelete ? (
+                        <DeleteIconButton
+                          disabled={busyDelete}
+                          onClick={() => setDeleteConfirm({ ids: [id] })}
+                        />
+                      ) : null}
+                    </div>
                   </div>
                   {isExpanded && isOpen ? (
-                    <div className="mt-3 rounded-[8px] border border-border bg-surface p-3">
+                    <div
+                      className="mt-3 rounded-[8px] border border-border bg-surface p-3"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       <label className="block text-sm font-medium text-text-secondary">
                         Outcome / notes (optional)
                         <textarea
@@ -360,7 +464,27 @@ export function MyTasksPage() {
             })}
           </ul>
         )}
+        {!loading && visible.length > 0 ? (
+          <PaginationBar page={paged.page} total={paged.total} onPageChange={paged.setPage} />
+        ) : null}
       </Card>
+
+      <ConfirmModal
+        open={Boolean(deleteConfirm)}
+        onClose={() => !busyDelete && setDeleteConfirm(null)}
+        onConfirm={() => {
+          if (deleteConfirm) void runDelete(deleteConfirm.ids)
+        }}
+        title={
+          deleteConfirm?.ids.length === 1
+            ? 'Delete this task?'
+            : `Delete ${deleteConfirm?.ids.length ?? 0} tasks?`
+        }
+        body="Selected calls, tasks or meetings will be permanently removed."
+        confirmLabel={busyDelete ? 'Deleting…' : 'Delete'}
+        confirmVariant="danger"
+        closeOnConfirm={false}
+      />
     </div>
   )
 }

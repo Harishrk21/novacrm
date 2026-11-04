@@ -17,6 +17,7 @@ export async function runAutomationPass() {
 
   let nudges = 0;
   let overdue = 0;
+  let dueToday = 0;
 
   for (const tenant of tenants) {
     const settings =
@@ -42,6 +43,56 @@ export async function runAutomationPass() {
       where: { tenantId: tenant.id, isActive: true },
       take: 50,
     });
+
+    // Always nudge assignees about calls / tasks / meetings due today (workqueue creations).
+    {
+      const dayStart = new Date();
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setDate(dayEnd.getDate() + 1);
+      const todays = await prisma.activity.findMany({
+        where: {
+          tenantId: tenant.id,
+          deletedAt: null,
+          status: { in: ["PENDING", "OVERDUE"] },
+          assignedToId: { not: null },
+          scheduledAt: { gte: dayStart, lt: dayEnd },
+        },
+        take: 80,
+      });
+      for (const task of todays) {
+        if (!task.assignedToId) continue;
+        const already = await prisma.notification.findFirst({
+          where: {
+            tenantId: tenant.id,
+            userId: task.assignedToId,
+            entityId: task.id,
+            type: "ACTIVITY_DUE_TODAY",
+            createdAt: { gte: dayStart },
+          },
+        });
+        if (already) continue;
+        const kind =
+          task.type === "CALL" || task.type === "WHATSAPP"
+            ? "Call"
+            : task.type === "MEETING" || task.type === "DEMO" || task.type === "VISIT"
+              ? "Meeting"
+              : "Task";
+        await prisma.notification.create({
+          data: {
+            id: newId(),
+            tenantId: tenant.id,
+            userId: task.assignedToId,
+            title: `${kind} due today`,
+            message: task.title.slice(0, 200),
+            type: "ACTIVITY_DUE_TODAY",
+            entityType: "activity",
+            entityId: task.id,
+          },
+        });
+        dueToday += 1;
+      }
+    }
 
     if (overdueOn || dbRules.some((r) => r.actionType === "OVERDUE_TASK_NOTIFY")) {
       const now = new Date();
@@ -131,6 +182,6 @@ export async function runAutomationPass() {
     }
   }
 
-  logger.info("Automation pass", { nudges, overdue });
-  return { nudges, overdue };
+  logger.info("Automation pass", { nudges, overdue, dueToday });
+  return { nudges, overdue, dueToday };
 }

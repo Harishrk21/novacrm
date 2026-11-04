@@ -54,12 +54,14 @@ export function releaseOrderLines(
     ? (cf.releaseLines as Array<Record<string, unknown>>)
     : []
 
-  // Prefer explicit order lines from sale custom fields when present
+  // Prefer explicit order lines from sale / lead custom fields when present
   const rawOrder = Array.isArray(cf.orderLines)
     ? (cf.orderLines as Array<Record<string, unknown>>)
     : Array.isArray(cf.saleProducts)
       ? (cf.saleProducts as Array<Record<string, unknown>>)
-      : null
+      : Array.isArray(cf.interested_products)
+        ? (cf.interested_products as Array<Record<string, unknown>>)
+        : null
 
   let draft: Array<{ label: string; qty: number }> = []
   if (rawOrder?.length) {
@@ -172,6 +174,24 @@ export function releaseStockProgress(
     allReduced,
     partial: reducedCount > 0 && !allReduced,
   }
+}
+
+/**
+ * Prefer the next incomplete product that still has in-stock units.
+ * Avoids sticking on an out-of-stock line when another product can be released.
+ */
+export function preferReleaseActiveLine(
+  orderLines: ReleaseOrderLine[],
+  stockCountByIndex: Record<number, number> | ((line: ReleaseOrderLine) => number),
+): ReleaseOrderLine | null {
+  const incomplete = orderLines.filter((l) => !l.done)
+  if (!incomplete.length) return null
+  const countOf =
+    typeof stockCountByIndex === 'function'
+      ? stockCountByIndex
+      : (line: ReleaseOrderLine) => stockCountByIndex[line.index] ?? 0
+  const withStock = incomplete.find((l) => countOf(l) > 0)
+  return withStock ?? incomplete[0] ?? null
 }
 
 /** True when catalog product name matches the ordered product label. */

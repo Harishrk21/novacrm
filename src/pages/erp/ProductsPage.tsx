@@ -147,7 +147,7 @@ export function ProductsPage() {
   const [filterFamily, setFilterFamily] = useState('')
   const [filterIndustry, setFilterIndustry] = useState('')
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (_opts?: { silent?: boolean }) => {
     try {
       const [products, lookups, brandRows] = await Promise.all([
         api.products({ limit: 200 }),
@@ -284,7 +284,7 @@ export function ProductsPage() {
       if (viewProduct && deleteIds.includes(String(viewProduct.id))) setViewProduct(null)
       if (editProduct && deleteIds.includes(String(editProduct.id))) setEditProduct(null)
       selection.clear()
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -390,7 +390,7 @@ export function ProductsPage() {
       addToast({ type: 'success', message: 'Product saved' })
       setForm(emptyForm())
       setTab('list')
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -462,7 +462,7 @@ export function ProductsPage() {
       })
       addToast({ type: 'success', message: 'Product updated' })
       setEditProduct(null)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',

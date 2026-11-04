@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { activityHref } from '@/lib/recordLinks'
 import { CalendarDays, Check, Clock, Mail, Pencil, Phone, Plus, RefreshCw, Users } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -19,10 +19,13 @@ import { ConfirmModal } from '@/components/ui/Modal'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Select } from '@/components/ui/Select'
 import { useRowSelection } from '@/hooks/useRowSelection'
+import { usePagedRows } from '@/hooks/usePagedRows'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 import { api, ApiClientError, isTenantSession, num } from '@/lib/api'
 import { cn, formatDateTime } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
+import { can } from '@/lib/permissions'
 import type { ActivityType } from '@/types'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 
@@ -70,9 +73,11 @@ type ActivityRow = {
 }
 
 export function ActivitiesPage() {
+  const navigate = useNavigate()
   const addToast = useUIStore((s) => s.addToast)
   const authUser = useAuthStore((s) => s.user)
   const isAgent = authUser?.role === 'AGENT'
+  const canDelete = can(authUser?.role, 'activities:delete')
   const [type, setType] = useState('')
   const [status, setStatus] = useState('')
   const [date, setDate] = useState('')
@@ -90,16 +95,20 @@ export function ActivitiesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [returnContactId, setReturnContactId] = useState('')
 
-  const load = useCallback(async () => {
+  const metaReadyRef = useRef(false)
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!isTenantSession()) {
       setLoading(false)
       setActivities([])
       return
     }
-    setLoading(true)
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
+      const needMeta = !metaReadyRef.current
       const [lookups, page] = await Promise.all([
-        api.lookups(),
+        needMeta ? api.lookups() : Promise.resolve(null),
         api.activities({
           limit: 200,
           ...(type ? { type } : {}),
@@ -107,14 +116,19 @@ export function ActivitiesPage() {
           ...(assigned ? { assignedToId: assigned } : isAgent ? { mine: 1 } : {}),
         }),
       ])
-      setUsers(lookups.users ?? [])
-      setContacts(lookups.contacts ?? [])
-      setDeals(
-        (await api.deals({ limit: 200 })).items.map((d) => ({
-          id: String(d.id),
-          name: String(d.name ?? 'Deal'),
-        })),
-      )
+      if (lookups) {
+        setUsers(lookups.users ?? [])
+        setContacts(lookups.contacts ?? [])
+      }
+      if (needMeta) {
+        setDeals(
+          (await api.deals({ limit: 200 })).items.map((d) => ({
+            id: String(d.id),
+            name: String(d.name ?? 'Deal'),
+          })),
+        )
+        metaReadyRef.current = true
+      }
       setActivities(
         page.items.map((raw) => {
           const r = raw as ActivityRow & Record<string, unknown>
@@ -145,7 +159,7 @@ export function ActivitiesPage() {
         message: e instanceof ApiClientError ? e.message : 'Failed to load activities',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast, assigned, isAgent, status, type])
 
@@ -174,6 +188,7 @@ export function ActivitiesPage() {
     })
   }, [activities, date])
 
+  const paged = usePagedRows(filtered, `${type}|${status}|${date}|${assigned}`)
   const ids = useMemo(() => filtered.map((a) => a.id), [filtered])
   const selection = useRowSelection(ids)
 
@@ -181,7 +196,7 @@ export function ActivitiesPage() {
     try {
       await api.completeActivity(id)
       addToast({ type: 'success', message: 'Activity marked complete' })
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -219,7 +234,7 @@ export function ActivitiesPage() {
       await api.createActivity({ ...body, status: 'PENDING' })
       setModalOpen(false)
       addToast({ type: 'success', message: 'Activity created' })
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -243,7 +258,7 @@ export function ActivitiesPage() {
       await api.updateActivity(editing.id, body)
       setEditing(null)
       addToast({ type: 'success', message: 'Activity updated' })
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -256,19 +271,36 @@ export function ActivitiesPage() {
 
   const runDelete = async (deleteIds: string[]) => {
     setBusyDelete(true)
+    let ok = 0
+    let failed = 0
+    let lastError = ''
     try {
-      await Promise.all(deleteIds.map((id) => api.deleteActivity(id)))
-      addToast({
-        type: 'success',
-        message: deleteIds.length === 1 ? 'Deleted' : `${deleteIds.length} deleted`,
-      })
-      selection.clear()
-      await load()
-    } catch (e) {
-      addToast({
-        type: 'error',
-        message: e instanceof ApiClientError ? e.message : 'Could not delete activity',
-      })
+      for (const id of deleteIds) {
+        try {
+          await api.deleteActivity(id)
+          ok += 1
+        } catch (e) {
+          failed += 1
+          lastError = e instanceof ApiClientError ? e.message : 'Could not delete activity'
+        }
+      }
+      if (ok > 0) {
+        addToast({
+          type: 'success',
+          message: ok === 1 ? 'Deleted' : `${ok} deleted`,
+        })
+        selection.clear()
+        await load({ silent: true })
+      }
+      if (failed > 0) {
+        addToast({
+          type: 'error',
+          message:
+            ok > 0
+              ? `${failed} could not be deleted${lastError ? `: ${lastError}` : ''}`
+              : lastError || 'Could not delete activity',
+        })
+      }
     } finally {
       setBusyDelete(false)
       setConfirm(null)
@@ -364,7 +396,7 @@ export function ActivitiesPage() {
         />
       </Card>
       <Card padding={false}>
-        {selection.someSelected ? (
+        {canDelete && selection.someSelected ? (
           <div className="border-b border-border px-4 pt-3">
             <BulkActionBar
               count={selection.selectedCount}
@@ -376,7 +408,7 @@ export function ActivitiesPage() {
           </div>
         ) : null}
         <div className="divide-y divide-border">
-          {filtered.length > 0 ? (
+          {canDelete && filtered.length > 0 ? (
             <div className="flex items-center gap-3 border-b border-border bg-muted/40 px-4 py-2">
               <SelectCheckbox
                 checked={selection.allSelected}
@@ -387,23 +419,40 @@ export function ActivitiesPage() {
               <span className="text-xs font-medium text-text-secondary">Select all</span>
             </div>
           ) : null}
-          {filtered.map((activity) => {
+          {paged.rows.map((activity) => {
             const Icon = typeIcons[activity.type] ?? CalendarDays
             const agent = activity.assignee ?? users.find((u) => u.id === activity.assignedToId)
             const contact =
               activity.contact ?? contacts.find((c) => c.id === activity.contactId)
             const deal = activity.deal ?? deals.find((d) => d.id === activity.dealId)
+            const openHref = activityHref(activity as unknown as Record<string, unknown>)
             return (
               <div
                 key={activity.id}
-                className="flex flex-col gap-4 p-4 hover:bg-surface lg:flex-row lg:items-center"
+                role={openHref ? 'link' : undefined}
+                tabIndex={openHref ? 0 : undefined}
+                className={cn(
+                  'flex flex-col gap-4 p-4 hover:bg-surface lg:flex-row lg:items-center',
+                  openHref && 'cursor-pointer',
+                )}
+                onClick={() => {
+                  if (openHref) navigate(openHref)
+                }}
+                onKeyDown={(e) => {
+                  if (openHref && (e.key === 'Enter' || e.key === ' ')) {
+                    e.preventDefault()
+                    navigate(openHref)
+                  }
+                }}
               >
-                <div className="flex items-center gap-3">
-                  <SelectCheckbox
-                    checked={selection.isSelected(activity.id)}
-                    onChange={() => selection.toggle(activity.id)}
-                    aria-label={`Select ${activity.title}`}
-                  />
+                <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                  {canDelete ? (
+                    <SelectCheckbox
+                      checked={selection.isSelected(activity.id)}
+                      onChange={() => selection.toggle(activity.id)}
+                      aria-label={`Select ${activity.title}`}
+                    />
+                  ) : null}
                   <div
                     className={cn(
                       'flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px]',
@@ -473,7 +522,7 @@ export function ActivitiesPage() {
                     </p>
                   )}
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                   {activity.status !== 'COMPLETED' && (
                     <Button variant="ghost" size="sm" onClick={() => void complete(activity.id)}>
                       <Check size={15} /> Complete
@@ -490,19 +539,24 @@ export function ActivitiesPage() {
                   >
                     <Pencil size={15} />
                   </Button>
-                  <DeleteIconButton
-                    disabled={busyDelete}
-                    onClick={() => setConfirm({ ids: [activity.id] })}
-                  />
+                  {canDelete ? (
+                    <DeleteIconButton
+                      disabled={busyDelete}
+                      onClick={() => setConfirm({ ids: [activity.id] })}
+                    />
+                  ) : null}
                 </div>
               </div>
             )
           })}
-          {loading && <TableSkeleton rows={8} className="p-6" />}
+          {loading && activities.length === 0 && <TableSkeleton rows={8} className="p-6" />}
           {!loading && !filtered.length && (
             <p className="p-12 text-center text-text-secondary">No activities match these filters.</p>
           )}
         </div>
+        {!loading && filtered.length > 0 ? (
+          <PaginationBar page={paged.page} total={paged.total} onPageChange={paged.setPage} />
+        ) : null}
       </Card>
       <ConfirmModal
         open={Boolean(confirm)}

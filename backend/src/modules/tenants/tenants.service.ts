@@ -1,10 +1,25 @@
 import { prisma } from "../../config/database.js";
 import { notFound } from "../../common/errors.js";
 
+type TenantRow = NonNullable<Awaited<ReturnType<typeof prisma.tenant.findFirst>>>;
+
+/** Never expose signing secrets or platform linkage keys to the SPA / tenant users. */
+function publicTenant(row: TenantRow) {
+  const {
+    attendanceSsoSecret: _secret,
+    ...safe
+  } = row as TenantRow & { attendanceSsoSecret?: string | null };
+  return {
+    ...safe,
+    /** Presence only — the raw secret stays server-side for ticket minting. */
+    attendanceSsoConfigured: Boolean(_secret),
+  };
+}
+
 export async function get(tenantId: string) {
   const row = await prisma.tenant.findFirst({ where: { id: tenantId, deletedAt: null } });
   if (!row) throw notFound("Tenant");
-  return row;
+  return publicTenant(row);
 }
 
 /** All module flags for the tenant (enabled + disabled) — sidebar / plan gating. */
@@ -44,4 +59,11 @@ export async function update(tenantId: string, data: Record<string, unknown>) {
 
   await prisma.tenant.update({ where: { id: tenantId }, data: patch });
   return get(tenantId);
+}
+
+/** Internal use only (SSO minting, provision) — includes attendanceSsoSecret. */
+export async function getRaw(tenantId: string) {
+  const row = await prisma.tenant.findFirst({ where: { id: tenantId, deletedAt: null } });
+  if (!row) throw notFound("Tenant");
+  return row;
 }

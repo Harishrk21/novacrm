@@ -14,6 +14,7 @@ import { api, ApiClientError } from '@/lib/api'
 import { downloadXlsx } from '@/lib/reportExport'
 import { productAttrs } from '@/lib/productCatalog'
 import { expandSerialRange, bumpSerial } from '@/lib/stockSerial'
+import { preferMainWarehouseId, sortWarehousesForDropdown } from '@/lib/warehouseSort'
 import { filterServiceEngineers } from '@/lib/roles'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
@@ -77,7 +78,9 @@ export function StockMovePage() {
   const [spares, setSpares] = useState<Array<Record<string, unknown>>>([])
   const [vendors, setVendors] = useState<Array<Record<string, unknown>>>([])
   const [brands, setBrands] = useState<Array<Record<string, unknown>>>([])
-  const [warehouses, setWarehouses] = useState<Array<{ id: string; name: string }>>([])
+  const [warehouses, setWarehouses] = useState<
+    Array<{ id: string; name: string; code?: string; isDefault?: boolean }>
+  >([])
   const [units, setUnits] = useState<Array<Record<string, unknown>>>([])
   const [engineers, setEngineers] = useState<Array<{ id: string; name: string }>>([])
 
@@ -150,26 +153,31 @@ export function StockMovePage() {
   const nQty = Math.max(1, Math.min(200, Math.floor(Number(qty) || 1)))
   const nSpareQty = Math.max(1, Math.min(500, Math.floor(Number(spareQty || qty) || 1)))
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const workspace = await api.inventoryWorkspace()
       setProducts(workspace.products ?? [])
       setSpares(workspace.spares ?? [])
       setVendors(workspace.vendors ?? [])
       setBrands(workspace.brands ?? [])
-      setWarehouses(
-        (workspace.warehouses ?? []).map((w) => ({ id: String(w.id), name: String(w.name) })),
+      const sortedWh = sortWarehousesForDropdown(
+        (workspace.warehouses ?? []).map((w) => ({
+          id: String(w.id),
+          name: String(w.name),
+          code: w.code != null ? String(w.code) : undefined,
+          isDefault: Boolean((w as { isDefault?: boolean }).isDefault),
+        })),
       )
+      setWarehouses(sortedWh)
       setUnits(
         (workspace.units ?? []).filter((u) => {
           const st = String(u.status)
           return st === 'IN_STOCK' || st === 'DEMO'
         }),
       )
-      setWarehouseId(
-        (prev) => prev || (workspace.warehouses?.[0] ? String(workspace.warehouses[0].id) : ''),
-      )
+      setWarehouseId((prev) => prev || preferMainWarehouseId(sortedWh))
       const allUsers = (workspace.users ?? []).map((u) => ({
         id: String(u.id),
         name: String(u.name ?? ''),
@@ -183,7 +191,7 @@ export function StockMovePage() {
         message: e instanceof ApiClientError ? e.message : 'Could not load stock form',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast])
 
@@ -353,6 +361,7 @@ export function StockMovePage() {
           sublabel: `${p.sku ?? ''}${onHand ? ` · ${onHand} in stock` : ''}`,
         }
       })
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
   }, [products, stockMachineType, units])
 
   const spareOptions = useMemo(() => {
@@ -364,18 +373,28 @@ export function StockMovePage() {
         label: String(s.name),
         sublabel: `${s.machineFamily} · On hand: ${s.quantityOnHand ?? 0}`,
       }))
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
   }, [spares, stockMachineType])
 
   const vendorOptions = useMemo(
-    () => vendors.map((v) => ({ value: String(v.id), label: String(v.name) })),
+    () =>
+      vendors
+        .map((v) => ({ value: String(v.id), label: String(v.name) }))
+        .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })),
     [vendors],
   )
   const brandOptions = useMemo(
-    () => brands.map((b) => ({ value: String(b.id), label: String(b.name) })),
+    () =>
+      brands
+        .map((b) => ({ value: String(b.id), label: String(b.name) }))
+        .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })),
     [brands],
   )
   const engineerOptions = useMemo(
-    () => engineers.map((e) => ({ value: e.id, label: e.name })),
+    () =>
+      [...engineers]
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+        .map((e) => ({ value: e.id, label: e.name })),
     [engineers],
   )
 
@@ -618,7 +637,7 @@ export function StockMovePage() {
       setReducePurpose('')
       setReduceReasonNote('')
       setDemoContact(null)
-      await load()
+      await load({ silent: true })
       void loadReduceHistory()
     } catch (e) {
       addToast({
@@ -677,7 +696,7 @@ export function StockMovePage() {
     }
   }
 
-  if (loading) {
+  if (loading && products.length === 0 && units.length === 0) {
     return (
       <div className="space-y-4">
         <PageHeader title="Stock move" breadcrumbs={[{ label: APP_NAME }, { label: 'Stock' }]} />
@@ -991,24 +1010,34 @@ export function StockMovePage() {
                 onChange={(e) => setUnitCost(e.target.value)}
               />
               <div className={nQty > 1 || isWeighingStock ? 'sm:col-span-2' : undefined}>
-                <Input
-                  label={nQty > 1 ? 'HMS Unique ID (first) *' : 'HMS Unique ID *'}
-                  value={hmsStart}
-                  onChange={(e) => {
-                    setHmsManual(true)
-                    setHmsStart(e.target.value)
-                  }}
-                  placeholder="Next number loads automatically"
-                />
+                <div className={nQty > 1 ? 'grid gap-3 sm:grid-cols-2' : undefined}>
+                  <Input
+                    label={nQty > 1 ? 'HMS Unique ID (start) *' : 'HMS Unique ID *'}
+                    value={hmsStart}
+                    onChange={(e) => {
+                      setHmsManual(true)
+                      setHmsStart(e.target.value)
+                    }}
+                    placeholder="Next number loads automatically"
+                  />
+                  {nQty > 1 ? (
+                    <Input
+                      label="HMS Unique ID (end)"
+                      value={hmsPreviewDisplay[hmsPreviewDisplay.length - 1] ?? ''}
+                      readOnly
+                      disabled
+                    />
+                  ) : null}
+                </div>
                 {hmsPreviewDisplay.length > 1 ? (
                   <p className="mt-1 text-xs text-text-secondary">
                     This batch: {hmsPreviewDisplay[0]} →{' '}
                     {hmsPreviewDisplay[hmsPreviewDisplay.length - 1]} ({hmsPreviewDisplay.length}{' '}
-                    IDs)
+                    IDs) — auto from latest + 1.
                   </p>
                 ) : hmsPreviewDisplay.length === 1 ? (
                   <p className="mt-1 text-xs text-text-secondary">
-                    Next available ID for this machine type (year + type + sequence).
+                    Next available ID (latest for this machine type + 1).
                   </p>
                 ) : (
                   <p className="mt-1 text-xs text-text-secondary">

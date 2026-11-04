@@ -237,71 +237,82 @@ export function ContactDetailPage() {
     setMachineOpen(true)
   }
 
-  const load = useCallback(async () => {
+  const catalogReadyRef = useRef(false)
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!id) return
-    setLoading(true)
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
+      const needCatalog = !catalogReadyRef.current
       const [row, lookups, rentalRows] = await Promise.all([
         api.getContact(id),
-        api.lookups(),
+        needCatalog ? api.lookups() : Promise.resolve(null),
         api.rentals({ contactId: id }).catch(() => [] as Array<Record<string, unknown>>),
       ])
       setContact(row)
       setRentals(Array.isArray(rentalRows) ? rentalRows : [])
-      setAccounts(lookups.accounts)
-      setUsers(lookups.users)
-      setCatalogProducts(
-        (lookups.products ?? []).map((p) => ({
-          id: String(p.id),
-          name: String(p.name ?? ''),
-          sku: String(p.sku ?? ''),
-          attributes: (p.attributes as Record<string, unknown> | null) ?? null,
-        })),
-      )
-      try {
-        const [productPage, brandRows] = await Promise.all([
-          api.products({ limit: 200 }),
-          api.inventoryBrands(),
-        ])
-        if (productPage.items?.length) {
-          setCatalogProducts(
-            productPage.items.map((p) => ({
-              id: String(p.id),
-              name: String(p.name ?? ''),
-              sku: String(p.sku ?? ''),
-              attributes: (p.attributes as Record<string, unknown> | null) ?? null,
-            })),
-          )
-        }
-        setCatalogBrands(
-          (brandRows ?? []).map((b) => ({ id: String(b.id), name: String(b.name ?? '') })),
+      if (lookups) {
+        setAccounts(lookups.accounts)
+        setUsers(lookups.users)
+        setCatalogProducts(
+          (lookups.products ?? []).map((p) => ({
+            id: String(p.id),
+            name: String(p.name ?? ''),
+            sku: String(p.sku ?? ''),
+            attributes: (p.attributes as Record<string, unknown> | null) ?? null,
+          })),
         )
-      } catch {
-        /* catalog from lookups is enough */
       }
-      const custom = (row.customFields as Record<string, unknown> | null) ?? {}
-      setForm({
-        name: String(row.name ?? ''),
-        email: String(row.email ?? ''),
-        phone: String(row.phone ?? ''),
-        mobile: indianMobileLocal(String(row.mobile ?? row.phone ?? '')),
-        mobile2: indianMobileLocal(String(custom.mobile_2 ?? '')),
-        mobile3: indianMobileLocal(String(custom.mobile_3 ?? '')),
-        whatsapp: indianMobileLocal(String(custom.whatsapp ?? '')),
-        landline: String(custom.landline ?? ''),
-        buildingName: String(custom.building_name ?? ''),
-        street: String(row.street ?? ''),
-        doorNo: String(row.doorNo ?? ''),
-        area: String(row.area ?? ''),
-        pincode: String(row.pincode ?? ''),
-        landmark: String(row.location ?? ''),
-        gpsLocation: String(custom.gps_location ?? ''),
-        city: String(row.city ?? ''),
-        state: String(row.state ?? ''),
-        accountId: String(row.accountId ?? ''),
-        ownerUserId: String(row.ownerUserId ?? ''),
-        description: String(row.description ?? ''),
-      })
+      if (needCatalog) {
+        try {
+          const [productPage, brandRows] = await Promise.all([
+            api.products({ limit: 200 }),
+            api.inventoryBrands(),
+          ])
+          if (productPage.items?.length) {
+            setCatalogProducts(
+              productPage.items.map((p) => ({
+                id: String(p.id),
+                name: String(p.name ?? ''),
+                sku: String(p.sku ?? ''),
+                attributes: (p.attributes as Record<string, unknown> | null) ?? null,
+              })),
+            )
+          }
+          setCatalogBrands(
+            (brandRows ?? []).map((b) => ({ id: String(b.id), name: String(b.name ?? '') })),
+          )
+        } catch {
+          /* catalog from lookups is enough */
+        }
+        catalogReadyRef.current = true
+      }
+      if (!silent) {
+        const custom = (row.customFields as Record<string, unknown> | null) ?? {}
+        setForm({
+          name: String(row.name ?? ''),
+          email: String(row.email ?? ''),
+          phone: String(row.phone ?? ''),
+          mobile: indianMobileLocal(String(row.mobile ?? row.phone ?? '')),
+          mobile2: indianMobileLocal(String(custom.mobile_2 ?? '')),
+          mobile3: indianMobileLocal(String(custom.mobile_3 ?? '')),
+          whatsapp: indianMobileLocal(String(custom.whatsapp ?? '')),
+          landline: String(custom.landline ?? ''),
+          buildingName: String(custom.building_name ?? ''),
+          street: String(row.street ?? ''),
+          doorNo: String(row.doorNo ?? ''),
+          area: String(row.area ?? ''),
+          pincode: String(row.pincode ?? ''),
+          landmark: String(row.location ?? ''),
+          gpsLocation: String(custom.gps_location ?? ''),
+          city: String(row.city ?? ''),
+          state: String(row.state ?? ''),
+          accountId: String(row.accountId ?? ''),
+          ownerUserId: String(row.ownerUserId ?? ''),
+          description: String(row.description ?? ''),
+        })
+      }
       // Timeline extras (activities + spares) — non-blocking
       setTimelineLoading(true)
       void Promise.all([
@@ -314,9 +325,9 @@ export function ContactDetailPage() {
         })
       }).finally(() => setTimelineLoading(false))
     } catch {
-      setContact(null)
+      if (!silent) setContact(null)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [id])
 
@@ -476,7 +487,7 @@ export function ContactDetailPage() {
       await api.addContactNote(id, noteDraft.trim())
       setNoteDraft('')
       addToast({ type: 'success', message: 'Note added' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -495,7 +506,7 @@ export function ContactDetailPage() {
       setEditingNoteId(null)
       setEditingNoteText('')
       addToast({ type: 'success', message: 'Note updated' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -512,7 +523,7 @@ export function ContactDetailPage() {
     try {
       await api.deleteContactNote(id, noteId)
       addToast({ type: 'success', message: 'Note deleted' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -640,7 +651,7 @@ export function ContactDetailPage() {
         addToast({ type: 'success', message: 'Machine added' })
       }
       setMachineOpen(false)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -671,7 +682,7 @@ export function ContactDetailPage() {
     }
   }
 
-  if (loading) {
+  if (loading && !contact) {
     return <DetailSkeleton />
   }
 
@@ -2541,16 +2552,17 @@ export function ContactDetailPage() {
                       cf.serviceReport && typeof cf.serviceReport === 'object',
                     )
                     return (
-                      <tr key={String(t.id)} className="border-t border-border">
+                      <tr
+                        key={String(t.id)}
+                        className="cursor-pointer border-t border-border hover:bg-surface"
+                        onClick={() => navigate(`/tickets/${t.id}`)}
+                      >
                         <td className="px-4 py-3">
-                          <Link
-                            className="font-mono text-accent-blue hover:underline"
-                            to={`/tickets/${t.id}`}
-                          >
+                          <span className="font-mono text-accent-blue">
                             {formatServiceId(
                               t.ticketNo != null ? String(t.ticketNo) : undefined,
                             )}
-                          </Link>
+                          </span>
                         </td>
                         <td className="px-4 py-3">{String(t.subject)}</td>
                         <td className="px-4 py-3">
@@ -2568,7 +2580,7 @@ export function ContactDetailPage() {
                             <span className="text-xs text-text-secondary">—</span>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-right">
+                        <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                           <Button
                             size="sm"
                             variant="outline"
@@ -2691,8 +2703,16 @@ export function ContactDetailPage() {
               {rentals.map((r) => {
                 const product = r.product as { name?: string } | null
                 return (
-                  <tr key={String(r.id)} className="border-t border-border">
-                    <td className="px-4 py-3 font-mono">{String(r.rentalNo ?? r.id)}</td>
+                  <tr
+                    key={String(r.id)}
+                    className="cursor-pointer border-t border-border hover:bg-surface"
+                    onClick={() =>
+                      navigate(`/rentals?q=${encodeURIComponent(String(r.rentalNo ?? r.id))}`)
+                    }
+                  >
+                    <td className="px-4 py-3 font-mono text-accent-blue">
+                      {String(r.rentalNo ?? r.id)}
+                    </td>
                     <td className="px-4 py-3">{product?.name ? String(product.name) : '—'}</td>
                     <td className="px-4 py-3">
                       <Badge color={String(r.status) === 'ACTIVE' ? 'amber' : 'green'}>

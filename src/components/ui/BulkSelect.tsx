@@ -142,7 +142,7 @@ export function BulkActionBar({
   if (count <= 0) return null
   const label = count === 1 ? noun : `${noun}s`
   return (
-    <div className="sticky top-0 z-20 mb-3 flex flex-wrap items-center gap-3 rounded-[10px] border border-accent-blue/30 bg-blue-50/90 px-4 py-2.5 shadow-sm backdrop-blur">
+    <div className="sticky top-0 z-[1] mb-3 flex flex-wrap items-center gap-3 rounded-[10px] border border-accent-blue/30 bg-blue-50/90 px-4 py-2.5 shadow-sm backdrop-blur">
       <span className="text-sm font-medium text-text-primary">
         {count} {label} selected
       </span>

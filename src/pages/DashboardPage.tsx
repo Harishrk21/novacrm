@@ -29,6 +29,14 @@ import {
 } from '@/lib/inventoryFlow'
 import { formatServiceId } from '@/lib/serviceId'
 import { cn, formatDate } from '@/lib/utils'
+import {
+  formatActivityDueLabel,
+  isActivityDueThisWeek,
+  isActivityDueTodayOrOverdue,
+  reminderFromActivity,
+  type DueReminderItem,
+} from '@/lib/activityReminders'
+import { DueTodayRemindersCard } from '@/components/dashboard/DueTodayRemindersCard'
 import { BlockSkeleton, PageSkeleton, TableSkeleton, Skeleton } from '@/components/ui/Skeleton'
 
 const AdminAnalyticsDashboard = lazy(() =>
@@ -78,8 +86,8 @@ function SalesExecutiveHomePage() {
     completed: 0,
   })
   const [openEnquiries, setOpenEnquiries] = useState<Array<Record<string, unknown>>>([])
-  const [dueFollowups, setDueFollowups] = useState<Array<Record<string, unknown>>>([])
-  const [weekFollowups, setWeekFollowups] = useState<Array<Record<string, unknown>>>([])
+  const [dueReminders, setDueReminders] = useState<DueReminderItem[]>([])
+  const [weekReminders, setWeekReminders] = useState<DueReminderItem[]>([])
   const [pipeline, setPipeline] = useState<Array<{ label: string; count: number; to: string; color: string }>>([])
 
   useEffect(() => {
@@ -92,10 +100,11 @@ function SalesExecutiveHomePage() {
       try {
         const [leadPage, actPage] = await Promise.all([
           api.leads({ limit: 100, assignedToId: user.id }),
-          api.activities({ limit: 50, assignedToId: user.id }).catch(() => ({ items: [] })),
+          api.activities({ limit: 100, assignedToId: user.id }).catch(() => ({ items: [] })),
         ])
         if (cancelled) return
         const items = leadPage.items ?? []
+        const acts = actPage.items ?? []
         const open = items.filter(
           (l) => !['LOST', 'CONVERTED', 'UNQUALIFIED'].includes(String(l.status)),
         )
@@ -126,13 +135,52 @@ function SalesExecutiveHomePage() {
           const d = new Date(iso)
           return !Number.isNaN(d.getTime()) && d >= startToday && d <= weekEnd
         })
-        const openActs = (actPage.items ?? []).filter((a) =>
-          ['PENDING', 'OVERDUE'].includes(String(a.status)),
-        )
-        const dueActs = openActs.filter((a) => {
-          if (!a.scheduledAt) return true
-          return new Date(String(a.scheduledAt)).getTime() <= endToday.getTime()
+        const dueActs = acts.filter((a) => isActivityDueTodayOrOverdue(a, endToday))
+        const weekActs = acts.filter((a) => isActivityDueThisWeek(a, startToday, weekEnd))
+
+        const leadReminders: DueReminderItem[] = dueFromLeads.map((l) => {
+          const iso = followIso(l) ?? ''
+          const dueAt = new Date(iso).getTime()
+          const cf = (l.customFields as Record<string, unknown> | null) ?? {}
+          const dueLabel = cf.reminder_at
+            ? formatActivityDueLabel(cf.reminder_at)
+            : String(cf.follow_up_date ?? '').slice(0, 10) || 'Due'
+          return {
+            id: `lead:${String(l.id)}`,
+            kind: 'followup',
+            title: String(l.name),
+            subtitle: [l.phone, l.company].filter(Boolean).map(String).join(' · ') || 'Enquiry follow-up',
+            dueLabel,
+            dueAt: Number.isNaN(dueAt) ? 0 : dueAt,
+            to: `/sale-tracking/${String(l.id)}`,
+            source: 'lead',
+          }
         })
+        const actReminders = dueActs.map((a) => reminderFromActivity(a))
+        const mergedDue = [...leadReminders, ...actReminders]
+          .sort((a, b) => a.dueAt - b.dueAt)
+          .slice(0, 12)
+
+        const weekLeadReminders: DueReminderItem[] = weekFromLeads.map((l) => {
+          const iso = followIso(l) ?? ''
+          const dueAt = new Date(iso).getTime()
+          const cf = (l.customFields as Record<string, unknown> | null) ?? {}
+          return {
+            id: `lead:${String(l.id)}`,
+            kind: 'followup' as const,
+            title: String(l.name),
+            subtitle: 'Follow-up',
+            dueLabel: String(cf.follow_up_date ?? cf.reminder_at ?? '').slice(0, 10),
+            dueAt: Number.isNaN(dueAt) ? 0 : dueAt,
+            to: `/sale-tracking/${String(l.id)}`,
+            source: 'lead' as const,
+          }
+        })
+        const weekActReminders = weekActs.map((a) => reminderFromActivity(a))
+        const mergedWeek = [...weekLeadReminders, ...weekActReminders]
+          .sort((a, b) => a.dueAt - b.dueAt)
+          .slice(0, 12)
+
         const awaitingShip = items.filter((l) => {
           const cf = (l.customFields as Record<string, unknown> | null) ?? {}
           const rel =
@@ -148,8 +196,8 @@ function SalesExecutiveHomePage() {
 
         setCounts({
           open: open.length,
-          followupsDue: Math.max(dueFromLeads.length, dueActs.length),
-          followupsWeek: weekFromLeads.length,
+          followupsDue: mergedDue.length,
+          followupsWeek: mergedWeek.length,
           demo: items.filter((l) => String(l.status) === 'DEMO').length,
           converted: items.filter((l) => String(l.status) === 'CONVERTED').length,
           awaitingShip: awaitingShip.length,
@@ -196,16 +244,8 @@ function SalesExecutiveHomePage() {
             )
             .slice(0, 8),
         )
-        setDueFollowups(
-          [...dueFromLeads]
-            .sort((a, b) => String(followIso(a)).localeCompare(String(followIso(b))))
-            .slice(0, 8),
-        )
-        setWeekFollowups(
-          [...weekFromLeads]
-            .sort((a, b) => String(followIso(a)).localeCompare(String(followIso(b))))
-            .slice(0, 8),
-        )
+        setDueReminders(mergedDue)
+        setWeekReminders(mergedWeek)
       } catch (e) {
         if (!cancelled) {
           addToast({
@@ -230,8 +270,8 @@ function SalesExecutiveHomePage() {
       icon: <Plus size={18} />,
     },
     {
-      title: 'Follow-ups due',
-      body: `${counts.followupsDue} today / overdue`,
+      title: 'Due today',
+      body: `${counts.followupsDue} call / task / meeting / follow-up`,
       to: '/workqueue',
       icon: <Clock size={18} />,
     },
@@ -392,8 +432,10 @@ function SalesExecutiveHomePage() {
         <Card padding={false}>
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <div>
-              <h2 className="text-sm font-semibold text-text-primary">Follow-ups due today</h2>
-              <p className="text-xs text-text-secondary">Today & overdue — call these first</p>
+              <h2 className="text-sm font-semibold text-text-primary">Due today</h2>
+              <p className="text-xs text-text-secondary">
+                Calls, tasks, meetings & lead follow-ups — today & overdue
+              </p>
             </div>
             <button
               type="button"
@@ -405,13 +447,13 @@ function SalesExecutiveHomePage() {
           </div>
           {loading ? (
             <BlockSkeleton lines={4} />
-          ) : dueFollowups.length === 0 ? (
+          ) : dueReminders.length === 0 ? (
             <div className="space-y-3 p-4">
               <p className="text-sm text-text-secondary">
                 Nothing due today.
-                {weekFollowups.length > 0
-                  ? ` ${weekFollowups.length} follow-up(s) coming up this week.`
-                  : ' Set a follow-up date on new enquiries.'}
+                {weekReminders.length > 0
+                  ? ` ${weekReminders.length} item(s) coming up this week.`
+                  : ' Create a call, task or meeting from Workqueue — it will remind you on that day.'}
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" onClick={() => navigate('/workqueue')}>
@@ -424,31 +466,21 @@ function SalesExecutiveHomePage() {
             </div>
           ) : (
             <ul className="divide-y divide-border">
-              {dueFollowups.map((l) => {
-                const cf = (l.customFields as Record<string, unknown> | null) ?? {}
-                const due = cf.reminder_at
-                  ? String(cf.reminder_at).replace('T', ' ').slice(0, 16)
-                  : String(cf.follow_up_date ?? '').slice(0, 10)
-                return (
-                  <li key={String(l.id)}>
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/sale-tracking/${String(l.id)}`)}
-                      className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-surface"
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-text-primary">
-                          {String(l.name)}
-                        </div>
-                        <div className="truncate text-xs text-text-secondary">
-                          {[l.phone, l.company].filter(Boolean).map(String).join(' · ') || 'Enquiry'}
-                        </div>
-                      </div>
-                      <Badge color="amber">{due || 'Due'}</Badge>
-                    </button>
-                  </li>
-                )
-              })}
+              {dueReminders.map((r) => (
+                <li key={r.id}>
+                  <button
+                    type="button"
+                    onClick={() => navigate(r.to)}
+                    className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-surface"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-text-primary">{r.title}</div>
+                      <div className="truncate text-xs text-text-secondary">{r.subtitle}</div>
+                    </div>
+                    <Badge color="amber">{r.dueLabel}</Badge>
+                  </button>
+                </li>
+              ))}
             </ul>
           )}
         </Card>
@@ -506,7 +538,7 @@ function SalesExecutiveHomePage() {
         </Card>
       </div>
 
-      {weekFollowups.length > 0 && dueFollowups.length === 0 ? (
+      {weekReminders.length > 0 && dueReminders.length === 0 ? (
         <Card padding={false}>
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <h2 className="text-sm font-semibold">Upcoming this week</h2>
@@ -519,22 +551,18 @@ function SalesExecutiveHomePage() {
             </button>
           </div>
           <ul className="divide-y divide-border sm:grid sm:grid-cols-2 sm:divide-y-0">
-            {weekFollowups.map((l) => {
-              const cf = (l.customFields as Record<string, unknown> | null) ?? {}
-              const due = String(cf.follow_up_date ?? cf.reminder_at ?? '').slice(0, 10)
-              return (
-                <li key={String(l.id)} className="sm:border-b sm:border-border">
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/sale-tracking/${String(l.id)}`)}
-                    className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left hover:bg-surface"
-                  >
-                    <span className="truncate text-sm font-medium">{String(l.name)}</span>
-                    <Badge color="gray">{due}</Badge>
-                  </button>
-                </li>
-              )
-            })}
+            {weekReminders.map((r) => (
+              <li key={r.id} className="sm:border-b sm:border-border">
+                <button
+                  type="button"
+                  onClick={() => navigate(r.to)}
+                  className="flex w-full items-center justify-between gap-2 px-4 py-3 text-left hover:bg-surface"
+                >
+                  <span className="truncate text-sm font-medium">{r.title}</span>
+                  <Badge color="gray">{r.dueLabel}</Badge>
+                </button>
+              </li>
+            ))}
           </ul>
         </Card>
       ) : null}
@@ -677,6 +705,11 @@ function WarehouseHomePage() {
             {refreshing ? 'Refreshing…' : 'Refresh live'}
           </Button>
         }
+      />
+
+      <DueTodayRemindersCard
+        title="My due today"
+        subtitle="Calls, tasks & meetings from Workqueue for your warehouse login"
       />
 
       {!areas.machines && !areas.sparesBilling && !areas.sparesWeighing ? (
@@ -928,6 +961,7 @@ function WarehouseHomePage() {
 }
 
 function ServiceDeskHomePage() {
+  const navigate = useNavigate()
   const addToast = useUIStore((s) => s.addToast)
   const user = useAuthStore((s) => s.user)
   const [loading, setLoading] = useState(true)
@@ -942,6 +976,7 @@ function ServiceDeskHomePage() {
   const [recent, setRecent] = useState<Array<Record<string, unknown>>>([])
   const [pendingApproval, setPendingApproval] = useState<Array<Record<string, unknown>>>([])
   const [unassigned, setUnassigned] = useState<Array<Record<string, unknown>>>([])
+  const [dueReminders, setDueReminders] = useState<DueReminderItem[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -951,11 +986,14 @@ function ServiceDeskHomePage() {
         return
       }
       try {
-        const [tSum, tickets, unassignedPage, resolvedPage] = await Promise.all([
+        const [tSum, tickets, unassignedPage, resolvedPage, actPage] = await Promise.all([
           api.ticketsSummary(),
           api.tickets({ limit: 10, sort: 'sla' }),
           api.tickets({ limit: 6, assignedToId: 'unassigned', sort: 'sla' }),
           api.tickets({ limit: 8, status: 'RESOLVED', sort: 'newest' }),
+          user?.id
+            ? api.activities({ limit: 50, assignedToId: user.id }).catch(() => ({ items: [] }))
+            : Promise.resolve({ items: [] as Array<Record<string, unknown>> }),
         ])
         if (cancelled) return
         const byStatus = tSum.byStatus ?? {}
@@ -981,6 +1019,13 @@ function ServiceDeskHomePage() {
             .filter((t) => ['OPEN', 'IN_PROGRESS', 'PENDING'].includes(String(t.status)))
             .slice(0, 6),
         )
+        setDueReminders(
+          (actPage.items ?? [])
+            .filter((a) => isActivityDueTodayOrOverdue(a))
+            .map((a) => reminderFromActivity(a))
+            .sort((a, b) => a.dueAt - b.dueAt)
+            .slice(0, 8),
+        )
       } catch (e) {
         if (!cancelled) {
           addToast({
@@ -995,7 +1040,7 @@ function ServiceDeskHomePage() {
     return () => {
       cancelled = true
     }
-  }, [addToast])
+  }, [addToast, user?.id])
 
   const metrics = [
     {
@@ -1082,6 +1127,43 @@ function ServiceDeskHomePage() {
           </ol>
         </div>
       </Card>
+
+      {dueReminders.length > 0 ? (
+        <Card padding={false}>
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold text-text-primary">Due today</h2>
+              <p className="text-xs text-text-secondary">
+                Your Workqueue calls, tasks & meetings for today
+              </p>
+            </div>
+            <button
+              type="button"
+              className="text-xs font-medium text-accent-blue hover:underline"
+              onClick={() => navigate('/workqueue')}
+            >
+              Workqueue →
+            </button>
+          </div>
+          <ul className="divide-y divide-border">
+            {dueReminders.map((r) => (
+              <li key={r.id}>
+                <button
+                  type="button"
+                  onClick={() => navigate(r.to)}
+                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-surface"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-text-primary">{r.title}</div>
+                    <div className="truncate text-xs text-text-secondary">{r.subtitle}</div>
+                  </div>
+                  <Badge color="amber">{r.dueLabel}</Badge>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {metrics.map((s) => {

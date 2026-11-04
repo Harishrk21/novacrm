@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
 import {
   Check,
@@ -273,6 +273,207 @@ function cell(v: unknown) {
   return s || null
 }
 
+function sampleCells(cols: string[], rows: Array<Record<string, unknown>>, limit = 5) {
+  const out: Record<string, string[]> = {}
+  for (const h of cols) {
+    const seen = new Set<string>()
+    const vals: string[] = []
+    for (const row of rows) {
+      const s = cell(row[h])
+      if (!s || seen.has(s)) continue
+      seen.add(s)
+      vals.push(s)
+      if (vals.length >= limit) break
+    }
+    out[h] = vals
+  }
+  return out
+}
+
+function majorityMatch(vals: string[], pred: (s: string) => boolean, ratio = 0.6) {
+  if (!vals.length) return false
+  return vals.filter(pred).length / vals.length >= ratio
+}
+
+function inferFromSamples(vals: string[], preferPhone?: boolean): string | null {
+  if (!vals.length) return null
+  const phone = (s: string) => {
+    const d = s.replace(/\D/g, '')
+    return d.length === 10 || (d.length === 12 && d.startsWith('91'))
+  }
+  if (majorityMatch(vals, (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s))) return 'email'
+  if (majorityMatch(vals, phone)) return preferPhone ? 'phone' : 'mobile'
+  if (majorityMatch(vals, (s) => /^\d{6}$/.test(s.replace(/\s/g, '')))) return 'pincode'
+  if (majorityMatch(vals, (s) => /^(weighing|billing|ccm|cctv|biometric|paper_?shredder|other)$/i.test(s)))
+    return 'machineType'
+  if (majorityMatch(vals, (s) => /^(sold_?by_?us|third_?party|outside)$/i.test(s))) return 'origin'
+  if (majorityMatch(vals, (s) => /^(gc|ngc|amc|non_?amc)$/i.test(s))) return 'servicePlan'
+  if (
+    majorityMatch(vals, (s) =>
+      /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$|^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$/.test(s),
+    )
+  ) {
+    return preferPhone ? 'nextServiceDueDate' : 'warrantyEndDate'
+  }
+  if (
+    majorityMatch(
+      vals,
+      (s) => /^[A-Za-z0-9][A-Za-z0-9\-_/]{4,24}$/.test(s) && /[A-Za-z]/.test(s) && /\d/.test(s) && !phone(s),
+      0.5,
+    )
+  ) {
+    return 'serialNo'
+  }
+  if (majorityMatch(vals, (s) => /^[1-9]\d{0,2}$/.test(s) && Number(s) <= 500, 0.8)) return 'quantity'
+  return null
+}
+
+/**
+ * Local column → CRM field map from header text + sample cell values.
+ * Used immediately on upload; AI refines with the same samples in the background.
+ */
+function mapHeadersLocally(
+  cols: string[],
+  rows: Array<Record<string, unknown>> = [],
+  kind?: ImportKind | null,
+): Record<string, string | null> {
+  const samples = sampleCells(cols, rows)
+  const preferPhone = kind === 'service'
+  type Cand = { h: string; field: string; score: number }
+  const cands: Cand[] = []
+
+  for (const h of cols) {
+    const key = h.trim()
+    const lower = key.toLowerCase()
+    const spaced = lower.replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim()
+    const norm = lower.replace(/[^a-z0-9]/g, '')
+    const vals = samples[h] ?? []
+
+    let byName: string | null = null
+    if ((TEMPLATE_HEADERS as readonly string[]).includes(key as (typeof TEMPLATE_HEADERS)[number])) {
+      byName = key
+    } else {
+      const tmpl = (TEMPLATE_HEADERS as readonly string[]).find((t) => t.toLowerCase() === lower)
+      if (tmpl) byName = tmpl
+      else if (
+        /^(customer|shop|company|client|party|firm)?\s*name$|^name$|customer name|shop name|party name|firm name|account name|dealer name/.test(
+          spaced,
+        ) ||
+        ['customername', 'shopname', 'partyname', 'companyname', 'clientname', 'firmname', 'name'].includes(
+          norm,
+        )
+      ) {
+        byName = 'name'
+      } else if (/whatsapp|wa\b/.test(spaced) || norm === 'whatsapp' || norm === 'wa') byName = 'whatsapp'
+      else if (
+        /mobile|cell|mobileno|cellphone|mob\b/.test(spaced) ||
+        ['mobile', 'mobileno', 'cell', 'cellphone'].includes(norm)
+      ) {
+        byName = 'mobile'
+      } else if (
+        /^phone$|phone no|phone number|contact no|contact number|phoneno|tel\b|landline/.test(spaced) ||
+        ['phone', 'phoneno', 'phonenumber', 'contact', 'contactno', 'contactnumber'].includes(norm)
+      ) {
+        byName = 'phone'
+      } else if (/e-?mail/.test(spaced) || norm === 'email') byName = 'email'
+      else if (/door|house no|plot/.test(spaced) || norm === 'doorno') byName = 'doorNo'
+      else if (
+        /street|road|address line 1|addr1|^address$/.test(spaced) ||
+        ['street', 'address', 'addr'].includes(norm)
+      ) {
+        byName = 'street'
+      } else if (/building|complex|tower|flat/.test(spaced) || norm === 'buildingname' || norm === 'building')
+        byName = 'buildingName'
+      else if (/^area$|locality|colony|nagar/.test(spaced) || norm === 'area') byName = 'area'
+      else if (/^city$|town|district/.test(spaced) || norm === 'city') byName = 'city'
+      else if (/^state$/.test(spaced) || norm === 'state') byName = 'state'
+      else if (/pin|postal|zip/.test(spaced) || ['pincode', 'pin', 'zip', 'zipcode'].includes(norm))
+        byName = 'pincode'
+      else if (/landmark|near/.test(spaced) || norm === 'landmark') byName = 'landmark'
+      else if (
+        /machine sold|machine name|product name|equipment name|asset name|^machine$|^product$/.test(spaced) ||
+        ['machinesold', 'machinename', 'productname'].includes(norm)
+      ) {
+        byName = 'machineName'
+      } else if (
+        /machine type|product type|equipment type|^category$|^type$/.test(spaced) ||
+        ['machinetype', 'type', 'category'].includes(norm)
+      ) {
+        byName = 'machineType'
+      } else if (
+        /serial|sr no|srno|sl no|hms id|unique id|sno\b/.test(spaced) ||
+        ['serialno', 'serial', 'serialnumber', 'srno'].includes(norm)
+      ) {
+        byName = 'serialNo'
+      } else if (/^model$|model no|model name/.test(spaced) || norm === 'model') byName = 'model'
+      else if (
+        /^qty$|quantity|units|nos|no of/.test(spaced) ||
+        ['qty', 'quantity', 'units', 'nos'].includes(norm)
+      ) {
+        byName = 'quantity'
+      } else if (/capacity/.test(spaced) || norm === 'capacity') byName = 'capacity'
+      else if (/accuracy/.test(spaced) || norm === 'accuracy') byName = 'accuracy'
+      else if (/platform/.test(spaced) || norm === 'platform' || norm === 'platformsize') byName = 'platformSize'
+      else if (/origin|sold by|outside/.test(spaced) || ['origin', 'soldby'].includes(norm)) byName = 'origin'
+      else if (
+        /coverage|service plan|service type|amc|gc|ngc/.test(spaced) ||
+        ['coverage', 'serviceplan', 'servicetype', 'amc', 'gc'].includes(norm)
+      ) {
+        byName = 'servicePlan'
+      } else if (/warranty/.test(spaced) || norm.includes('warranty')) byName = 'warrantyEndDate'
+      else if (/amc start/.test(spaced) || norm.includes('amcstart')) byName = 'amcStartDate'
+      else if (/amc end/.test(spaced) || norm.includes('amcend')) byName = 'amcEndDate'
+      else if (/next service/.test(spaced) || norm.includes('nextservice')) byName = 'nextServiceDueDate'
+      else if (/stamping/.test(spaced) || norm.includes('stamping')) byName = 'stampingDate'
+      else if (
+        /stamp valid|next due|valid till/.test(spaced) ||
+        ['nextdue', 'validtill', 'nextduedate'].includes(norm)
+      ) {
+        byName = 'nextDueDate'
+      } else if (
+        /sale notes|service notes|machine notes|remarks|notes/.test(spaced) ||
+        ['salenotes', 'servicenotes', 'machinenotes', 'notes', 'remarks', 'description'].includes(norm)
+      ) {
+        byName = /machine|sale|service/.test(spaced) ? 'machineNotes' : 'description'
+      }
+    }
+
+    const byVal = inferFromSamples(vals, preferPhone)
+    if (byName) {
+      const agree =
+        byVal === byName ||
+        (byName === 'mobile' && byVal === 'phone') ||
+        (byName === 'phone' && byVal === 'mobile')
+      cands.push({ h, field: byName, score: agree ? 100 : byVal && byVal !== byName ? 70 : 90 })
+    } else if (byVal) {
+      cands.push({ h, field: byVal, score: 75 })
+    } else if (
+      vals.length &&
+      /cust|party|firm|client|shop|dealer|account|org|business/i.test(h) &&
+      majorityMatch(vals, (s) => s.length >= 3 && /[A-Za-z]{3}/.test(s), 0.8)
+    ) {
+      cands.push({ h, field: 'name', score: 60 })
+    }
+  }
+
+  cands.sort((a, b) => b.score - a.score)
+  const used = new Set<string>()
+  const out: Record<string, string | null> = {}
+  for (const h of cols) out[h] = null
+  for (const c of cands) {
+    if (used.has(c.field) || out[c.h]) continue
+    out[c.h] = c.field
+    used.add(c.field)
+  }
+
+  const phoneCols = cols.filter((h) => out[h] === 'phone' || out[h] === 'mobile')
+  if (phoneCols.length === 1 && out[phoneCols[0]!] === 'phone' && kind !== 'service') {
+    out[phoneCols[0]!] = 'mobile'
+  }
+
+  return out
+}
+
 function rowsToImportPayload(
   rows: Array<Record<string, unknown>>,
   mapping: Record<string, string | null>,
@@ -338,7 +539,7 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
   const addToast = useUIStore((s) => s.addToast)
   const fileRef = useRef<HTMLInputElement>(null)
   const [step, setStep] = useState<WizardStep>('upload')
-  const [importKind, setImportKind] = useState<ImportKind | null>(null)
+  const [importKind, setImportKind] = useState<ImportKind | null>('sales')
   const [headers, setHeaders] = useState<string[]>([])
   const [rawRows, setRawRows] = useState<Array<Record<string, unknown>>>([])
   const [fileName, setFileName] = useState<string | null>(null)
@@ -398,7 +599,9 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
               { tip: 'Serial No = one sold unit. Qty without serial = that many units of the same model.' },
               { tip: 'Origin: SOLD_BY_US. Coverage: GC (1yr from sale) or NGC.' },
               { tip: 'machineType: WEIGHING | BILLING | CCM | CCTV | BIOMETRIC | PAPER_SHREDDER | OTHER' },
-              { tip: 'Dates: YYYY-MM-DD. AI maps your column names — review Field mapping.' },
+              {
+                tip: 'Your real file can use any column names — AI reads sample cell values to map fields. Review Field mapping.',
+              },
             ]
           : [
               { tip: 'This is the SERVICE register sample. Upload it after choosing Service.' },
@@ -407,86 +610,73 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
               { tip: 'Service Type: AMC | NGC | NON_AMC. Origin: SOLD_BY_US or THIRD_PARTY (outside).' },
               { tip: 'AMC Start / AMC End / Next Service — for AMC machines.' },
               { tip: 'Stamping Date + Stamp Valid Till — weighing quarters.' },
-              { tip: 'Dates: YYYY-MM-DD. AI maps your column names — review Field mapping.' },
+              {
+                tip: 'Your real file can use any column names — AI reads sample cell values to map fields. Review Field mapping.',
+              },
             ],
       },
     ])
   }
 
-  const runAiMap = useCallback(async (cols: string[], rows: Array<Record<string, unknown>>) => {
+  const mapGenRef = useRef(0)
+
+  const runAiMap = useCallback(async (
+    cols: string[],
+    rows: Array<Record<string, unknown>>,
+    gen?: number,
+    kindOverride?: ImportKind | null,
+  ) => {
     setMappingBusy(true)
+    const kind = kindOverride !== undefined ? kindOverride : importKind
+    const stillCurrent = () => gen == null || gen === mapGenRef.current
     try {
-      const res = await api.aiMapCustomerImport({
-        headers: cols,
-        sampleRows: rows.slice(0, 3),
-        kind: importKind ?? undefined,
-      })
-      setMapping(res.mapping ?? {})
+      // Cap wait so a hung Gemini call never leaves the wizard feeling stuck
+      // Send sample rows so AI infers from cell values, not just header text
+      const res = await Promise.race([
+        api.aiMapCustomerImport({
+          headers: cols,
+          sampleRows: rows.slice(0, 8),
+          kind: kind ?? undefined,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('AI mapping timed out')), 18_000),
+        ),
+      ])
+      if (!stillCurrent()) return
+      const local = mapHeadersLocally(cols, rows, kind)
+      const aiMap = res.mapping ?? {}
+      const used = new Set<string>()
+      const merged: Record<string, string | null> = {}
+      for (const h of cols) merged[h] = null
+      // AI first (it saw sample values), then local fill for gaps — unique fields only
+      for (const source of [aiMap, local]) {
+        for (const h of cols) {
+          if (merged[h]) continue
+          const v = source[h]
+          if (!v || used.has(v)) continue
+          merged[h] = v
+          used.add(v)
+        }
+      }
+      setMapping(merged)
       setUsedAi(Boolean(res.usedAi))
       setMapNote(res.notes ?? null)
     } catch (err) {
-      const local: Record<string, string | null> = {}
-      const aliases: Record<string, string> = {
-        customer: 'name',
-        customername: 'name',
-        customer_name: 'name',
-        party: 'name',
-        partyname: 'name',
-        phoneno: 'mobile',
-        phone_no: 'mobile',
-        mobileno: 'mobile',
-        mobile_no: 'mobile',
-        cellphone: 'mobile',
-        contact: 'mobile',
-        address: 'street',
-        addr: 'street',
-        pin: 'pincode',
-        zip: 'pincode',
-        zipcode: 'pincode',
-        serial: 'serialNo',
-        serialnumber: 'serialNo',
-        qty: 'quantity',
-        quantity: 'quantity',
-        units: 'quantity',
-        nos: 'quantity',
-        machinetype: 'machineType',
-        type: 'machineType',
-        serviceplan: 'servicePlan',
-        coverage: 'servicePlan',
-        amc: 'servicePlan',
-        gc: 'servicePlan',
-        warranty: 'warrantyEndDate',
-        warrantyend: 'warrantyEndDate',
-        warrantyenddate: 'warrantyEndDate',
-        amcstart: 'amcStartDate',
-        amcstartdate: 'amcStartDate',
-        amcend: 'amcEndDate',
-        amcenddate: 'amcEndDate',
-        nextservice: 'nextServiceDueDate',
-        nextservicedue: 'nextServiceDueDate',
-        stamping: 'stampingDate',
-        stampingdate: 'stampingDate',
-        nextdue: 'nextDueDate',
-        validtill: 'nextDueDate',
-        origin: 'origin',
-        soldby: 'origin',
-      }
-      for (const h of cols) {
-        const key = h.trim()
-        const norm = key.toLowerCase().replace(/[^a-z0-9]/g, '')
-        if ((TEMPLATE_HEADERS as readonly string[]).includes(key)) local[h] = key
-        else if (aliases[norm]) local[h] = aliases[norm]
-        else local[h] = null
-      }
-      setMapping(local)
+      if (!stillCurrent()) return
+      setMapping((prev) => {
+        const hasIdentity =
+          Object.values(prev).includes('name') &&
+          (Object.values(prev).includes('mobile') || Object.values(prev).includes('phone'))
+        return hasIdentity ? prev : mapHeadersLocally(cols, rows, kind)
+      })
       setUsedAi(false)
       setMapNote(
         err instanceof ApiClientError
-          ? `${err.message} — using smart header match.`
-          : 'Could not reach AI — using smart header match.',
+          ? `${err.message} — matched from headers + sample values.`
+          : 'Could not reach AI — matched from headers + sample values.',
       )
     } finally {
-      setMappingBusy(false)
+      if (stillCurrent()) setMappingBusy(false)
     }
   }, [importKind])
 
@@ -520,14 +710,22 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
         return
       }
       const cols = Object.keys(json[0]!)
+      const gen = ++mapGenRef.current
+      const local = mapHeadersLocally(cols, json, importKind)
       setHeaders(cols)
       setRawRows(json)
-      await runAiMap(cols, json)
+      setMapping(local)
+      setUsedAi(false)
+      setMapNote(
+        'Matched from your headers + sample cells. AI is refining with more sample values…',
+      )
+      // Advance immediately so Next is usable; do not block on Gemini
       setStep('actions')
       addToast({
         type: 'success',
         message: `Loaded ${json.length} row${json.length === 1 ? '' : 's'} from ${file.name}`,
       })
+      void runAiMap(cols, json, gen)
     } catch (err) {
       addToast({
         type: 'error',
@@ -537,6 +735,7 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
   }
 
   function resetAll() {
+    mapGenRef.current += 1
     setStep('upload')
     setHeaders([])
     setRawRows([])
@@ -545,16 +744,14 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
     setMapping({})
     setDefaults({})
     setMapNote(null)
+    setMappingBusy(false)
     setSummary(null)
   }
 
   function autoMapIdentity() {
-    const local: Record<string, string | null> = {}
-    for (const h of headers) {
-      const key = h.trim()
-      local[h] = (TEMPLATE_HEADERS as readonly string[]).includes(key) ? key : mapping[h] ?? null
-    }
-    setMapping(local)
+    setMapping(mapHeadersLocally(headers, rawRows, importKind))
+    setUsedAi(false)
+    setMapNote('Matched columns from header names + sample cell values.')
   }
 
   async function doImport() {
@@ -635,6 +832,13 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
   }
 
   function goNext() {
+    if (step === 'fields' && (!hasName || !hasPhone)) {
+      addToast({
+        type: 'error',
+        message: 'Map Customer name and Mobile/Phone before continuing',
+      })
+      return
+    }
     const i = stepIndex
     if (i < WIZARD_STEPS.length - 1) setStep(WIZARD_STEPS[i + 1]!.id)
   }
@@ -643,12 +847,6 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
     const i = stepIndex
     if (i > 0) setStep(WIZARD_STEPS[i - 1]!.id)
   }
-
-  useEffect(() => {
-    if (step === 'fields' && mappingBusy) {
-      /* keep */
-    }
-  }, [step, mappingBusy])
 
   const sampleForHeader = (h: string) =>
     rawRows
@@ -752,9 +950,9 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
             <div className="mx-auto max-w-3xl">
               <h2 className="text-lg font-semibold">Import Contacts</h2>
               <p className="mt-1 text-sm text-text-secondary">
-                Sales and service stay as separate files. Upload each on its own — the same mobile
-                clubs into one customer, and machines from both files attach. AI maps columns; Field
-                mapping stays on screen so you can check it.
+                Sample files are only a reference — client Excel/CSV can use any column names. AI
+                reads sample cell values to map fields quickly. Same mobile across sales + service
+                clubs into one customer.
               </p>
 
               <div className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -782,7 +980,11 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
                       type="button"
                       onClick={() => {
                         setImportKind(opt.id)
-                        if (headers.length) void runAiMap(headers, rawRows)
+                        if (headers.length) {
+                          const gen = ++mapGenRef.current
+                          setMapping(mapHeadersLocally(headers, rawRows, opt.id))
+                          void runAiMap(headers, rawRows, gen, opt.id)
+                        }
                       }}
                       className={cn(
                         'rounded-xl border p-4 text-left transition',
@@ -843,6 +1045,8 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
               </p>
 
               <div
+                role="button"
+                tabIndex={0}
                 onDragOver={(e) => {
                   e.preventDefault()
                   setDragOver(true)
@@ -851,11 +1055,41 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
                 onDrop={(e) => {
                   e.preventDefault()
                   setDragOver(false)
+                  if (!importKind) {
+                    addToast({
+                      type: 'error',
+                      message: 'Choose Sales or Service above, then upload the file',
+                    })
+                    return
+                  }
                   const f = e.dataTransfer.files?.[0]
                   if (f) void onFile(f)
                 }}
+                onClick={() => {
+                  if (!importKind) {
+                    addToast({
+                      type: 'error',
+                      message: 'Choose Sales or Service above, then browse for the file',
+                    })
+                    return
+                  }
+                  fileRef.current?.click()
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    if (!importKind) {
+                      addToast({
+                        type: 'error',
+                        message: 'Choose Sales or Service above, then browse for the file',
+                      })
+                      return
+                    }
+                    fileRef.current?.click()
+                  }
+                }}
                 className={cn(
-                  'mt-6 flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-14 text-center transition',
+                  'mt-6 flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-14 text-center transition',
                   dragOver
                     ? 'border-violet-500 bg-violet-500/5'
                     : 'border-border bg-muted/20 hover:border-violet-400/50',
@@ -873,7 +1107,9 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
                   ref={fileRef}
                   type="file"
                   accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                  className="hidden"
+                  className="sr-only"
+                  tabIndex={-1}
+                  onClick={(e) => e.stopPropagation()}
                   onChange={(e) => {
                     const f = e.target.files?.[0]
                     e.target.value = ''
@@ -882,8 +1118,31 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
                 />
                 <Button
                   className="mt-3"
-                  disabled={!importKind}
-                  onClick={() => fileRef.current?.click()}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (!importKind) {
+                      addToast({
+                        type: 'error',
+                        message: 'Choose Sales or Service above, then browse for the file',
+                      })
+                      return
+                    }
+                    // Prefer showPicker when available (more reliable than .click() in some embeds)
+                    const input = fileRef.current
+                    if (!input) return
+                    const withPicker = input as HTMLInputElement & {
+                      showPicker?: () => void
+                    }
+                    try {
+                      if (typeof withPicker.showPicker === 'function') {
+                        withPicker.showPicker()
+                      } else {
+                        input.click()
+                      }
+                    } catch {
+                      input.click()
+                    }
+                  }}
                 >
                   Browse Files
                 </Button>
@@ -1025,8 +1284,9 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
                 <div>
                   <h2 className="text-lg font-semibold">Field mapping</h2>
                   <p className="text-sm text-text-secondary">
-                    AI mapped this {importKind === 'service' ? 'service' : 'sales'} file. Check every
-                    column — sample data is from your sheet. Fix a row if the guess is wrong.
+                    Mapped this {importKind === 'service' ? 'service' : 'sales'} file from your
+                    headers and sample cell values. Check each row — fix anything the guess got
+                    wrong.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -1034,17 +1294,20 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
                     variant="outline"
                     size="sm"
                     disabled={mappingBusy}
-                    onClick={() => void runAiMap(headers, rawRows)}
+                    onClick={() => {
+                      const gen = ++mapGenRef.current
+                      void runAiMap(headers, rawRows, gen, importKind)
+                    }}
                   >
                     {mappingBusy ? (
                       <Loader2 size={14} className="animate-spin" />
                     ) : (
                       <Sparkles size={14} />
                     )}
-                    Auto map
+                    Auto map with AI
                   </Button>
                   <Button variant="outline" size="sm" onClick={autoMapIdentity}>
-                    <Wand2 size={14} /> Match template headers
+                    <Wand2 size={14} /> Match from samples
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => setMapping({})}>
                     <RotateCcw size={14} /> Reset mapping
@@ -1229,8 +1492,8 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-muted/30 px-4 py-3">
+      {/* Footer — above floating stock alerts so Next stays clickable */}
+      <div className="relative z-[80] flex flex-wrap items-center justify-between gap-3 border-t border-border bg-muted/30 px-4 py-3">
         <div className="flex flex-wrap gap-3 text-sm">
           <button
             type="button"
@@ -1265,7 +1528,19 @@ export function CustomerImportPanel({ onImported, onCancel }: Props) {
             {step === 'upload' ? 'Cancel' : 'Back'}
           </Button>
           {step !== 'assign' ? (
-            <Button disabled={!canNext() || mappingBusy} onClick={goNext}>
+            <Button
+              disabled={!canNext()}
+              title={
+                step === 'fields' && (!hasName || !hasPhone)
+                  ? 'Map Customer name and Mobile/Phone first'
+                  : step === 'upload' && !headers.length
+                    ? 'Upload a file first'
+                    : mappingBusy
+                      ? 'Column mapping still refining in the background'
+                      : undefined
+              }
+              onClick={goNext}
+            >
               Next
             </Button>
           ) : summary ? (

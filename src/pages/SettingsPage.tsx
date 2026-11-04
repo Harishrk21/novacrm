@@ -902,8 +902,9 @@ function Pipeline() {
   const [colorHex, setColorHex] = useState('#3B82F6')
   const [saving, setSaving] = useState(false)
 
-  async function load() {
-    setLoading(true)
+  async function load(opts?: { silent?: boolean }) {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const data = await api.lookups()
       setItems(
@@ -915,7 +916,7 @@ function Pipeline() {
         message: err instanceof ApiClientError ? err.message : 'Failed to load stages',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -956,7 +957,7 @@ function Pipeline() {
         addToast({ type: 'success', message: 'Stage created' })
       }
       setOpen(false)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -972,7 +973,7 @@ function Pipeline() {
     try {
       await api.updateStage(row.id, { isActive: false })
       addToast({ type: 'success', message: 'Stage deactivated' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1045,7 +1046,7 @@ function Pipeline() {
             ) : undefined
           }
         />
-        {loading ? (
+        {loading && items.length === 0 ? (
           <BlockSkeleton lines={5} />
         ) : items.length === 0 ? (
           <p className="text-sm text-text-secondary">No stages yet.</p>
@@ -1098,8 +1099,9 @@ function Sources() {
   const [name, setName] = useState('')
   const [saving, setSaving] = useState(false)
 
-  async function load() {
-    setLoading(true)
+  async function load(opts?: { silent?: boolean }) {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const data = await api.lookups()
       setItems(data.sources)
@@ -1109,7 +1111,7 @@ function Sources() {
         message: err instanceof ApiClientError ? err.message : 'Failed to load sources',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -1141,7 +1143,7 @@ function Sources() {
         addToast({ type: 'success', message: 'Source created' })
       }
       setOpen(false)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1157,7 +1159,7 @@ function Sources() {
     try {
       await api.deleteSource(row.id)
       addToast({ type: 'success', message: 'Source deactivated' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1202,7 +1204,7 @@ function Sources() {
             ) : undefined
           }
         />
-        {loading ? (
+        {loading && items.length === 0 ? (
           <BlockSkeleton lines={5} />
         ) : items.length === 0 ? (
           <p className="text-sm text-text-secondary">No sources yet.</p>
@@ -1264,8 +1266,9 @@ export function UsersSettings() {
   const [phone, setPhone] = useState('')
   const [roleCode, setRoleCode] = useState('SERVICE_ENGINEER')
 
-  async function load() {
-    setLoading(true)
+  async function load(opts?: { silent?: boolean }) {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const res = await api.listUsers()
       setItems(res.items)
@@ -1276,7 +1279,7 @@ export function UsersSettings() {
         message: err instanceof ApiClientError ? err.message : 'Failed to load users',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -1312,7 +1315,7 @@ export function UsersSettings() {
       setPhone('')
       setPassword('Demo@12345')
       setRoleCode('SERVICE_ENGINEER')
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1393,7 +1396,7 @@ export function UsersSettings() {
             }
           />
         </div>
-        {loading ? (
+        {loading && items.length === 0 ? (
           <TableSkeleton rows={5} className="px-5 pb-5" />
         ) : (
           <div className="overflow-x-auto">
@@ -1462,8 +1465,9 @@ function EmailTemplates() {
   const [body, setBody] = useState('')
   const [saving, setSaving] = useState(false)
 
-  async function load() {
-    setLoading(true)
+  async function load(opts?: { silent?: boolean }) {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const t = await api.myTenant()
       const settings = (t.settings ?? {}) as Record<string, unknown>
@@ -1482,7 +1486,7 @@ function EmailTemplates() {
         message: err instanceof ApiClientError ? err.message : 'Failed to load templates',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -1550,7 +1554,7 @@ function EmailTemplates() {
             </Button>
           }
         />
-        {loading ? (
+        {loading && templates.length === 0 ? (
           <BlockSkeleton lines={5} />
         ) : (
           <div className="divide-y divide-border">
@@ -1843,7 +1847,7 @@ function Automation() {
         Custom rule builder is not available yet. Toggles below control the scheduled automation
         pass (overdue tasks + lead follow-up nudges).
       </p>
-      {loading ? (
+      {loading && rules.length === 0 ? (
         <BlockSkeleton lines={5} />
       ) : (
         <div className="divide-y divide-border">

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -22,10 +22,12 @@ import { useUIStore } from '@/store/uiStore'
 import { DetailSkeleton } from '@/components/ui/Skeleton'
 import {
   AccountFormFields,
+  accountFormSteps,
   accountToForm,
   emptyAccountForm,
   formToPayload,
   type AccountFormState,
+  type AccountFormStep,
 } from '@/components/accounts/AccountFormFields'
 
 function fmtAddr(a: unknown) {
@@ -45,18 +47,32 @@ export function AccountDetailPage() {
   const [loading, setLoading] = useState(true)
   const [editOpen, setEditOpen] = useState(false)
   const [form, setForm] = useState<AccountFormState>(emptyAccountForm())
+  const [accountStep, setAccountStep] = useState<AccountFormStep>('identity')
+  const editSteps = accountFormSteps(form)
+  const editStepIdx = Math.max(0, editSteps.indexOf(accountStep))
+  const onReviewStep = accountStep === 'review'
 
-  const load = useCallback(async () => {
+  const lookupsReadyRef = useRef(false)
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!id) return
-    setLoading(true)
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
-      const [acc, lookups] = await Promise.all([api.getAccount(id), api.lookups()])
+      const needLookups = !lookupsReadyRef.current
+      const [acc, lookups] = await Promise.all([
+        api.getAccount(id),
+        needLookups ? api.lookups() : Promise.resolve(null),
+      ])
       setAccount(acc)
-      setUsers(lookups.users)
+      if (lookups) {
+        setUsers(lookups.users)
+        lookupsReadyRef.current = true
+      }
     } catch {
-      setAccount(null)
+      if (!silent) setAccount(null)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [id])
 
@@ -92,10 +108,21 @@ export function AccountDetailPage() {
   async function saveEdit(e: FormEvent) {
     e.preventDefault()
     if (!id) return
+    if (!onReviewStep) {
+      const next = editSteps[editStepIdx + 1]
+      if (next) setAccountStep(next)
+      return
+    }
+    if (!form.name.trim()) {
+      addToast({ type: 'error', message: 'Company name is required' })
+      setAccountStep('identity')
+      return
+    }
     try {
       const updated = await api.updateAccount(id, formToPayload(form))
       setAccount(updated)
       setEditOpen(false)
+      setAccountStep('identity')
       addToast({ type: 'success', message: 'Account updated' })
     } catch (err) {
       addToast({
@@ -105,7 +132,7 @@ export function AccountDetailPage() {
     }
   }
 
-  if (loading) return <DetailSkeleton />
+  if (loading && !account) return <DetailSkeleton />
   if (!account) {
     return (
       <EmptyState
@@ -139,6 +166,7 @@ export function AccountDetailPage() {
               return
             }
             setForm(accountToForm(account))
+            setAccountStep('identity')
             setEditOpen(true)
           }}
         >
@@ -151,19 +179,46 @@ export function AccountDetailPage() {
         accent="violet"
         eyebrow="Accounts"
         title="Edit account"
-        subtitle="Update company, tax, addresses and commercial terms."
-        onClose={() => setEditOpen(false)}
+        width={760}
+        subtitle="Step through changes, then review the summary before saving."
+        onClose={() => {
+          setEditOpen(false)
+          setAccountStep('identity')
+        }}
         footer={
           <>
-            <FormPanelCancel onClick={() => setEditOpen(false)} />
+            <FormPanelCancel
+              onClick={() => {
+                setEditOpen(false)
+                setAccountStep('identity')
+              }}
+            />
+            {editStepIdx > 0 ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  const prev = editSteps[editStepIdx - 1]
+                  if (prev) setAccountStep(prev)
+                }}
+              >
+                Back
+              </Button>
+            ) : null}
             <Button type="submit" form="edit-account">
-              Save changes
+              {onReviewStep ? 'Save changes' : 'Next'}
             </Button>
           </>
         }
       >
         <form id="edit-account" onSubmit={saveEdit}>
-          <AccountFormFields form={form} setForm={setForm} users={users} />
+          <AccountFormFields
+            form={form}
+            setForm={setForm}
+            users={users}
+            step={accountStep}
+            onStepChange={setAccountStep}
+          />
         </form>
       </FormPanel>
 

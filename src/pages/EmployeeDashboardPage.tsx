@@ -27,6 +27,13 @@ import { BlockSkeleton } from '@/components/ui/Skeleton'
 import { saleIsCompleted } from '@/lib/salesFlow'
 import { isServiceEngineer } from '@/lib/roles'
 import { useFieldShell } from '@/hooks/useFieldShell'
+import {
+  activityKindLabel,
+  activityReminderKind,
+  activityWorkqueueNav,
+  formatActivityDueLabel,
+  isActivityDueTodayOrOverdue,
+} from '@/lib/activityReminders'
 
 type Row = Record<string, unknown>
 
@@ -51,23 +58,26 @@ export function EmployeeDashboardPage() {
   const [leads, setLeads] = useState<Row[]>([])
   const [activities, setActivities] = useState<Row[]>([])
   const [tickets, setTickets] = useState<Row[]>([])
+  const [claimable, setClaimable] = useState<Row[]>([])
   const [summary, setSummary] = useState({ open: 0, overdue: 0, resolvedToday: 0 })
   const [focusId, setFocusId] = useState<string | null>(null)
   const [completeOpen, setCompleteOpen] = useState(false)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!isTenantSession() || !user?.id) {
       setLoading(false)
       return
     }
-    setLoading(true)
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       // Live API only — mine=1 returns jobs assigned to / received / delivered by this user.
-      // Scoped agents are also forced to "mine" on the server.
+      // Engineers also get claimable=1 so Ready-to-accept pool jobs appear on Home.
       const ticketParams: Record<string, string | number | undefined> = {
         limit: 100,
         sort: 'sla',
         mine: 1,
+        ...(engineer ? { claimable: 1 } : {}),
       }
       const [leadsPage, actsPage, ticketsPage, sum] = await Promise.all([
         api.leads({ limit: 50, assignedToId: user.id }),
@@ -77,7 +87,16 @@ export function EmployeeDashboardPage() {
       ])
       setLeads(leadsPage.items)
       setActivities(actsPage.items)
-      setTickets(ticketsPage.items)
+      const items = ticketsPage.items ?? []
+      if (engineer) {
+        setTickets(items.filter((t) => Boolean(t.assignedToId)))
+        setClaimable(
+          items.filter((t) => String(t.status) === 'OPEN' && !t.assignedToId),
+        )
+      } else {
+        setTickets(items)
+        setClaimable([])
+      }
       setSummary({
         open: sum.open,
         overdue: sum.overdue,
@@ -89,9 +108,9 @@ export function EmployeeDashboardPage() {
         message: e instanceof ApiClientError ? e.message : 'Failed to load your work',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
-  }, [addToast, user?.id])
+  }, [addToast, engineer, user?.id])
 
   useEffect(() => {
     void load()
@@ -119,6 +138,11 @@ export function EmployeeDashboardPage() {
     [activities],
   )
 
+  const dueTodayActs = useMemo(
+    () => pendingActs.filter((a) => isActivityDueTodayOrOverdue(a)),
+    [pendingActs],
+  )
+
   useEffect(() => {
     if (!openTickets.length) {
       setFocusId(null)
@@ -138,7 +162,7 @@ export function EmployeeDashboardPage() {
     try {
       await api.updateTicket(String(current.id), { status: 'IN_PROGRESS' })
       addToast({ type: 'success', message: 'Work started' })
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -166,7 +190,7 @@ export function EmployeeDashboardPage() {
       if (updated.whatsapp?.fallbackWaLink && !updated.whatsapp.notified) {
         window.open(updated.whatsapp.fallbackWaLink, '_blank', 'noopener,noreferrer')
       }
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -186,13 +210,25 @@ export function EmployeeDashboardPage() {
       to: '/tickets',
       tint: 'bg-amber-50 text-accent-amber',
     },
-    {
-      label: 'SLA overdue',
-      value: summary.overdue,
-      icon: CheckSquare,
-      to: '/tickets?slaBreached=1',
-      tint: 'bg-red-50 text-accent-red',
-    },
+    ...(engineer
+      ? [
+          {
+            label: 'Ready to accept',
+            value: claimable.length,
+            icon: UserPlus,
+            to: '/tickets?queue=awaiting',
+            tint: 'bg-red-50 text-accent-red',
+          },
+        ]
+      : [
+          {
+            label: 'SLA overdue',
+            value: summary.overdue,
+            icon: CheckSquare,
+            to: '/tickets?slaBreached=1',
+            tint: 'bg-red-50 text-accent-red',
+          },
+        ]),
     {
       label: 'Resolved today',
       value: summary.resolvedToday,
@@ -228,9 +264,23 @@ export function EmployeeDashboardPage() {
         actions={
           <div className="flex flex-wrap gap-2">
             {engineer ? (
-              <Link to="/workqueue" className={fieldShell ? 'flex-1' : undefined}>
-                <Button variant="outline" className={fieldShell ? 'w-full min-h-11' : undefined}>
-                  <ListTodo size={16} /> Open to accept
+              <Link
+                to="/tickets?queue=awaiting"
+                className={fieldShell ? 'flex-1' : undefined}
+              >
+                <Button
+                  variant="outline"
+                  className={cn(
+                    fieldShell ? 'w-full min-h-11' : undefined,
+                    'border-red-400/70 text-red-700 hover:bg-red-50 dark:border-red-500/50 dark:text-red-300 dark:hover:bg-red-950/40',
+                  )}
+                >
+                  <ListTodo size={16} /> Ready to accept
+                  {claimable.length > 0 ? (
+                    <span className="ml-1.5 rounded-full bg-red-600 px-1.5 text-[11px] font-semibold text-white">
+                      {claimable.length}
+                    </span>
+                  ) : null}
                 </Button>
               </Link>
             ) : (
@@ -393,6 +443,47 @@ export function EmployeeDashboardPage() {
         ) : null}
       </Card>
 
+      {engineer && claimable.length > 0 ? (
+        <Card
+          padding={false}
+          className="border-red-400/70 bg-red-50/60 dark:border-red-500/40 dark:bg-red-950/25"
+        >
+          <div className="flex items-center justify-between border-b border-red-200/80 px-4 py-3 dark:border-red-900/50">
+            <h2 className="font-semibold text-red-800 dark:text-red-200">
+              Ready to accept ({claimable.length})
+            </h2>
+            <Link
+              to="/tickets?queue=awaiting"
+              className="text-sm font-medium text-red-700 hover:underline dark:text-red-300"
+            >
+              Open pool →
+            </Link>
+          </div>
+          <div className="divide-y divide-red-200/60 dark:divide-red-900/40">
+            {claimable.slice(0, 5).map((t) => (
+              <Link
+                key={String(t.id)}
+                to={`/tickets/${t.id}`}
+                className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-red-100/70 dark:hover:bg-red-950/50"
+              >
+                <div className="min-w-0">
+                  <div className="truncate font-medium text-text-primary">
+                    {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} —{' '}
+                    {String(t.subject)}
+                  </div>
+                  <div className="text-xs text-text-secondary">
+                    {t.createdAt ? timeAgo(String(t.createdAt)) : 'Open pool'}
+                  </div>
+                </div>
+                <Badge color="red" solid>
+                  Accept
+                </Badge>
+              </Link>
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card padding={false}>
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -423,7 +514,9 @@ export function EmployeeDashboardPage() {
             ))}
             {!loading && !tickets.length && (
               <p className="p-6 text-center text-sm text-text-secondary">
-                No jobs assigned to you yet. When an admin assigns a ticket, it appears here live.
+                {engineer
+                  ? 'No jobs assigned to you yet. Check Ready to accept for open pool tickets.'
+                  : 'No jobs assigned to you yet. When an admin assigns a ticket, it appears here live.'}
               </p>
             )}
           </div>
@@ -431,31 +524,55 @@ export function EmployeeDashboardPage() {
 
         <Card padding={false}>
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h2 className="font-semibold">Pending tasks</h2>
-            <Link to="/my-tasks" className="text-sm text-accent-blue hover:underline">
-              All
+            <div>
+              <h2 className="font-semibold">
+                {dueTodayActs.length ? 'Due today' : 'Pending tasks'}
+              </h2>
+              {dueTodayActs.length > 0 ? (
+                <p className="text-xs text-text-secondary">
+                  Calls, tasks & meetings from Workqueue — {dueTodayActs.length} due
+                </p>
+              ) : null}
+            </div>
+            <Link to="/workqueue" className="text-sm text-accent-blue hover:underline">
+              Workqueue
             </Link>
           </div>
           <div className="divide-y divide-border">
-            {pendingActs.slice(0, 5).map((act) => (
-              <Link
-                key={String(act.id)}
-                to="/my-tasks"
-                className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface"
-              >
-                <div className="min-w-0">
-                  <div className="truncate font-medium">{String(act.title)}</div>
-                  <div className="text-xs text-text-secondary">
-                    {act.scheduledAt ? formatDateTime(String(act.scheduledAt)) : timeAgo(String(act.createdAt))}
+            {(dueTodayActs.length ? dueTodayActs : pendingActs).slice(0, 6).map((act) => {
+              const kind = activityReminderKind(act.type)
+              return (
+                <Link
+                  key={String(act.id)}
+                  to={activityWorkqueueNav(kind)}
+                  className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate font-medium">{String(act.title)}</div>
+                    <div className="text-xs text-text-secondary">
+                      {activityKindLabel(kind)}
+                      {' · '}
+                      {act.scheduledAt
+                        ? formatActivityDueLabel(act.scheduledAt)
+                        : timeAgo(String(act.createdAt))}
+                    </div>
                   </div>
-                </div>
-                <Badge color={activityStatusColor[String(act.status)] ?? 'slate'}>
-                  {labelize(String(act.status))}
-                </Badge>
-              </Link>
-            ))}
+                  <Badge
+                    color={
+                      isActivityDueTodayOrOverdue(act)
+                        ? 'amber'
+                        : (activityStatusColor[String(act.status)] ?? 'slate')
+                    }
+                  >
+                    {isActivityDueTodayOrOverdue(act) ? 'Due' : labelize(String(act.status))}
+                  </Badge>
+                </Link>
+              )
+            })}
             {!loading && !pendingActs.length && (
-              <p className="p-6 text-center text-sm text-text-secondary">No pending tasks.</p>
+              <p className="p-6 text-center text-sm text-text-secondary">
+                No pending calls, tasks or meetings. Create them from Workqueue — you&apos;ll see a reminder here on that day.
+              </p>
             )}
           </div>
         </Card>

@@ -96,7 +96,7 @@ export function Modal({
 
   // Portal above drawers (z-180/190) so discard / confirm dialogs stay clickable
   return createPortal(
-    <div className="fixed inset-0 z-[220] flex items-end justify-center p-0 sm:items-center sm:p-4">
+    <div className="fixed inset-0 z-[250] flex items-end justify-center p-0 sm:items-center sm:p-4">
       <div
         className="absolute inset-0 bg-[var(--color-overlay)] backdrop-blur-[2px]"
         onClick={onClose}

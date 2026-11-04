@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Download, FileText, RefreshCw } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Badge } from '@/components/ui/Badge'
@@ -115,6 +115,7 @@ async function loadReportTickets(maxPagesPerStatus = 8) {
  * Per-customer view also lives on Contact → Service.
  */
 export function ServiceReportsPage() {
+  const navigate = useNavigate()
   const addToast = useUIStore((s) => s.addToast)
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState<ReportRow[]>([])
@@ -125,8 +126,9 @@ export function ServiceReportsPage() {
   const [to, setTo] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const { rows: next, byId } = await loadReportTickets()
       setTicketById(byId)
@@ -136,9 +138,9 @@ export function ServiceReportsPage() {
         type: 'error',
         message: e instanceof ApiClientError ? e.message : 'Could not load service reports',
       })
-      setRows([])
+      if (!silent) setRows([])
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast])
 
@@ -301,7 +303,7 @@ export function ServiceReportsPage() {
         </span>
       </div>
 
-      {loading ? (
+      {loading && rows.length === 0 ? (
         <TableSkeleton rows={6} />
       ) : filtered.length === 0 ? (
         <EmptyState
@@ -327,17 +329,18 @@ export function ServiceReportsPage() {
             </thead>
             <tbody>
               {filtered.map((r) => (
-                <tr key={r.ticketId} className="border-t border-border">
+                <tr
+                  key={r.ticketId}
+                  className="cursor-pointer border-t border-border hover:bg-surface"
+                  onClick={() => navigate(`/tickets/${r.ticketId}`)}
+                >
                   <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary">
                     {r.savedAt ? formatDate(r.savedAt) : '—'}
                   </td>
                   <td className="px-4 py-3">
-                    <Link
-                      className="font-mono text-accent-blue hover:underline"
-                      to={`/tickets/${r.ticketId}`}
-                    >
+                    <span className="font-mono text-accent-blue">
                       {formatServiceId(r.ticketNo)}
-                    </Link>
+                    </span>
                     <div className="mt-0.5 max-w-[180px] truncate text-xs text-text-secondary">
                       {r.subject}
                     </div>
@@ -347,7 +350,7 @@ export function ServiceReportsPage() {
                       {r.jobKind === 'stamping' ? 'Stamping' : 'Service'}
                     </Badge>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     {r.contactId ? (
                       <Link
                         className="font-medium text-accent-blue hover:underline"
@@ -366,7 +369,7 @@ export function ServiceReportsPage() {
                     </Badge>
                   </td>
                   <td className="px-4 py-3 text-xs text-text-secondary">{r.savedBy}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1">
                       <DownloadIconButton
                         label="Download service report"

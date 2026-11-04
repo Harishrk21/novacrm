@@ -6,7 +6,8 @@ import { normalizePhone } from '../../common/utils/phone.js'
 import { success } from '../../common/utils/response.js'
 import { validate } from '../../middleware/validate.middleware.js'
 import { authenticate } from '../../middleware/auth.middleware.js'
-import { requireTenant } from '../../middleware/tenant.middleware.js'
+import { requireTenant, requireTenantAdmin } from '../../middleware/tenant.middleware.js'
+import { requirePermission } from '../../middleware/permissions.middleware.js'
 import { cacheDelPattern } from '../../config/redis.js'
 import { AppError } from '../../common/errors.js'
 import {
@@ -194,6 +195,7 @@ integrationsRouter.post(
   '/whatsapp/cloud/config',
   authenticate,
   requireTenant,
+  requireTenantAdmin,
   validate(cloudConfigSchema),
   async (req, res, next) => {
     try {
@@ -321,6 +323,7 @@ integrationsRouter.post(
   '/whatsapp/cloud/test',
   authenticate,
   requireTenant,
+  requireTenantAdmin,
   async (req, res, next) => {
     try {
       const tenantId = req.auth!.tenantId!
@@ -350,6 +353,7 @@ integrationsRouter.post(
   '/askmeister/connect',
   authenticate,
   requireTenant,
+  requireTenantAdmin,
   validate(askmeisterConnectSchema),
   async (req, res, next) => {
     try {
@@ -407,7 +411,7 @@ integrationsRouter.get('/status', authenticate, requireTenant, async (req, res, 
   }
 })
 
-integrationsRouter.post('/askmeister/disconnect', authenticate, requireTenant, async (req, res, next) => {
+integrationsRouter.post('/askmeister/disconnect', authenticate, requireTenant, requireTenantAdmin, async (req, res, next) => {
   try {
     const tenantId = req.auth!.tenantId!
     await prisma.integration.updateMany({
@@ -420,19 +424,29 @@ integrationsRouter.post('/askmeister/disconnect', authenticate, requireTenant, a
   }
 })
 
-integrationsRouter.post('/whatsapp/webhook', validate(webhookSchema), async (req, res, next) => {
+/**
+ * Legacy AskMeister inbound webhook.
+ * Requires header `x-webhook-secret` matching ASKMEISTER_WEBHOOK_SECRET (or WHATSAPP_INBOUND_SECRET).
+ * Never falls back to “first connected tenant”.
+ */
+function requireWebhookSecret(req: import('express').Request, _res: import('express').Response, next: import('express').NextFunction) {
+  const expected =
+    (process.env.ASKMEISTER_WEBHOOK_SECRET || process.env.WHATSAPP_INBOUND_SECRET || '').trim()
+  const provided = String(req.headers['x-webhook-secret'] ?? '').trim()
+  if (!expected || !provided || provided !== expected) {
+    return next(new AppError('Unauthorized webhook', 401))
+  }
+  return next()
+}
+
+integrationsRouter.post('/whatsapp/webhook', requireWebhookSecret, validate(webhookSchema), async (req, res, next) => {
   try {
+
     const { from, body, externalId, contactName, tenantSlug, tenantId: bodyTenantId } = req.body
     let tenantId = bodyTenantId as string | undefined
     if (!tenantId && tenantSlug) {
       const t = await prisma.tenant.findFirst({ where: { slug: tenantSlug, deletedAt: null } })
       tenantId = t?.id
-    }
-    if (!tenantId) {
-      const integ = await prisma.integration.findFirst({
-        where: { provider: 'ASKMEISTER', status: 'CONNECTED' },
-      })
-      tenantId = integ?.tenantId
     }
     if (!tenantId) throw new AppError('tenantSlug or tenantId required', 400)
     const tid: string = tenantId
@@ -523,7 +537,7 @@ integrationsRouter.post('/whatsapp/webhook', validate(webhookSchema), async (req
   }
 })
 
-integrationsRouter.get('/whatsapp/conversations', authenticate, requireTenant, async (req, res, next) => {
+integrationsRouter.get('/whatsapp/conversations', authenticate, requireTenant, requirePermission('whatsapp:view'), async (req, res, next) => {
   try {
     const tenantId = req.auth!.tenantId!
     const rows = await prisma.whatsappConversation.findMany({
@@ -541,6 +555,7 @@ integrationsRouter.get(
   '/whatsapp/conversations/:id/messages',
   authenticate,
   requireTenant,
+  requirePermission('whatsapp:view'),
   async (req, res, next) => {
     try {
       const tenantId = req.auth!.tenantId!
@@ -565,6 +580,7 @@ integrationsRouter.post(
   '/whatsapp/conversations/:id/messages',
   authenticate,
   requireTenant,
+  requirePermission('whatsapp:send'),
   validate(sendSchema),
   async (req, res, next) => {
     try {

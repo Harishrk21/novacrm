@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { Check, ChevronDown } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -18,11 +19,13 @@ import {
   INVENTORY_FLOW_STEPS,
   inventoryStepDoneFlags,
   parseProductStampLines,
+  preferReleaseActiveLine,
   productMatchesOrderLabel,
   releaseStockProgress,
   suggestStampingRequired,
   type ReleaseOrderLine,
 } from '@/lib/inventoryFlow'
+import { cn } from '@/lib/utils'
 import { stampQuarterFromDate, STAMP_QUARTERS } from '@/lib/hmsCoverage'
 import { isWeighingCatalogProduct, productAttrs } from '@/lib/productCatalog'
 import { APP_NAME } from '@/lib/branding'
@@ -148,10 +151,12 @@ const STAMP_QUARTER_OPTIONS = [
 ]
 
 function stampingIsConfirmed(cf: Record<string, unknown>): boolean {
-  if (cf.stampingConfirmedAt || cf.stampingSkipped) return true
+  if (cf.stampingSkipped) return true
   if (Array.isArray(cf.stampLines) && cf.stampLines.length) {
+    // Multi-product: every line must be confirmed (partial Release & ship merges per tab)
     return (cf.stampLines as Array<{ confirmed?: boolean }>).every((l) => l.confirmed)
   }
+  if (cf.stampingConfirmedAt) return true
   return Boolean(cf.stampingDone)
 }
 
@@ -265,12 +270,17 @@ export function RequisitionsPanel({
   const addToast = useUIStore((s) => s.addToast)
   const canApprove = can(role, 'requisitions:approve')
   const canFulfill = can(role, 'requisitions:fulfill')
+  const canViewReqs = can(role, 'requisitions:view')
   const canViewSale = can(role, 'leads:view')
+  /** Sales desk has view but not fulfill — still need Release / Shipped tabs. */
+  const canBrowseReleaseQueues = canFulfill || canApprove || canViewReqs
   const [searchParams] = useSearchParams()
   const focusReqId = searchParams.get('reqId')
+  const autoOpenedReqRef = useRef<string | null>(null)
 
   const [queue, setQueue] = useState<Queue>(defaultQueue)
   const [items, setItems] = useState<Record<string, unknown>[]>([])
+  const [pendingCount, setPendingCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [stampOpen, setStampOpen] = useState<string | null>(null)
@@ -323,8 +333,9 @@ export function RequisitionsPanel({
     })
   }
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const status =
         queue === 'pending'
@@ -332,13 +343,22 @@ export function RequisitionsPanel({
           : queue === 'approved'
             ? 'APPROVED'
             : 'APPROVED,FULFILLED'
-      const res = await api.requisitions({
-        limit: 100,
-        status,
-        ...(queue === 'fulfill' || queue === 'shipped' || queue === 'pending' || queue === 'approved'
-          ? { queue }
-          : {}),
-      })
+      const [res, pendRes] = await Promise.all([
+        api.requisitions({
+          limit: 100,
+          status,
+          ...(queue === 'fulfill' || queue === 'shipped' || queue === 'pending' || queue === 'approved'
+            ? { queue }
+            : {}),
+        }),
+        canApprove
+          ? api.requisitions({
+              limit: 100,
+              status: 'PENDING_APPROVAL',
+              queue: 'pending',
+            })
+          : Promise.resolve(null),
+      ])
       let rows = res.items ?? []
       if (queue === 'fulfill') {
         rows = rows.filter((r) => !r.shippedAt)
@@ -346,16 +366,18 @@ export function RequisitionsPanel({
         rows = rows.filter((r) => Boolean(r.shippedAt))
       }
       setItems(rows)
+      if (pendRes) setPendingCount((pendRes.items ?? []).length)
+      else if (queue === 'pending') setPendingCount(rows.length)
     } catch (err) {
       addToast({
         type: 'error',
         message: err instanceof ApiClientError ? err.message : 'Failed to load requisitions',
       })
-      setItems([])
+      if (!silent) setItems([])
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
-  }, [addToast, queue])
+  }, [addToast, canApprove, queue])
 
   useEffect(() => {
     setQueue(defaultQueue)
@@ -367,10 +389,27 @@ export function RequisitionsPanel({
 
   useEffect(() => {
     if (!focusReqId || loading) return
-    const el = document.getElementById(`req-row-${focusReqId}`)
-    if (!el) return
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }, [focusReqId, loading, items])
+    const row =
+      items.find((r) => String(r.id) === focusReqId) ??
+      items.find((r) => String(r.reqNumber ?? '') === focusReqId)
+    const rowId = row ? String(row.id) : focusReqId
+    const el =
+      document.getElementById(`req-row-${rowId}`) ??
+      document.getElementById(`req-row-${focusReqId}`)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+
+    // Deep-link from notifications: open the Sign / approve dialog for pending reqs
+    if (
+      canApprove &&
+      row &&
+      String(row.status) === 'PENDING_APPROVAL' &&
+      autoOpenedReqRef.current !== rowId
+    ) {
+      autoOpenedReqRef.current = rowId
+      setQueue('pending')
+      setConfirmAction({ type: 'approve', id: rowId })
+    }
+  }, [focusReqId, loading, items, canApprove])
 
   function openStampConfirm(row: Record<string, unknown>) {
     const id = String(row.id)
@@ -459,11 +498,36 @@ export function RequisitionsPanel({
     setPickedUnitIds([])
   }
 
-  /** Switch Release & ship focus to one ordered product (tab). */
+  /** In-stock unit count matching an ordered product label. */
+  function stockCountForOrderLabel(
+    label: string,
+    products: Array<Record<string, unknown>>,
+    units: StockPick[],
+  ) {
+    const matchingIds = new Set(
+      products
+        .filter((p) => productMatchesOrderLabel(p, label))
+        .map((p) => String(p.id)),
+    )
+    if (!matchingIds.size) return 0
+    return units.filter(
+      (u) => matchingIds.has(String(u.productId)) && String(u.status) === 'IN_STOCK',
+    ).length
+  }
+
+  /** Open one product accordion panel at a time; re-click closes it. */
   function selectReleaseProductTab(lineIndex: number) {
     if (!pickOpen) return
     const line = pickOpen.orderLines.find((l) => l.index === lineIndex)
     if (!line) return
+    // Re-click the open row → collapse
+    if (pickOpen.activeLine?.index === lineIndex) {
+      setPickOpen((prev) => (prev ? { ...prev, activeLine: null } : prev))
+      setPickProductId('')
+      setPickMachineType('')
+      setPickedUnitIds([])
+      return
+    }
     setPickOpen((prev) => (prev ? { ...prev, activeLine: line } : prev))
     setPickedUnitIds([])
     if (line.done) {
@@ -472,6 +536,21 @@ export function RequisitionsPanel({
       return
     }
     applyPickerSelection(catalogProducts, { activeLine: line })
+  }
+
+  function resolveActiveLineWithStock(
+    orderLines: ReleaseOrderLine[],
+    products: Array<Record<string, unknown>>,
+    units: StockPick[],
+    preferred?: ReleaseOrderLine | null,
+  ) {
+    if (preferred && !preferred.done) {
+      const n = stockCountForOrderLabel(preferred.label, products, units)
+      if (n > 0) return preferred
+    }
+    return preferReleaseActiveLine(orderLines, (line) =>
+      stockCountForOrderLabel(line.label, products, units),
+    )
   }
 
   function stampIndexForOrderLine(line: ReleaseOrderLine | null | undefined): number {
@@ -520,19 +599,6 @@ export function RequisitionsPanel({
     }
     openStampConfirm(row)
     setStampOpen(null)
-    setPickOpen({
-      id,
-      productId: row.productId ? String(row.productId) : null,
-      markShipped: true,
-      mode: 'complete',
-      customer: customerFromRow(row),
-      needed: progress.needed,
-      reducedCount: progress.reducedCount,
-      productLabels: progress.productLabels,
-      orderLines: progress.orderLines,
-      activeLine: progress.activeLine,
-      releaseLines: progress.releaseLines,
-    })
     setPickedUnitIds([])
     setPickProductId('')
     setPickMachineType('')
@@ -541,28 +607,46 @@ export function RequisitionsPanel({
       const workspace = await api.inventoryWorkspace()
       const products = workspace.products ?? []
       setCatalogProducts(products)
-      applyPickerSelection(products, progress)
       const usedUnitIds = new Set(
         progress.releaseLines.map((l) => String(l.stockUnitId ?? '')).filter(Boolean),
       )
-      setStockOptions(
-        (workspace.units ?? [])
-          .filter((u) => {
-            if (usedUnitIds.has(String(u.id))) return false
-            return String(u.status) === 'IN_STOCK'
-          })
-          .map((u) => {
-            const prod = products.find((p) => String(p.id) === String(u.productId))
-            return {
-              id: String(u.id),
-              productId: u.productId ? String(u.productId) : undefined,
-              serialNo: u.serialNo ? String(u.serialNo) : undefined,
-              hmsUniqId: u.hmsUniqId != null ? String(u.hmsUniqId) : null,
-              status: u.status ? String(u.status) : undefined,
-              productName: prod?.name ? String(prod.name) : undefined,
-            }
-          }),
+      const units: StockPick[] = (workspace.units ?? [])
+        .filter((u) => {
+          if (usedUnitIds.has(String(u.id))) return false
+          return String(u.status) === 'IN_STOCK'
+        })
+        .map((u) => {
+          const prod = products.find((p) => String(p.id) === String(u.productId))
+          return {
+            id: String(u.id),
+            productId: u.productId ? String(u.productId) : undefined,
+            serialNo: u.serialNo ? String(u.serialNo) : undefined,
+            hmsUniqId: u.hmsUniqId != null ? String(u.hmsUniqId) : null,
+            status: u.status ? String(u.status) : undefined,
+            productName: prod?.name ? String(prod.name) : undefined,
+          }
+        })
+      setStockOptions(units)
+      const activeLine = resolveActiveLineWithStock(
+        progress.orderLines,
+        products,
+        units,
+        progress.activeLine,
       )
+      setPickOpen({
+        id,
+        productId: row.productId ? String(row.productId) : null,
+        markShipped: true,
+        mode: 'complete',
+        customer: customerFromRow(row),
+        needed: progress.needed,
+        reducedCount: progress.reducedCount,
+        productLabels: progress.productLabels,
+        orderLines: progress.orderLines,
+        activeLine,
+        releaseLines: progress.releaseLines,
+      })
+      applyPickerSelection(products, { activeLine })
     } finally {
       setStockLoading(false)
     }
@@ -697,7 +781,7 @@ export function RequisitionsPanel({
     try {
       await api.approveRequisition(id)
       addToast({ type: 'success', message: 'Signed — sales will notify inventory' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -716,7 +800,7 @@ export function RequisitionsPanel({
       setRejectId(null)
       setRejectReason('')
       addToast({ type: 'success', message: 'Rejected — sales can resubmit' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -729,6 +813,13 @@ export function RequisitionsPanel({
 
   async function saveStampConfirm(id: string) {
     for (const line of stampLines) {
+      if (line.stampingRequired && !line.stampingNumber.trim()) {
+        addToast({
+          type: 'error',
+          message: `Enter stamping number for "${line.label}" (or set Required = No)`,
+        })
+        return
+      }
       if (line.stampingRequired && !line.stampingDate) {
         addToast({
           type: 'error',
@@ -768,7 +859,7 @@ export function RequisitionsPanel({
         type: 'success',
         message: 'Stamping confirmed — you can reduce stock now',
       })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -788,7 +879,7 @@ export function RequisitionsPanel({
         ...(stockUnitId ? { stockUnitId } : {}),
       })
       const progress = releaseStockProgress(updated)
-      await load()
+      await load({ silent: true })
 
       if (!progress.allReduced) {
         addToast({
@@ -881,7 +972,7 @@ export function RequisitionsPanel({
         type: 'success',
         message: 'Ready to ship — moved to Shipped tab · sales notified',
       })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -909,7 +1000,7 @@ export function RequisitionsPanel({
           : 'Delivery challan created — next: Ready to ship',
       })
       if (challan) openPrintableDeliveryChallan(challan, APP_NAME)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -972,7 +1063,7 @@ export function RequisitionsPanel({
         })) as Record<string, unknown>
       }
       const progress = releaseStockProgress(updated ?? {})
-      await load()
+      await load({ silent: true })
       if (!progress.allReduced) {
         addToast({
           type: 'success',
@@ -1031,11 +1122,53 @@ export function RequisitionsPanel({
     }
   }
 
-  /** Stamp → reduce selected units → create DC → ready to ship (one click) */
+  /** True only when every ordered product line is fully reduced — never finish early. */
+  function releaseFullyComplete(
+    expected: { needed: number; orderLines: ReleaseOrderLine[] },
+    progress: ReturnType<typeof releaseStockProgress>,
+  ) {
+    const expectedUnits = Math.max(
+      expected.needed,
+      expected.orderLines.reduce((sum, line) => sum + line.qty, 0),
+      expected.orderLines.length,
+      progress.needed,
+    )
+    if (progress.releaseLines.length < expectedUnits) return false
+    if (progress.reducedCount < expectedUnits) return false
+    if (progress.orderLines.some((line) => !line.done)) return false
+    // Keep original product list in sync (backend may under-count products)
+    for (const line of expected.orderLines) {
+      const match =
+        progress.orderLines.find(
+          (p) =>
+            p.index === line.index ||
+            p.label.trim().toLowerCase() === line.label.trim().toLowerCase(),
+        ) ?? null
+      if (!match || !match.done) return false
+    }
+    return true
+  }
+
+  /** Stamp → reduce selected units; only when ALL products done → DC → ready to ship */
   async function completeReleaseAll() {
     if (!pickOpen || pickOpen.mode !== 'complete' || busyId === pickOpen.id) return
     const active = pickOpen.activeLine
     if (!active) {
+      addToast({
+        type: 'error',
+        message: 'Open a product below and reduce it before saving',
+      })
+      return
+    }
+    if (active.done) {
+      addToast({
+        type: 'error',
+        message: `“${active.label}” is already done — open the next unfinished product`,
+      })
+      return
+    }
+    const remainingProducts = pickOpen.orderLines.filter((l) => !l.done)
+    if (remainingProducts.length === 0) {
       addToast({ type: 'error', message: 'All ordered products are already reduced' })
       return
     }
@@ -1057,6 +1190,13 @@ export function RequisitionsPanel({
     }
     const stampIdx = stampIndexForOrderLine(active)
     const activeStamp = stampIdx >= 0 ? stampLines[stampIdx] : null
+    if (activeStamp?.stampingRequired && !activeStamp.stampingNumber.trim()) {
+      addToast({
+        type: 'error',
+        message: `Enter stamping number for "${activeStamp.label}" (or set Required = No)`,
+      })
+      return
+    }
     if (activeStamp?.stampingRequired && !activeStamp.stampingDate) {
       addToast({
         type: 'error',
@@ -1072,6 +1212,10 @@ export function RequisitionsPanel({
       return
     }
     const id = pickOpen.id
+    const expectedSnapshot = {
+      needed: pickOpen.needed,
+      orderLines: pickOpen.orderLines.map((l) => ({ ...l })),
+    }
     const ids = pickedUnitIds.slice(0, need)
     const primaryStampNo =
       (activeStamp?.stampingRequired && activeStamp.stampingNumber.trim()
@@ -1081,18 +1225,41 @@ export function RequisitionsPanel({
       null
     setBusyId(id)
     try {
+      // Confirm stamping for this product only — backend merges by label
+      const stampPayload =
+        activeStamp && stampIdx >= 0
+          ? [
+              {
+                label: activeStamp.label,
+                stampingRequired: activeStamp.stampingRequired,
+                stampingDate: activeStamp.stampingRequired ? activeStamp.stampingDate : null,
+                nextDueDate:
+                  activeStamp.stampingRequired && activeStamp.nextDueDate
+                    ? activeStamp.nextDueDate
+                    : null,
+                stampingNumber:
+                  activeStamp.stampingRequired && activeStamp.stampingNumber.trim()
+                    ? activeStamp.stampingNumber.trim()
+                    : null,
+                stampingQuarter:
+                  activeStamp.stampingRequired && activeStamp.stampingQuarter
+                    ? activeStamp.stampingQuarter
+                    : null,
+              },
+            ]
+          : stampLines.map((l) => ({
+              label: l.label,
+              stampingRequired: l.stampingRequired,
+              stampingDate: l.stampingRequired ? l.stampingDate : null,
+              nextDueDate: l.stampingRequired && l.nextDueDate ? l.nextDueDate : null,
+              stampingNumber:
+                l.stampingRequired && l.stampingNumber.trim() ? l.stampingNumber.trim() : null,
+              stampingQuarter:
+                l.stampingRequired && l.stampingQuarter ? l.stampingQuarter : null,
+            }))
       await api.recordRequisitionStamping(id, {
         vcNumber: primaryStampNo,
-        lines: stampLines.map((l) => ({
-          label: l.label,
-          stampingRequired: l.stampingRequired,
-          stampingDate: l.stampingRequired ? l.stampingDate : null,
-          nextDueDate: l.stampingRequired && l.nextDueDate ? l.nextDueDate : null,
-          stampingNumber:
-            l.stampingRequired && l.stampingNumber.trim() ? l.stampingNumber.trim() : null,
-          stampingQuarter:
-            l.stampingRequired && l.stampingQuarter ? l.stampingQuarter : null,
-        })),
+        lines: stampPayload,
       })
       let updated: Record<string, unknown> | null = null
       for (const stockUnitId of ids) {
@@ -1102,38 +1269,102 @@ export function RequisitionsPanel({
         })) as Record<string, unknown>
       }
       const progress = releaseStockProgress(updated ?? {})
-      if (!progress.allReduced) {
+      // Merge expected product list so a backend under-count cannot finish early
+      const mergedOrderLines =
+        expectedSnapshot.orderLines.length > progress.orderLines.length
+          ? expectedSnapshot.orderLines.map((line) => {
+              const hit = progress.orderLines.find(
+                (p) =>
+                  p.index === line.index ||
+                  p.label.trim().toLowerCase() === line.label.trim().toLowerCase(),
+              )
+              if (!hit) {
+                // Count release lines matched to this label after this save
+                const releaseHits = progress.releaseLines.filter((r) => {
+                  const rel = String(r.label ?? r.productName ?? '')
+                    .trim()
+                    .toLowerCase()
+                  const want = line.label.trim().toLowerCase()
+                  return rel === want || rel.includes(want) || want.includes(rel)
+                }).length
+                const reduced = Math.min(line.qty, Math.max(line.reduced, releaseHits))
+                const remaining = Math.max(0, line.qty - reduced)
+                return { ...line, reduced, remaining, done: remaining === 0 }
+              }
+              return { ...line, ...hit, label: line.label, qty: line.qty, index: line.index }
+            })
+          : progress.orderLines
+      const mergedProgress = {
+        ...progress,
+        orderLines: mergedOrderLines,
+        needed: Math.max(
+          progress.needed,
+          expectedSnapshot.needed,
+          mergedOrderLines.reduce((s, l) => s + l.qty, 0),
+        ),
+        reducedCount: mergedOrderLines.reduce((s, l) => s + l.reduced, 0),
+        remaining: mergedOrderLines.reduce((s, l) => s + l.remaining, 0),
+        allReduced: mergedOrderLines.every((l) => l.done),
+        activeLine: mergedOrderLines.find((l) => !l.done) ?? null,
+      }
+      const fullyDone = releaseFullyComplete(expectedSnapshot, mergedProgress)
+
+      if (!fullyDone) {
         setPickedUnitIds([])
-        setPickOpen((prev) => (prev ? syncPickOpenProgress(prev, progress) : prev))
-        const next = progress.activeLine
-        addToast({
-          type: 'success',
-          message: next
-            ? `“${active.label}” done · next: “${next.label}” (need ${next.remaining})`
-            : `Reduced ${ids.length} · ${progress.reducedCount}/${progress.needed}`,
-        })
         const workspace = await api.inventoryWorkspace()
         const products = workspace.products ?? []
         setCatalogProducts(products)
-        applyPickerSelection(products, progress)
         const usedUnitIds = new Set(
-          progress.releaseLines.map((l) => String(l.stockUnitId ?? '')).filter(Boolean),
+          mergedProgress.releaseLines.map((l) => String(l.stockUnitId ?? '')).filter(Boolean),
         )
-        setStockOptions(
-          (workspace.units ?? [])
-            .filter((u) => !usedUnitIds.has(String(u.id)) && String(u.status) === 'IN_STOCK')
-            .map((u) => {
-              const prod = products.find((p) => String(p.id) === String(u.productId))
-              return {
-                id: String(u.id),
-                productId: u.productId ? String(u.productId) : undefined,
-                serialNo: u.serialNo ? String(u.serialNo) : undefined,
-                hmsUniqId: u.hmsUniqId != null ? String(u.hmsUniqId) : null,
-                status: u.status ? String(u.status) : undefined,
-                productName: prod?.name ? String(prod.name) : undefined,
+        const units: StockPick[] = (workspace.units ?? [])
+          .filter((u) => !usedUnitIds.has(String(u.id)) && String(u.status) === 'IN_STOCK')
+          .map((u) => {
+            const prod = products.find((p) => String(p.id) === String(u.productId))
+            return {
+              id: String(u.id),
+              productId: u.productId ? String(u.productId) : undefined,
+              serialNo: u.serialNo ? String(u.serialNo) : undefined,
+              hmsUniqId: u.hmsUniqId != null ? String(u.hmsUniqId) : null,
+              status: u.status ? String(u.status) : undefined,
+              productName: prod?.name ? String(prod.name) : undefined,
+            }
+          })
+        setStockOptions(units)
+        const next = resolveActiveLineWithStock(
+          mergedOrderLines,
+          products,
+          units,
+          mergedProgress.activeLine,
+        )
+        setPickOpen((prev) =>
+          prev
+            ? {
+                ...syncPickOpenProgress(prev, {
+                  ...mergedProgress,
+                  orderLines: mergedOrderLines,
+                  activeLine: next,
+                  productLabels: mergedOrderLines.map((l) => l.label),
+                }),
+                orderLines: mergedOrderLines,
+                activeLine: next,
+                needed: mergedProgress.needed,
+                reducedCount: mergedProgress.reducedCount,
               }
-            }),
+            : prev,
         )
+        const left = mergedOrderLines.filter((l) => !l.done).length
+        const oosNote =
+          next && stockCountForOrderLabel(next.label, products, units) === 0
+            ? ` · “${next.label}” has no stock yet — add stock or finish later`
+            : ''
+        addToast({
+          type: 'success',
+          message: next
+            ? `“${active.label}” saved (${mergedProgress.reducedCount}/${mergedProgress.needed}). Open next: “${next.label}” — ${left} product${left === 1 ? '' : 's'} left${oosNote}`
+            : `Saved ${ids.length} · ${mergedProgress.reducedCount}/${mergedProgress.needed} — reduce remaining products before finish`,
+        })
+        applyPickerSelection(products, { activeLine: next })
         return
       }
       const dcRow = await api.createRequisitionDeliveryChallan(id)
@@ -1152,7 +1383,7 @@ export function RequisitionsPanel({
           : 'Released · DC created · ready to ship — sales notified',
       })
       if (challan) openPrintableDeliveryChallan(challan, APP_NAME)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1167,10 +1398,17 @@ export function RequisitionsPanel({
     <Card padding={false} className="mb-4">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
         <div>
-          <h2 className="font-semibold text-text-primary">
+          <h2
+            className={cn(
+              'font-semibold',
+              queue === 'pending'
+                ? 'text-red-800 dark:text-red-200'
+                : 'text-text-primary',
+            )}
+          >
             {title ??
               (queue === 'pending'
-                ? 'Pending requisitions'
+                ? 'Awaiting accept'
                 : queue === 'shipped'
                   ? 'Shipped releases'
                   : 'Approved for stock release')}
@@ -1180,8 +1418,8 @@ export function RequisitionsPanel({
               ? 'Completed releases — DC, machines out, customer, and ship date. Active work stays on Release queue.'
               : subtitle ??
                 (queue === 'pending'
-                  ? 'Sign like the paper HMS form — inventory only sees the job after sales notifies them.'
-                  : 'Step 1 Stamping → Step 2 Reduce → Step 3 Ship. Create DC after reduce. PI stays with sales.')}
+                  ? 'Sales requisitions waiting for your sign-off — highlighted in red until you Accept.'
+                  : 'One product at a time: stamp → pick unit → reduce. Then DC → Ready to ship.')}
           </p>
           {(queue === 'fulfill' || queue === 'approved') && canFulfill ? (
             <div className="mt-3">
@@ -1216,22 +1454,39 @@ export function RequisitionsPanel({
           {canApprove ? (
             <Button
               size="sm"
-              variant={queue === 'pending' ? 'primary' : 'outline'}
+              variant="outline"
               onClick={() => setQueue('pending')}
+              className={cn(
+                'border-red-400/70 text-red-700 hover:bg-red-50 dark:border-red-500/50 dark:text-red-300 dark:hover:bg-red-950/40',
+                queue === 'pending' &&
+                  'border-red-600 bg-red-600 text-white hover:bg-red-700 hover:text-white dark:border-red-500 dark:bg-red-600 dark:hover:bg-red-700',
+              )}
             >
-              Pending
+              Awaiting accept
+              {pendingCount > 0 ? (
+                <span
+                  className={cn(
+                    'ml-1.5 rounded-full px-1.5 text-[11px] tabular-nums',
+                    queue === 'pending'
+                      ? 'bg-white/20 text-white'
+                      : 'bg-red-500/15 text-red-700 dark:text-red-300',
+                  )}
+                >
+                  {pendingCount}
+                </span>
+              ) : null}
             </Button>
           ) : null}
-          {canFulfill || canApprove ? (
+          {canBrowseReleaseQueues ? (
             <Button
               size="sm"
               variant={queue === 'approved' || queue === 'fulfill' ? 'primary' : 'outline'}
-              onClick={() => setQueue(canFulfill ? 'fulfill' : 'approved')}
+              onClick={() => setQueue(canFulfill ? 'fulfill' : canApprove ? 'approved' : 'fulfill')}
             >
               Release queue
             </Button>
           ) : null}
-          {canFulfill || canApprove ? (
+          {canBrowseReleaseQueues ? (
             <Button
               size="sm"
               variant={queue === 'shipped' ? 'primary' : 'outline'}
@@ -1246,14 +1501,14 @@ export function RequisitionsPanel({
         </div>
       </div>
 
-      {loading ? (
+      {loading && items.length === 0 ? (
         <p className="p-6 text-sm text-text-secondary">Loading…</p>
       ) : items.length === 0 ? (
         <EmptyState
           title="Nothing in this queue"
           subtitle={
             queue === 'pending'
-              ? 'When sales submits a requisition, it lands here for your signature.'
+              ? 'When sales submits a requisition, it lands here in red for your Accept.'
               : queue === 'shipped'
                 ? 'After Ready to ship, completed releases appear here with DC and machine details.'
                 : 'After sales notifies inventory, approved sales appear here for stamping / stock / delivery.'
@@ -1428,15 +1683,19 @@ export function RequisitionsPanel({
                     : {}
                 const stockProgress = releaseStockProgress(row)
                 const focused = focusReqId === id
+                const awaitingAccept = st === 'PENDING_APPROVAL'
                 return (
                   <tr
                     key={id}
                     id={`req-row-${id}`}
-                    className={
+                    className={cn(
+                      'border-b last:border-0',
                       focused
-                        ? 'border-b border-amber-300 bg-amber-50/70 last:border-0 dark:border-amber-800 dark:bg-amber-950/40'
-                        : 'border-b border-border last:border-0'
-                    }
+                        ? 'border-amber-300 bg-amber-50/70 dark:border-amber-800 dark:bg-amber-950/40'
+                        : awaitingAccept
+                          ? 'border-red-200/80 bg-red-50/80 hover:bg-red-50 dark:border-red-900/40 dark:bg-red-950/30 dark:hover:bg-red-950/45'
+                          : 'border-border',
+                    )}
                   >
                     <td className="px-3 py-2.5 font-mono text-xs font-semibold">
                       {String(row.reqNumber ?? '—')}
@@ -1475,10 +1734,13 @@ export function RequisitionsPanel({
                             ? 'green'
                             : st === 'REJECTED'
                               ? 'red'
-                              : 'amber'
+                              : awaitingAccept
+                                ? 'red'
+                                : 'amber'
                         }
+                        solid={awaitingAccept}
                       >
-                        {st.replaceAll('_', ' ')}
+                        {awaitingAccept ? 'Awaiting accept' : st.replaceAll('_', ' ')}
                       </Badge>
                       {cf.inventoryNotifiedAt ? (
                         <div className="mt-0.5 text-[10px] text-emerald-600">Inv. notified</div>
@@ -1499,14 +1761,15 @@ export function RequisitionsPanel({
                     </td>
                     <td className="px-3 py-2.5">
                       <div className="flex flex-wrap gap-1">
-                        {canApprove && st === 'PENDING_APPROVAL' ? (
+                        {canApprove && awaitingAccept ? (
                           <>
                             <Button
                               size="sm"
+                              className="bg-red-600 text-white hover:bg-red-700"
                               disabled={busyId === id}
                               onClick={() => setConfirmAction({ type: 'approve', id })}
                             >
-                              Sign
+                              Accept
                             </Button>
                             <Button
                               size="sm"
@@ -1554,9 +1817,9 @@ export function RequisitionsPanel({
       <ConfirmModal
         open={confirmAction?.type === 'approve'}
         onClose={() => setConfirmAction(null)}
-        title="Approve & sign this sale?"
+        title="Accept this requisition?"
         body="Confirms the sales requisition. Sales can then notify inventory to release stock. Continue?"
-        confirmLabel={busyId === confirmAction?.id ? 'Signing…' : 'Approve & sign'}
+        confirmLabel={busyId === confirmAction?.id ? 'Accepting…' : 'Accept & sign'}
         confirmVariant="primary"
         onConfirm={() => {
           const id = confirmAction?.id
@@ -1606,8 +1869,8 @@ export function RequisitionsPanel({
         }
         subtitle={
           pickOpen?.mode === 'complete'
-            ? 'One go for inventory: stamping → pick unit(s) → reduce stock → delivery challan → ready to ship.'
-            : 'Customer is fixed from the sale. Pick type → model → unit (same path as Stock → Reduce).'
+            ? 'Open one product at a time → stamp → pick serial → Reduce. Repeat until all products are done, then DC + ship.'
+            : 'Open the product, pick type → model → unit, then reduce.'
         }
         size="2xl"
         accent="sky"
@@ -1621,6 +1884,7 @@ export function RequisitionsPanel({
             <Button
               disabled={
                 busyId === pickOpen?.id ||
+                !pickOpen?.activeLine ||
                 Boolean(pickOpen?.activeLine?.done) ||
                 !pickedUnitIds.length ||
                 (activeLineRemaining > 0 && pickedUnitIds.length !== activeLineRemaining)
@@ -1629,487 +1893,517 @@ export function RequisitionsPanel({
             >
               {busyId === pickOpen?.id
                 ? pickOpen?.mode === 'complete'
-                  ? 'Releasing…'
+                  ? 'Saving…'
                   : 'Reducing…'
-                : pickOpen?.activeLine?.done
-                  ? 'Already reduced'
-                  : pickOpen?.mode === 'complete'
-                    ? pickOpen.activeLine &&
-                      !pickOpen.orderLines.every(
-                        (l) => l.done || l.index === pickOpen.activeLine?.index,
-                      )
-                      ? `Reduce “${pickOpen.activeLine.label}” (${pickedUnitIds.length}/${activeLineRemaining}) → next`
-                      : `Finish release (${pickedUnitIds.length}/${activeLineRemaining || pickedUnitIds.length})`
-                    : activeLineRemaining > 0
-                      ? `Reduce ${pickedUnitIds.length}/${activeLineRemaining} for this product`
-                      : 'Reduce stock'}
+                : !pickOpen?.activeLine
+                  ? 'Open a product below'
+                  : pickOpen.activeLine.done
+                    ? 'Already done — open next'
+                    : pickOpen.mode === 'complete'
+                      ? pickOpen.orderLines.filter((l) => !l.done).length > 1
+                        ? `Save this product (${pickedUnitIds.length}/${activeLineRemaining || 1}) — ${pickOpen.orderLines.filter((l) => !l.done).length - 1} more left`
+                        : `Save last product (${pickedUnitIds.length}/${activeLineRemaining || pickedUnitIds.length}) & finish`
+                      : activeLineRemaining > 0
+                        ? `Reduce ${pickedUnitIds.length}/${activeLineRemaining}`
+                        : 'Reduce stock'}
             </Button>
           </>
         }
       >
         {pickOpen?.customer ? (
-          <div className="mb-5 rounded-xl border border-sky-200/90 bg-sky-50/70 px-4 py-4 dark:border-sky-500/30 dark:bg-sky-950/40">
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <div>
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
-                  Reducing for customer
-                </div>
-                <div className="mt-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                  <span className="text-lg font-semibold text-text-primary">
-                    {pickOpen.customer.name}
-                  </span>
+          <div className="mb-4 rounded-lg border border-border bg-muted/30 px-3.5 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-text-primary">
+                  {pickOpen.customer.name}
                   {pickOpen.customer.customerCode ? (
-                    <span className="font-mono text-xs font-medium text-text-secondary">
+                    <span className="ml-2 font-mono text-xs font-normal text-text-secondary">
                       {pickOpen.customer.customerCode}
                     </span>
                   ) : null}
-                </div>
+                </p>
+                <p className="mt-0.5 truncate text-xs text-text-secondary">
+                  {[pickOpen.customer.phone, pickOpen.customer.reqNumber]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
               </div>
-              {pickOpen.needed > 1 ? (
-                <div className="rounded-lg border border-sky-300/60 bg-card px-3 py-1.5 text-sm font-semibold text-text-primary">
-                  {pickOpen.reducedCount}/{pickOpen.needed} reduced
-                </div>
-              ) : null}
+              <div className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-semibold text-text-primary">
+                {pickOpen.orderLines.filter((l) => l.done).length}/{pickOpen.orderLines.length || 1}{' '}
+                products done
+                {pickOpen.needed > 1 ? (
+                  <span className="ml-1.5 font-normal text-text-secondary">
+                    · {pickOpen.reducedCount}/{pickOpen.needed} units
+                  </span>
+                ) : null}
+              </div>
             </div>
-            <div className="mt-3 grid gap-x-6 gap-y-1.5 text-sm text-text-secondary sm:grid-cols-2">
-              {pickOpen.customer.phone ? (
-                <div>
-                  <span className="text-text-secondary/80">Phone · </span>
-                  <span className="text-text-primary">{pickOpen.customer.phone}</span>
-                </div>
-              ) : null}
-              {pickOpen.customer.email ? (
-                <div className="min-w-0 truncate">
-                  <span className="text-text-secondary/80">Email · </span>
-                  <span className="text-text-primary">{pickOpen.customer.email}</span>
-                </div>
-              ) : null}
-              {pickOpen.customer.reqNumber ? (
-                <div>
-                  <span className="text-text-secondary/80">Req · </span>
-                  <span className="font-mono text-text-primary">{pickOpen.customer.reqNumber}</span>
-                </div>
-              ) : null}
-              {pickOpen.customer.address ? (
-                <div className="sm:col-span-2 text-[13px] leading-snug">
-                  {pickOpen.customer.address}
-                </div>
-              ) : null}
-            </div>
-            {pickOpen.customer.leadId && canViewSale ? (
-              <Link
-                to={`/sale-tracking/${pickOpen.customer.leadId}`}
-                className="mt-3 inline-block text-sm font-medium text-accent-blue hover:underline"
-              >
-                Open sale overview
-              </Link>
-            ) : null}
           </div>
         ) : null}
 
-        <div
-          className={
-            pickOpen && pickOpen.orderLines.length > 1
-              ? 'flex flex-col gap-4 sm:flex-row sm:items-stretch sm:gap-5'
-              : undefined
-          }
-        >
-          {pickOpen && pickOpen.orderLines.length > 0 ? (
-            <nav
-              aria-label="Products on this release"
-              className={`shrink-0 rounded-xl border border-sky-200/80 bg-sky-50/40 p-2 dark:border-sky-800/50 dark:bg-sky-950/30 ${
-                pickOpen.orderLines.length > 1
-                  ? 'sm:w-[11.5rem] sm:self-start'
-                  : 'mb-4'
-              }`}
-            >
-              <div className="mb-1.5 px-2 text-[11px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
-                Products
-                <span className="ml-1 font-normal normal-case tracking-normal text-text-secondary">
-                  ({pickOpen.orderLines.filter((l) => l.done).length}/{pickOpen.orderLines.length}{' '}
-                  done)
-                </span>
-              </div>
-              <ul className="flex flex-col gap-1">
-                {pickOpen.orderLines.map((line) => {
-                  const isActive = pickOpen.activeLine?.index === line.index
-                  return (
-                    <li key={`${line.label}-${line.index}`}>
-                      <button
-                        type="button"
-                        onClick={() => selectReleaseProductTab(line.index)}
-                        className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-left transition ${
-                          isActive
-                            ? 'bg-sky-600 text-white shadow-sm shadow-sky-600/25'
-                            : line.done
-                              ? 'bg-emerald-50 text-emerald-900 hover:bg-emerald-100/80 dark:bg-emerald-950/40 dark:text-emerald-100 dark:hover:bg-emerald-950/60'
-                              : 'bg-card text-text-primary hover:bg-sky-100/70 dark:hover:bg-sky-950/50'
-                        }`}
-                      >
-                        <span
-                          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
-                            line.done
-                              ? isActive
-                                ? 'bg-white/25 text-white'
-                                : 'bg-emerald-500 text-white'
-                              : isActive
-                                ? 'bg-white/25 text-white'
-                                : 'bg-muted text-text-secondary ring-1 ring-border'
-                          }`}
-                        >
-                          {line.done ? '✓' : line.index + 1}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-semibold">{line.label}</span>
-                          <span
-                            className={`block text-[11px] ${
-                              isActive ? 'text-white/80' : 'text-text-secondary'
-                            }`}
-                          >
-                            {line.done
-                              ? `Done · ${line.reduced}/${line.qty}`
-                              : `Need ${line.remaining} of ${line.qty}`}
-                          </span>
-                        </span>
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
-            </nav>
-          ) : null}
-
-          <div className="min-w-0 flex-1">
-        {pickOpen?.mode === 'complete' &&
-        pickOpen.activeLine &&
-        !pickOpen.activeLine.done &&
-        activeStampLine &&
-        activeStampIdx >= 0 ? (
-          <div className="mb-4 space-y-3 rounded-xl border border-amber-200/80 bg-amber-50/50 p-4 dark:border-amber-900/40 dark:bg-amber-950/20">
-            <div>
-              <h3 className="text-sm font-semibold text-text-primary">
-                1. Stamping — {pickOpen.activeLine.label}
-              </h3>
-              <p className="text-xs text-text-secondary">
-                Yes = stamped (enter date). No = not required (billing/POS). Then pick unit(s)
-                below.
-              </p>
-            </div>
-            <div className="rounded-lg border border-border bg-card p-3">
-              <div className="mt-0.5 flex flex-wrap gap-2">
-                <Button
-                  size="sm"
-                  variant={activeStampLine.stampingRequired ? 'primary' : 'outline'}
-                  onClick={() =>
-                    setStampLines((prev) =>
-                      prev.map((l, i) =>
-                        i === activeStampIdx
-                          ? {
-                              ...l,
-                              stampingRequired: true,
-                              stampingQuarter:
-                                l.stampingQuarter || stampQuarterFromDate(l.stampingDate),
-                            }
-                          : l,
-                      ),
-                    )
-                  }
+        {pickOpen && pickOpen.orderLines.length > 0 ? (
+          <div className="space-y-2">
+            <p className="text-xs text-text-secondary">
+              Click a product to open it, click again to close. Finish one, then open the next.
+            </p>
+            {pickOpen.orderLines.map((line) => {
+              const isOpen = pickOpen.activeLine?.index === line.index
+              const inStock = stockCountForOrderLabel(
+                line.label,
+                catalogProducts,
+                stockOptions,
+              )
+              const status = line.done
+                ? `Done · ${line.reduced}/${line.qty}`
+                : inStock > 0
+                  ? `Need ${line.remaining} · ${inStock} in stock`
+                  : `Need ${line.remaining} · no stock`
+              return (
+                <div
+                  key={`${line.label}-${line.index}`}
+                  className={cn(
+                    'overflow-hidden rounded-lg border transition',
+                    isOpen
+                      ? 'border-sky-400 shadow-sm dark:border-sky-600'
+                      : line.done
+                        ? 'border-emerald-200/80 dark:border-emerald-800/50'
+                        : 'border-border',
+                  )}
                 >
-                  Yes
-                </Button>
-                <Button
-                  size="sm"
-                  variant={!activeStampLine.stampingRequired ? 'primary' : 'outline'}
-                  onClick={() =>
-                    setStampLines((prev) =>
-                      prev.map((l, i) =>
-                        i === activeStampIdx ? { ...l, stampingRequired: false } : l,
-                      ),
-                    )
-                  }
-                >
-                  No
-                </Button>
-              </div>
-              {activeStampLine.stampingRequired ? (
-                <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                  <div className="sm:col-span-2">
-                    <Input
-                      label="Stamping number"
-                      value={activeStampLine.stampingNumber}
-                      onChange={(e) =>
-                        setStampLines((prev) =>
-                          prev.map((l, i) =>
-                            i === activeStampIdx
-                              ? { ...l, stampingNumber: e.target.value }
-                              : l,
-                          ),
-                        )
-                      }
-                      placeholder="Govt stamp / VC number"
+                  <button
+                    type="button"
+                    aria-expanded={isOpen}
+                    onClick={() => selectReleaseProductTab(line.index)}
+                    className={cn(
+                      'flex w-full items-center gap-3 px-3.5 py-3 text-left transition',
+                      isOpen
+                        ? 'bg-sky-50 dark:bg-sky-950/40'
+                        : line.done
+                          ? 'bg-emerald-50/70 hover:bg-emerald-50 dark:bg-emerald-950/25'
+                          : 'bg-card hover:bg-muted/40',
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold',
+                        line.done
+                          ? 'bg-emerald-500 text-white'
+                          : isOpen
+                            ? 'bg-sky-600 text-white'
+                            : 'bg-muted text-text-secondary ring-1 ring-border',
+                      )}
+                    >
+                      {line.done ? <Check size={14} strokeWidth={2.5} /> : line.index + 1}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold text-text-primary">
+                        {line.label}
+                      </span>
+                      <span className="block text-xs text-text-secondary">{status}</span>
+                    </span>
+                    <ChevronDown
+                      size={18}
+                      className={cn(
+                        'shrink-0 text-text-secondary transition-transform',
+                        isOpen && 'rotate-180',
+                      )}
                     />
-                  </div>
+                  </button>
+
+                  {isOpen ? (
+                    <div className="border-t border-border bg-card px-3.5 py-4">
+                      {line.done ? (
+                        <p className="text-sm text-emerald-800 dark:text-emerald-200">
+                          This product is already reduced ({line.reduced}/{line.qty}). Open the next
+                          unfinished product above.
+                        </p>
+                      ) : (
+                        <div className="space-y-5">
+                          {pickOpen.mode === 'complete' &&
+                          activeStampLine &&
+                          activeStampIdx >= 0 ? (
+                            <section className="space-y-2">
+                              <h3 className="text-sm font-semibold text-text-primary">
+                                1. Stamping needed?
+                              </h3>
+                              <p className="text-xs text-text-secondary">
+                                Yes for weighing (number + dates). No for billing / POS.
+                              </p>
+                              <div className="flex flex-wrap gap-2">
+                                <Button
+                                  size="sm"
+                                  variant={
+                                    activeStampLine.stampingRequired ? 'primary' : 'outline'
+                                  }
+                                  onClick={() =>
+                                    setStampLines((prev) =>
+                                      prev.map((l, i) =>
+                                        i === activeStampIdx
+                                          ? {
+                                              ...l,
+                                              stampingRequired: true,
+                                              stampingQuarter:
+                                                l.stampingQuarter ||
+                                                stampQuarterFromDate(l.stampingDate),
+                                            }
+                                          : l,
+                                      ),
+                                    )
+                                  }
+                                >
+                                  Yes
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant={
+                                    !activeStampLine.stampingRequired ? 'primary' : 'outline'
+                                  }
+                                  onClick={() =>
+                                    setStampLines((prev) =>
+                                      prev.map((l, i) =>
+                                        i === activeStampIdx
+                                          ? { ...l, stampingRequired: false }
+                                          : l,
+                                      ),
+                                    )
+                                  }
+                                >
+                                  No
+                                </Button>
+                              </div>
+                              {activeStampLine.stampingRequired ? (
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                  <div className="sm:col-span-2">
+                                    <Input
+                                      label="Stamping number *"
+                                      value={activeStampLine.stampingNumber}
+                                      onChange={(e) =>
+                                        setStampLines((prev) =>
+                                          prev.map((l, i) =>
+                                            i === activeStampIdx
+                                              ? { ...l, stampingNumber: e.target.value }
+                                              : l,
+                                          ),
+                                        )
+                                      }
+                                      placeholder="Govt stamp / VC number"
+                                    />
+                                  </div>
+                                  <Select
+                                    label="Stamping quarter *"
+                                    value={activeStampLine.stampingQuarter}
+                                    onChange={(e) =>
+                                      setStampLines((prev) =>
+                                        prev.map((l, i) =>
+                                          i === activeStampIdx
+                                            ? {
+                                                ...l,
+                                                stampingQuarter: e.target
+                                                  .value as StampLineDraft['stampingQuarter'],
+                                              }
+                                            : l,
+                                        ),
+                                      )
+                                    }
+                                    options={STAMP_QUARTER_OPTIONS}
+                                  />
+                                  <Input
+                                    label="Stamped date *"
+                                    type="date"
+                                    value={activeStampLine.stampingDate}
+                                    onChange={(e) => {
+                                      const date = e.target.value
+                                      setStampLines((prev) =>
+                                        prev.map((l, i) =>
+                                          i === activeStampIdx
+                                            ? {
+                                                ...l,
+                                                stampingDate: date,
+                                                stampingQuarter: date
+                                                  ? stampQuarterFromDate(date)
+                                                  : l.stampingQuarter,
+                                              }
+                                            : l,
+                                        ),
+                                      )
+                                    }}
+                                  />
+                                  <Input
+                                    label="Next due (optional)"
+                                    type="date"
+                                    value={activeStampLine.nextDueDate}
+                                    onChange={(e) =>
+                                      setStampLines((prev) =>
+                                        prev.map((l, i) =>
+                                          i === activeStampIdx
+                                            ? { ...l, nextDueDate: e.target.value }
+                                            : l,
+                                        ),
+                                      )
+                                    }
+                                  />
+                                </div>
+                              ) : (
+                                <p className="text-xs text-text-secondary">
+                                  No stamping for this product.
+                                </p>
+                              )}
+                            </section>
+                          ) : null}
+
+                          <section className="space-y-3">
+                            <h3 className="text-sm font-semibold text-text-primary">
+                              {pickOpen.mode === 'complete' ? '2. Pick stock unit' : 'Pick stock unit'}
+                            </h3>
+                            {stockLoading ? (
+                              <p className="py-6 text-center text-sm text-text-secondary">
+                                Loading stock…
+                              </p>
+                            ) : (
+                              <div className="space-y-3">
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                  <Select
+                                    label="Machine type"
+                                    value={pickMachineType}
+                                    placeholder="Select type…"
+                                    options={STOCK_MACHINE_TYPES.map((t) => ({
+                                      value: t.value,
+                                      label: t.label,
+                                    }))}
+                                    onChange={(e) => {
+                                      setPickMachineType(
+                                        e.target.value as StockMachineType | '',
+                                      )
+                                      setPickProductId('')
+                                      setPickedUnitIds([])
+                                    }}
+                                  />
+                                  <SearchableSelect
+                                    label="Model (match order)"
+                                    value={pickProductId}
+                                    onChange={(v) => {
+                                      const p = catalogProducts.find((x) => String(x.id) === v)
+                                      const orderLabel = line.label
+                                      if (
+                                        orderLabel &&
+                                        p &&
+                                        !productMatchesOrderLabel(p, orderLabel)
+                                      ) {
+                                        addToast({
+                                          type: 'error',
+                                          message: `Pick a model matching “${orderLabel}”`,
+                                        })
+                                        return
+                                      }
+                                      setPickProductId(v)
+                                      setPickedUnitIds([])
+                                    }}
+                                    placeholder={`Match “${line.label}”…`}
+                                    options={pickProductOptions}
+                                    emptyText={`No models match “${line.label}”`}
+                                  />
+                                </div>
+
+                                {!pickProductId ? (
+                                  <p className="rounded-lg border border-dashed border-border bg-muted/20 px-3 py-5 text-center text-sm text-text-secondary">
+                                    Choose type and model, then select{' '}
+                                    {activeLineRemaining || 1} unit
+                                    {(activeLineRemaining || 1) === 1 ? '' : 's'}.
+                                  </p>
+                                ) : pickUnitsForModel.length === 0 ? (
+                                  <div className="space-y-2 rounded-lg border border-amber-200/80 bg-amber-50/50 px-3 py-4 text-sm dark:border-amber-900/50 dark:bg-amber-950/30">
+                                    <p className="font-semibold text-amber-950 dark:text-amber-100">
+                                      No in-stock units for this model
+                                    </p>
+                                    <p className="text-xs text-text-secondary">
+                                      Add stock, or open another product that has stock.
+                                    </p>
+                                    <div className="flex flex-wrap gap-2 pt-1">
+                                      <Link to="/erp/stock/move">
+                                        <Button size="sm" variant="outline">
+                                          Add stock
+                                        </Button>
+                                      </Link>
+                                      {pickOpen.orderLines.some(
+                                        (l) =>
+                                          !l.done &&
+                                          l.index !== line.index &&
+                                          stockCountForOrderLabel(
+                                            l.label,
+                                            catalogProducts,
+                                            stockOptions,
+                                          ) > 0,
+                                      ) ? (
+                                        <Button
+                                          size="sm"
+                                          onClick={() => {
+                                            const next = preferReleaseActiveLine(
+                                              pickOpen.orderLines,
+                                              (l) =>
+                                                l.index === line.index
+                                                  ? 0
+                                                  : stockCountForOrderLabel(
+                                                      l.label,
+                                                      catalogProducts,
+                                                      stockOptions,
+                                                    ),
+                                            )
+                                            if (next) selectReleaseProductTab(next.index)
+                                          }}
+                                        >
+                                          Open product with stock
+                                        </Button>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                      <p className="text-sm font-medium text-text-primary">
+                                        Select {activeLineRemaining || 1} unit
+                                        {(activeLineRemaining || 1) === 1 ? '' : 's'}
+                                      </p>
+                                      <span className="text-xs text-text-secondary">
+                                        {pickedUnitIds.length}/{activeLineRemaining || 1} selected
+                                      </span>
+                                    </div>
+                                    <ul className="max-h-[min(18rem,38vh)] space-y-1.5 overflow-auto rounded-lg border border-border bg-muted/10 p-1.5">
+                                      {pickUnitsForModel.map((u) => {
+                                        const selected = pickedUnitIds.includes(u.id)
+                                        const hms = u.hmsUniqId ? String(u.hmsUniqId) : ''
+                                        const serial = u.serialNo ? String(u.serialNo) : ''
+                                        const weighingLabel = hms || serial || '—'
+                                        return (
+                                          <li key={u.id}>
+                                            <button
+                                              type="button"
+                                              onClick={() => togglePickedUnit(u.id)}
+                                              className={cn(
+                                                'flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2.5 text-left transition',
+                                                selected
+                                                  ? 'border-sky-400 bg-sky-50 dark:border-sky-600 dark:bg-sky-950/50'
+                                                  : 'border-border bg-card hover:border-sky-300/70',
+                                              )}
+                                            >
+                                              <div className="min-w-0">
+                                                {pickIsWeighing ? (
+                                                  <>
+                                                    <div className="font-mono text-sm font-semibold text-text-primary">
+                                                      HMS {weighingLabel}
+                                                    </div>
+                                                    <div className="text-xs text-text-secondary">
+                                                      Weighing · {String(u.status)}
+                                                    </div>
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    <div className="font-mono text-sm font-semibold text-text-primary">
+                                                      S/No {serial || '—'}
+                                                    </div>
+                                                    <div className="font-mono text-xs text-text-secondary">
+                                                      HMS {hms || '—'} · {String(u.status)}
+                                                    </div>
+                                                  </>
+                                                )}
+                                              </div>
+                                              <span
+                                                className={cn(
+                                                  'shrink-0 text-xs font-semibold',
+                                                  selected
+                                                    ? 'text-sky-700 dark:text-sky-300'
+                                                    : 'text-text-secondary',
+                                                )}
+                                              >
+                                                {selected ? 'Selected' : 'Select'}
+                                              </span>
+                                            </button>
+                                          </li>
+                                        )
+                                      })}
+                                    </ul>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </section>
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+        ) : pickOpen ? (
+          <div className="min-w-0 space-y-4">
+            {stockLoading ? (
+              <p className="py-8 text-center text-sm text-text-secondary">Loading stock…</p>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
                   <Select
-                    label="Stamping quarter *"
-                    value={activeStampLine.stampingQuarter}
-                    onChange={(e) =>
-                      setStampLines((prev) =>
-                        prev.map((l, i) =>
-                          i === activeStampIdx
-                            ? {
-                                ...l,
-                                stampingQuarter: e.target.value as StampLineDraft['stampingQuarter'],
-                              }
-                            : l,
-                        ),
-                      )
-                    }
-                    options={STAMP_QUARTER_OPTIONS}
-                  />
-                  <Input
-                    label="Stamped date *"
-                    type="date"
-                    value={activeStampLine.stampingDate}
+                    label="Machine type"
+                    value={pickMachineType}
+                    placeholder="Select type…"
+                    options={STOCK_MACHINE_TYPES.map((t) => ({ value: t.value, label: t.label }))}
                     onChange={(e) => {
-                      const date = e.target.value
-                      setStampLines((prev) =>
-                        prev.map((l, i) =>
-                          i === activeStampIdx
-                            ? {
-                                ...l,
-                                stampingDate: date,
-                                stampingQuarter: date
-                                  ? stampQuarterFromDate(date)
-                                  : l.stampingQuarter,
-                              }
-                            : l,
-                        ),
-                      )
+                      setPickMachineType(e.target.value as StockMachineType | '')
+                      setPickProductId('')
+                      setPickedUnitIds([])
                     }}
                   />
-                  <Input
-                    label="Next due (optional)"
-                    type="date"
-                    value={activeStampLine.nextDueDate}
-                    onChange={(e) =>
-                      setStampLines((prev) =>
-                        prev.map((l, i) =>
-                          i === activeStampIdx ? { ...l, nextDueDate: e.target.value } : l,
-                        ),
-                      )
+                  <SearchableSelect
+                    label="Model"
+                    value={pickProductId}
+                    onChange={(v) => {
+                      setPickProductId(v)
+                      setPickedUnitIds([])
+                    }}
+                    placeholder={pickMachineType ? 'Search model…' : 'Select machine type first'}
+                    options={pickProductOptions}
+                    emptyText={
+                      pickMachineType
+                        ? 'No models for this type'
+                        : 'Pick type first'
                     }
                   />
                 </div>
-              ) : (
-                <p className="mt-2 text-xs text-text-secondary">No stamping for this product.</p>
-              )}
-            </div>
-            <h3 className="pt-1 text-sm font-semibold text-text-primary">
-              2. Pick unit(s) — {pickOpen.activeLine.label}
-            </h3>
-          </div>
-        ) : null}
-
-        {pickOpen?.activeLine?.done ? (
-          <div className="mb-4 rounded-xl border border-emerald-200/80 bg-emerald-50/60 px-4 py-6 text-center dark:border-emerald-800/50 dark:bg-emerald-950/30">
-            <p className="text-sm font-semibold text-emerald-900 dark:text-emerald-100">
-              “{pickOpen.activeLine.label}” already reduced
-            </p>
-            <p className="mt-1 text-xs text-text-secondary">
-              Qty {pickOpen.activeLine.reduced}/{pickOpen.activeLine.qty} · pick the next product from
-              the list on the left
-            </p>
-          </div>
-        ) : null}
-
-        {!pickOpen?.activeLine?.done ? (
-        <ol className="mb-4 grid grid-cols-3 gap-2">
-          {[
-            { n: 1, label: 'Type', done: Boolean(pickMachineType) },
-            { n: 2, label: 'Model', done: Boolean(pickProductId) },
-            { n: 3, label: 'Unit(s)', done: pickedUnitIds.length > 0 },
-          ].map((s) => (
-            <li
-              key={s.n}
-              className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
-                s.done
-                  ? 'border-emerald-300/80 bg-emerald-50/80 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-100'
-                  : 'border-border bg-muted/40 text-text-secondary'
-              }`}
-            >
-              <span
-                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${
-                  s.done
-                    ? 'bg-emerald-500 text-white'
-                    : 'bg-card text-text-secondary ring-1 ring-border'
-                }`}
-              >
-                {s.done ? '✓' : s.n}
-              </span>
-              <span className="font-semibold">{s.label}</span>
-            </li>
-          ))}
-        </ol>
-        ) : null}
-
-        {pickOpen?.activeLine?.done ? null : stockLoading ? (
-          <p className="py-8 text-center text-sm text-text-secondary">Loading stock…</p>
-        ) : (
-          <div className="space-y-4">
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Select
-                label="Machine type"
-                value={pickMachineType}
-                placeholder="Select type…"
-                options={STOCK_MACHINE_TYPES.map((t) => ({ value: t.value, label: t.label }))}
-                onChange={(e) => {
-                  setPickMachineType(e.target.value as StockMachineType | '')
-                  setPickProductId('')
-                  setPickedUnitIds([])
-                }}
-              />
-
-              <SearchableSelect
-                label="Model (must match order)"
-                value={pickProductId}
-                onChange={(v) => {
-                  const p = catalogProducts.find((x) => String(x.id) === v)
-                  const orderLabel = pickOpen?.activeLine?.label
-                  if (orderLabel && p && !productMatchesOrderLabel(p, orderLabel)) {
-                    addToast({
-                      type: 'error',
-                      message: `Pick a model matching “${orderLabel}”`,
-                    })
-                    return
-                  }
-                  setPickProductId(v)
-                  setPickedUnitIds([])
-                }}
-                placeholder={
-                  pickOpen?.activeLine
-                    ? `Match “${pickOpen.activeLine.label}”…`
-                    : pickMachineType
-                      ? 'Search model…'
-                      : 'Select machine type first'
-                }
-                options={pickProductOptions}
-                emptyText={
-                  pickOpen?.activeLine
-                    ? `No catalog models match “${pickOpen.activeLine.label}”`
-                    : pickMachineType
-                      ? 'No models for this type in stock catalog'
-                      : 'Pick type first'
-                }
-              />
-            </div>
-
-            {!pickProductId ? (
-              <p className="rounded-xl border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-sm text-text-secondary">
-                Choose type and the ordered model, then pick exactly the qty for this line.
-              </p>
-            ) : pickUnitsForModel.length === 0 ? (
-              <p className="rounded-xl border border-amber-200/80 bg-amber-50/50 px-4 py-6 text-sm text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
-                No in-stock units for this model. Add stock first, or open{' '}
-                <Link
-                  to="/erp/stock/move?mode=reduce"
-                  className="font-medium text-accent-blue hover:underline"
-                >
-                  Reduce stock
-                </Link>
-                .
-              </p>
-            ) : (
-              <div>
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-sm font-semibold text-text-primary">
-                    Units — select exactly {activeLineRemaining || 1}
-                  </h3>
-                  <span className="text-xs text-text-secondary">
-                    {pickUnitsForModel.filter((u) => String(u.status) === 'IN_STOCK').length} in
-                    stock
-                    {pickedUnitIds.length > 0
-                      ? ` · ${pickedUnitIds.length}/${activeLineRemaining || 1} selected`
-                      : ''}
-                  </span>
-                </div>
-                <p className="mb-2 text-xs text-text-secondary">
-                  Qty is fixed by the order
-                  {pickOpen?.activeLine
-                    ? ` (“${pickOpen.activeLine.label}” × ${pickOpen.activeLine.qty})`
-                    : ''}
-                  . Use the product list on the left to move between lines.
-                </p>
-                <ul className="max-h-[min(22rem,42vh)] space-y-2 overflow-auto rounded-xl border border-border bg-muted/15 p-2">
-                  {pickUnitsForModel.map((u) => {
-                    const selected = pickedUnitIds.includes(u.id)
-                    const hms = u.hmsUniqId ? String(u.hmsUniqId) : ''
-                    const serial = u.serialNo ? String(u.serialNo) : ''
-                    const weighingLabel = hms || serial || '—'
-                    return (
-                      <li key={u.id}>
-                        <button
-                          type="button"
-                          onClick={() => togglePickedUnit(u.id)}
-                          className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3.5 py-3 text-left transition ${
-                            selected
-                              ? 'border-sky-400 bg-sky-50 shadow-sm dark:border-sky-600 dark:bg-sky-950/50'
-                              : 'border-border bg-card hover:border-sky-300/70'
-                          }`}
-                        >
-                          <div className="flex min-w-0 items-start gap-2.5">
-                            <span
-                              className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] font-bold ${
-                                selected
-                                  ? 'border-sky-600 bg-sky-600 text-white'
-                                  : 'border-border bg-card text-transparent'
-                              }`}
-                              aria-hidden
-                            >
-                              ✓
+                {pickProductId && pickUnitsForModel.length > 0 ? (
+                  <ul className="max-h-[min(22rem,42vh)] space-y-2 overflow-auto rounded-xl border border-border bg-muted/15 p-2">
+                    {pickUnitsForModel.map((u) => {
+                      const selected = pickedUnitIds.includes(u.id)
+                      const hms = u.hmsUniqId ? String(u.hmsUniqId) : ''
+                      const serial = u.serialNo ? String(u.serialNo) : ''
+                      return (
+                        <li key={u.id}>
+                          <button
+                            type="button"
+                            onClick={() => togglePickedUnit(u.id)}
+                            className={cn(
+                              'flex w-full items-center justify-between gap-3 rounded-lg border px-3.5 py-3 text-left',
+                              selected
+                                ? 'border-sky-400 bg-sky-50 dark:border-sky-600 dark:bg-sky-950/50'
+                                : 'border-border bg-card',
+                            )}
+                          >
+                            <span className="font-mono text-sm font-semibold">
+                              {pickIsWeighing
+                                ? `HMS ${hms || serial || '—'}`
+                                : `S/No ${serial || '—'}`}
                             </span>
-                            <div className="min-w-0">
-                              {pickIsWeighing ? (
-                                <>
-                                  <div className="font-mono text-sm font-semibold text-text-primary">
-                                    HMS {weighingLabel}
-                                  </div>
-                                  <div className="mt-0.5 text-xs text-text-secondary">
-                                    Weighing · {String(u.status)}
-                                  </div>
-                                </>
-                              ) : (
-                                <>
-                                  <div className="font-mono text-sm font-semibold text-text-primary">
-                                    S/No {serial || '—'}
-                                  </div>
-                                  <div className="mt-0.5 font-mono text-xs text-text-secondary">
-                                    HMS {hms || '—'} · {String(u.status)}
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          </div>
-                          {selected ? (
-                            <span className="shrink-0 rounded-md bg-sky-600 px-2 py-1 text-xs font-semibold text-white">
-                              Added
+                            <span className="text-xs font-medium text-text-secondary">
+                              {selected ? 'Selected' : 'Select'}
                             </span>
-                          ) : (
-                            <span className="shrink-0 text-xs font-medium text-text-secondary">
-                              Add
-                            </span>
-                          )}
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
+                          </button>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                ) : null}
               </div>
             )}
           </div>
-        )}
-          </div>
-        </div>
+        ) : null}
       </Modal>
 
       <Modal
@@ -2182,7 +2476,7 @@ export function RequisitionsPanel({
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
                   <div className="sm:col-span-2">
                     <Input
-                      label="Stamping number"
+                      label="Stamping number *"
                       value={line.stampingNumber}
                       onChange={(e) =>
                         setStampLines((prev) =>

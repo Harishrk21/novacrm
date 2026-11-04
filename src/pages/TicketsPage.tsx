@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CatalogMachinePick } from '@/components/contacts/CatalogMachinePick'
@@ -26,8 +26,11 @@ import { Input } from '@/components/ui/Input'
 import { ConfirmModal, Modal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
+import { VerticalFormShell } from '@/components/ui/VerticalFormTabs'
 import { useConfirmLeave, useDiscardGuard } from '@/hooks/useDiscardGuard'
 import { useRowSelection } from '@/hooks/useRowSelection'
+import { usePagedRows } from '@/hooks/usePagedRows'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 import { api, ApiClientError, num } from '@/lib/api'
 import {
   ASSET_ORIGIN_OPTIONS,
@@ -114,13 +117,12 @@ const emptyQuickMachine = {
   remindersEnabled: true,
 }
 
-/** Create-form sections — keeps the long drawer readable. */
+/** Create-form sections — one tab per group so the long form stays readable. */
 type TicketFormTab = 'details' | 'customer' | 'machine' | 'payment' | 'assign'
 
 const TICKET_SECTION_TAB: Record<string, TicketFormTab> = {
   'section-ticket-customer': 'customer',
-  // Machine lives on the same wizard step as customer
-  'section-ticket-machine': 'customer',
+  'section-ticket-machine': 'machine',
   'section-ticket-assign': 'assign',
 }
 
@@ -182,13 +184,23 @@ function jobKindFromParams(params: URLSearchParams): CreateJobKind {
   return ''
 }
 
-type TicketQueueId = 'all' | 'awaiting' | 'progress' | 'approval' | 'closed'
+type TicketQueueId = 'all' | 'mine' | 'awaiting' | 'progress' | 'approval' | 'closed'
 
 function parseTicketQueue(raw: string | null): TicketQueueId {
-  if (raw === 'awaiting' || raw === 'progress' || raw === 'approval' || raw === 'closed') {
+  if (
+    raw === 'mine' ||
+    raw === 'awaiting' ||
+    raw === 'progress' ||
+    raw === 'approval' ||
+    raw === 'closed'
+  ) {
     return raw
   }
   return 'all'
+}
+
+function isClaimablePoolTicket(t: Record<string, unknown>) {
+  return String(t.status) === 'OPEN' && !t.assignedToId
 }
 
 export function TicketsPage() {
@@ -209,9 +221,14 @@ export function TicketsPage() {
   const [users, setUsers] = useState<LookupUser[]>([])
   const [status, setStatus] = useState(searchParams.get('status') ?? '')
   const [areaFilter, setAreaFilter] = useState(searchParams.get('area') ?? '')
-  const [queue, setQueue] = useState<TicketQueueId>(() =>
-    parseTicketQueue(searchParams.get('queue')),
-  )
+  const [queue, setQueue] = useState<TicketQueueId>(() => {
+    const q = parseTicketQueue(searchParams.get('queue'))
+    // Engineers: only My jobs vs Ready to accept
+    if (isServiceEngineer(useAuthStore.getState().user?.role)) {
+      return q === 'awaiting' ? 'awaiting' : 'mine'
+    }
+    return q
+  })
   const [tab, setTab] = useState<'list' | 'create'>('list')
   const [jobKind, setJobKind] = useState<CreateJobKind>(() => jobKindFromParams(searchParams))
   const [assignModal, setAssignModal] = useState<{ id: string; ticketNo?: string } | null>(null)
@@ -295,8 +312,11 @@ export function TicketsPage() {
 
   const engineers = useMemo(() => filterServiceEngineers(users), [users])
 
-  const load = useCallback(async () => {
+  const ticketLookupsReadyRef = useRef(false)
+
+  const load = useCallback(async (_opts?: { silent?: boolean }) => {
     try {
+      const needLookups = !ticketLookupsReadyRef.current
       const [res, lookups] = await Promise.all([
         api.tickets({
           limit: 100,
@@ -307,10 +327,13 @@ export function TicketsPage() {
           slaBreached: searchParams.get('slaBreached') || undefined,
           ...(isAgent ? { mine: 1, ...(isServiceEngineer(authUser?.role) ? { claimable: 1 } : {}) } : {}),
         }),
-        api.lookups({ scope: 'core' }),
+        needLookups ? api.lookups({ scope: 'core' }) : Promise.resolve(null),
       ])
       setTickets(res.items ?? [])
-      setUsers(lookups.users)
+      if (lookups) {
+        setUsers(lookups.users)
+        ticketLookupsReadyRef.current = true
+      }
       setForm((f) => ({
         ...f,
         receivedByUserId: f.receivedByUserId || authUser?.id || '',
@@ -361,15 +384,20 @@ export function TicketsPage() {
 
   // Keep queue chips in sync with Sidebar / bookmark URLs (?queue=…)
   useEffect(() => {
-    setQueue(parseTicketQueue(searchParams.get('queue')))
-  }, [searchParams])
+    const q = parseTicketQueue(searchParams.get('queue'))
+    if (isEngineer) {
+      setQueue(q === 'awaiting' ? 'awaiting' : 'mine')
+      return
+    }
+    setQueue(q === 'mine' ? 'all' : q)
+  }, [searchParams, isEngineer])
 
   function selectQueue(id: TicketQueueId) {
     setQueue(id)
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev)
-        if (id === 'all') next.delete('queue')
+        if (id === 'all' || (isEngineer && id === 'mine')) next.delete('queue')
         else next.set('queue', id)
         return next
       },
@@ -388,28 +416,38 @@ export function TicketsPage() {
   }, [isAdmin, isDesk, authUser?.role, tab, load])
 
   const queueCounts = useMemo(() => {
-    const awaiting = tickets.filter((t) => String(t.status) === 'OPEN' && !t.assignedToId).length
+    const awaiting = tickets.filter((t) => isClaimablePoolTicket(t)).length
+    const mine = tickets.filter((t) => Boolean(t.assignedToId)).length
     const progress = tickets.filter((t) =>
       ['IN_PROGRESS', 'PENDING'].includes(String(t.status)),
     ).length
     const approval = tickets.filter((t) => String(t.status) === 'RESOLVED').length
     const closed = tickets.filter((t) => String(t.status) === 'CLOSED').length
-    return { awaiting, progress, approval, closed, all: tickets.length }
+    return { awaiting, mine, progress, approval, closed, all: tickets.length }
   }, [tickets])
 
   const displayedTickets = useMemo(() => {
-    const useQueue = isAdmin || isDesk
-    const rows =
-      !useQueue || queue === 'all'
-        ? [...tickets]
-        : tickets.filter((t) => {
-            const st = String(t.status)
-            if (queue === 'awaiting') return st === 'OPEN' && !t.assignedToId
-            if (queue === 'progress') return ['IN_PROGRESS', 'PENDING'].includes(st)
-            if (queue === 'approval') return st === 'RESOLVED'
-            if (queue === 'closed') return st === 'CLOSED'
-            return true
-          })
+    let rows: Record<string, unknown>[]
+    if (isEngineer) {
+      rows =
+        queue === 'awaiting'
+          ? tickets.filter((t) => isClaimablePoolTicket(t))
+          : tickets.filter((t) => Boolean(t.assignedToId))
+    } else if (isAdmin || isDesk) {
+      rows =
+        queue === 'all'
+          ? [...tickets]
+          : tickets.filter((t) => {
+              const st = String(t.status)
+              if (queue === 'awaiting') return isClaimablePoolTicket(t)
+              if (queue === 'progress') return ['IN_PROGRESS', 'PENDING'].includes(st)
+              if (queue === 'approval') return st === 'RESOLVED'
+              if (queue === 'closed') return st === 'CLOSED'
+              return true
+            })
+    } else {
+      rows = [...tickets]
+    }
     // Newest service jobs first
     return rows.sort((a, b) => {
       const ta = new Date(String(a.createdAt ?? 0)).getTime()
@@ -417,8 +455,12 @@ export function TicketsPage() {
       if (tb !== ta) return tb - ta
       return num(b.ticketNo) - num(a.ticketNo)
     })
-  }, [tickets, queue, isAdmin, isDesk])
+  }, [tickets, queue, isAdmin, isDesk, isEngineer])
 
+  const paged = usePagedRows(
+    displayedTickets,
+    `${queue}|${status}|${areaFilter}|${searchParams.get('contactId') ?? ''}|${searchParams.get('slaBreached') ?? ''}`,
+  )
   const ticketIds = useMemo(() => displayedTickets.map((t) => String(t.id)), [displayedTickets])
   const selection = useRowSelection(ticketIds)
 
@@ -440,7 +482,7 @@ export function TicketsPage() {
       })
       setAssignModal(null)
       setAssignUserId('')
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -931,78 +973,72 @@ export function TicketsPage() {
   const ticketFormTabs = useMemo(() => {
     const tabs: Array<{ id: TicketFormTab; label: string }> = [
       { id: 'details', label: isStampingJob ? 'Channel' : 'Details' },
-      { id: 'customer', label: 'Customer & machine' },
+      { id: 'customer', label: 'Customer' },
+      { id: 'machine', label: isStampingJob ? 'Machine & stamp' : 'Machine' },
     ]
     if (!isDesk) tabs.push({ id: 'payment', label: 'Payment' })
     // Assign is off on create — ticket stays OPEN; first engineer to Accept wins
-    tabs.push({ id: 'assign', label: 'Issue log' })
+    tabs.push({ id: 'assign', label: 'Complaint' })
     return tabs
   }, [isStampingJob, isDesk])
-
-  const createFlowSteps = useMemo(
-    () => [
-      ...ticketFormTabs.map((t) => ({
-        key: t.id,
-        label: t.label,
-        hint:
-          t.id === 'details'
-            ? isStampingJob
-              ? 'How it arrived'
-              : 'Service type'
-            : t.id === 'customer'
-              ? 'Shop + machine'
-              : t.id === 'payment'
-                ? 'Optional now'
-                : 'Complaint note',
-      })),
-      {
-        key: 'pool',
-        label: 'Open pool',
-        hint: 'First Accept wins',
-      },
-    ],
-    [ticketFormTabs, isStampingJob],
-  )
-
-  const createFlowDone = useMemo(() => {
-    const tabDone = ticketFormTabs.map((t) => {
-      if (t.id === 'details') return formTab !== 'details' || Boolean(form.channel)
-      if (t.id === 'customer')
-        return (
-          Boolean(form.contactId) &&
-          (Boolean(form.assetId) ||
-            (form.newMachine &&
-              Boolean(form.machineName.trim()) &&
-              (form.origin === 'SOLD_BY_US' || form.origin === 'THIRD_PARTY')))
-        )
-      if (t.id === 'payment') return formTab === 'assign' || Boolean(form.description.trim())
-      if (t.id === 'assign') return Boolean(form.description.trim())
-      return false
-    })
-    // Last step (Open pool) completes only after create — always false here
-    return [...tabDone, false]
-  }, [
-    ticketFormTabs,
-    formTab,
-    form.channel,
-    form.contactId,
-    form.assetId,
-    form.newMachine,
-    form.machineName,
-    form.origin,
-    form.description,
-  ])
   const createReturnTo =
     jobKind === 'STAMPING'
       ? '/tickets?open=1&job=stamping&category=Stamping'
       : '/tickets?open=1&job=service'
 
   const createOpen = tab === 'create'
+  /** True only after the user actually edits — Cancel / Back with a blank form closes immediately. */
+  const createDirty = useMemo(() => {
+    if (!createOpen || !canCreate) return false
+    const urlKind = jobKindFromParams(searchParams)
+    const userPickedKind = Boolean(jobKind) && jobKind !== urlKind
+    const defaultStampDesc = 'Customer walk-in for government stamping / verification.'
+    const intakeStampDesc = 'From intake — government stamping / verification.'
+    const intakeServiceDesc = 'From intake — service job. Log the customer complaint below.'
+    const desc = form.description.trim()
+    const descEdited =
+      Boolean(desc) &&
+      desc !== defaultStampDesc &&
+      desc !== intakeStampDesc &&
+      desc !== intakeServiceDesc
+    return Boolean(
+      userPickedKind ||
+        pickedContact ||
+        form.contactId ||
+        form.assetId ||
+        form.newMachine ||
+        machinePath ||
+        descEdited ||
+        (form.channel && form.channel !== 'Walk-in') ||
+        (jobKind === 'SERVICE' && form.category && form.category !== 'Breakdown') ||
+        Boolean(form.paymentTotal.trim()) ||
+        Boolean(form.advanceAmount.trim()) ||
+        Boolean(form.serialNo.trim()) ||
+        Boolean(form.machineName.trim()),
+    )
+  }, [
+    createOpen,
+    canCreate,
+    jobKind,
+    searchParams,
+    pickedContact,
+    form.contactId,
+    form.assetId,
+    form.newMachine,
+    form.description,
+    form.channel,
+    form.category,
+    form.paymentTotal,
+    form.advanceAmount,
+    form.serialNo,
+    form.machineName,
+    machinePath,
+  ])
   const createLeaveReason =
     'You have a new ticket form open. Leaving will discard your changes.'
-  useDiscardGuard(createOpen && canCreate, createLeaveReason)
+  useDiscardGuard(createDirty, createLeaveReason)
   const { requestLeave: requestLeaveCreate, dialog: createDiscardDialog } = useConfirmLeave(
-    createOpen && canCreate,
+    createDirty,
     createLeaveReason,
   )
 
@@ -1253,7 +1289,7 @@ export function TicketsPage() {
       // Only create a machine when explicitly adding a new one — never re-create an existing selection
       if (form.newMachine || (!assetId && form.machineName.trim())) {
         if (!form.machineName.trim()) {
-          setFormTab('customer')
+          setFormTab('machine')
           setMachinePath('new')
           setNewMachineModalOpen(true)
           setFormGuide({
@@ -1270,7 +1306,7 @@ export function TicketsPage() {
             ? form.origin
             : ''
         if (!originForNew) {
-          setFormTab('customer')
+          setFormTab('machine')
           setMachinePath('new')
           setNewMachineModalOpen(true)
           setFormGuide({
@@ -1340,7 +1376,7 @@ export function TicketsPage() {
       }
 
       if (!assetId) {
-        setFormTab('customer')
+        setFormTab('machine')
         setFormGuide({
           title: 'Machine needed',
           message: 'Select an existing machine for this customer, or add a new one.',
@@ -1480,7 +1516,7 @@ export function TicketsPage() {
         navigate(`/tickets/${String(created.id)}`)
         return
       }
-      await load()
+      await load({ silent: true })
     } catch (err) {
       setFormGuide(friendlyTicketCreateError(err))
       window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -1498,7 +1534,7 @@ export function TicketsPage() {
         message: deleteIds.length === 1 ? 'Deleted' : `${deleteIds.length} deleted`,
       })
       selection.clear()
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1575,10 +1611,10 @@ export function TicketsPage() {
             id: 'list',
             label: isAdmin || isDesk
               ? 'All tickets'
-              : isServiceEngineer(authUser?.role)
-                ? 'My jobs & open pool'
+              : isEngineer
+                ? 'My tickets'
                 : 'Assigned to me',
-            count: tickets.length,
+            count: isEngineer ? queueCounts.mine + queueCounts.awaiting : tickets.length,
           },
           ...(canCreate ? [{ id: 'create', label: 'New ticket' }] : []),
         ]}
@@ -1610,6 +1646,42 @@ export function TicketsPage() {
                   </span>
                 </Button>
               ))}
+            </div>
+          ) : null}
+          {isEngineer ? (
+            <div className="mb-4 flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant={queue === 'mine' ? 'primary' : 'outline'}
+                onClick={() => selectQueue('mine')}
+              >
+                My jobs
+                <span className="ml-1.5 rounded-full bg-black/10 px-1.5 text-[11px] tabular-nums dark:bg-white/15">
+                  {queueCounts.mine}
+                </span>
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => selectQueue('awaiting')}
+                className={cn(
+                  'border-red-400/70 text-red-700 hover:bg-red-50 dark:border-red-500/50 dark:text-red-300 dark:hover:bg-red-950/40',
+                  queue === 'awaiting' &&
+                    'border-red-600 bg-red-600 text-white hover:bg-red-700 hover:text-white dark:border-red-500 dark:bg-red-600 dark:hover:bg-red-700',
+                )}
+              >
+                Ready to accept
+                <span
+                  className={cn(
+                    'ml-1.5 rounded-full px-1.5 text-[11px] tabular-nums',
+                    queue === 'awaiting'
+                      ? 'bg-white/20 text-white'
+                      : 'bg-red-500/15 text-red-700 dark:text-red-300',
+                  )}
+                >
+                  {queueCounts.awaiting}
+                </span>
+              </Button>
             </div>
           ) : null}
           <div className="mb-4 flex flex-wrap gap-3">
@@ -1645,15 +1717,19 @@ export function TicketsPage() {
                       : queue === 'approval'
                         ? 'No tickets pending approval'
                         : 'No service jobs in this queue'
-                    : isServiceEngineer(authUser?.role)
-                      ? 'No open jobs in your pool'
+                    : isEngineer
+                      ? queue === 'awaiting'
+                        ? 'No tickets ready to accept'
+                        : 'No jobs assigned to you'
                       : 'No jobs assigned to you'
                 }
                 subtitle={
                   isAdmin || isDesk
                     ? 'Create an OPEN ticket — engineers Accept from the pool. Desk marks complete, collects payment, and closes.'
-                    : isServiceEngineer(authUser?.role)
-                      ? 'Open jobs appear here and in Workqueue → Open to accept. Tap Accept before another engineer takes it.'
+                    : isEngineer
+                      ? queue === 'awaiting'
+                        ? 'When desk opens a job to the pool, it shows here in red — tap Accept before another engineer takes it.'
+                        : 'Tickets you own appear here. Check Ready to accept for open pool jobs.'
                       : 'When a ticket is assigned to you, it shows up here from the live database.'
                 }
                 actionLabel={canCreate ? 'New ticket' : undefined}
@@ -1672,7 +1748,7 @@ export function TicketsPage() {
                 ) : null}
                 {fieldShell && isEngineer ? (
                   <div className="space-y-2.5">
-                    {displayedTickets.map((ticket) => {
+                    {paged.rows.map((ticket) => {
                       const id = String(ticket.id)
                       const contact = ticket.contact as {
                         id?: string
@@ -1687,7 +1763,7 @@ export function TicketsPage() {
                             ? String(ticket.contactId)
                             : ''
                       const st = String(ticket.status)
-                      const unassigned = !ticket.assignedToId
+                      const claimable = isClaimablePoolTicket(ticket)
                       const serviceId = formatServiceId(ticket.ticketNo as number | string)
                       const area =
                         contact?.area ||
@@ -1696,7 +1772,12 @@ export function TicketsPage() {
                       return (
                         <div
                           key={id}
-                          className="rounded-xl border border-border bg-card p-3.5 shadow-sm"
+                          className={cn(
+                            'rounded-xl border bg-card p-3.5 shadow-sm',
+                            claimable
+                              ? 'border-red-400/80 bg-red-50/80 dark:border-red-500/50 dark:bg-red-950/30'
+                              : 'border-border',
+                          )}
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0">
@@ -1718,14 +1799,25 @@ export function TicketsPage() {
                                 {area ? ` · ${area}` : ''}
                               </div>
                             </div>
-                            <Badge color={st === 'OPEN' ? 'amber' : st === 'RESOLVED' ? 'green' : 'blue'}>
-                              {labelize(st)}
+                            <Badge
+                              color={
+                                claimable
+                                  ? 'red'
+                                  : st === 'OPEN'
+                                    ? 'amber'
+                                    : st === 'RESOLVED'
+                                      ? 'green'
+                                      : 'blue'
+                              }
+                              solid={claimable}
+                            >
+                              {claimable ? 'Ready to accept' : labelize(st)}
                             </Badge>
                           </div>
                           <div className="mt-3 flex flex-col gap-2">
-                            {unassigned && st === 'OPEN' ? (
+                            {claimable ? (
                               <Button
-                                className="min-h-12 w-full text-base"
+                                className="min-h-12 w-full bg-red-600 text-base text-white hover:bg-red-700"
                                 onClick={() => {
                                   void (async () => {
                                     try {
@@ -1740,7 +1832,7 @@ export function TicketsPage() {
                                             ? e.message
                                             : 'Already taken',
                                       })
-                                      await load()
+                                      await load({ silent: true })
                                     }
                                   })()
                                 }}
@@ -1762,7 +1854,12 @@ export function TicketsPage() {
                   </div>
                 ) : null}
                 <div className={cn('overflow-x-auto', fieldShell && isEngineer && 'hidden')}>
-                  <table className="w-full min-w-[1400px] text-left text-sm">
+                  <table
+                    className={cn(
+                      'w-full text-left text-sm',
+                      isEngineer ? 'min-w-[860px]' : 'min-w-[1400px]',
+                    )}
+                  >
                     <thead className="bg-surface text-xs text-text-secondary">
                       <tr className="border-b border-border">
                         <th className="w-10 px-3 py-3">
@@ -1773,24 +1870,37 @@ export function TicketsPage() {
                             aria-label="Select all"
                           />
                         </th>
-                        {[
-                          'Service ID',
-                          'Created',
-                          'Closed',
-                          'Customer',
-                          'Area',
-                          'Machine',
-                          'Engineer',
-                          'AMC',
-                          'Stamping',
-                          'Total payment',
-                          'Advance',
-                          'Balance',
-                          'Pay status',
-                          'Next due',
-                          'Status',
-                          'Actions',
-                        ].map((h) => (
+                        {(isEngineer
+                          ? [
+                              'Service ID',
+                              'Created',
+                              'Customer',
+                              'Area',
+                              'Machine',
+                              'AMC',
+                              'Stamping',
+                              'Status',
+                              'Actions',
+                            ]
+                          : [
+                              'Service ID',
+                              'Created',
+                              'Closed',
+                              'Customer',
+                              'Area',
+                              'Machine',
+                              'Engineer',
+                              'AMC',
+                              'Stamping',
+                              'Total payment',
+                              'Advance',
+                              'Balance',
+                              'Pay status',
+                              'Next due',
+                              'Status',
+                              'Actions',
+                            ]
+                        ).map((h) => (
                           <th key={h} className="px-3 py-3 font-medium">
                             {h}
                           </th>
@@ -1798,7 +1908,7 @@ export function TicketsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {displayedTickets.map((ticket) => {
+                      {paged.rows.map((ticket) => {
                         const id = String(ticket.id)
                         const contact = ticket.contact as {
                           id?: string
@@ -1816,6 +1926,7 @@ export function TicketsPage() {
                         const st = String(ticket.status)
                         const paySt = String(ticket.paymentStatus ?? 'UNPAID')
                         const unassigned = !ticket.assignedToId
+                        const claimable = isClaimablePoolTicket(ticket)
                         const serviceId = formatServiceId(ticket.ticketNo as number | string)
                         const area =
                           contact?.area ||
@@ -1824,7 +1935,12 @@ export function TicketsPage() {
                         return (
                           <tr
                             key={id}
-                            className="cursor-pointer border-b border-border last:border-0 hover:bg-surface"
+                            className={cn(
+                              'cursor-pointer border-b border-border last:border-0 hover:bg-surface',
+                              isEngineer &&
+                                claimable &&
+                                'bg-red-50/80 hover:bg-red-50 dark:bg-red-950/30 dark:hover:bg-red-950/45',
+                            )}
                             onClick={() => navigate(`/tickets/${id}`)}
                           >
                             <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
@@ -1851,9 +1967,11 @@ export function TicketsPage() {
                             <td className="whitespace-nowrap px-3 py-3 text-xs text-text-secondary">
                               {ticket.createdAt ? formatDate(String(ticket.createdAt)) : '—'}
                             </td>
-                            <td className="whitespace-nowrap px-3 py-3 text-xs text-text-secondary">
-                              {ticket.closedAt ? formatDate(String(ticket.closedAt)) : '—'}
-                            </td>
+                            {!isEngineer ? (
+                              <td className="whitespace-nowrap px-3 py-3 text-xs text-text-secondary">
+                                {ticket.closedAt ? formatDate(String(ticket.closedAt)) : '—'}
+                              </td>
+                            ) : null}
                             <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
                               {contactId ? (
                                 <Link
@@ -1871,15 +1989,17 @@ export function TicketsPage() {
                             </td>
                             <td className="px-3 py-3 text-text-secondary">{area || '—'}</td>
                             <td className="max-w-[160px] px-3 py-3">{asset?.name ?? String(ticket.subject)}</td>
-                            <td className="px-3 py-3">
-                              {unassigned ? (
-                                <Badge color="amber">
-                                  {st === 'OPEN' ? 'Open to accept' : 'Unassigned'}
-                                </Badge>
-                              ) : (
-                                String(ticket.assignedToName ?? ticket.receivedByName ?? '—')
-                              )}
-                            </td>
+                            {!isEngineer ? (
+                              <td className="px-3 py-3">
+                                {unassigned ? (
+                                  <Badge color="amber">
+                                    {st === 'OPEN' ? 'Open to accept' : 'Unassigned'}
+                                  </Badge>
+                                ) : (
+                                  String(ticket.assignedToName ?? ticket.receivedByName ?? '—')
+                                )}
+                              </td>
+                            ) : null}
                             <td className="px-3 py-3">
                               <Badge color={asset?.servicePlan === 'AMC' ? 'green' : 'gray'}>
                                 {asset?.servicePlan === 'AMC' ? 'AMC' : 'Non-AMC'}
@@ -1888,22 +2008,41 @@ export function TicketsPage() {
                             <td className="px-3 py-3">
                               {ticket.stampingDate ? formatDate(String(ticket.stampingDate)) : '—'}
                             </td>
-                            <td className="px-3 py-3 font-medium">{formatCurrency(num(ticket.paymentTotal))}</td>
-                            <td className="px-3 py-3">{formatCurrency(num(ticket.advanceAmount))}</td>
-                            <td className="px-3 py-3 font-semibold text-accent-amber">
-                              {formatCurrency(num(ticket.balanceDue))}
-                            </td>
+                            {!isEngineer ? (
+                              <>
+                                <td className="px-3 py-3 font-medium">
+                                  {formatCurrency(num(ticket.paymentTotal))}
+                                </td>
+                                <td className="px-3 py-3">
+                                  {formatCurrency(num(ticket.advanceAmount))}
+                                </td>
+                                <td className="px-3 py-3 font-semibold text-accent-amber">
+                                  {formatCurrency(num(ticket.balanceDue))}
+                                </td>
+                                <td className="px-3 py-3">
+                                  <Badge
+                                    color={
+                                      paySt === 'PAID' ? 'green' : paySt === 'PARTIAL' ? 'amber' : 'gray'
+                                    }
+                                  >
+                                    {labelize(paySt)}
+                                  </Badge>
+                                </td>
+                                <td className="px-3 py-3">
+                                  {ticket.nextDueDate ? formatDate(String(ticket.nextDueDate)) : '—'}
+                                </td>
+                              </>
+                            ) : null}
                             <td className="px-3 py-3">
-                              <Badge color={paySt === 'PAID' ? 'green' : paySt === 'PARTIAL' ? 'amber' : 'gray'}>
-                                {labelize(paySt)}
-                              </Badge>
-                            </td>
-                            <td className="px-3 py-3">
-                              {ticket.nextDueDate ? formatDate(String(ticket.nextDueDate)) : '—'}
-                            </td>
-                            <td className="px-3 py-3">
-                              <Badge color={ticketStatusColor[st] ?? 'gray'} solid>
-                                {labelize(st)}
+                              <Badge
+                                color={
+                                  isEngineer && claimable
+                                    ? 'red'
+                                    : (ticketStatusColor[st] ?? 'gray')
+                                }
+                                solid
+                              >
+                                {isEngineer && claimable ? 'Ready to accept' : labelize(st)}
                               </Badge>
                             </td>
                             <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
@@ -1950,15 +2089,16 @@ export function TicketsPage() {
                                     {unassigned ? 'Assign' : 'Reassign'}
                                   </Button>
                                 ) : null}
-                                {isServiceEngineer(authUser?.role) && unassigned && st === 'OPEN' ? (
+                                {isEngineer && claimable ? (
                                   <Button
                                     size="sm"
+                                    className="bg-red-600 text-white hover:bg-red-700"
                                     onClick={() => {
                                       void (async () => {
                                         try {
                                           await api.claimTicket(id)
                                           addToast({ type: 'success', message: 'Job accepted' })
-                                          await load()
+                                          await load({ silent: true })
                                           navigate(`/tickets/${id}`)
                                         } catch (e) {
                                           addToast({
@@ -1968,7 +2108,7 @@ export function TicketsPage() {
                                                 ? e.message
                                                 : 'Already taken',
                                           })
-                                          await load()
+                                          await load({ silent: true })
                                         }
                                       })()
                                     }}
@@ -1990,6 +2130,11 @@ export function TicketsPage() {
                     </tbody>
                   </table>
                 </div>
+                <PaginationBar
+                  page={paged.page}
+                  total={paged.total}
+                  onPageChange={paged.setPage}
+                />
               </div>
             )}
           </Card>
@@ -2066,63 +2211,48 @@ export function TicketsPage() {
                 <Card className="overflow-hidden border-border/80 p-0 shadow-sm">
                   <div
                     className={cn(
-                      'border-b border-border px-4 py-3.5 sm:px-5',
+                      'flex flex-wrap items-start justify-between gap-2 border-b border-border px-4 py-3 sm:px-5',
                       isStampingJob
                         ? 'bg-gradient-to-br from-violet-50/90 via-card to-card dark:from-violet-950/25'
                         : 'bg-gradient-to-br from-sky-50/90 via-card to-card dark:from-sky-950/25',
                     )}
                   >
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div>
-                        <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
-                          {isStampingJob ? 'Stamping job' : 'Service ticket'} · Step{' '}
-                          {createStepIndex + 1} of {ticketFormTabs.length}
-                        </p>
-                        <h2 className="mt-0.5 text-base font-semibold tracking-tight text-text-primary">
-                          {ticketFormTabs.find((t) => t.id === formTab)?.label ?? 'Details'}
-                        </h2>
-                        <p className="mt-0.5 max-w-xl text-xs leading-relaxed text-text-secondary">
-                          {createSubtitle}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        className="text-[11px] font-medium text-accent-blue hover:underline"
-                        onClick={() => {
-                          setJobKind('')
-                          setFieldErrors({})
-                          setFormGuide(null)
-                        }}
-                      >
-                        Change type
-                      </button>
-                    </div>
-
-                    <div className="mt-3 rounded-xl border border-border/70 bg-card/80 px-2 py-2.5">
-                      <FlowStepBar
-                        steps={createFlowSteps}
-                        doneFlags={createFlowDone}
-                        onStepClick={(_index, step) => {
-                          if (step.key === 'pool') {
-                            setFormTab('assign')
-                            setFormGuide(null)
-                            return
-                          }
-                          if (ticketFormTabs.some((t) => t.id === step.key)) {
-                            setFormTab(step.key as TicketFormTab)
-                            setFormGuide(null)
-                          }
-                        }}
-                      />
-                      <p className="mt-2 px-1 text-center text-[11px] text-text-secondary">
-                        After create → <strong className="text-text-primary">OPEN pool</strong> ·
-                        first engineer to <strong className="text-text-primary">Accept</strong> gets
-                        the job
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
+                        {isStampingJob ? 'Stamping job' : 'Service ticket'} · Step{' '}
+                        {createStepIndex + 1} of {ticketFormTabs.length}
+                      </p>
+                      <h2 className="mt-0.5 text-base font-semibold tracking-tight text-text-primary">
+                        {ticketFormTabs.find((t) => t.id === formTab)?.label ?? 'Details'}
+                      </h2>
+                      <p className="mt-0.5 max-w-xl text-xs leading-relaxed text-text-secondary">
+                        {createSubtitle}
                       </p>
                     </div>
+                    <button
+                      type="button"
+                      className="text-[11px] font-medium text-accent-blue hover:underline"
+                      onClick={() => {
+                        setJobKind('')
+                        setFieldErrors({})
+                        setFormGuide(null)
+                      }}
+                    >
+                      Change type
+                    </button>
                   </div>
 
-                  <div className="px-4 py-4 sm:px-5">
+                  <VerticalFormShell
+                    className="min-h-[380px] rounded-none border-0"
+                    accent={isStampingJob ? 'violet' : 'sky'}
+                    title="Steps"
+                    active={formTab}
+                    onChange={(id) => {
+                      setFormTab(id as TicketFormTab)
+                      setFormGuide(null)
+                    }}
+                    tabs={ticketFormTabs.map((t) => ({ id: t.id, label: t.label }))}
+                  >
 
             {formTab === 'details' ? (
             <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -2164,18 +2294,18 @@ export function TicketsPage() {
             </section>
             ) : null}
 
-            {formTab === 'customer' || formTab === 'machine' ? (
-            <>
+            {formTab === 'customer' ? (
             <section
               id="section-ticket-customer"
               className={`scroll-mt-24 space-y-3 rounded-xl border border-emerald-200/70 bg-emerald-50/20 p-3.5 sm:p-4 dark:border-emerald-900/40 dark:bg-emerald-950/15 ${sectionErrorClass(Boolean(fieldErrors.contactId), 'guide')}`}
             >
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-emerald-800 dark:text-emerald-200">
-                  1 · Customer
+                  Customer
                 </p>
                 <p className="mt-0.5 text-xs text-text-secondary">
-                  Find the shop first. Machine choice opens in its own step below.
+                  Find the shop first. Next tab is Machine
+                  {isStampingJob ? ' & stamp' : ''}.
                 </p>
               </div>
               {fieldErrors.contactId ? (
@@ -2202,17 +2332,37 @@ export function TicketsPage() {
                   ) : null}
                   <span className="mt-0.5 block text-[11px] opacity-80">
                     {assets.length > 0
-                      ? `${assets.length} machine${assets.length === 1 ? '' : 's'} on file — choose in step 2.`
-                      : 'No machines on file — add one in step 2.'}
+                      ? `${assets.length} machine${assets.length === 1 ? '' : 's'} on file — choose on the Machine tab.`
+                      : 'No machines on file — add one on the Machine tab.'}
                   </span>
                 </div>
               ) : null}
             </section>
+            ) : null}
 
-            {form.contactId ? (
+            {formTab === 'machine' ? (
+            !form.contactId ? (
+              <div className="rounded-xl border border-amber-200/80 bg-amber-50/50 px-4 py-6 text-center dark:border-amber-900/40 dark:bg-amber-950/20">
+                <p className="text-sm font-semibold text-text-primary">Pick a customer first</p>
+                <p className="mt-1 text-xs text-text-secondary">
+                  Machine and stamp fields are per shop — choose the customer tab, then come back.
+                </p>
+                <Button
+                  className="mt-3"
+                  size="sm"
+                  onClick={() => {
+                    setFormTab('customer')
+                    setFormGuide(null)
+                  }}
+                >
+                  Go to Customer
+                </Button>
+              </div>
+            ) : (
+            <>
             <section
               id="section-ticket-machine"
-              className={`scroll-mt-24 mt-4 grid gap-3 rounded-xl border p-3.5 sm:grid-cols-2 sm:p-4 lg:grid-cols-3 ${
+              className={`scroll-mt-24 grid gap-3 rounded-xl border p-3.5 sm:grid-cols-2 sm:p-4 lg:grid-cols-3 ${
                 isStampingJob
                   ? 'border-violet-200/80 bg-violet-50/25 dark:border-violet-900/45 dark:bg-violet-950/20'
                   : 'border-sky-200/80 bg-sky-50/25 dark:border-sky-900/45 dark:bg-sky-950/20'
@@ -2234,10 +2384,11 @@ export function TicketsPage() {
                           : 'text-sky-800 dark:text-sky-200',
                       )}
                     >
-                      2 · Machine
+                      Machine{isStampingJob ? ' & stamp' : ''}
                     </p>
                     <p className="mt-0.5 text-xs text-text-secondary">
                       Pick an existing unit, or open the add-machine form (popup).
+                      {pickedContact ? ` · ${pickedContact.name}` : ''}
                     </p>
                   </div>
                   {machinePath ? (
@@ -2513,12 +2664,6 @@ export function TicketsPage() {
                         </dd>
                       </div>
                       <div>
-                        <dt className="text-[11px] text-text-secondary">Serial</dt>
-                        <dd className="font-mono font-medium">
-                          {selectedAsset.serialNo ? String(selectedAsset.serialNo) : '—'}
-                        </dd>
-                      </div>
-                      <div>
                         <dt className="text-[11px] text-text-secondary">Model</dt>
                         <dd className="font-medium">
                           {selectedAsset.model ? String(selectedAsset.model) : '—'}
@@ -2588,12 +2733,6 @@ export function TicketsPage() {
                 </div>
               ) : null}
             </section>
-            ) : (
-              <p className="rounded-xl border border-dashed border-border bg-muted/15 px-4 py-5 text-center text-sm text-text-secondary">
-                Search and select a customer above — their machines will show here so you can pick
-                one or add a new machine for this visit.
-              </p>
-            )}
 
             {isStampingJob &&
             form.contactId &&
@@ -2739,6 +2878,7 @@ export function TicketsPage() {
               </section>
             ) : null}
             </>
+            )
             ) : null}
 
             {formTab === 'payment' && !isDesk ? (
@@ -2776,7 +2916,7 @@ export function TicketsPage() {
                 <div className="sm:col-span-2 lg:col-span-3">
                   <MissingBanner
                     tone="guide"
-                    title="Issue log"
+                    title="Complaint"
                     message={fieldErrors.description}
                   />
                 </div>
@@ -2817,7 +2957,7 @@ export function TicketsPage() {
                 }))}
               />
               <label className="block text-sm sm:col-span-2 lg:col-span-3">
-                <span className="mb-1 block font-medium text-text-secondary">Issue log *</span>
+                <span className="mb-1 block font-medium text-text-secondary">Complaint *</span>
                 <textarea
                   className={`min-h-24 w-full rounded-[8px] border bg-card p-3 text-sm outline-none focus:border-accent-blue focus:ring-2 focus:ring-accent-blue/20 ${
                     fieldErrors.description ? 'border-sky-400' : 'border-border'
@@ -2861,6 +3001,13 @@ export function TicketsPage() {
                           size="sm"
                           type="button"
                           onClick={() => {
+                            if (formTab === 'customer' && !form.contactId) {
+                              setFormGuide({
+                                title: 'Customer needed',
+                                message: 'Search and select a shop before continuing to Machine.',
+                              })
+                              return
+                            }
                             if (createStepIndex < ticketFormTabs.length - 1) {
                               setFormTab(ticketFormTabs[createStepIndex + 1]!.id)
                               setFormGuide(null)
@@ -2875,7 +3022,7 @@ export function TicketsPage() {
                         </Button>
                       )}
                     </div>
-                  </div>
+                  </VerticalFormShell>
                 </Card>
               </>
             )}

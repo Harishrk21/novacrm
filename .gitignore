@@ -25,6 +25,12 @@ backend/.env
 backend/.env.*
 !backend/.env.example
 
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -35,3 +41,5 @@ backend/.env.*
 *.njsproj
 *.sln
 *.sw?
+dev-dist/
+e2e/**/out/

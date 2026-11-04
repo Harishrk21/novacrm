@@ -7,8 +7,6 @@ import {
   Building2,
   CheckSquare,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Filter,
   ListTodo,
   Phone,
@@ -41,8 +39,13 @@ import {
 import { api, ApiClientError, isTenantSession } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
+import {
+  BulkActionBar,
+  DeleteIconButton,
+  SelectCheckbox,
+} from '@/components/ui/BulkSelect'
 import { Input } from '@/components/ui/Input'
-import { Modal } from '@/components/ui/Modal'
+import { ConfirmModal, Modal } from '@/components/ui/Modal'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
@@ -53,7 +56,11 @@ import {
   isServiceDesk,
   isServiceEngineer,
 } from '@/lib/roles'
+import { can } from '@/lib/permissions'
+import { useRowSelection } from '@/hooks/useRowSelection'
+import { usePagedRows } from '@/hooks/usePagedRows'
 import { TableSkeleton } from '@/components/ui/Skeleton'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 import { ContactPicker, type ContactPick } from '@/components/contacts/ContactPicker'
 import { useFieldShell } from '@/hooks/useFieldShell'
 
@@ -71,8 +78,6 @@ type NavId =
   | 'contacts'
 
 type DateFilter = 'today_overdue' | 'today' | 'overdue' | 'week' | 'all'
-
-const PAGE_SIZE = 20
 
 const DATE_FILTERS: { value: DateFilter; label: string }[] = [
   { value: 'today_overdue', label: 'Today & Overdue' },
@@ -251,6 +256,19 @@ export function WorkqueuePage() {
 
   const salesDesk = isSalesDesk(role)
   const [nav, setNav] = useState<NavId>(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get('nav')
+    const allowed: NavId[] = [
+      'followups',
+      'tasks',
+      'calls',
+      'meetings',
+      'leads',
+      'touched-leads',
+      'contacts',
+      'tickets',
+      'claimable',
+    ]
+    if (fromUrl && (allowed as string[]).includes(fromUrl)) return fromUrl as NavId
     const r = useAuthStore.getState().user?.role
     if (isServiceEngineer(r)) return 'claimable'
     if (isSalesDesk(r)) return 'followups'
@@ -261,12 +279,13 @@ export function WorkqueuePage() {
   )
   const [ticketStatusFilter, setTicketStatusFilter] = useState<TicketStatusFilter>('')
   const [filterOpen, setFilterOpen] = useState(true)
-  const [page, setPage] = useState(1)
   const [localFilter, setLocalFilter] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('due')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   const [createOpen, setCreateOpen] = useState<CreateKind | null>(null)
   const [createBusy, setCreateBusy] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<{ ids: string[] } | null>(null)
+  const [busyDelete, setBusyDelete] = useState(false)
   const [createForm, setCreateForm] = useState({
     leadId: '',
     ticketId: '',
@@ -278,6 +297,11 @@ export function WorkqueuePage() {
     location: '',
   })
   const [pickedContact, setPickedContact] = useState<ContactPick | null>(null)
+  const isAdmin = isCompanyAdmin(role)
+  const canDeleteActivities = can(role, 'activities:delete')
+  const canDeleteLeads = isAdmin || can(role, 'leads:delete')
+  const canDeleteContacts = isAdmin || can(role, 'contacts:delete')
+  const canDeleteTickets = isAdmin || can(role, 'tickets:delete')
   const serviceSide = !salesDesk
   const [todayAlertDismissed, setTodayAlertDismissed] = useState(() => {
     try {
@@ -287,12 +311,13 @@ export function WorkqueuePage() {
     }
   })
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!isTenantSession() || !user?.id) {
       setLoading(false)
       return
     }
-    setLoading(true)
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const scoped = !isCompanyAdmin(role)
       const wantsSalesQueues = salesDesk || isCompanyAdmin(role)
@@ -365,7 +390,7 @@ export function WorkqueuePage() {
         message: e instanceof ApiClientError ? e.message : 'Failed to load workqueue',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [user?.id, role, salesDesk, addToast])
 
@@ -379,10 +404,10 @@ export function WorkqueuePage() {
     if (!isServiceEngineer(role) && !isServiceDesk(role)) return
     const id = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return
-      void load()
+      void load({ silent: true })
     }, 45_000)
     const onVis = () => {
-      if (document.visibilityState === 'visible') void load()
+      if (document.visibilityState === 'visible') void load({ silent: true })
     }
     document.addEventListener('visibilitychange', onVis)
     return () => {
@@ -392,7 +417,6 @@ export function WorkqueuePage() {
   }, [role, load])
 
   useEffect(() => {
-    setPage(1)
     setLocalFilter('')
     setSortKey('due')
     setSortDir('asc')
@@ -405,7 +429,6 @@ export function WorkqueuePage() {
       setSortKey(key)
       setSortDir(key === 'due' ? 'asc' : 'asc')
     }
-    setPage(1)
   }
 
   const openActivities = useMemo(
@@ -674,14 +697,14 @@ export function WorkqueuePage() {
         navigate(`/tickets/${ticketId}`)
         return
       }
-      await load()
+      await load({ silent: true })
       setNav('tickets')
     } catch (e) {
       addToast({
         type: 'error',
         message: e instanceof ApiClientError ? e.message : 'Already taken by another engineer',
       })
-      await load()
+      await load({ silent: true })
     } finally {
       setClaimBusyId(null)
     }
@@ -813,7 +836,7 @@ export function WorkqueuePage() {
       else if (createOpen === 'call') setNav('calls')
       else if (createOpen === 'meeting') setNav('meetings')
       else setNav('tasks')
-      await load()
+      await load({ silent: true })
     } catch (e) {
       addToast({
         type: 'error',
@@ -833,13 +856,97 @@ export function WorkqueuePage() {
     return null
   }, [nav])
 
-  const total = rows.length
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const pageSafe = Math.min(page, pageCount)
-  const pageRows = rows.slice((pageSafe - 1) * PAGE_SIZE, pageSafe * PAGE_SIZE)
-  const from = total === 0 ? 0 : (pageSafe - 1) * PAGE_SIZE + 1
-  const to = Math.min(pageSafe * PAGE_SIZE, total)
+  const paged = usePagedRows(
+    rows,
+    `${nav}|${dateFilter}|${ticketStatusFilter}|${localFilter}|${sortKey}|${sortDir}`,
+  )
+  const pageRows = paged.rows
+  const isActivityNav = nav === 'tasks' || nav === 'meetings' || nav === 'calls'
+  const isLeadNav = nav === 'followups' || nav === 'leads' || nav === 'touched-leads'
+  const canDeleteNav =
+    isActivityNav
+      ? canDeleteActivities
+      : isLeadNav
+        ? canDeleteLeads
+        : nav === 'contacts'
+          ? canDeleteContacts
+          : nav === 'tickets' || nav === 'claimable'
+            ? canDeleteTickets
+            : false
+  const showActionCol =
+    canDeleteNav || nav === 'claimable' || nav === 'tickets' || isActivityNav
+  const selectablePageIds = useMemo(
+    () => (canDeleteNav ? pageRows.map((r) => String(r.id)) : []),
+    [canDeleteNav, pageRows],
+  )
+  const selection = useRowSelection(selectablePageIds)
 
+  const deleteNoun =
+    nav === 'calls'
+      ? 'call'
+      : nav === 'meetings'
+        ? 'meeting'
+        : nav === 'tasks'
+          ? 'task'
+          : nav === 'contacts'
+            ? 'contact'
+            : nav === 'tickets' || nav === 'claimable'
+              ? 'ticket'
+              : nav === 'followups'
+                ? 'follow-up lead'
+                : 'lead'
+
+  const deleteConfirmBody =
+    isActivityNav
+      ? 'This removes the call, task or meeting from your workqueue. This cannot be undone.'
+      : isLeadNav
+        ? 'This permanently deletes the lead / enquiry. This cannot be undone.'
+        : nav === 'contacts'
+          ? 'This permanently deletes the customer contact. This cannot be undone.'
+          : 'This permanently deletes the service ticket. This cannot be undone.'
+
+  async function runDeleteRows(deleteIds: string[]) {
+    if (!deleteIds.length || !canDeleteNav) return
+    setBusyDelete(true)
+    let ok = 0
+    let failed = 0
+    let lastError = ''
+    try {
+      for (const id of deleteIds) {
+        try {
+          if (isActivityNav) await api.deleteActivity(id)
+          else if (isLeadNav) await api.deleteLead(id)
+          else if (nav === 'contacts') await api.deleteContact(id)
+          else if (nav === 'tickets' || nav === 'claimable') await api.deleteTicket(id)
+          else throw new Error('Delete not supported here')
+          ok += 1
+        } catch (e) {
+          failed += 1
+          lastError = e instanceof ApiClientError ? e.message : 'Delete failed'
+        }
+      }
+      if (ok > 0) {
+        addToast({
+          type: 'success',
+          message: ok === 1 ? 'Deleted' : `${ok} deleted`,
+        })
+        selection.clear()
+        await load({ silent: true })
+      }
+      if (failed > 0) {
+        addToast({
+          type: 'error',
+          message:
+            ok > 0
+              ? `${failed} could not be deleted${lastError ? `: ${lastError}` : ''}`
+              : lastError || 'Could not delete',
+        })
+      }
+    } finally {
+      setBusyDelete(false)
+      setDeleteConfirm(null)
+    }
+  }
   function NavItem({
     id,
     label,
@@ -1010,6 +1117,34 @@ export function WorkqueuePage() {
     return <span className="text-text-secondary">—</span>
   }
 
+  /** Plain labels for fully clickable rows (avoid nested links). */
+  function relatedPlain(row: Row) {
+    const deal = row.deal as { name?: string } | null
+    if (deal?.name) return deal.name
+    if (leadHref(row)) return 'Lead'
+    const ticketHref = activityHref(row)
+    if (
+      ticketHref?.startsWith('/tickets/') &&
+      (nav === 'tasks' || nav === 'meetings' || nav === 'calls')
+    ) {
+      return 'Service job'
+    }
+    if (row.accountName) return String(row.accountName)
+    const contact = row.contact as { name?: string } | null
+    if (contact?.name) return contact.name
+    return '—'
+  }
+
+  function contactPlain(row: Row) {
+    const contact = row.contact as { name?: string } | null
+    if (contact?.name) return contact.name
+    if (nav === 'leads' || nav === 'touched-leads' || nav === 'followups') {
+      return String(row.phone ?? row.email ?? '—')
+    }
+    if (nav === 'contacts') return String(row.email ?? row.phone ?? '—')
+    return '—'
+  }
+
   function SortTh({
     label,
     column,
@@ -1042,8 +1177,6 @@ export function WorkqueuePage() {
       </th>
     )
   }
-
-  const isActivityNav = nav === 'tasks' || nav === 'meetings' || nav === 'calls'
 
   return (
     <div
@@ -1377,7 +1510,18 @@ export function WorkqueuePage() {
           ) : null}
 
           <div className="min-h-0 flex-1 overflow-auto">
-            {loading ? (
+            {canDeleteNav && selection.someSelected ? (
+              <div className="border-b border-border px-4 pt-3">
+                <BulkActionBar
+                  count={selection.selectedCount}
+                  noun={deleteNoun}
+                  busy={busyDelete}
+                  onClear={selection.clear}
+                  onDelete={() => setDeleteConfirm({ ids: selection.selectedIds })}
+                />
+              </div>
+            ) : null}
+            {loading && pageRows.length === 0 ? (
               <div className="p-4">
                 <TableSkeleton rows={8} />
               </div>
@@ -1414,13 +1558,43 @@ export function WorkqueuePage() {
                         ? 'Open · free to accept'
                         : labelize(String(row.status))
                       : labelize(String(row.status ?? 'Open'))
+                  const href = workqueueRowHref(nav, row)
                   return (
                     <div
                       key={tid}
-                      className="rounded-xl border border-border bg-card p-3.5 shadow-sm"
+                      role={href ? 'link' : undefined}
+                      tabIndex={href ? 0 : undefined}
+                      className={cn(
+                        'rounded-xl border border-border bg-card p-3.5 shadow-sm',
+                        href && 'cursor-pointer hover:border-accent-blue/40',
+                      )}
+                      onClick={() => {
+                        if (href) navigate(href)
+                      }}
+                      onKeyDown={(e) => {
+                        if (href && (e.key === 'Enter' || e.key === ' ')) {
+                          e.preventDefault()
+                          navigate(href)
+                        }
+                      }}
                     >
-                      <div className="text-[15px] font-semibold text-text-primary">
-                        {subjectCell(row)}
+                      <div className="flex items-start gap-2">
+                        {canDeleteNav ? (
+                          <div
+                            className="pt-0.5"
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => e.stopPropagation()}
+                          >
+                            <SelectCheckbox
+                              checked={selection.isSelected(tid)}
+                              onChange={() => selection.toggle(tid)}
+                              aria-label={`Select ${rowSubjectText(nav, row)}`}
+                            />
+                          </div>
+                        ) : null}
+                        <div className="min-w-0 flex-1 text-[15px] font-semibold text-text-primary">
+                          {subjectCell(row)}
+                        </div>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-text-secondary">
                         <span>{dueCell(row)}</span>
@@ -1431,7 +1605,11 @@ export function WorkqueuePage() {
                       <div className="mt-1 truncate text-[13px] text-text-secondary">
                         {contactCell(row)}
                       </div>
-                      <div className="mt-3 flex flex-col gap-2">
+                      <div
+                        className="mt-3 flex flex-col gap-2"
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                      >
                         {nav === 'claimable' && unassigned && engineer ? (
                           <button
                             type="button"
@@ -1442,14 +1620,26 @@ export function WorkqueuePage() {
                             {claimBusyId === tid ? 'Accepting…' : 'Accept job'}
                           </button>
                         ) : null}
-                        {workqueueRowHref(nav, row) ? (
-                          <Link
-                            to={workqueueRowHref(nav, row)!}
-                            className="flex min-h-11 w-full items-center justify-center rounded-xl border border-border text-[14px] font-semibold text-accent-blue"
-                          >
-                            {nav === 'tickets' || nav === 'claimable' ? 'Open job' : 'Open'}
-                          </Link>
-                        ) : null}
+                        <div className="flex gap-2">
+                          {href ? (
+                            <Link
+                              to={href}
+                              className="flex min-h-11 flex-1 items-center justify-center rounded-xl border border-border text-[14px] font-semibold text-accent-blue"
+                            >
+                              {nav === 'tickets' || nav === 'claimable' ? 'Open job' : 'Open'}
+                            </Link>
+                          ) : null}
+                          {canDeleteNav ? (
+                            <Button
+                              variant="outline"
+                              className="min-h-11 border-rose-200 text-rose-600 hover:bg-rose-50"
+                              disabled={busyDelete}
+                              onClick={() => setDeleteConfirm({ ids: [tid] })}
+                            >
+                              Delete
+                            </Button>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
                   )
@@ -1457,16 +1647,28 @@ export function WorkqueuePage() {
               </div>
             ) : (
               <table className="w-full min-w-[880px] border-collapse text-left text-[13px]">
-                <thead className="sticky top-0 z-10 bg-card">
+                <thead className="sticky top-0 z-[1] bg-card">
                   <tr className="border-b border-border text-[12px] font-medium text-text-secondary">
+                    {canDeleteNav ? (
+                      <th className="w-10 px-3 py-2.5">
+                        <SelectCheckbox
+                          checked={selection.allSelected}
+                          indeterminate={selection.someSelected && !selection.allSelected}
+                          onChange={selection.toggleAll}
+                          aria-label="Select all on page"
+                        />
+                      </th>
+                    ) : null}
                     <SortTh label="Subject" column="subject" className="px-4" />
                     <SortTh label="Due Date" column="due" />
                     <SortTh label="Status" column="status" />
                     <SortTh label="Priority" column="priority" />
                     <SortTh label="Related To" column="related" />
                     <SortTh label="Contact Name" column="contact" className="px-4" />
-                    {nav === 'claimable' || nav === 'tickets' || isActivityNav ? (
-                      <th className="px-4 py-2.5 font-medium">Action</th>
+                    {showActionCol ? (
+                      <th className="sticky right-0 z-[2] bg-card px-4 py-2.5 font-medium shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.12)]">
+                        Action
+                      </th>
                     ) : null}
                   </tr>
                 </thead>
@@ -1478,13 +1680,41 @@ export function WorkqueuePage() {
                       (row.contact as { area?: string } | null)?.area ||
                       (row.customFields as { serviceArea?: string } | null)?.serviceArea ||
                       ''
+                    const href = workqueueRowHref(nav, row)
                     return (
                     <tr
                       key={tid}
-                      className="border-b border-border/80 transition hover:bg-muted/40"
+                      role={href ? 'link' : undefined}
+                      tabIndex={href ? 0 : undefined}
+                      className={cn(
+                        'border-b border-border/80 transition hover:bg-muted/40',
+                        href && 'cursor-pointer',
+                      )}
+                      onClick={() => {
+                        if (href) navigate(href)
+                      }}
+                      onKeyDown={(e) => {
+                        if (href && (e.key === 'Enter' || e.key === ' ')) {
+                          e.preventDefault()
+                          navigate(href)
+                        }
+                      }}
                     >
+                      {canDeleteNav ? (
+                        <td
+                          className="px-3 py-2.5"
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => e.stopPropagation()}
+                        >
+                          <SelectCheckbox
+                            checked={selection.isSelected(tid)}
+                            onChange={() => selection.toggle(tid)}
+                            aria-label={`Select ${rowSubjectText(nav, row)}`}
+                          />
+                        </td>
+                      ) : null}
                       <td className="max-w-[280px] px-4 py-2.5">
-                        <div className="font-medium">{subjectCell(row)}</div>
+                        <div className="font-medium text-text-primary">{rowSubjectText(nav, row)}</div>
                         {area ? (
                           <div className="text-[11px] text-text-secondary">Area · {area}</div>
                         ) : null}
@@ -1502,29 +1732,45 @@ export function WorkqueuePage() {
                       <td className="whitespace-nowrap px-3 py-2.5 text-text-primary">
                         {priorityOf(row)}
                       </td>
-                      <td className="max-w-[200px] truncate px-3 py-2.5">{relatedCell(row)}</td>
-                      <td className="max-w-[180px] truncate px-4 py-2.5">{contactCell(row)}</td>
-                      {nav === 'claimable' || nav === 'tickets' || isActivityNav ? (
-                        <td className="px-4 py-2.5">
-                          {nav === 'claimable' && unassigned && isServiceEngineer(role) ? (
-                            <button
-                              type="button"
-                              disabled={claimBusyId === tid}
-                              onClick={() => void acceptJob(tid)}
-                              className="rounded-md bg-[color:var(--color-accent-blue)] px-2.5 py-1 text-[12px] font-semibold text-white disabled:opacity-60"
-                            >
-                              {claimBusyId === tid ? 'Accepting…' : 'Accept'}
-                            </button>
-                          ) : workqueueRowHref(nav, row) ? (
-                            <Link
-                              to={workqueueRowHref(nav, row)!}
-                              className="text-[12px] font-semibold text-accent-blue hover:underline"
-                            >
-                              Open
-                            </Link>
-                          ) : (
-                            <span className="text-[12px] text-text-secondary">—</span>
-                          )}
+                      <td className="max-w-[200px] truncate px-3 py-2.5 text-text-primary">
+                        {relatedPlain(row)}
+                      </td>
+                      <td className="max-w-[180px] truncate px-4 py-2.5 text-text-primary">
+                        {contactPlain(row)}
+                      </td>
+                      {showActionCol ? (
+                        <td
+                          className="sticky right-0 z-[1] bg-card px-4 py-2.5 shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.12)]"
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => e.stopPropagation()}
+                        >
+                          <div className="flex items-center gap-2">
+                            {nav === 'claimable' && unassigned && isServiceEngineer(role) ? (
+                              <button
+                                type="button"
+                                disabled={claimBusyId === tid}
+                                onClick={() => void acceptJob(tid)}
+                                className="rounded-md bg-[color:var(--color-accent-blue)] px-2.5 py-1 text-[12px] font-semibold text-white disabled:opacity-60"
+                              >
+                                {claimBusyId === tid ? 'Accepting…' : 'Accept'}
+                              </button>
+                            ) : href ? (
+                              <Link
+                                to={href}
+                                className="text-[12px] font-semibold text-accent-blue hover:underline"
+                              >
+                                Open
+                              </Link>
+                            ) : (
+                              <span className="text-[12px] text-text-secondary">—</span>
+                            )}
+                            {canDeleteNav ? (
+                              <DeleteIconButton
+                                disabled={busyDelete}
+                                onClick={() => setDeleteConfirm({ ids: [tid] })}
+                              />
+                            ) : null}
+                          </div>
                         </td>
                       ) : null}
                     </tr>
@@ -1535,34 +1781,26 @@ export function WorkqueuePage() {
             )}
           </div>
 
-          <div className="flex h-10 shrink-0 items-center justify-between border-t border-border px-4 text-[12px] text-text-secondary">
-            <span>
-              Total Records <span className="font-medium text-text-primary">{total}</span>
-            </span>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                disabled={pageSafe <= 1}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="rounded p-1 hover:bg-muted disabled:opacity-30"
-              >
-                <ChevronLeft size={16} />
-              </button>
-              <span className="min-w-[4.5rem] text-center tabular-nums">
-                {from} to {to}
-              </span>
-              <button
-                type="button"
-                disabled={pageSafe >= pageCount}
-                onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-                className="rounded p-1 hover:bg-muted disabled:opacity-30"
-              >
-                <ChevronRight size={16} />
-              </button>
-            </div>
-          </div>
+          <PaginationBar page={paged.page} total={paged.total} onPageChange={paged.setPage} />
         </section>
       </div>
+
+      <ConfirmModal
+        open={Boolean(deleteConfirm)}
+        onClose={() => !busyDelete && setDeleteConfirm(null)}
+        onConfirm={() => {
+          if (deleteConfirm) void runDeleteRows(deleteConfirm.ids)
+        }}
+        title={
+          deleteConfirm?.ids.length === 1
+            ? `Delete this ${deleteNoun}?`
+            : `Delete ${deleteConfirm?.ids.length ?? 0} ${deleteNoun}s?`
+        }
+        body={deleteConfirmBody}
+        confirmLabel={busyDelete ? 'Deleting…' : 'Delete'}
+        confirmVariant="danger"
+        closeOnConfirm={false}
+      />
 
       <Modal
         open={Boolean(createOpen)}

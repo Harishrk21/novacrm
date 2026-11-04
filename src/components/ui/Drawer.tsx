@@ -141,13 +141,14 @@ export function Drawer({
 
   return createPortal(
     <>
+      {/* Above Team Chat dock (z-200) so Save/Cancel stay clickable; below Modal (z-250). */}
       <div
-        className="fixed inset-0 z-[180] bg-black/35 opacity-100 transition-opacity duration-150"
+        className="fixed inset-0 z-[225] bg-black/35 opacity-100 transition-opacity duration-150"
         onClick={onClose}
         aria-hidden={false}
       />
       <aside
-        className="fixed bottom-0 right-0 top-0 z-[190] flex translate-x-0 flex-col bg-card shadow-[-4px_0_24px_rgba(0,0,0,0.14)] transition-transform duration-150"
+        className="fixed bottom-0 right-0 top-0 z-[230] flex translate-x-0 flex-col bg-card shadow-[-4px_0_24px_rgba(0,0,0,0.14)] transition-transform duration-150"
         style={{ width: w, maxWidth: '100vw' }}
         role="dialog"
         aria-modal="true"

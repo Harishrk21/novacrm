@@ -18,7 +18,10 @@ import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { Input } from '@/components/ui/Input'
 import { ConfirmModal, Modal } from '@/components/ui/Modal'
 import { Select } from '@/components/ui/Select'
+import { VerticalFormShell } from '@/components/ui/VerticalFormTabs'
 import { TableSkeleton } from '@/components/ui/Skeleton'
+import { PaginationBar } from '@/components/ui/PaginationBar'
+import { usePagedRows } from '@/hooks/usePagedRows'
 import { api, ApiClientError, isTenantSession } from '@/lib/api'
 import { cn, formatCurrency, formatDateTime, formatPhone } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
@@ -26,6 +29,11 @@ import { useUIStore } from '@/store/uiStore'
 type Row = Record<string, unknown>
 type Tab = 'ACTIVE' | 'OVERDUE' | 'RETURNED' | 'CANCELLED' | 'ALL'
 type IssueStep = 1 | 2 | 3
+const RENTAL_ISSUE_TABS = [
+  { id: '1', label: 'Customer' },
+  { id: '2', label: 'Machine' },
+  { id: '3', label: 'Terms' },
+] as const
 
 function statusColor(s: string): 'blue' | 'amber' | 'red' | 'green' | 'gray' {
   if (s === 'ACTIVE') return 'blue'
@@ -104,13 +112,15 @@ export function RentalsPage() {
   const [picked, setPicked] = useState<ContactPick | null>(null)
   const [intakeLeadId, setIntakeLeadId] = useState<string | null>(null)
   const [form, setForm] = useState(emptyIssueForm)
+  const paged = usePagedRows(items, tab)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!isTenantSession()) {
       setLoading(false)
       return
     }
-    setLoading(true)
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const [list, sum] = await Promise.all([
         api.rentals({
@@ -132,13 +142,40 @@ export function RentalsPage() {
         message: e instanceof ApiClientError ? e.message : 'Failed to load rentals',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [tab, addToast])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    const q = searchParams.get('q')?.trim()
+    if (!q) return
+    if (tab !== 'ALL') {
+      setTab('ALL')
+      return
+    }
+    if (loading || items.length === 0) return
+    const match = items.find(
+      (r) =>
+        String(r.id) === q ||
+        String(r.rentalNo ?? '')
+          .toLowerCase()
+          .includes(q.toLowerCase()),
+    )
+    if (!match) return
+    setDetail(match)
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('q')
+        return next
+      },
+      { replace: true },
+    )
+  }, [searchParams, items, loading, tab, setSearchParams])
 
   useEffect(() => {
     if (searchParams.get('open') !== '1') return
@@ -336,7 +373,7 @@ export function RentalsPage() {
       setIssueOpen(false)
       setIntakeLeadId(null)
       setTab('ACTIVE')
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -356,7 +393,7 @@ export function RentalsPage() {
       setReturnTarget(null)
       setReturnNotes('')
       setDetail(null)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -377,7 +414,7 @@ export function RentalsPage() {
       setCancelNotes('')
       setDetail(null)
       setTab('CANCELLED')
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -416,7 +453,7 @@ export function RentalsPage() {
       })
       addToast({ type: 'success', message: 'Rental terms updated' })
       setExtendTarget(null)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -503,7 +540,7 @@ export function RentalsPage() {
           ))}
         </div>
 
-        {loading ? (
+        {loading && items.length === 0 ? (
           <div className="p-4">
             <TableSkeleton rows={6} />
           </div>
@@ -531,7 +568,7 @@ export function RentalsPage() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((r) => {
+                {paged.rows.map((r) => {
                   const product = r.product as { id?: string; name?: string; sku?: string } | null
                   const unit = r.stockUnit as {
                     serialNo?: string
@@ -544,17 +581,17 @@ export function RentalsPage() {
                   const leadId = r.leadId != null ? String(r.leadId) : ''
                   const active = status === 'ACTIVE' || status === 'OVERDUE'
                   return (
-                    <tr key={String(r.id)} className="border-b border-border/70 hover:bg-muted/30">
+                    <tr
+                      key={String(r.id)}
+                      className="cursor-pointer border-b border-border/70 hover:bg-muted/30"
+                      onClick={() => setDetail(r)}
+                    >
                       <td className="px-4 py-2.5">
-                        <button
-                          type="button"
-                          className="font-medium text-[color:var(--color-accent-blue)] hover:underline"
-                          onClick={() => setDetail(r)}
-                        >
+                        <span className="font-medium text-[color:var(--color-accent-blue)]">
                           {String(r.rentalNo)}
-                        </button>
+                        </span>
                       </td>
-                      <td className="px-3 py-2.5">
+                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                         {productId ? (
                           <Link
                             to={`/erp/products/${productId}`}
@@ -580,7 +617,7 @@ export function RentalsPage() {
                           {product?.sku ? ` · ${product.sku}` : ''}
                         </div>
                       </td>
-                      <td className="px-3 py-2.5">
+                      <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                         {contactId ? (
                           <Link
                             to={`/contacts/${contactId}`}
@@ -637,7 +674,7 @@ export function RentalsPage() {
                           ? ` · Dep ${formatCurrency(Number(r.depositAmount))}`
                           : ''}
                       </td>
-                      <td className="px-4 py-2.5 text-right">
+                      <td className="px-4 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
                         {active ? (
                           <div className="flex flex-wrap justify-end gap-1.5">
                             <Button size="sm" variant="outline" onClick={() => openExtend(r)}>
@@ -674,6 +711,7 @@ export function RentalsPage() {
                 })}
               </tbody>
             </table>
+            <PaginationBar page={paged.page} total={paged.total} onPageChange={paged.setPage} />
           </div>
         )}
       </Card>
@@ -717,55 +755,63 @@ export function RentalsPage() {
           </>
         }
       >
-        <div className="mb-4 flex gap-2 text-xs font-medium">
-          {([1, 2, 3] as const).map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => {
-                if (s < issueStep) setIssueStep(s)
-              }}
-              className={cn(
-                'rounded-full px-3 py-1',
-                issueStep === s
-                  ? 'bg-[color:var(--color-accent-blue)] text-white'
-                  : issueStep > s
-                    ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200'
-                    : 'bg-muted text-text-secondary',
-              )}
-            >
-              {s === 1 ? '1 · Customer' : s === 2 ? '2 · Machine' : '3 · Terms'}
-            </button>
-          ))}
-        </div>
-
-        <form id="issue-rental" onSubmit={requestIssue} className="space-y-5">
+        <form id="issue-rental" onSubmit={requestIssue}>
+          <VerticalFormShell
+            className="min-h-[360px]"
+            accent="sky"
+            title="Steps"
+            active={String(issueStep)}
+            onChange={(id) => {
+              const next = Number(id) as IssueStep
+              if (next <= issueStep) setIssueStep(next)
+            }}
+            tabs={[...RENTAL_ISSUE_TABS]}
+          >
           {issueStep === 1 ? (
-            <section className="space-y-3 rounded-xl border border-border bg-muted/20 p-4">
-              <h3 className="text-sm font-semibold">1. CRM customer *</h3>
+            <section className="space-y-3">
+              <div>
+                <h3 className="text-sm font-semibold text-text-primary">CRM customer</h3>
+                <p className="text-xs text-text-secondary">
+                  Search an existing shop — name and phone fill from the customer record.
+                </p>
+              </div>
               <ContactPicker
-                label="Customer *"
+                label="Search customer *"
                 valueId={picked?.id ?? ''}
                 selected={picked}
                 onSelect={onPickContact}
                 returnTo="/rentals"
               />
+              {picked ? (
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2.5 text-sm">
+                  <div className="font-medium text-text-primary">{form.customerName || picked.name}</div>
+                  <div className="mt-0.5 text-xs text-text-secondary">
+                    {[form.customerPhone, form.customerCompany, form.city].filter(Boolean).join(' · ') ||
+                      'Selected customer'}
+                  </div>
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Input
+                    label="Customer name *"
+                    value={form.customerName}
+                    onChange={(e) => setForm({ ...form, customerName: e.target.value })}
+                  />
+                  <Input
+                    label="Phone"
+                    value={form.customerPhone}
+                    onChange={(e) => setForm({ ...form, customerPhone: e.target.value })}
+                  />
+                </div>
+              )}
               <div className="grid gap-3 sm:grid-cols-2">
-                <Input
-                  label="Customer name *"
-                  value={form.customerName}
-                  onChange={(e) => setForm({ ...form, customerName: e.target.value })}
-                />
-                <Input
-                  label="Phone"
-                  value={form.customerPhone}
-                  onChange={(e) => setForm({ ...form, customerPhone: e.target.value })}
-                />
-                <Input
-                  label="Company / shop"
-                  value={form.customerCompany}
-                  onChange={(e) => setForm({ ...form, customerCompany: e.target.value })}
-                />
+                {!picked ? (
+                  <Input
+                    label="Company / shop"
+                    value={form.customerCompany}
+                    onChange={(e) => setForm({ ...form, customerCompany: e.target.value })}
+                  />
+                ) : null}
                 <Input
                   label="Email"
                   type="email"
@@ -793,11 +839,13 @@ export function RentalsPage() {
           ) : null}
 
           {issueStep === 2 ? (
-            <section className="space-y-3 rounded-xl border border-border bg-muted/20 p-4">
-              <h3 className="text-sm font-semibold">2. Machine going out (IN_STOCK)</h3>
-              <p className="text-xs text-text-secondary">
-                Only warehouse serials marked IN_STOCK appear. Need two machines? Issue twice.
-              </p>
+            <section className="space-y-3">
+              <div>
+                <h3 className="text-sm font-semibold text-text-primary">Machine going out</h3>
+                <p className="text-xs text-text-secondary">
+                  Only IN_STOCK warehouse serials. Need two machines? Issue twice.
+                </p>
+              </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <Select
                   label="Product"
@@ -826,25 +874,28 @@ export function RentalsPage() {
                 />
               </div>
               {selectedUnit ? (
-                <div className="rounded-lg border border-sky-200 bg-sky-50/60 px-3 py-2 text-xs text-sky-950 dark:border-sky-900/40 dark:bg-sky-950/30 dark:text-sky-100">
-                  <strong>S/No {String(selectedUnit.serialNo)}</strong>
-                  {selectedUnit.hmsUniqId ? ` · ${String(selectedUnit.hmsUniqId)}` : ''}
-                  {(selectedUnit.warehouse as { code?: string } | null)?.code
-                    ? ` · ${(selectedUnit.warehouse as { code: string }).code}`
-                    : ''}
-                  {selectedUnit.stampingDate
-                    ? ` · stamp ${String(selectedUnit.stampingDate).slice(0, 10)}`
-                    : ''}
-                </div>
+                <p className="text-xs text-text-secondary">
+                  {[
+                    selectedUnit.hmsUniqId ? `HMS ${String(selectedUnit.hmsUniqId)}` : null,
+                    (selectedUnit.warehouse as { code?: string } | null)?.code
+                      ? `Warehouse ${(selectedUnit.warehouse as { code: string }).code}`
+                      : null,
+                    selectedUnit.stampingDate
+                      ? `Stamp ${String(selectedUnit.stampingDate).slice(0, 10)}`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ') || 'Serial selected above'}
+                </p>
               ) : null}
             </section>
           ) : null}
 
           {issueStep === 3 ? (
-            <section className="space-y-3 rounded-xl border border-border bg-muted/20 p-4">
-              <h3 className="flex items-center gap-2 text-sm font-semibold">
+            <section className="space-y-3">
+              <h3 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
                 <CalendarClock size={15} />
-                3. Hire period & charges
+                Hire period & charges
               </h3>
               <div className="grid gap-3 sm:grid-cols-2">
                 <Input
@@ -904,6 +955,7 @@ export function RentalsPage() {
               </div>
             </section>
           ) : null}
+          </VerticalFormShell>
         </form>
       </FormPanel>
 

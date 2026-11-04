@@ -202,8 +202,9 @@ export function SpareStockPage() {
     })
   }
 
-  async function refresh() {
-    setLoading(true)
+  async function refresh(opts?: { silent?: boolean }) {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       await Promise.all([loadItems(), loadHistory(), loadMonthly()])
     } catch (e) {
@@ -212,7 +213,7 @@ export function SpareStockPage() {
         message: e instanceof ApiClientError ? e.message : 'Failed to load spare stock',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -354,7 +355,7 @@ export function SpareStockPage() {
       })
       addToast({ type: 'success', message: 'Spare stock received' })
       closeReceive()
-      await refresh()
+      await refresh({ silent: true })
       setTab('stock')
     } catch (e) {
       addToast({
@@ -389,7 +390,7 @@ export function SpareStockPage() {
         message: iss.issuedToUserId ? 'Spare issued' : 'Spare stock reduced',
       })
       setIssueOpen(false)
-      await refresh()
+      await refresh({ silent: true })
       setTab('history')
     } catch (e) {
       addToast({
@@ -447,7 +448,7 @@ export function SpareStockPage() {
               ...(areas.sparesBilling ? (['sparesBilling'] as const) : []),
               ...(areas.sparesWeighing ? (['sparesWeighing'] as const) : []),
             ]}
-            onImported={() => void refresh()}
+            onImported={() => void refresh({ silent: true })}
             onClose={() => setImportOpen(false)}
           />
         </Card>
@@ -532,11 +533,11 @@ export function SpareStockPage() {
         ]}
       />
 
-      {loading ? (
+      {loading && items.length === 0 ? (
         <Card className="p-8 text-sm text-text-secondary">Loading spare stock…</Card>
       ) : null}
 
-      {!loading && tab === 'stock' ? (
+      {tab === 'stock' && !(loading && items.length === 0) ? (
         items.length === 0 ? (
           <EmptyState
             title="No spare parts yet"
@@ -589,7 +590,7 @@ export function SpareStockPage() {
         )
       ) : null}
 
-      {!loading && tab === 'monthly' && monthly ? (
+      {tab === 'monthly' && monthly && !(loading && items.length === 0) ? (
         <Card className="overflow-hidden p-0">
           <div className="flex flex-wrap items-center gap-3 border-b border-border bg-muted/30 px-4 py-3 text-sm">
             <span className="font-medium text-text-primary">Period {monthLabel}</span>
@@ -638,7 +639,7 @@ export function SpareStockPage() {
         </Card>
       ) : null}
 
-      {!loading && tab === 'history' ? (
+      {tab === 'history' && !(loading && items.length === 0) ? (
         history.length === 0 ? (
           <EmptyState
             title="No spare movements yet"

@@ -7,6 +7,7 @@ import {
   RequireCompanyAdmin,
   RequireErpAccess,
   RequireBillingAccess,
+  RequirePermission,
 } from '@/components/auth/RequireCompanyAdmin'
 import { LoginPage } from '@/pages/LoginPage'
 import { PlatformLoginPage } from '@/pages/PlatformLoginPage'
@@ -193,9 +194,13 @@ export default function App() {
             <Route
               path="activities"
               element={
-                <RequireCompanyAdmin>
+                <RequirePermission
+                  permission="activities:view"
+                  title="Activities access required"
+                  hint="Calls & tasks are available to roles with activities permission (admin, manager, sales, desk, warehouse, engineers)."
+                >
                   <ActivitiesPage />
-                </RequireCompanyAdmin>
+                </RequirePermission>
               }
             />
             <Route path="tickets" element={<TicketsPage />} />

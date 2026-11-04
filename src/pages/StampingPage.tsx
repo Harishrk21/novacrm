@@ -205,8 +205,9 @@ export function StampingPage() {
   const [nextDue, setNextDue] = useState(addOneYear(new Date().toISOString().slice(0, 10)))
   const [saving, setSaving] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const [unitRes, assetRes, productPage] = await Promise.all([
         api.stockUnits({ limit: 200 }),
@@ -229,7 +230,7 @@ export function StampingPage() {
         message: err instanceof ApiClientError ? err.message : 'Could not load stamping register',
       })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast])
 
@@ -418,7 +419,7 @@ export function StampingPage() {
       }
       addToast({ type: 'success', message: 'Stamping recorded' })
       setCreateOpen(false)
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -444,7 +445,7 @@ export function StampingPage() {
         setDetailAsset(null)
       }
       addToast({ type: 'success', message: 'Stamping updated' })
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -633,7 +634,7 @@ export function StampingPage() {
       </div>
 
       <Card padding={false}>
-        {loading ? (
+        {loading && units.length === 0 && assets.length === 0 ? (
           <TableSkeleton rows={8} />
         ) : mainTab === 'warehouse' ? (
           filteredUnits.length === 0 ? (

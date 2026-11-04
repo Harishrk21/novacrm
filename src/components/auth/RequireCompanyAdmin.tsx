@@ -3,6 +3,7 @@ import { AccessDenied } from '@/components/auth/AccessDenied'
 import { useAuthStore } from '@/store/authStore'
 import { canAccessProformaInvoices, isCompanyAdmin } from '@/lib/roles'
 import { hasAnyInventoryArea, resolveInventoryAreas } from '@/lib/inventoryAreas'
+import { can, type Permission } from '@/lib/permissions'
 
 /** Blocks non-admins from company-admin-only routes (reports, users, emails, etc.). */
 export function RequireCompanyAdmin({ children }: { children: React.ReactNode }) {
@@ -14,6 +15,25 @@ export function RequireCompanyAdmin({ children }: { children: React.ReactNode })
         hint="This area is for company admins. Ask an admin if you need reports, users, or email settings."
       />
     )
+  }
+  return <>{children}</>
+}
+
+/** Gate a route by RBAC permission (matches sidebar / API). */
+export function RequirePermission({
+  permission,
+  children,
+  title = 'Access required',
+  hint = 'Your role does not include this area.',
+}: {
+  permission: Permission
+  children: React.ReactNode
+  title?: string
+  hint?: string
+}) {
+  const role = useAuthStore((s) => s.user?.role)
+  if (!can(role, permission)) {
+    return <AccessDenied title={title} hint={hint} />
   }
   return <>{children}</>
 }

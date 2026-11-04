@@ -70,6 +70,10 @@ export function notificationHref(
     return '/workqueue'
   }
 
+  if (type === 'ACTIVITY_DUE_TODAY' || type === 'activity_overdue') {
+    return '/workqueue'
+  }
+
   if (
     isLeadEntity ||
     type.startsWith('LEAD_') ||
@@ -86,6 +90,10 @@ export function notificationHref(
   }
 
   if (entityType === 'ticket' || type.includes('TICKET')) {
+    if (type === 'TICKET_AVAILABLE' || type.includes('AVAILABLE')) {
+      if (entityId) return `/tickets/${entityId}`
+      return '/tickets?queue=awaiting'
+    }
     if (entityId) return `/tickets/${entityId}`
     return '/tickets'
   }

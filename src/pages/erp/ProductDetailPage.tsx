@@ -42,9 +42,10 @@ export function ProductDetailPage() {
     notes: '',
   })
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!id) return
-    setLoading(true)
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     try {
       const [row, lookups] = await Promise.all([api.getProduct(id), api.lookups()])
       setProduct(row)
@@ -54,9 +55,9 @@ export function ProductDetailPage() {
         warehouseId: f.warehouseId || lookups.warehouses[0]?.id || '',
       }))
     } catch {
-      setProduct(null)
+      if (!silent) setProduct(null)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [id])
 
@@ -81,7 +82,7 @@ export function ProductDetailPage() {
       addToast({ type: 'success', message: 'Stock updated' })
       setAdjustOpen(false)
       setForm((f) => ({ ...f, quantity: '', notes: '' }))
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Adjust failed' })
     } finally {
@@ -89,7 +90,7 @@ export function ProductDetailPage() {
     }
   }
 
-  if (loading) return <DetailSkeleton />
+  if (loading && !product) return <DetailSkeleton />
   if (!product) {
     return (
       <EmptyState

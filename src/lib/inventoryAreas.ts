@@ -64,9 +64,8 @@ export function resolveInventoryAreas(
     const nested = parseInventoryAreas(o.inventoryAreas)
     if (nested) return nested
   }
-  // Self-control model: everyone with a login can see all inventory areas unless
-  // an admin explicitly restricted preferences.inventoryAreas on the user.
-  void roleCode
+  // Engineers start locked out of stock until admin assigns areas on Users & Roles.
+  if (roleCode === 'SERVICE_ENGINEER') return { ...NO_INVENTORY_AREAS }
   return { ...ALL_INVENTORY_AREAS }
 }
 

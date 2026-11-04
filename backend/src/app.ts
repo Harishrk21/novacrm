@@ -4,7 +4,8 @@ import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import path from "node:path";
-import { rateLimit } from "express-rate-limit";
+import { createHash } from "node:crypto";
+import { ipKeyGenerator, rateLimit } from "express-rate-limit";
 import { env } from "./config/env.js";
 import { prisma } from "./config/database.js";
 import { apiRouter } from "./routes/index.js";
@@ -41,7 +42,13 @@ app.use(
   "/api",
   rateLimit({
     windowMs: 15 * 60 * 1000,
-    limit: 1000,
+    limit: Number(process.env.API_RATE_LIMIT) || 1000,
+    // Per signed-in session, so a whole office behind one NAT IP is not throttled together.
+    keyGenerator: (req) => {
+      const auth = req.headers.authorization;
+      if (auth?.startsWith("Bearer ")) return `t:${createHash("sha256").update(auth.slice(7)).digest("base64url")}`;
+      return ipKeyGenerator(req.ip ?? "");
+    },
     standardHeaders: "draft-8",
     legacyHeaders: false,
   }),

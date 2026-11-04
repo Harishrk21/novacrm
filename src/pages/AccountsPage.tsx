@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Building2, Search } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
@@ -18,10 +18,19 @@ import { PageTabs } from '@/components/ui/PageTabs'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
 import { useRowSelection } from '@/hooks/useRowSelection'
+import { usePagedRows } from '@/hooks/usePagedRows'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 import { api, ApiClientError, num } from '@/lib/api'
 import { formatCurrency } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
-import { emptyAccountForm, AccountFormFields, formToPayload, type AccountFormState } from '@/components/accounts/AccountFormFields'
+import {
+  emptyAccountForm,
+  AccountFormFields,
+  accountFormSteps,
+  formToPayload,
+  type AccountFormState,
+  type AccountFormStep,
+} from '@/components/accounts/AccountFormFields'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 
 export function AccountsPage() {
@@ -38,30 +47,39 @@ export function AccountsPage() {
   const [search, setSearch] = useState('')
   const [tab, setTab] = useState<'list' | 'create'>('list')
   const [form, setForm] = useState<AccountFormState>(emptyAccountForm())
+  const [accountStep, setAccountStep] = useState<AccountFormStep>('identity')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<{ ids: string[] } | null>(null)
   const [busyDelete, setBusyDelete] = useState(false)
 
+  const paged = usePagedRows(items, search)
   const ids = useMemo(() => items.map((i) => String(i.id)), [items])
   const selection = useRowSelection(ids)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const lookupsReadyRef = useRef(false)
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     setLoadError(null)
     try {
+      const needLookups = !lookupsReadyRef.current
       const [res, lookups] = await Promise.all([
         api.accounts({ limit: 100, search: search || undefined }),
-        api.lookups(),
+        needLookups ? api.lookups() : Promise.resolve(null),
       ])
       setItems(res.items ?? [])
-      setUsers(lookups.users)
+      if (lookups) {
+        setUsers(lookups.users)
+        lookupsReadyRef.current = true
+      }
     } catch (err) {
       const message = err instanceof ApiClientError ? err.message : 'Failed to load accounts'
       setLoadError(message)
       addToast({ type: 'error', message })
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast, search])
 
@@ -69,12 +87,31 @@ export function AccountsPage() {
     void load()
   }, [load])
 
+  const createSteps = accountFormSteps(form)
+  const createStepIdx = Math.max(0, createSteps.indexOf(accountStep))
+  const onReviewStep = accountStep === 'review'
+
+  function resetCreate() {
+    setTab('list')
+    setForm(emptyAccountForm())
+    setAccountStep('identity')
+  }
+
   async function handleCreate(e: FormEvent) {
     e.preventDefault()
+    if (!onReviewStep) {
+      const next = createSteps[createStepIdx + 1]
+      if (next) setAccountStep(next)
+      return
+    }
+    if (!form.name.trim()) {
+      addToast({ type: 'error', message: 'Company name is required' })
+      setAccountStep('identity')
+      return
+    }
     try {
       const created = await api.createAccount(formToPayload(form))
-      setTab('list')
-      setForm(emptyAccountForm())
+      resetCreate()
       addToast({ type: 'success', message: 'Account saved' })
       window.location.href = `/accounts/${created.id}`
     } catch (err) {
@@ -91,7 +128,7 @@ export function AccountsPage() {
         message: deleteIds.length === 1 ? 'Deleted' : `${deleteIds.length} deleted`,
       })
       selection.clear()
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -117,7 +154,10 @@ export function AccountsPage() {
         active={tab}
         onChange={(id) => {
           setTab(id as 'list' | 'create')
-          if (id === 'create') setForm(emptyAccountForm())
+          if (id === 'create') {
+            setForm(emptyAccountForm())
+            setAccountStep('identity')
+          }
         }}
         tabs={[
           { id: 'list', label: 'All accounts', count: items.length },
@@ -138,7 +178,7 @@ export function AccountsPage() {
               />
             </div>
           </div>
-          {loading ? (
+          {loading && items.length === 0 ? (
             <TableSkeleton rows={8} />
           ) : loadError && items.length === 0 ? (
             <EmptyState
@@ -188,7 +228,7 @@ export function AccountsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((account) => {
+                  {paged.rows.map((account) => {
                     const id = String(account.id)
                     return (
                       <tr
@@ -238,6 +278,7 @@ export function AccountsPage() {
                   })}
                 </tbody>
               </table>
+              <PaginationBar page={paged.page} total={paged.total} onPageChange={paged.setPage} />
             </div>
           )}
         </Card>
@@ -247,27 +288,38 @@ export function AccountsPage() {
           accent="theme"
           eyebrow="Companies"
           title="Add account"
-          subtitle="Full company profile — tax, addresses, owner and commercial terms."
-          onClose={() => {
-            setTab('list')
-            setForm(emptyAccountForm())
-          }}
+          width={760}
+          subtitle="Step through the profile, then review everything before saving."
+          onClose={resetCreate}
           footer={
             <>
-              <FormPanelCancel
-                onClick={() => {
-                  setTab('list')
-                  setForm(emptyAccountForm())
-                }}
-              />
+              <FormPanelCancel onClick={resetCreate} />
+              {createStepIdx > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    const prev = createSteps[createStepIdx - 1]
+                    if (prev) setAccountStep(prev)
+                  }}
+                >
+                  Back
+                </Button>
+              ) : null}
               <Button type="submit" form="add-account">
-                Save account
+                {onReviewStep ? 'Save account' : 'Next'}
               </Button>
             </>
           }
         >
           <form id="add-account" onSubmit={handleCreate}>
-            <AccountFormFields form={form} setForm={setForm} users={users} />
+            <AccountFormFields
+              form={form}
+              setForm={setForm}
+              users={users}
+              step={accountStep}
+              onStepChange={setAccountStep}
+            />
           </form>
         </FormPanel>
       )}

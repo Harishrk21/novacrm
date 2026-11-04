@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { Check, X, AlertTriangle, Info } from 'lucide-react'
 import { useUIStore } from '@/store/uiStore'
 import { cn } from '@/lib/utils'
@@ -56,9 +57,13 @@ export function ToastContainer() {
   const toasts = useUIStore((s) => s.toasts)
   const removeToast = useUIStore((s) => s.removeToast)
 
-  return (
+  if (typeof document === 'undefined') return null
+
+  // Portal to body above Drawer (z-230) / Modal (z-250) so validation errors
+  // while Add product (etc.) is open are visible and dismissible.
+  return createPortal(
     <div
-      className="pointer-events-none fixed right-4 top-4 z-[100] flex w-[min(100vw-2rem,22rem)] flex-col gap-2.5 sm:right-5 sm:top-5"
+      className="pointer-events-none fixed right-4 top-4 z-[300] flex w-[min(100vw-2rem,22rem)] flex-col gap-2.5 sm:right-5 sm:top-5"
       aria-live="polite"
     >
       {toasts.map((t) => {
@@ -100,6 +105,7 @@ export function ToastContainer() {
           </div>
         )
       })}
-    </div>
+    </div>,
+    document.body,
   )
 }

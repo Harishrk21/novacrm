@@ -25,6 +25,7 @@ import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
+import { VerticalFormShell } from '@/components/ui/VerticalFormTabs'
 import { CatalogMachinePick } from '@/components/contacts/CatalogMachinePick'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CustomerImportPanel } from '@/components/contacts/CustomerImportPanel'
@@ -36,6 +37,7 @@ import {
 } from '@/components/contacts/ContactFilterSidebar'
 import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import { useRowSelection } from '@/hooks/useRowSelection'
+import { usePagedRows } from '@/hooks/usePagedRows'
 import { useConfirmLeave, useDiscardGuard } from '@/hooks/useDiscardGuard'
 import { useUnsavedStore } from '@/store/unsavedStore'
 import { api, ApiClientError } from '@/lib/api'
@@ -51,7 +53,9 @@ import { toStoredIndianMobile } from '@/lib/phoneIndia'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { canAssignTickets, canCreateTickets, isServiceDesk } from '@/lib/roles'
+import { can } from '@/lib/permissions'
 import { TableSkeleton } from '@/components/ui/Skeleton'
+import { PaginationBar } from '@/components/ui/PaginationBar'
 
 type ContactRow = {
   id: string
@@ -160,6 +164,7 @@ export function ContactsPage() {
   const authRole = useAuthStore((s) => s.user?.role)
   const isDesk = isServiceDesk(authRole)
   const canAssign = canAssignTickets(authRole)
+  const canImportContacts = can(authRole, 'contacts:import')
 
   const [items, setItems] = useState<ContactRow[]>([])
   const [accounts, setAccounts] = useState<Array<{ id: string; name: string }>>([])
@@ -269,6 +274,10 @@ export function ContactsPage() {
     return rows
   }, [displayed, sortBy])
 
+  const paged = usePagedRows(
+    sortedDisplayed,
+    `${search}|${accountFilter}|${ownerFilter}|${cityFilter}|${quickFilter}|${hasEmailFilter}|${hasWhatsappFilter}|${sortBy}`,
+  )
   const ids = useMemo(() => sortedDisplayed.map((i) => String(i.id)), [sortedDisplayed])
   const selection = useRowSelection(ids)
 
@@ -306,7 +315,8 @@ export function ContactsPage() {
     const open = searchParams.get('open') === '1'
 
     if (tabQ === 'import') {
-      setTab('import')
+      if (can(authRole, 'contacts:import')) setTab('import')
+      else setTab('list')
       setSearchParams({}, { replace: true })
       return
     }
@@ -334,12 +344,16 @@ export function ContactsPage() {
       setFilterOpen(true)
       setSearchParams({}, { replace: true })
     }
-  }, [searchParams, setSearchParams])
+  }, [searchParams, setSearchParams, authRole])
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const catalogReadyRef = useRef(false)
+
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent)
+    if (!silent) setLoading(true)
     setLoadError(null)
     try {
+      const needCatalog = !catalogReadyRef.current
       const [contactsRes, lookups] = await Promise.all([
         api.contacts({
           limit: 100,
@@ -349,41 +363,46 @@ export function ContactsPage() {
           city: cityFilter || undefined,
           hasAccount: undefined,
         }),
-        api.lookups({ scope: 'full' }),
+        needCatalog ? api.lookups({ scope: 'full' }) : Promise.resolve(null),
       ])
       setItems((contactsRes.items ?? []) as ContactRow[])
-      setAccounts(lookups.accounts)
-      setUsers(lookups.users)
-      setCatalogProducts(
-        (lookups.products ?? []).map((p) => ({
-          id: String(p.id),
-          name: String(p.name ?? ''),
-          sku: String(p.sku ?? ''),
-          attributes: (p.attributes as Record<string, unknown> | null) ?? null,
-        })),
-      )
-      // Paint contacts list now — catalog enrichment must not hold the skeleton
-      setLoading(false)
-      try {
-        const [productPage, brandRows] = await Promise.all([
-          api.products({ limit: 150 }),
-          api.inventoryBrands(),
-        ])
-        if (productPage.items?.length) {
-          setCatalogProducts(
-            productPage.items.map((p) => ({
-              id: String(p.id),
-              name: String(p.name ?? ''),
-              sku: String(p.sku ?? ''),
-              attributes: (p.attributes as Record<string, unknown> | null) ?? null,
-            })),
-          )
-        }
-        setCatalogBrands(
-          (brandRows ?? []).map((b) => ({ id: String(b.id), name: String(b.name ?? '') })),
+      if (lookups) {
+        setAccounts(lookups.accounts)
+        setUsers(lookups.users)
+        setCatalogProducts(
+          (lookups.products ?? []).map((p) => ({
+            id: String(p.id),
+            name: String(p.name ?? ''),
+            sku: String(p.sku ?? ''),
+            attributes: (p.attributes as Record<string, unknown> | null) ?? null,
+          })),
         )
-      } catch {
-        /* sales without inventory APIs still get lookups catalog */
+      }
+      // Paint contacts list now — catalog enrichment must not hold the skeleton
+      if (!silent) setLoading(false)
+      if (needCatalog) {
+        try {
+          const [productPage, brandRows] = await Promise.all([
+            api.products({ limit: 150 }),
+            api.inventoryBrands(),
+          ])
+          if (productPage.items?.length) {
+            setCatalogProducts(
+              productPage.items.map((p) => ({
+                id: String(p.id),
+                name: String(p.name ?? ''),
+                sku: String(p.sku ?? ''),
+                attributes: (p.attributes as Record<string, unknown> | null) ?? null,
+              })),
+            )
+          }
+          setCatalogBrands(
+            (brandRows ?? []).map((b) => ({ id: String(b.id), name: String(b.name ?? '') })),
+          )
+        } catch {
+          /* sales without inventory APIs still get lookups catalog */
+        }
+        catalogReadyRef.current = true
       }
     } catch (err) {
       const message = err instanceof ApiClientError ? err.message : 'Failed to load contacts'
@@ -392,9 +411,9 @@ export function ContactsPage() {
         type: 'error',
         message,
       })
-      setLoading(false)
+      if (!silent) setLoading(false)
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [addToast, search, accountFilter, ownerFilter, cityFilter])
 
@@ -608,7 +627,7 @@ export function ContactsPage() {
         message: deleteIds.length === 1 ? 'Deleted' : `${deleteIds.length} deleted`,
       })
       selection.clear()
-      await load()
+      await load({ silent: true })
     } catch (err) {
       addToast({
         type: 'error',
@@ -655,7 +674,7 @@ export function ContactsPage() {
                     <UserPlus size={14} className="text-accent-blue" />
                     Create Contact
                   </button>
-                  {canCreateTickets(authRole) ? (
+                  {canImportContacts ? (
                     <button
                       type="button"
                       className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-primary hover:bg-muted/60"
@@ -690,7 +709,7 @@ export function ContactsPage() {
         }}
         tabs={[
           { id: 'list', label: 'Directory', count: items.length },
-          ...(canCreateTickets(authRole) ? [{ id: 'import', label: 'Import Contacts' }] : []),
+          ...(canImportContacts ? [{ id: 'import', label: 'Import Contacts' }] : []),
           { id: 'create', label: 'Create Contact' },
         ]}
       />
@@ -798,7 +817,7 @@ export function ContactsPage() {
                 </div>
               </div>
 
-            {loading ? (
+            {loading && items.length === 0 ? (
               <TableSkeleton rows={6} className="p-6" />
             ) : loadError && items.length === 0 ? (
               <EmptyState
@@ -875,7 +894,7 @@ export function ContactsPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {sortedDisplayed.map((c) => {
+                        {paged.rows.map((c) => {
                           const rawPhone = c.phone || c.mobile || ''
                           const phoneDisplay = formatPhone(rawPhone) || '—'
                           const waRaw = c.whatsapp?.trim() || ''
@@ -969,6 +988,11 @@ export function ContactsPage() {
                       </tbody>
                     </table>
                   </div>
+                  <PaginationBar
+                    page={paged.page}
+                    total={paged.total}
+                    onPageChange={paged.setPage}
+                  />
                 </div>
                 <p className="mt-3 px-1 text-xs text-text-secondary">
                   Showing {displayed.length} customer{displayed.length === 1 ? '' : 's'}
@@ -987,6 +1011,7 @@ export function ContactsPage() {
           title={createStep === 'customer' ? 'Create Contact' : 'Add product / machine'}
           width={680}
           storageKey="nova.drawer.contacts.create"
+          dirty={createDirty}
           subtitle={
             createStep === 'customer'
               ? 'Shop details first — then Next to add product (Sold by us or Outside).'
@@ -1020,6 +1045,19 @@ export function ContactsPage() {
             </>
           }
         >
+          <VerticalFormShell
+            className="min-h-[420px]"
+            title="Steps"
+            accent="theme"
+            active={createStep}
+            onChange={(id) => {
+              if (id === 'customer' || id === 'product') setCreateStep(id)
+            }}
+            tabs={[
+              { id: 'customer', label: 'Customer' },
+              { id: 'product', label: 'Product' },
+            ]}
+          >
           {createStep === 'customer' ? (
             <form id="customer-step" onSubmit={(e) => goNextToProduct(e)} className="space-y-6">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -1333,6 +1371,7 @@ export function ContactsPage() {
               </div>
             </form>
           )}
+          </VerticalFormShell>
         </FormPanel>
       ) : null}
 

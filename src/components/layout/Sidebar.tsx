@@ -301,11 +301,9 @@ function CollapsedSectionIcon({ section }: { section: NavSection }) {
 
 function NavItemRow({
   item,
-  isAdmin,
   siblings,
 }: {
   item: NavItem
-  isAdmin: boolean
   siblings?: NavItem[]
 }) {
   const navigate = useNavigate()
@@ -1222,7 +1220,6 @@ export function Sidebar() {
                       <NavItemRow
                         key={`${item.to}-${item.label}`}
                         item={item}
-                        isAdmin={isAdmin}
                         siblings={section.items}
                       />
                     ))}

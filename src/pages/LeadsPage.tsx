@@ -2268,7 +2268,7 @@ export function LeadsPage() {
                 <ReviewRow label="Company" value={form.company} />
                 <ReviewRow
                   label="Phone"
-                  value={form.phone ? formatPhone(toStoredIndianMobile(form.phone)) : ''}
+                  value={form.phone ? formatPhone(toStoredIndianMobile(form.phone) ?? undefined) : ''}
                 />
                 <ReviewRow label="Email" value={form.email} />
                 <ReviewRow

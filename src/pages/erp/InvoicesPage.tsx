@@ -685,7 +685,7 @@ export function InvoicesPage() {
           (lookups.products ?? []).map((p) => ({
             id: String(p.id),
             name: String(p.name),
-            sku: p.sku != null ? String(p.sku) : undefined,
+            sku: p.sku != null ? String(p.sku) : '',
             salePrice: num(p.salePrice),
             taxPercent: num(p.taxPercent),
             attributes: (p.attributes as Record<string, unknown> | null | undefined) ?? null,

@@ -4,7 +4,6 @@ import {
   ArrowDown,
   ArrowUp,
   Bell,
-  Building2,
   CheckSquare,
   ChevronDown,
   Filter,
@@ -22,7 +21,6 @@ import {
   activityHref,
   activitySubjectLabel,
   contactHref,
-  dealHref,
   leadHref,
   workqueueRowHref,
 } from '@/lib/recordLinks'
@@ -1017,82 +1015,6 @@ export function WorkqueuePage() {
         {due.text}
       </span>
     )
-  }
-
-  function relatedCell(row: Row) {
-    const deal = row.deal as { id?: string; name?: string } | null
-    const dHref = dealHref(row)
-    if (deal?.name && dHref) {
-      return (
-        <Link
-          to={dHref}
-          className="inline-flex items-center gap-1.5 text-[color:var(--color-accent-blue)] hover:underline"
-        >
-          <Building2 size={13} className="shrink-0 text-text-secondary" />
-          {deal.name}
-        </Link>
-      )
-    }
-    const lHref = leadHref(row)
-    if (lHref) {
-      return (
-        <Link
-          to={lHref}
-          className="inline-flex items-center gap-1.5 text-[color:var(--color-accent-blue)] hover:underline"
-        >
-          <Users size={13} className="shrink-0 text-amber-500" />
-          Lead
-        </Link>
-      )
-    }
-    const ticketHref = activityHref(row)
-    if (
-      ticketHref?.startsWith('/tickets/') &&
-      (nav === 'tasks' || nav === 'meetings' || nav === 'calls')
-    ) {
-      return (
-        <Link
-          to={ticketHref}
-          className="inline-flex items-center gap-1.5 text-[color:var(--color-accent-blue)] hover:underline"
-        >
-          <Ticket size={13} className="shrink-0 text-text-secondary" />
-          Service job
-        </Link>
-      )
-    }
-    if (row.accountId && row.accountName) {
-      return (
-        <Link
-          to={`/accounts/${String(row.accountId)}`}
-          className="inline-flex items-center gap-1.5 text-[color:var(--color-accent-blue)] hover:underline"
-        >
-          <Building2 size={13} className="text-text-secondary" />
-          {String(row.accountName)}
-        </Link>
-      )
-    }
-    if (row.accountName) {
-      return (
-        <span className="inline-flex items-center gap-1.5">
-          <Building2 size={13} className="text-text-secondary" />
-          {String(row.accountName)}
-        </span>
-      )
-    }
-    const cHref = contactHref(row)
-    const contact = row.contact as { name?: string } | null
-    if (cHref && contact?.name) {
-      return (
-        <Link
-          to={cHref}
-          className="inline-flex items-center gap-1.5 text-[color:var(--color-accent-blue)] hover:underline"
-        >
-          <Building2 size={13} className="shrink-0 text-text-secondary" />
-          {contact.name}
-        </Link>
-      )
-    }
-    return <span className="text-text-secondary">—</span>
   }
 
   function contactCell(row: Row) {

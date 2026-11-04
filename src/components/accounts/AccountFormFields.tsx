@@ -456,9 +456,7 @@ export function AccountFormFields({
               className="h-4 w-4 accent-accent-blue"
               checked={form.sameAsBilling}
               onChange={(e) => {
-                const sameAsBilling = e.target.checked
-                set({ sameAsBilling })
-                if (sameAsBilling && step === 'shipping') onStepChange('billing')
+                set({ sameAsBilling: e.target.checked })
               }}
             />
             Shipping same as billing
@@ -572,7 +570,7 @@ export function AccountFormFields({
           <ReviewSection title="Contact" onEdit={() => onStepChange('contact')}>
             <ReviewRow
               label="Phone"
-              value={form.phone ? formatPhone(toStoredIndianMobile(form.phone)) : ''}
+              value={form.phone ? formatPhone(toStoredIndianMobile(form.phone) ?? undefined) : ''}
             />
             <ReviewRow label="Email" value={form.email} />
           </ReviewSection>

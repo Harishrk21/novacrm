@@ -5,14 +5,26 @@ import './index.css'
 import App from './App.tsx'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ThemeBootstrap } from '@/components/ThemeBootstrap'
+import { MEISTER_COLORS } from '@/lib/branding'
 import { applyTheme } from '@/lib/theme'
 
 try {
-  const raw = localStorage.getItem('novacrm-ui')
-  if (raw) {
-    const parsed = JSON.parse(raw) as { state?: { themeMode?: 'light' | 'dark'; palette?: string } }
-    const mode = parsed.state?.themeMode ?? 'light'
-    const palette = (parsed.state?.palette ?? 'ocean') as
+  const authRaw = localStorage.getItem('novacrm-auth')
+  const auth = authRaw ? (JSON.parse(authRaw) as { kind?: string }) : null
+  const uiRaw = localStorage.getItem('novacrm-ui')
+  const ui = uiRaw
+    ? (JSON.parse(uiRaw) as { state?: { themeMode?: 'light' | 'dark'; palette?: string } })
+    : null
+  const mode = ui?.state?.themeMode ?? 'light'
+  // Platform session must boot with Meister chrome, not a tenant kit left in novacrm-ui
+  if (auth?.kind === 'platform') {
+    applyTheme(mode, 'ocean', {
+      accent: MEISTER_COLORS.blue,
+      accentHover: MEISTER_COLORS.blueHover,
+      sidebarBg: MEISTER_COLORS.navy,
+    })
+  } else if (ui?.state?.palette) {
+    const palette = ui.state.palette as
       | 'ocean'
       | 'emerald'
       | 'violet'

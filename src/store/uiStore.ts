@@ -1,7 +1,22 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Toast } from '@/types'
+import { MEISTER_COLORS } from '@/lib/branding'
 import { applyTheme, type ColorPalette, type ThemeMode } from '@/lib/theme'
+import { getAuth } from '@/lib/api'
+
+/** Avoid painting tenant kits onto platform admin chrome. */
+function applyUiTheme(mode: ThemeMode, palette: ColorPalette) {
+  if (getAuth()?.kind === 'platform') {
+    applyTheme(mode, 'ocean', {
+      accent: MEISTER_COLORS.blue,
+      accentHover: MEISTER_COLORS.blueHover,
+      sidebarBg: MEISTER_COLORS.navy,
+    })
+    return
+  }
+  applyTheme(mode, palette)
+}
 
 interface UIState {
   sidebarCollapsed: boolean
@@ -62,16 +77,16 @@ export const useUIStore = create<UIState>()(
       palette: 'violet',
       setThemeMode: (mode) => {
         set({ themeMode: mode })
-        applyTheme(mode, get().palette)
+        applyUiTheme(mode, get().palette)
       },
       setPalette: (palette) => {
         set({ palette })
-        applyTheme(get().themeMode, palette)
+        applyUiTheme(get().themeMode, palette)
       },
       toggleThemeMode: () => {
         const next = get().themeMode === 'light' ? 'dark' : 'light'
         set({ themeMode: next })
-        applyTheme(next, get().palette)
+        applyUiTheme(next, get().palette)
       },
       teamChatOpen: false,
       teamChatTab: 'chats',
@@ -145,7 +160,7 @@ export const useUIStore = create<UIState>()(
         currentUserId: s.currentUserId,
       }),
       onRehydrateStorage: () => (state) => {
-        if (state) applyTheme(state.themeMode, state.palette)
+        if (state) applyUiTheme(state.themeMode, state.palette)
       },
     },
   ),

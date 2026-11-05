@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
+import { MEISTER_COLORS } from '@/lib/branding'
 import { applyTheme, type ColorPalette } from '@/lib/theme'
 
 const PALETTE_KEYS = new Set(['ocean', 'emerald', 'violet', 'amber', 'rose', 'slate'])
@@ -9,7 +10,20 @@ function asPalette(v: unknown): ColorPalette | null {
   return typeof v === 'string' && PALETTE_KEYS.has(v) ? (v as ColorPalette) : null
 }
 
-/** Applies theme; platform branding palette is the source of truth when locked. */
+/** Meister chrome for platform console — never inherits tenant dashboard kits. */
+function applyPlatformTheme(mode: 'light' | 'dark') {
+  applyTheme(mode, 'ocean', {
+    accent: MEISTER_COLORS.blue,
+    accentHover: MEISTER_COLORS.blueHover,
+    sidebarBg: MEISTER_COLORS.navy,
+  })
+}
+
+/**
+ * Applies theme for the active session.
+ * Platform admin always uses Meister colors. Tenant branding is applied to :root
+ * without writing into the shared `novacrm-ui` palette (which platform also reads).
+ */
 export function ThemeBootstrap({ children }: { children: React.ReactNode }) {
   const themeMode = useUIStore((s) => s.themeMode)
   const palette = useUIStore((s) => s.palette)
@@ -19,10 +33,16 @@ export function ThemeBootstrap({ children }: { children: React.ReactNode }) {
   const appliedDefault = useRef<string | null>(null)
 
   useEffect(() => {
+    if (kind === 'platform') {
+      applyPlatformTheme(themeMode)
+      return
+    }
+
     if (kind !== 'tenant' || !branding) {
       applyTheme(themeMode, palette)
       return
     }
+
     const brandPalette = asPalette(branding.palette)
     const overrides = {
       accent: branding.accent,
@@ -31,15 +51,13 @@ export function ThemeBootstrap({ children }: { children: React.ReactNode }) {
     }
 
     if (branding.locked && brandPalette) {
-      if (brandPalette !== palette) {
-        setPalette(brandPalette)
-        return
-      }
+      // Locked kit applies to :root only — never persist into shared novacrm-ui
+      // (platform admin also reads that store).
       applyTheme(themeMode, brandPalette, overrides)
       return
     }
 
-    // Unlocked: seed palette once from platform, then let the user change it
+    // Unlocked: seed user preference once from platform branding, then let them change it
     const seedKey = `${branding.palette ?? ''}`
     if (brandPalette && appliedDefault.current !== seedKey) {
       appliedDefault.current = seedKey

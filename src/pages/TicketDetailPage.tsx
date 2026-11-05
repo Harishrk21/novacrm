@@ -1474,6 +1474,30 @@ export function TicketDetailPage() {
     return `${Math.round(hours / 24)}d ${hours % 24}h open`
   }, [ticket])
 
+  const payGatePreview = paymentSettledForComplete()
+  const workGateAlertPreview = useMemo(() => {
+    if (!ticket) return false
+    const ticketCf = (ticket.customFields as Record<string, unknown>) ?? {}
+    const stamping =
+      String(ticketCf.category ?? '') === 'Stamping' ||
+      String(ticketCf.workType ?? '') === 'Stamping' ||
+      String(ticketCf.visitPurpose ?? '') === 'STAMPING'
+    const status = String(ticket.status)
+    const isOpen = ['OPEN', 'IN_PROGRESS', 'PENDING'].includes(status)
+    return (
+      isOpen &&
+      (stamping
+        ? !stampResultSaved || !editDraft.stampingDate.trim()
+        : isEngineer && !isAdmin && dayNotes.length === 0)
+    )
+  }, [ticket, stampResultSaved, editDraft.stampingDate, isEngineer, isAdmin, dayNotes])
+
+  // Must run before any early return — otherwise ticket load adds a hook and React #310s
+  useEffect(() => {
+    if (tabAttention === 'payment' && payGatePreview.ok) setTabAttention(null)
+    if (tabAttention === 'work' && !workGateAlertPreview) setTabAttention(null)
+  }, [tabAttention, payGatePreview.ok, workGateAlertPreview])
+
   // Keep helpers referenced so noUnusedLocals does not strip future UI wiring
   void uploadFieldPhoto
   void uploadSignature
@@ -1680,19 +1704,9 @@ export function TicketDetailPage() {
       : []),
   ]
 
-  const payGate = paymentSettledForComplete()
-  const workGateAlert =
-    isOpen &&
-    (isStampingJob
-      ? !stampResultSaved || !editDraft.stampingDate.trim()
-      : isEngineer && !isAdmin && dayNotes.length === 0)
+  const payGate = payGatePreview
+  const workGateAlert = workGateAlertPreview
   const paymentGateAlert = Boolean(showPayment && isOpen && !payGate.ok)
-
-  // Clear pulse once the blocking requirement is met
-  useEffect(() => {
-    if (tabAttention === 'payment' && payGate.ok) setTabAttention(null)
-    if (tabAttention === 'work' && !workGateAlert) setTabAttention(null)
-  }, [tabAttention, payGate.ok, workGateAlert])
 
   const detailTabs: TicketDetailTabItem[] = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },

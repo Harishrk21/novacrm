@@ -890,7 +890,15 @@ export function buildTicketCompleteMessage(opts: {
 
 const OPEN_STATUSES = ["OPEN", "IN_PROGRESS", "PENDING"] as const;
 
+/** Company-wide overdue flagging runs at most once a minute (it ran on every list / summary call). */
+const slaRefreshedAt = new Map<string, number>();
+
 export async function refreshSlaBreached(tenantId: string, ticketIds?: string[]) {
+  if (!ticketIds?.length) {
+    const last = slaRefreshedAt.get(tenantId) ?? 0;
+    if (Date.now() - last < 60_000) return;
+    slaRefreshedAt.set(tenantId, Date.now());
+  }
   const now = new Date();
   await prisma.ticket.updateMany({
     where: {

@@ -1097,12 +1097,14 @@ const DEFS: Def[] = [
 
 /** Catalogue for the Reports page — only the reports this role may run. */
 export async function reportCatalog(t: string, role: string) {
-  const people = await prisma.user.findMany({
-    where: { tenantId: t, deletedAt: null },
-    select: { id: true, name: true, roleId: true },
-    orderBy: { name: "asc" },
-  });
-  const roles = await prisma.role.findMany({ where: { tenantId: t }, select: { id: true, code: true } });
+  const [people, roles] = await Promise.all([
+    prisma.user.findMany({
+      where: { tenantId: t, deletedAt: null },
+      select: { id: true, name: true, roleId: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.role.findMany({ where: { tenantId: t }, select: { id: true, code: true } }),
+  ]);
   const code = new Map(roles.map((r) => [r.id, r.code]));
   const engineers = people.filter((u) => /ENGINEER|DESK|ADMIN|MANAGER/.test(code.get(u.roleId) ?? ""));
   const sales = people.filter((u) => /SALES|AGENT|ADMIN|MANAGER/.test(code.get(u.roleId) ?? ""));

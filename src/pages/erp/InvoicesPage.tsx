@@ -644,17 +644,16 @@ export function InvoicesPage() {
       // Settle independently — sales can open proformas even if a secondary lookup 403s
       // Silent refresh after save skips heavy stock/lookups fan-out
       const needMeta = !invoiceMetaReadyRef.current
-      const [invR, lookupsR, accountsR, tenantR, unitsInStockR, unitsDemoR] = await Promise.allSettled([
+      // Stock units (serial pickers on a new proforma) load in the background — the list doesn't wait for them
+      const unitsPromise =
+        needMeta && !silent
+          ? Promise.allSettled([api.stockUnitsAll({ status: 'IN_STOCK' }), api.stockUnitsAll({ status: 'DEMO' })])
+          : null
+      const [invR, lookupsR, accountsR, tenantR] = await Promise.allSettled([
         api.invoices({ limit: 50, status: statusFilter || undefined }),
         needMeta ? api.lookups() : Promise.resolve(null),
         needMeta && can(authUser?.role, 'accounts:view') ? api.accounts({ limit: 100 }) : Promise.resolve(null),
         needMeta ? api.myTenant() : Promise.resolve(null),
-        needMeta && !silent
-          ? api.stockUnitsAll({ status: 'IN_STOCK' })
-          : Promise.resolve([]),
-        needMeta && !silent
-          ? api.stockUnitsAll({ status: 'DEMO' })
-          : Promise.resolve([]),
       ])
       if (invR.status !== 'fulfilled') {
         throw invR.reason instanceof Error ? invR.reason : new Error('Failed to load invoices')
@@ -670,9 +669,6 @@ export function InvoicesPage() {
           : { items: [] as Array<Record<string, unknown>> }
       const tenant =
         tenantR.status === 'fulfilled' && tenantR.value ? tenantR.value : {}
-      const unitsInStock =
-        unitsInStockR.status === 'fulfilled' ? unitsInStockR.value : []
-      const unitsDemo = unitsDemoR.status === 'fulfilled' ? unitsDemoR.value : []
 
       setItems(inv.items ?? [])
       if (needMeta) {
@@ -707,9 +703,13 @@ export function InvoicesPage() {
           stampingDate: (u.stampingDate as string | null) ?? null,
           warehouse: (u.warehouse as { name?: string } | null) ?? null,
         })
-        const inStock = ((unitsInStock as Array<Record<string, unknown>>) ?? []).map(mapUnit)
-        const demo = ((unitsDemo as Array<Record<string, unknown>>) ?? []).map(mapUnit)
-        setStockUnits([...inStock, ...demo])
+        if (unitsPromise) {
+          void unitsPromise.then(([inS, demoS]) => {
+            const inStock = ((inS.status === 'fulfilled' ? inS.value : []) as Array<Record<string, unknown>>).map(mapUnit)
+            const demo = ((demoS.status === 'fulfilled' ? demoS.value : []) as Array<Record<string, unknown>>).map(mapUnit)
+            setStockUnits([...inStock, ...demo])
+          })
+        }
         const tRow = tenant as Record<string, unknown>
         setSeller({
           name: String(tRow.name ?? 'HMS Enterprises'),

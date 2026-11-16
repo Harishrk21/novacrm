@@ -131,6 +131,7 @@ async function refreshAccessToken(): Promise<string | null> {
  * and each caller gets its own copy so one screen can't mutate another's data.
  */
 const getsInFlight = new Map<string, Promise<unknown>>()
+const tipsCache = new Map<string, Promise<Array<{ title: string; body: string; tipType?: string; type?: string }>>>()
 
 export async function apiFetch<T>(
   path: string,
@@ -748,10 +749,19 @@ export const api = {
       }
     }>(`/public/workspace/${encodeURIComponent(slug)}`, { skipAuth: true }),
 
-  tips: (moduleKey: string) =>
-    apiFetch<Array<{ title: string; body: string; tipType?: string; type?: string }>>(
+  /** Page tips rarely change — fetched once per module per session (they were re-fetched on every visit). */
+  tips: (moduleKey: string) => {
+    const hit = tipsCache.get(moduleKey)
+    if (hit) return hit
+    const req = apiFetch<Array<{ title: string; body: string; tipType?: string; type?: string }>>(
       `/tips/${encodeURIComponent(moduleKey)}`,
-    ),
+    ).catch((e) => {
+      tipsCache.delete(moduleKey)
+      throw e
+    })
+    tipsCache.set(moduleKey, req)
+    return req
+  },
 
   /** `core` = users/stages/warehouses (fast). `full` = + contacts/products/accounts. */
   lookups: (opts?: { scope?: LookupsScope }) => fetchLookupsCached(opts?.scope ?? 'full'),

@@ -20,6 +20,7 @@ import { Select } from '@/components/ui/Select'
 import { Switch } from '@/components/ui/Switch'
 import { Badge } from '@/components/ui/Badge'
 import { api, ApiClientError, num } from '@/lib/api'
+import { StockRegisterCard } from '@/components/inventory/StockRegisterCard'
 import {
   buildHmsAttributes,
   familyByCode,
@@ -2084,6 +2085,8 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
 
           <FormPanel
             open={productDrawerOpen}
+            layout="page"
+            eyebrow="Inventory · Product catalogue"
             onClose={closeProductDrawer}
             title={editingProductId || editingSpareId ? 'Edit product' : 'Add product'}
             subtitle={
@@ -3590,6 +3593,8 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
               Excel includes a Filters sheet plus machine units and/or spare monthly rows
             </span>
           </div>
+
+          <StockRegisterCard year={repYear} month={repMonth} />
 
           {(machineMonthly || spareMonthly) && (
             <div className="space-y-4">

@@ -22,6 +22,9 @@ interface UIState {
   sidebarCollapsed: boolean
   toggleSidebar: () => void
   setSidebarCollapsed: (v: boolean) => void
+  /** Phone/tablet (< lg): sidebar drawer open. Not persisted. */
+  mobileNavOpen: boolean
+  setMobileNavOpen: (v: boolean) => void
   toasts: Toast[]
   addToast: (toast: Omit<Toast, 'id'>) => void
   removeToast: (id: string) => void
@@ -58,6 +61,8 @@ export const useUIStore = create<UIState>()(
       sidebarCollapsed: false,
       toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
       setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
+      mobileNavOpen: false,
+      setMobileNavOpen: (v) => set({ mobileNavOpen: v }),
       toasts: [],
       addToast: (toast) => {
         const id = `toast-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`

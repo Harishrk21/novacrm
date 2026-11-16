@@ -6,10 +6,10 @@ import {
   Package,
   FileText,
   MessageSquare,
-  Pencil,
   UserRound,
+  CheckCircle2,
 } from 'lucide-react'
-import { Badge, leadStatusColor } from '@/components/ui/Badge'
+import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -24,7 +24,6 @@ import {
   productCatalogMeta,
 } from '@/lib/hmsCatalog'
 import {
-  HMS_LEAD_PIPELINE,
   HMS_SERVICE_TYPES,
   HMS_WAY_OF_ENQUIRIES,
   enquiryWayFromSourceName,
@@ -65,11 +64,9 @@ import {
   type SalesRequisitionRow,
 } from '@/lib/salesFlow'
 import { isWarehouse } from '@/lib/roles'
-
-const STATUS_OPTIONS = HMS_LEAD_PIPELINE.map((s) => ({
-  value: s.value,
-  label: s.label,
-}))
+import { LeadStatusBadges } from '@/components/sales/LeadStatusBadges'
+import { missedSteps, nextStep } from '@/lib/flowSteps'
+import { leadOutcome, leadStage } from '@/lib/leadStage'
 
 function statusLabel(s: string) {
   return leadPipelineLabel(s)
@@ -119,7 +116,6 @@ export function LeadDetailPage() {
   const [lostOpen, setLostOpen] = useState(false)
   const [lostReason, setLostReason] = useState('')
   const [lostBusy, setLostBusy] = useState(false)
-  const [statusBusy, setStatusBusy] = useState(false)
   const [payNote, setPayNote] = useState('')
   const [payAmount, setPayAmount] = useState('')
   const [saleTotal, setSaleTotal] = useState('')
@@ -253,12 +249,10 @@ export function LeadDetailPage() {
   }, [cf, requisition?.customFields])
   const status = String(lead?.status ?? 'NEW')
   /** Step 3 — customer already on the sale (picker / convert). Not the same as clicking Convert. */
+  // Ready to buy only after an explicit Convert — then the requisition step opens
   const readyForBuy = useMemo(
-    () =>
-      status === 'CONVERTED' ||
-      Boolean(lead?.convertedContactId) ||
-      Boolean(cf.contact_id),
-    [status, lead?.convertedContactId, cf.contact_id],
+    () => status === 'CONVERTED' || Boolean(lead?.convertedContactId),
+    [status, lead?.convertedContactId],
   )
   const salesFlags = useMemo(
     () => salesStepDoneFlags({ lead, activities, requisition }),
@@ -266,6 +260,8 @@ export function LeadDetailPage() {
   )
   const saleStepsComplete = saleAllStepsDone(salesFlags)
   const saleCompleted = saleIsCompleted(lead)
+  // Automatic stage + simple outcome (Open / Closed / Lost) — see lib/leadStage
+  const currentStage = leadStage(lead, { activities, hasRequisition: Boolean(requisition?.id) })
   const salePay = useMemo(
     () => salePaymentSettled(lead, requisition),
     [lead, requisition],
@@ -303,6 +299,21 @@ export function LeadDetailPage() {
               : null,
         })
       : null
+  // Step guidance: who acts next, and which earlier steps were skipped (highlighted on the bar)
+  const missedStepIdx = missedSteps(salesFlags, SALES_FLOW_STEPS)
+  const nextStepIdx = nextStep(salesFlags, SALES_FLOW_STEPS)
+  const stepMessage = (j: number) =>
+    salesStepBlockers(j + 1, salesFlags.map((f, k) => (k === j ? f : true)), {
+      status,
+      requisition,
+      lead,
+      role: authUser?.role,
+    })[0] ?? ''
+  const stepOwner = (key: string) => {
+    if (key === 'requisition') return requisition?.status === 'PENDING_APPROVAL' ? 'Admin' : 'Sales → Admin'
+    if (key === 'inventory' || key === 'ship') return 'Warehouse'
+    return 'Sales'
+  }
   const salesActiveStep = useMemo(() => {
     if (saleStepsComplete || saleCompleted) return salesFlags.length - 1
     for (let i = 0; i < salesFlags.length; i++) {
@@ -357,7 +368,7 @@ export function LeadDetailPage() {
       : []
     if (!products.length && (requisition?.productName || fromLead?.productName)) {
       const name = String(requisition?.productName ?? fromLead?.productName ?? '')
-      name.split(/[,;/|]+/).map((s) => s.trim()).filter(Boolean).forEach((label, i) => {
+      name.split(/[,;|]+/).map((s) => s.trim()).filter(Boolean).forEach((label, i) => {
         products.push({
           index: i + 1,
           label,
@@ -620,7 +631,7 @@ export function LeadDetailPage() {
     if (!lead) return
     try {
       const interestedProductId = String(cf.interested_product_id ?? cf.demoProductId ?? '')
-      const units = await api.stockUnits({ status: 'IN_STOCK', limit: 300 })
+      const units = await api.stockUnitsAll({ status: 'IN_STOCK' })
       const mapped: StockUnitRow[] = (units as Array<Record<string, unknown>>).map((u) => {
         const product = (u.product as Record<string, unknown> | null) ?? null
         return {
@@ -745,16 +756,6 @@ export function LeadDetailPage() {
     }
   }
 
-  function requestStatusChange(next: string) {
-    if (!lead || next === status) return
-    if (next === 'LOST' || next === 'UNQUALIFIED') {
-      setLostReason('')
-      setLostOpen(true)
-      return
-    }
-    void updateStatus(next)
-  }
-
   async function confirmCloseLead() {
     if (!lead) return
     if (!lostReason.trim()) {
@@ -793,68 +794,6 @@ export function LeadDetailPage() {
     }
   }
 
-  async function updateStatus(next: string) {
-    if (!lead) return
-    if (next === 'CONVERTED') {
-      await beginConvert()
-      return
-    }
-    if (next === 'LOST' || next === 'UNQUALIFIED') {
-      setLostReason('')
-      setLostOpen(true)
-      return
-    }
-    if (next === 'DEMO') {
-      if (cf.demoStockUnitId || status === 'DEMO') {
-        setStatusBusy(true)
-        try {
-          const history = await pushTimeline(
-            cf,
-            `Lead Status was updated from ${statusLabel(status)} to ${statusLabel('DEMO')}`,
-            'status',
-          )
-          const updated = await api.updateLead(String(lead.id), {
-            status: 'DEMO',
-            customFields: { ...cf, timelineHistory: history },
-          })
-          setLead(updated)
-          addToast({ type: 'success', message: `Status → ${statusLabel('DEMO')}` })
-        } catch (err) {
-          addToast({
-            type: 'error',
-            message: err instanceof ApiClientError ? err.message : 'Update failed',
-          })
-        } finally {
-          setStatusBusy(false)
-        }
-        return
-      }
-      await openDemoPicker()
-      return
-    }
-    setStatusBusy(true)
-    try {
-      const history = await pushTimeline(
-        cf,
-        `Lead Status was updated from ${statusLabel(status)} to ${statusLabel(next)}`,
-        'status',
-      )
-      const updated = await api.updateLead(String(lead.id), {
-        status: next,
-        customFields: { ...cf, timelineHistory: history },
-      })
-      setLead(updated)
-      addToast({ type: 'success', message: `Status → ${statusLabel(next)}` })
-    } catch (err) {
-      addToast({
-        type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Update failed',
-      })
-    } finally {
-      setStatusBusy(false)
-    }
-  }
-
   async function beginConvert() {
     if (!lead) return
     const unitId = cf.demoStockUnitId ? String(cf.demoStockUnitId) : ''
@@ -887,12 +826,10 @@ export function LeadDetailPage() {
       setConvertOpen(false)
       setDetailTab('overview')
       setRelatedSection('requisition')
-      const reqErr = String((result as { requisitionError?: string | null }).requisitionError ?? '')
+      void result
       addToast({
-        type: reqErr ? 'warning' : 'success',
-        message: reqErr
-          ? `Converted — ${reqErr}`
-          : 'Converted — sales requisition submitted for admin sign-off',
+        type: 'success',
+        message: 'Ready to buy confirmed — next: send the requisition for admin sign-off',
       })
       await load({ silent: true })
     } catch (err) {
@@ -916,17 +853,27 @@ export function LeadDetailPage() {
     setPaySaving(true)
     try {
       const due = Math.max(0, total - advance)
-      const updated = await api.updateLead(String(lead.id), {
-        customFields: {
-          ...cf,
-          salePaymentTotal: total || null,
-          saleAdvanceAmount: advance || null,
-          saleDueAmount: due,
-          budget: total || cf.budget || null,
-        },
+      if (requisition?.id) {
+        // Requisition holds the advance used for due / PI — update it and the lead together,
+        // then reload so the card, badges and Mark sale complete all see the same numbers.
+        await api.setRequisitionPayment(String(requisition.id), { total, advance })
+        await load({ silent: true })
+      } else {
+        const updated = await api.updateLead(String(lead.id), {
+          customFields: {
+            ...cf,
+            salePaymentTotal: total || null,
+            saleAdvanceAmount: advance || null,
+            saleDueAmount: due,
+            budget: total || cf.budget || null,
+          },
+        })
+        setLead(updated)
+      }
+      addToast({
+        type: 'success',
+        message: due === 0 && total > 0 ? 'Payment saved — fully paid' : 'Payment saved on this sale',
       })
-      setLead(updated)
-      addToast({ type: 'success', message: 'Payment saved on this sale' })
     } catch (err) {
       addToast({
         type: 'error',
@@ -1107,7 +1054,7 @@ export function LeadDetailPage() {
       setLead(updated)
       addToast({
         type: 'success',
-        message: 'Sale marked complete — it left My leads. Open the Completed chip to find it.',
+        message: 'Sale marked complete — find it under Leads → Closed · sold.',
       })
     } catch (err) {
       addToast({
@@ -1128,7 +1075,6 @@ export function LeadDetailPage() {
     try {
       const row = await api.requisitionPaymentNote(String(requisition.id), {
         note: payNote.trim(),
-        amount: payAmount ? Number(payAmount) : undefined,
       })
       setRequisition(row as SalesRequisitionRow)
       setPayNote('')
@@ -1379,20 +1325,17 @@ export function LeadDetailPage() {
                 ) : null}
               </>
             ) : null}
-            {status !== 'DEMO' && status !== 'CONVERTED' && status !== 'LOST' && !isDesk && !isWh ? (
+            {status !== 'DEMO' && status !== 'CONVERTED' && status !== 'LOST' && !isDesk && !isWh &&
+            !requisition && currentStage !== 'DEMO' && currentStage !== 'READY' ? (
               <Button variant="outline" onClick={() => void openDemoPicker()} disabled={needsVerify}>
                 <Package size={16} /> Issue demo
               </Button>
             ) : null}
-            {status !== 'CONVERTED' && status !== 'LOST' && !isDesk && !isWh && !readyForBuy ? (
-              <Button onClick={() => void beginConvert()} disabled={needsVerify}>
-                Convert / ready to buy
-              </Button>
-            ) : null}
-            {status !== 'LOST' && status !== 'UNQUALIFIED' && !isDesk && !isWh ? (
+            {status !== 'LOST' && status !== 'UNQUALIFIED' && !isDesk && !isWh &&
+            !saleCompleted && releaseSnapshot.releaseLines.length === 0 && !releaseSnapshot.inventoryDone ? (
               <Button
                 variant="outline"
-                disabled={statusBusy || lostBusy}
+                disabled={lostBusy}
                 onClick={() => {
                   setLostReason('')
                   setLostOpen(true)
@@ -1406,9 +1349,6 @@ export function LeadDetailPage() {
                 Open releases
               </Button>
             ) : null}
-            <Button variant="outline" onClick={() => setDetailTab('overview')}>
-              <Pencil size={14} /> Overview
-            </Button>
           </div>
         </div>
 
@@ -1515,17 +1455,35 @@ export function LeadDetailPage() {
             <p className="mt-0.5 text-xs text-text-secondary">
               {saleCompleted
                 ? `Sale completed${cf.saleCompletedAt ? ` · ${formatDate(String(cf.saleCompletedAt))}` : ''}`
-                : salePay.pending
-                  ? salePay.due > 0
-                    ? `Payment pending — ₹${salePay.due.toLocaleString('en-IN')} still due. Settle payment before Mark sale complete.`
-                    : 'Payment pending — record and settle PI/payment (due ₹0) before Mark sale complete.'
-                  : saleStepsComplete
+                : saleStepsComplete && salePay.ok
                     ? 'All progress steps done — payment settled. You can mark sale complete.'
                     : `Step ${salesActiveStep + 1} of ${SALES_FLOW_STEPS.length}`}
               {requisition?.reqNumber
                 ? ` · ${requisition.reqNumber} (${String(requisition.status ?? '').replaceAll('_', ' ')})`
                 : ''}
             </p>
+            {!saleCompleted && leadOutcome(lead) === 'OPEN' ? (
+              <div className="mt-2 space-y-1.5">
+                {missedStepIdx.map((i) => (
+                  <div
+                    key={i}
+                    className="flex flex-wrap items-center gap-x-2 rounded-md border border-amber-400/50 bg-amber-400/10 px-2.5 py-1.5 text-xs text-amber-800 dark:text-amber-200"
+                  >
+                    <span className="font-semibold">Missed · {SALES_FLOW_STEPS[i]!.label}</span>
+                    <span>— {stepMessage(i)}</span>
+                  </div>
+                ))}
+                {nextStepIdx >= 0 ? (
+                  <div className="flex flex-wrap items-center gap-x-2 rounded-md border border-accent-blue/40 bg-accent-blue/10 px-2.5 py-1.5 text-xs text-text-primary">
+                    <span className="font-semibold">
+                      Next · {SALES_FLOW_STEPS[nextStepIdx]!.label}
+                    </span>
+                    <Badge color="gray">{stepOwner(SALES_FLOW_STEPS[nextStepIdx]!.key)}</Badge>
+                    <span className="text-text-secondary">— {stepMessage(nextStepIdx)}</span>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
           <div className="flex flex-wrap gap-2">
             {!readyForBuy && status !== 'CONVERTED' && status !== 'LOST' && !isDesk && !isWh ? (
@@ -1546,11 +1504,10 @@ export function LeadDetailPage() {
               <>
                 <Button
                   size="sm"
-                  className="bg-red-600 text-white hover:bg-red-700"
                   disabled={reqBusy}
                   onClick={() => setSaleConfirm('approve')}
                 >
-                  Accept
+                  Accept requisition
                 </Button>
                 <Button size="sm" variant="outline" disabled={reqBusy} onClick={() => setRejectOpen(true)}>
                   Reject
@@ -1564,7 +1521,8 @@ export function LeadDetailPage() {
                 disabled={reqBusy}
                 onClick={() => setSaleConfirm('notifyInventory')}
               >
-                Notify inventory
+                {/* Approval notifies the warehouse automatically — this is just a nudge */}
+                {inventoryRelease.inventoryNotifiedAt ? 'Remind inventory' : 'Notify inventory'}
               </Button>
             ) : null}
             {canReqFulfill && requisition?.status === 'APPROVED' ? (
@@ -1572,44 +1530,28 @@ export function LeadDetailPage() {
                 Reduce stock
               </Button>
             ) : null}
+            {/* Stock out → delivery challan → ready to ship */}
             {canReqFulfill &&
             (requisition?.status === 'FULFILLED' || requisition?.status === 'APPROVED') &&
+            releaseSnapshot.inventoryDone &&
             !requisition.shippedAt ? (
-              <Button size="sm" disabled={reqBusy} onClick={() => void shipReq()}>
-                Mark ready to ship
-              </Button>
-            ) : null}
-            {canBill && readyForPi && proformaHref ? (
-              <Button size="sm" onClick={() => navigate(proformaHref)}>
-                Create proforma
-              </Button>
+              saleChallan?.number ? (
+                <Button size="sm" disabled={reqBusy} onClick={() => void shipReq()}>
+                  Mark ready to ship
+                </Button>
+              ) : (
+                <Button size="sm" disabled={reqBusy} onClick={() => void createSaleDcFromSale()}>
+                  Create delivery challan
+                </Button>
+              )
             ) : null}
             {canReqWrite && saleStepsComplete && !saleCompleted && salePay.ok ? (
-              <Button size="sm" disabled={reqBusy} onClick={() => void markSaleComplete()}>
-                Mark sale complete
-              </Button>
-            ) : null}
-            {canReqWrite && !saleCompleted && salePay.pending && salesFlags.slice(0, 6).every(Boolean) ? (
               <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  document.getElementById('section-payment')?.scrollIntoView({
-                    behavior: 'smooth',
-                    block: 'center',
-                  })
-                  addToast({
-                    type: 'error',
-                    message:
-                      salePay.due > 0
-                        ? `Payment pending — ₹${salePay.due.toLocaleString('en-IN')} still due`
-                        : 'Payment pending — settle PI/payment first',
-                  })
-                }}
+                disabled={reqBusy}
+                className="animate-pulse bg-emerald-600 text-white shadow-lg shadow-emerald-600/30 ring-2 ring-emerald-400/60 hover:bg-emerald-700 hover:animate-none"
+                onClick={() => void markSaleComplete()}
               >
-                {salePay.due > 0
-                  ? `Payment pending · ₹${salePay.due.toLocaleString('en-IN')}`
-                  : 'Payment pending'}
+                <CheckCircle2 size={16} /> Mark sale complete
               </Button>
             ) : null}
           </div>
@@ -1688,24 +1630,18 @@ export function LeadDetailPage() {
               Lead status
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              {saleCompleted ? (
-                <Badge color="green" solid>
-                  Completed
-                </Badge>
-              ) : (
-                <Badge color={leadStatusColor[status] ?? 'gray'} solid>
-                  {statusLabel(status)}
-                </Badge>
-              )}
+              <LeadStatusBadges
+                lead={lead}
+                activities={activities}
+                hasRequisition={Boolean(requisition?.id)}
+                showOpen
+              />
               <Badge color="blue">
                 {HMS_SERVICE_TYPES.find((t) => t.value === serviceTypeLabel)?.label ?? serviceTypeLabel}
               </Badge>
               <Badge color="purple">{enquiryWayLabel}</Badge>
               {needsVerify && !saleCompleted ? (
                 <Badge color="amber">Needs confirm</Badge>
-              ) : null}
-              {status === 'CONVERTED' && !saleCompleted ? (
-                <Badge color="green">Won · Customer linked</Badge>
               ) : null}
               {status === 'LOST' && cf.lostReason ? (
                 <span className="text-xs text-text-secondary">
@@ -1717,44 +1653,8 @@ export function LeadDetailPage() {
                   Prospect — convert to add customer
                 </span>
               ) : null}
-              {cf.follow_up_date ? (
-                <span className="inline-flex items-center gap-1 text-xs text-amber-800 dark:text-amber-200">
-                  <Bell size={12} /> Follow-up {String(cf.follow_up_date).slice(0, 10)}
-                </span>
-              ) : null}
             </div>
           </div>
-          {status !== 'LOST' && status !== 'UNQUALIFIED' && !isDesk && !saleCompleted ? (
-            <div className="flex w-full flex-wrap items-end gap-2 sm:w-auto">
-              {status !== 'CONVERTED' ? (
-                <Select
-                  label="Update status"
-                  value={status}
-                  disabled={statusBusy || lostBusy}
-                  onChange={(e) => requestStatusChange(e.target.value)}
-                  className="min-w-[180px] flex-1 sm:flex-none"
-                  options={STATUS_OPTIONS.filter(
-                    (s) => s.value !== 'CONVERTED' && s.value !== 'UNQUALIFIED',
-                  )}
-                />
-              ) : (
-                <p className="max-w-xs text-xs text-text-secondary">
-                  Won / customer linked — if they back out, mark as lost to close.
-                </p>
-              )}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={statusBusy || lostBusy}
-                onClick={() => {
-                  setLostReason('')
-                  setLostOpen(true)
-                }}
-              >
-                Mark as lost
-              </Button>
-            </div>
-          ) : null}
         </div>
         <div className="grid gap-3 border-t border-border pt-3 sm:grid-cols-2 lg:grid-cols-5">
           {[
@@ -1762,7 +1662,7 @@ export function LeadDetailPage() {
             ['Email', String(lead.email || '—')],
             ['Phone', lead.phone ? formatPhone(String(lead.phone)) : '—'],
             ['Created', lead.createdAt ? formatDate(String(lead.createdAt)) : '—'],
-            ['Status', saleCompleted ? 'Completed' : statusLabel(status)],
+            ['Next follow-up', cf.follow_up_date ? String(cf.follow_up_date).slice(0, 10) : '—'],
           ].map(([label, value]) => (
             <div key={String(label)} className="min-w-0">
               <div className="text-[11px] font-medium text-text-secondary">{label}</div>
@@ -2389,58 +2289,6 @@ export function LeadDetailPage() {
         }
       />
 
-      {readyForPi && proformaHref ? (
-        <Card className="space-y-3 border-sky-300/70 bg-sky-50/60 p-4 dark:border-sky-800 dark:bg-sky-950/35">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold text-sky-950 dark:text-sky-100">
-                Create proforma
-              </h2>
-              <p className="mt-0.5 text-xs text-sky-900/85 dark:text-sky-200/85">
-                Stock reduce already locked serial / uniq ID
-                {saleChallan?.number || cf.saleDcNo
-                  ? ` and DC ${saleChallan?.number ?? String(cf.saleDcNo)}`
-                  : ''}
-                . Proforma uses these units — no second stock pick.
-              </p>
-            </div>
-            {canBill ? (
-              <Button size="sm" onClick={() => navigate(proformaHref)}>
-                Create proforma
-              </Button>
-            ) : null}
-          </div>
-          {releaseSnapshot.releaseLines.length ? (
-            <div className="overflow-x-auto rounded-lg border border-sky-200/70 bg-white/70 dark:border-sky-900/50 dark:bg-black/20">
-              <table className="min-w-full text-left text-xs">
-                <thead className="bg-sky-100/60 text-[10px] uppercase tracking-wide text-sky-900/70 dark:bg-sky-950/50 dark:text-sky-200/70">
-                  <tr>
-                    <th className="px-3 py-2 font-semibold">Product</th>
-                    <th className="px-3 py-2 font-semibold">Serial</th>
-                    <th className="px-3 py-2 font-semibold">Uniq ID</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {releaseSnapshot.releaseLines.map((r, i) => (
-                    <tr
-                      key={String(r.stockUnitId ?? r.serialNo ?? i)}
-                      className="border-t border-sky-100 dark:border-sky-900/40"
-                    >
-                      <td className="px-3 py-2 font-medium">{String(r.label ?? '—')}</td>
-                      <td className="px-3 py-2 font-mono">{String(r.serialNo ?? '—')}</td>
-                      <td className="px-3 py-2 font-mono">{String(r.hmsUniqId ?? '—')}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <p className="text-xs text-sky-900/80 dark:text-sky-200/80">
-              Sale units will appear here after inventory reduces stock.
-            </p>
-          )}
-        </Card>
-      ) : null}
 
       {relatedSection === 'demo' || cf.demoSerialNo || challan ? (
         <div className="grid gap-3 sm:grid-cols-2">
@@ -2584,12 +2432,9 @@ export function LeadDetailPage() {
           <table className="w-full text-sm">
             <tbody className="divide-y divide-border">
               {[
-                ['Lead Owner', executiveName],
                 ['Company', String(lead.company ?? '—')],
-                ['Email', String(lead.email ?? '—')],
                 ['Service type', serviceTypeLabel],
                 ['Way of enquiry / Lead Source', enquiryWayLabel],
-                ['Lead Status', saleCompleted ? 'Completed' : statusLabel(status)],
                 [
                   'Customer type',
                   cf.contact_id
@@ -2606,7 +2451,6 @@ export function LeadDetailPage() {
                       ? formatDate(String(lead.createdAt))
                       : '—',
                 ],
-                ['Follow-up', cf.follow_up_date ? String(cf.follow_up_date).slice(0, 10) : '—'],
                 [
                   'Reminder',
                   cf.reminder_at ? String(cf.reminder_at).replace('T', ' ').slice(0, 16) : '—',
@@ -2706,13 +2550,20 @@ export function LeadDetailPage() {
             </div>
           ) : (
             <div className="space-y-3 px-4 py-6">
-              <p className="text-sm text-text-secondary">
-                No demo unit yet. Issue a serial to generate a delivery challan automatically and move stock to Demo
-                inventory.
-              </p>
-              <Button onClick={() => void openDemoPicker()}>
-                <Package size={16} /> Issue demo unit
-              </Button>
+              {requisition || currentStage === 'READY' ? (
+                // Sale already moved past demo — offering a demo here would be confusing
+                <p className="text-sm text-text-secondary">No demo was issued for this sale.</p>
+              ) : (
+                <>
+                  <p className="text-sm text-text-secondary">
+                    No demo unit yet. Issue a serial to generate a delivery challan automatically and move stock to Demo
+                    inventory.
+                  </p>
+                  <Button onClick={() => void openDemoPicker()}>
+                    <Package size={16} /> Issue demo unit
+                  </Button>
+                </>
+              )}
             </div>
           )}
         </Card>

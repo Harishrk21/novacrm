@@ -39,7 +39,7 @@ function orderLinesFromLeadCf(cf: Record<string, unknown>): ReleaseOrderLineDraf
   ).trim();
   if (!joined) return [];
   const parts = joined
-    .split(/[,;/|]+/)
+    .split(/[,;|]+/)
     .map((s) => s.trim())
     .filter(Boolean);
   if (parts.length > 1) {
@@ -59,12 +59,50 @@ function orderLinesQty(lines: ReleaseOrderLineDraft[]): number {
 }
 
 /** Units that must be reduced before a multi-product sale is fully released. */
+type EffectiveOrderLine = { label: string; qty: number; productId?: string };
+const normName = (v: unknown) => String(v ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+
+/** Ordered machines for a sale (multi-line orders, or the single requisition product). */
+export function effectiveOrderLines(
+  row: { qty?: unknown; productName?: string | null; productId?: string | null },
+  cf: Record<string, unknown>,
+): EffectiveOrderLine[] {
+  const raw = Array.isArray(cf.orderLines)
+    ? (cf.orderLines as Array<Record<string, unknown>>)
+    : Array.isArray(cf.saleProducts)
+      ? (cf.saleProducts as Array<Record<string, unknown>>)
+      : Array.isArray(cf.interested_products)
+        ? (cf.interested_products as Array<Record<string, unknown>>)
+        : [];
+  if (raw.length) {
+    return raw.map((l, i) => ({
+      label: String(l.label ?? l.name ?? l.productName ?? `Product ${i + 1}`).trim(),
+      qty: Math.max(1, Math.floor(Number(l.qty ?? l.quantity ?? 1)) || 1),
+      productId: l.productId != null ? String(l.productId) : l.id != null ? String(l.id) : undefined,
+    }));
+  }
+  return [
+    {
+      label: String(row.productName || "Machine"),
+      qty: Math.max(1, Number(row.qty) || 1),
+      productId: row.productId ? String(row.productId) : undefined,
+    },
+  ];
+}
+
+/** Does this catalogue product satisfy that ordered line? */
+export function lineMatchesProduct(line: EffectiveOrderLine, product: { id: string; name: string; sku?: string | null }) {
+  if (line.productId) return line.productId === product.id;
+  const l = normName(line.label);
+  return l === normName(product.name) || (product.sku ? l === normName(product.sku) : false);
+}
+
 function releaseMachinesNeeded(
-  row: { qty?: number | null; productName?: string | null },
+  row: { qty?: unknown; productName?: string | null },
   cf: Record<string, unknown>,
 ): number {
   const nameParts = String(row.productName || "")
-    .split(/[,;/|]+/)
+    .split(/[,;|]+/)
     .map((s) => s.trim())
     .filter(Boolean);
   const rawOrder = Array.isArray(cf.orderLines)
@@ -87,7 +125,10 @@ function releaseMachinesNeeded(
     typeof cf.machinesNeeded === "number" && Number.isFinite(cf.machinesNeeded)
       ? Math.max(0, Number(cf.machinesNeeded))
       : 0;
-  return Math.max(1, fromOrder, fromStamp, fromCf, Number(row.qty) || 0, nameParts.length);
+  // Order lines (with quantities) are the truth when present — stale stored counts or name
+  // splitting must never inflate it ("HMS/WEP 2100" used to count as 2 machines).
+  if (fromOrder > 0) return fromOrder;
+  return Math.max(1, fromStamp, fromCf, Number(row.qty) || 0, nameParts.length);
 }
 
 /**
@@ -128,7 +169,7 @@ async function ensureRequisitionOrderLines(
   }
   if (lines.length <= 1) {
     const parts = String(row.productName || "")
-      .split(/[,;/|]+/)
+      .split(/[,;|]+/)
       .map((s) => s.trim())
       .filter(Boolean);
     if (parts.length > 1) {
@@ -402,7 +443,7 @@ function leadCf(lead: { customFields: unknown }) {
 }
 
 /** Mirror inventory release + stamping onto the sale lead for sales desk full page. */
-async function syncSaleReleaseToLead(
+export async function syncSaleReleaseToLead(
   t: string,
   leadId: string,
   reqRow: {
@@ -467,7 +508,7 @@ async function syncSaleReleaseToLead(
     }));
   } else if (reqRow.productName) {
     const parts = String(reqRow.productName)
-      .split(/[,;/|]+/)
+      .split(/[,;|]+/)
       .map((s) => s.trim())
       .filter(Boolean);
     products = (parts.length ? parts : [String(reqRow.productName)]).map((label, i) => ({
@@ -739,7 +780,7 @@ export async function list(t: string, q: Record<string, unknown>) {
         where,
         skip: p.skip,
         take: p.take,
-        orderBy: { createdAt: "desc" },
+        orderBy: q.queue === "shipped" ? [{ shippedAt: "desc" }, { createdAt: "desc" }] : { createdAt: "desc" },
       }),
       prisma.salesRequisition.count({ where }),
     ]);
@@ -813,6 +854,9 @@ export async function submit(t: string, userId: string, data: SubmitInput, req?:
     throw new AppError("Cannot raise requisition for a closed / junk enquiry", 400);
   }
 
+  if (lead.status !== "CONVERTED" && !lead.convertedContactId) {
+    throw new AppError("Confirm Ready to buy (Convert) before sending the requisition", 400);
+  }
   const cf = leadCf(lead);
   const contactId =
     lead.convertedContactId ??
@@ -978,7 +1022,26 @@ export async function approve(t: string, id: string, userId: string, req?: Reque
   }
 
   // Backfill multi-product lines from the lead before inventory sees the release
-  await ensureRequisitionOrderLines(t, row);
+  const withLines = await ensureRequisitionOrderLines(t, row);
+  // W6: products added as "not listed" on the lead can't be released until they're in the catalogue
+  {
+    const lcf =
+      withLines.customFields && typeof withLines.customFields === "object" && !Array.isArray(withLines.customFields)
+        ? (withLines.customFields as Record<string, unknown>)
+        : {};
+    const lines = effectiveOrderLines(withLines as Parameters<typeof effectiveOrderLines>[0], lcf);
+    const catalog = await prisma.product.findMany({
+      where: { tenantId: t, deletedAt: null },
+      select: { id: true, name: true, sku: true },
+    });
+    const missing = lines.filter((l) => !catalog.some((p) => lineMatchesProduct(l, p)));
+    if (missing.length) {
+      throw new AppError(
+        `Add to the product catalogue before accepting: ${missing.map((m) => m.label).join(", ")}`,
+        409,
+      );
+    }
+  }
 
   const updated = await prisma.salesRequisition.update({
     where: { id },
@@ -1022,7 +1085,7 @@ export async function approve(t: string, id: string, userId: string, req?: Reque
           tenantId: t,
           userId: updated.requestedById,
           title: "Requisition approved",
-          message: `${updated.reqNumber} signed by admin. Notify inventory to release stock / prepare delivery.`,
+          message: `${updated.reqNumber} signed by admin. Inventory has been notified to release stock.`,
           type: "REQUISITION_APPROVED",
           entityType: "sales_requisition",
           entityId: updated.id,
@@ -1032,11 +1095,17 @@ export async function approve(t: string, id: string, userId: string, req?: Reque
     );
   }
 
+  // W1: tell the warehouse straight away (no extra "Notify inventory" hop for sales)
+  try {
+    await notifyInventory(t, updated.id, userId, req);
+  } catch (err) {
+    console.error(`[requisitions] auto-notify inventory failed for ${updated.reqNumber}:`, err);
+  }
   await notifyAdmins(
     t,
     {
       title: "Requisition signed",
-      message: `${updated.reqNumber} approved — waiting for sales to notify inventory.`,
+      message: `${updated.reqNumber} approved — inventory notified to release stock.`,
       type: "REQUISITION_APPROVED",
       entityType: "sales_requisition",
       entityId: updated.id,
@@ -1499,7 +1568,8 @@ export async function fulfill(
   if (row.status !== "APPROVED" && row.status !== "FULFILLED") {
     throw new AppError("Only approved requisitions can be fulfilled by inventory", 409);
   }
-  if (!row.contactId) throw new AppError("Requisition has no customer contact", 400);
+  const contactId = row.contactId;
+  if (!contactId) throw new AppError("Requisition has no customer contact", 400);
   row = (await ensureRequisitionOrderLines(t, row)) as typeof row;
 
   const stockUnitId = body.stockUnitId?.trim() || row.stockUnitId;
@@ -1514,7 +1584,18 @@ export async function fulfill(
     where: { id: stockUnitId, tenantId: t, deletedAt: null },
   });
   if (!unit) throw notFound("Stock unit");
-  if (unit.status !== "IN_STOCK" && unit.status !== "DEMO") {
+  // W4: an earlier attempt may have sold this unit for THIS sale but failed before recording it
+  // on the requisition — resume instead of failing with "not available" forever.
+  const unitCf0 = (
+    unit.customFields && typeof unit.customFields === "object" && !Array.isArray(unit.customFields)
+      ? unit.customFields
+      : {}
+  ) as Record<string, unknown>;
+  const resumingRelease =
+    unit.status === "SOLD" &&
+    (unitCf0.salesRequisitionId === row.id ||
+      String(unit.notes ?? "").includes(`Sale release ${row.reqNumber}`));
+  if (!resumingRelease && unit.status !== "IN_STOCK" && unit.status !== "DEMO") {
     throw new AppError(
       `Unit ${unit.hmsUniqId || unit.serialNo} is not available (${unit.status})`,
       409,
@@ -1548,8 +1629,35 @@ export async function fulfill(
     throw new AppError("This unit was already reduced for this sale", 409);
   }
 
+  // W2/W3: only the ordered machines, in the ordered quantities — no substitutes, no extras
+  const orderLines = effectiveOrderLines(row, cf);
+  const usedPerLine = orderLines.map(
+    (line, idx) =>
+      existingRelease.filter((rl) =>
+        rl.lineIndex != null
+          ? Number(rl.lineIndex) === idx
+          : lineMatchesProduct(line, { id: String(rl.productId ?? ""), name: String(rl.label ?? "") }),
+      ).length,
+  );
+  // Legacy single-line sales without a product id accept the picked model
+  const candidates = orderLines
+    .map((line, idx) => ({ line, idx }))
+    .filter(({ line }) => (orderLines.length === 1 && !line.productId) || lineMatchesProduct(line, product));
+  if (!candidates.length) {
+    throw new AppError(
+      `${product.name} is not on this sale's order (ordered: ${orderLines.map((l) => `${l.qty} × ${l.label}`).join(", ")})`,
+      409,
+    );
+  }
+  const openLine = candidates.find(({ line, idx }) => (usedPerLine[idx] ?? 0) < line.qty);
+  if (!openLine) {
+    const { line } = candidates[0]!;
+    throw new AppError(`All ${line.qty} × ${line.label} already reduced for this sale`, 409);
+  }
+  const matchedLineIndex = openLine.idx;
+
   const contact = await prisma.contact.findFirst({
-    where: { id: row.contactId, tenantId: t, deletedAt: null },
+    where: { id: contactId, tenantId: t, deletedAt: null },
   });
   if (!contact) throw notFound("Contact");
 
@@ -1570,10 +1678,12 @@ export async function fulfill(
     .join(" · ");
 
   const { reduceStockUnit } = await import("../inventory/inventory.service.js");
-  const reduced = await reduceStockUnit(t, userId, unit.id, {
-    notes: reduceNotes,
-    reason: `Sale release ${row.reqNumber}`,
-  });
+  const reduced = resumingRelease
+    ? { customFields: unitCf0 }
+    : await reduceStockUnit(t, userId, unit.id, {
+        notes: reduceNotes,
+        reason: `Sale release ${row.reqNumber}`,
+      });
 
   const reducedCf =
     reduced.customFields && typeof reduced.customFields === "object" && !Array.isArray(reduced.customFields)
@@ -1629,6 +1739,7 @@ export async function fulfill(
   const releaseLine = {
     label: product.name,
     productId: product.id,
+    lineIndex: matchedLineIndex,
     stockUnitId: unit.id,
     serialNo: identity.serialNo,
     hmsUniqId: identity.hmsUniqId,
@@ -1648,7 +1759,8 @@ export async function fulfill(
       stockUnitId: unit.id,
       serialNo: identity.displaySerial || row.serialNo,
       productName: row.productName || product.name,
-      shippedAt: body.markShipped && allDone ? new Date() : row.shippedAt,
+      // Shortcut ship only if the DC already exists (normally: reduce → DC → ship)
+      shippedAt: body.markShipped && allDone && cf.saleDcNo ? new Date() : row.shippedAt,
       customFields: {
         ...cf,
         fulfilledAt: allDone ? new Date().toISOString() : cf.fulfilledAt ?? null,
@@ -1704,7 +1816,7 @@ export async function fulfill(
     await syncSaleReleaseToLead(t, row.leadId, updated);
   }
 
-  if (allDone && body.markShipped) {
+  if (allDone && body.markShipped && cf.saleDcNo) {
     await notifySalesReadyToShip(
       t,
       {
@@ -1820,6 +1932,8 @@ export async function createSaleDeliveryChallan(
           hmsUniqId: true,
           productId: true,
           stampingDate: true,
+          brandId: true,
+          customFields: true,
         },
       })
     : [];
@@ -1978,6 +2092,12 @@ export async function createSaleDeliveryChallan(
     productName: string;
     productId?: string | null;
     productSku?: string | null;
+    /** For brand / spec / guarantee lookup */
+    stockUnitId?: string | null;
+    assetId?: string | null;
+    brand?: string | null;
+    spec?: string | null;
+    warrantyEnd?: string | null;
     serialNo: string | null;
     hmsUniqId: string | null;
     qty: number;
@@ -2002,6 +2122,8 @@ export async function createSaleDeliveryChallan(
             hmsUniqId: r.hmsUniqId ? String(r.hmsUniqId) : null,
           });
           return {
+            stockUnitId: r.stockUnitId ? String(r.stockUnitId) : null,
+            assetId: r.assetId ? String(r.assetId) : null,
             productName: String(r.label ?? prod?.name ?? row.productName ?? "Product"),
             productId: pid || null,
             productSku: prod?.sku ? String(prod.sku) : null,
@@ -2047,6 +2169,34 @@ export async function createSaleDeliveryChallan(
             };
           })(),
         ];
+
+  // Full machine details on the DC: brand, spec / capacity, guarantee (GC) end
+  {
+    const brandIds = [...new Set(stockUnits.map((u) => u.brandId).filter((x): x is string => Boolean(x)))];
+    const assetIds = lines.map((l) => l.assetId).filter((x): x is string => Boolean(x));
+    const [brands, assets] = await Promise.all([
+      brandIds.length ? prisma.brand.findMany({ where: { id: { in: brandIds } }, select: { id: true, name: true } }) : [],
+      assetIds.length
+        ? prisma.customerAsset.findMany({ where: { id: { in: assetIds } }, select: { id: true, warrantyEndDate: true, capacity: true } })
+        : [],
+    ]);
+    const brandName = Object.fromEntries(brands.map((b) => [b.id, b.name]));
+    const assetById = Object.fromEntries(assets.map((a) => [a.id, a]));
+    lines = lines.map((l) => {
+      const u = l.stockUnitId ? unitById[l.stockUnitId] : null;
+      const ucf = (u?.customFields && typeof u.customFields === "object" ? u.customFields : {}) as Record<string, unknown>;
+      const prod = l.productId ? productById[l.productId] : null;
+      const pattr = (prod?.attributes && typeof prod.attributes === "object" ? prod.attributes : {}) as Record<string, unknown>;
+      const asset = l.assetId ? assetById[l.assetId] : null;
+      const spec = String(ucf.spec ?? asset?.capacity ?? pattr.capacity ?? pattr.spec ?? "").trim() || null;
+      return {
+        ...l,
+        brand: (u?.brandId ? brandName[u.brandId] : null) ?? (String(ucf.brand ?? pattr.brand ?? "").trim() || null),
+        spec,
+        warrantyEnd: asset?.warrantyEndDate ? asset.warrantyEndDate.toISOString().slice(0, 10) : null,
+      };
+    });
+  }
 
   // Customer order: alphabetical product list (stable for multi-machine DCs)
   lines = [...lines].sort((a, b) =>
@@ -2236,6 +2386,10 @@ export async function markShipped(t: string, id: string, userId: string, req?: R
       409,
     );
   }
+  // Goods leave with their paperwork: stock out → delivery challan → ready to ship
+  if (!cf.saleDcNo) {
+    throw new AppError("Create the delivery challan first — stock out → DC → ready to ship", 409);
+  }
 
   const updated = await prisma.salesRequisition.update({
     where: { id },
@@ -2295,10 +2449,8 @@ export async function addPaymentNote(
     amount: body.amount ?? null,
     note: body.note.trim(),
   };
-  const advanceAmount =
-    body.amount != null && Number.isFinite(body.amount)
-      ? Number(row.advanceAmount) + Number(body.amount)
-      : row.advanceAmount;
+  // Note only — adding amounts here double-counted the advance. Use POST /:id/payment to set it.
+  const advanceAmount = row.advanceAmount;
 
   const updated = await prisma.salesRequisition.update({
     where: { id },
@@ -2414,4 +2566,55 @@ export async function markFulfilledFromInvoice(
       },
     },
   });
+}
+
+/**
+ * Set the sale payment (absolute Total / Advance) from the lead's Payment card.
+ * Keeps the requisition (source for PI / DC / due checks) and the lead mirror in sync —
+ * previously only the lead was updated, so the requisition's old advance kept showing a due.
+ */
+export async function setSalePayment(
+  t: string,
+  id: string,
+  body: { total: number; advance: number },
+) {
+  await ensureSalesRequisitionsTable();
+  const row = await prisma.salesRequisition.findFirst({
+    where: { id, tenantId: t, deletedAt: null },
+  });
+  if (!row) throw notFound("Sales requisition");
+  const total = Math.max(0, Number(body.total) || 0);
+  const advance = Math.max(0, Number(body.advance) || 0);
+  if (total > 0 && advance > total) throw new AppError("Advance cannot be more than total", 400);
+  const due = Math.max(0, total - advance);
+
+  const cf =
+    row.customFields && typeof row.customFields === "object" && !Array.isArray(row.customFields)
+      ? (row.customFields as Record<string, unknown>)
+      : {};
+  const updated = await prisma.salesRequisition.update({
+    where: { id },
+    data: {
+      advanceAmount: advance,
+      customFields: { ...cf, salePaymentTotal: total || null } as Prisma.InputJsonValue,
+    },
+  });
+
+  const lead = await prisma.lead.findFirst({ where: { id: row.leadId, tenantId: t, deletedAt: null } });
+  if (lead) {
+    const lcf = leadCf(lead);
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: {
+        customFields: {
+          ...lcf,
+          salePaymentTotal: total || null,
+          saleAdvanceAmount: advance || null,
+          saleDueAmount: due,
+          budget: total || lcf.budget || null,
+        } as Prisma.InputJsonValue,
+      },
+    });
+  }
+  return serializeRequisition(updated as unknown as Record<string, unknown>);
 }

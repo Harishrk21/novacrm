@@ -47,31 +47,31 @@ export function GeofenceFields({ value, onChange, idPrefix = 'geo' }: Props) {
       : 'https://www.google.com/maps'
 
   return (
-    <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/80 p-4">
+    <div className="space-y-3 rounded-xl border border-border bg-muted/30 p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-            <MapPin className="h-4 w-4 text-sky-700" />
+          <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+            <MapPin className="h-4 w-4 text-accent-blue" />
             Attendance office GPS
           </div>
-          <p className="mt-1 text-xs text-slate-600">
+          <p className="mt-1 text-xs text-text-secondary">
             When on, employees can mark attendance only within the radius of this pin (default 10 m).
           </p>
         </div>
-        <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-slate-700">
+        <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-text-secondary">
           <input
             id={`${idPrefix}-enabled`}
             type="checkbox"
             checked={value.enabled}
             onChange={(e) => onChange({ ...value, enabled: e.target.checked })}
-            className="h-4 w-4 rounded border-slate-300"
+            className="h-4 w-4 rounded border-border"
           />
           Enforce
         </label>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <label className="block text-xs font-medium text-slate-600">
+        <label className="block text-xs font-medium text-text-secondary">
           Latitude
           <input
             id={`${idPrefix}-lat`}
@@ -80,10 +80,10 @@ export function GeofenceFields({ value, onChange, idPrefix = 'geo' }: Props) {
             value={value.lat}
             onChange={(e) => onChange({ ...value, lat: e.target.value })}
             placeholder="13.0827000"
-            className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+            className="mt-1 w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-text-primary"
           />
         </label>
-        <label className="block text-xs font-medium text-slate-600">
+        <label className="block text-xs font-medium text-text-secondary">
           Longitude
           <input
             id={`${idPrefix}-lng`}
@@ -92,10 +92,10 @@ export function GeofenceFields({ value, onChange, idPrefix = 'geo' }: Props) {
             value={value.lng}
             onChange={(e) => onChange({ ...value, lng: e.target.value })}
             placeholder="80.2707000"
-            className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+            className="mt-1 w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-text-primary"
           />
         </label>
-        <label className="block text-xs font-medium text-slate-600">
+        <label className="block text-xs font-medium text-text-secondary">
           Radius (metres)
           <input
             id={`${idPrefix}-radius`}
@@ -104,7 +104,7 @@ export function GeofenceFields({ value, onChange, idPrefix = 'geo' }: Props) {
             max={5000}
             value={value.radiusM}
             onChange={(e) => onChange({ ...value, radiusM: e.target.value })}
-            className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+            className="mt-1 w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-text-primary"
           />
         </label>
       </div>
@@ -113,7 +113,7 @@ export function GeofenceFields({ value, onChange, idPrefix = 'geo' }: Props) {
         <button
           type="button"
           onClick={useMyLocation}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-text-primary hover:bg-muted"
         >
           <Navigation className="h-3.5 w-3.5" />
           Use my current location
@@ -122,7 +122,7 @@ export function GeofenceFields({ value, onChange, idPrefix = 'geo' }: Props) {
           href={mapsHref}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-50"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-accent-blue hover:bg-muted"
         >
           Open in Google Maps
         </a>

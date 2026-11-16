@@ -13,7 +13,8 @@
     "prisma:seed": "tsx prisma/seed.ts",
     "db:test": "tsx scripts/test-db.ts",
     "db:seed-demo": "tsx scripts/seed-hms-demo.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "db:rename-hms-slug": "tsx scripts/rename-hms-slug.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.13.0",

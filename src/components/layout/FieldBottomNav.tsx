@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Bell,
   BookOpen,
+  Clock,
   ClipboardList,
   Home,
   ListTodo,
@@ -17,18 +18,18 @@ import {
 import { cn } from '@/lib/utils'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { useAuthStore } from '@/store/authStore'
+import { tenantLoginPath } from '@/lib/lastTenantSlug'
 import { useUIStore } from '@/store/uiStore'
 import { useNotificationsStore } from '@/store/notificationsStore'
+import { useModulesStore } from '@/store/modulesStore'
+import { api } from '@/lib/api'
 
-const TABS = [
-  { to: '/', label: 'Home', icon: Home },
-  { to: '/workqueue', label: 'Queue', icon: ListTodo },
-  { to: '/tickets', label: 'Jobs', icon: Ticket },
-  { to: '#more', label: 'More', icon: MoreHorizontal },
-] as const
+/** App-style bottom bar for engineers on a phone: the 3 things they do all day + More. */
+type Tab = { to: string; label: string; icon: typeof Home }
 
 const MORE_LINKS = [
   { to: '/notifications', label: 'Notifications', icon: Bell },
+  { to: '/workqueue', label: 'Tasks & reminders', icon: ListTodo },
   { to: '/spare-parts', label: 'Spare parts', icon: Wrench },
   { to: '/service-reports', label: 'Service reports', icon: ClipboardList },
   { to: '/contacts', label: 'Contacts', icon: Users },
@@ -47,6 +48,33 @@ export function FieldBottomNav() {
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
 
   const onTicketDetail = /^\/tickets\/[^/]+/.test(location.pathname)
+  const moduleOn = useModulesStore((s) => s.enabled)
+  useModulesStore((s) => s.modules)
+  const attendanceOn = Boolean(authUser?.attendanceEnabled) || moduleOn('hr.attendance', false)
+  const [readyCount, setReadyCount] = useState(0)
+  // Badge on Jobs: open jobs waiting for an engineer to accept
+  useEffect(() => {
+    let alive = true
+    const tick = () =>
+      void api
+        .tickets({ status: 'OPEN', assignedToId: 'unassigned', claimable: 1, limit: 1 })
+        .then((r) => alive && setReadyCount(Number(r.meta?.total ?? r.items?.length ?? 0)))
+        .catch(() => undefined)
+    tick()
+    const t = window.setInterval(tick, 60_000)
+    return () => {
+      alive = false
+      window.clearInterval(t)
+    }
+  }, [location.pathname])
+  const TABS: Tab[] = [
+    { to: '/', label: 'Home', icon: Home },
+    { to: '/tickets', label: 'Jobs', icon: Ticket },
+    ...(attendanceOn
+      ? [{ to: `/attendance?returnUrl=${encodeURIComponent(`${window.location.origin}/`)}`, label: 'Attendance', icon: Clock }]
+      : []),
+    { to: '#more', label: 'More', icon: MoreHorizontal },
+  ]
 
   async function handleLogout() {
     setLogoutConfirmOpen(false)
@@ -55,9 +83,7 @@ export function FieldBottomNav() {
       await logout()
       addToast({ type: 'success', message: 'Signed out' })
     } finally {
-      navigate(authUser?.tenantSlug ? `/login/${authUser.tenantSlug}` : '/login', {
-        replace: true,
-      })
+      navigate(tenantLoginPath(authUser?.tenantSlug), { replace: true })
     }
   }
 
@@ -131,7 +157,7 @@ export function FieldBottomNav() {
         className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
         aria-label="Field navigation"
       >
-        <ul className="grid h-16 grid-cols-4">
+        <ul className={cn('grid h-16', TABS.length === 4 ? 'grid-cols-4' : 'grid-cols-3')}>
           {TABS.map((tab) => {
             const Icon = tab.icon
             if (tab.to === '#more') {
@@ -169,7 +195,14 @@ export function FieldBottomNav() {
                     )
                   }
                 >
-                  <Icon size={22} strokeWidth={2} />
+                  <span className="relative">
+                    <Icon size={22} strokeWidth={2} />
+                    {tab.to === '/tickets' && readyCount > 0 ? (
+                      <span className="absolute -right-2.5 -top-1.5 min-w-[18px] rounded-full bg-accent-red px-1 text-center text-[10px] font-bold leading-[18px] text-white">
+                        {readyCount > 9 ? '9+' : readyCount}
+                      </span>
+                    ) : null}
+                  </span>
                   {tab.label}
                 </NavLink>
               </li>

@@ -40,6 +40,7 @@ import {
   isWarehouse,
 } from '@/lib/roles'
 import { useModulesStore } from '@/store/modulesStore'
+import { HmsLogo } from '@/components/HmsLogo'
 import { BlockSkeleton } from '@/components/ui/Skeleton'
 
 type SearchHit = { id: string; primary: string; secondary?: string; type: string }
@@ -52,8 +53,7 @@ type TopbarProps = {
 export function Topbar({ fieldShell = false }: TopbarProps) {
   const navigate = useNavigate()
   const location = useLocation()
-  const setSidebarCollapsed = useUIStore((s) => s.setSidebarCollapsed)
-  const sidebarCollapsed = useUIStore((s) => s.sidebarCollapsed)
+  const setMobileNavOpen = useUIStore((s) => s.setMobileNavOpen)
   const themeMode = useUIStore((s) => s.themeMode)
   const palette = useUIStore((s) => s.palette)
   const toggleThemeMode = useUIStore((s) => s.toggleThemeMode)
@@ -175,7 +175,12 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
     if (!userId || !isTenantSession()) return
     const onArrived = (ev: Event) => {
       const detail = (ev as CustomEvent<{ title?: string; message?: string }>).detail
-      setNotifOpen(true)
+      // Don't throw the panel over a form someone is typing in — toast + pulse is enough then
+      const el = document.activeElement as HTMLElement | null
+      const typing =
+        !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
+      // Phone (engineer app): never throw the panel over the screen — toast, pulsing bell and the Jobs badge are enough
+      if (!fieldShell && !typing && !document.querySelector('[role="dialog"]')) setNotifOpen(true)
       setBellPulse(true)
       window.setTimeout(() => setBellPulse(false), 1800)
       addToast({
@@ -186,7 +191,7 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
     }
     window.addEventListener(NOTIFICATION_ARRIVED_EVENT, onArrived)
     return () => window.removeEventListener(NOTIFICATION_ARRIVED_EVENT, onArrived)
-  }, [userId, addToast])
+  }, [userId, addToast, fieldShell])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -345,19 +350,21 @@ export function Topbar({ fieldShell = false }: TopbarProps) {
       className={cn(
         // Above page sticky columns (workqueue Action, inventory, bulk bars) on every role/login
         'zcrm-topbar relative z-[100] flex shrink-0 items-center gap-3 border-b border-border bg-card/95 px-3 backdrop-blur sm:px-4',
-        fieldShell ? 'h-12 pt-[env(safe-area-inset-top)]' : 'h-14',
+        fieldShell ? 'h-[calc(3rem+env(safe-area-inset-top))] pt-[env(safe-area-inset-top)]' : 'h-14',
       )}
     >
       {!fieldShell ? (
         <button
+          type="button"
+          aria-label="Open menu"
           className="rounded-lg p-1.5 text-text-secondary hover:bg-muted lg:hidden"
-          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onClick={() => setMobileNavOpen(true)}
         >
           <Menu size={20} />
         </button>
       ) : (
         <div className="flex min-w-0 items-center gap-2">
-          <img src="/hms-logo.png" alt="" className="h-7 w-auto object-contain" draggable={false} />
+          <HmsLogo size="sm" alt="" className="h-7" />
           <h1 className="truncate text-[16px] font-semibold tracking-tight text-text-primary">
             {fieldTitle}
           </h1>

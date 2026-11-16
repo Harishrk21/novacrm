@@ -122,7 +122,7 @@ export function ActivitiesPage() {
       }
       if (needMeta) {
         setDeals(
-          (await api.deals({ limit: 200 })).items.map((d) => ({
+          (can(authUser?.role, 'deals:view') ? (await api.deals({ limit: 200 })).items : []).map((d) => ({
             id: String(d.id),
             name: String(d.name ?? 'Deal'),
           })),

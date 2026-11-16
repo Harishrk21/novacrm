@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { PAGE_SIZE } from '@/lib/pagination'
+import { PaginationBar } from '@/components/ui/PaginationBar'
+import { fetchAllAsPage } from '@/lib/fetchAllPages'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Check, ChevronDown } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { FlowStepBar } from '@/components/ui/FlowStepBar'
 import { Input } from '@/components/ui/Input'
 import { ConfirmModal, Modal } from '@/components/ui/Modal'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
@@ -16,8 +18,6 @@ import {
   parseDeliveryChallan,
 } from '@/lib/deliveryChallanPrint'
 import {
-  INVENTORY_FLOW_STEPS,
-  inventoryStepDoneFlags,
   parseProductStampLines,
   preferReleaseActiveLine,
   productMatchesOrderLabel,
@@ -261,6 +261,20 @@ function WarehouseReleaseSteps({
   )
 }
 
+
+/** Bulk reduce stopped part-way — tells the warehouse exactly how many units went through. */
+class PartialReduceError extends Error {
+  constructor(done: number, total: number, cause: unknown) {
+    const why = cause instanceof ApiClientError ? cause.message : 'request failed'
+    super(
+      done > 0
+        ? `Reduced ${done} of ${total} unit(s), then stopped: ${why}. The reduced units are saved — continue with the rest.`
+        : `No units reduced: ${why}`,
+    )
+    this.name = 'PartialReduceError'
+  }
+}
+
 export function RequisitionsPanel({
   defaultQueue = 'pending',
   title,
@@ -333,24 +347,35 @@ export function RequisitionsPanel({
     })
   }
 
+  /** Shipped history is paged on the server (25 per page) */
+  const [shippedPage, setShippedPage] = useState(1)
+  const [shippedTotal, setShippedTotal] = useState(0)
+  useEffect(() => {
+    setShippedPage(1)
+  }, [queue])
+
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = Boolean(opts?.silent)
     if (!silent) setLoading(true)
     try {
+      const shippedView = queue === 'shipped'
       const status =
         queue === 'pending'
           ? 'PENDING_APPROVAL'
           : queue === 'approved'
             ? 'APPROVED'
             : 'APPROVED,FULFILLED'
+      const queueParams = {
+        status,
+        ...(queue === 'fulfill' || queue === 'shipped' || queue === 'pending' || queue === 'approved'
+          ? { queue }
+          : {}),
+      }
       const [res, pendRes] = await Promise.all([
-        api.requisitions({
-          limit: 100,
-          status,
-          ...(queue === 'fulfill' || queue === 'shipped' || queue === 'pending' || queue === 'approved'
-            ? { queue }
-            : {}),
-        }),
+        // Shipped grows forever → one server page at a time; active queues → every row
+        shippedView
+          ? api.requisitions({ ...queueParams, page: shippedPage, limit: PAGE_SIZE })
+          : fetchAllAsPage((p) => api.requisitions({ ...queueParams, ...p })),
         canApprove
           ? api.requisitions({
               limit: 100,
@@ -366,7 +391,8 @@ export function RequisitionsPanel({
         rows = rows.filter((r) => Boolean(r.shippedAt))
       }
       setItems(rows)
-      if (pendRes) setPendingCount((pendRes.items ?? []).length)
+      setShippedTotal(shippedView ? Number(res.meta?.total ?? rows.length) : 0)
+      if (pendRes) setPendingCount(Number(pendRes.meta?.total ?? (pendRes.items ?? []).length))
       else if (queue === 'pending') setPendingCount(rows.length)
     } catch (err) {
       addToast({
@@ -377,7 +403,7 @@ export function RequisitionsPanel({
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [addToast, canApprove, queue])
+  }, [addToast, canApprove, queue, shippedPage])
 
   useEffect(() => {
     setQueue(defaultQueue)
@@ -1057,10 +1083,15 @@ export function RequisitionsPanel({
       let updated: Record<string, unknown> | null = null
       for (let i = 0; i < ids.length; i++) {
         const isLast = i === ids.length - 1
-        updated = (await api.fulfillRequisition(id, {
-          markShipped: isLast ? markShipped : false,
-          stockUnitId: ids[i],
-        })) as Record<string, unknown>
+        try {
+          updated = (await api.fulfillRequisition(id, {
+            markShipped: isLast ? markShipped : false,
+            stockUnitId: ids[i],
+          })) as Record<string, unknown>
+        } catch (err) {
+          // W7: report exactly what went through, refresh, let the user continue
+          throw new PartialReduceError(i, ids.length, err)
+        }
       }
       const progress = releaseStockProgress(updated ?? {})
       await load({ silent: true })
@@ -1113,10 +1144,15 @@ export function RequisitionsPanel({
           : `All ${progress.needed} machine(s) reduced — serials on customer Machines · next: Sale DC`,
       })
     } catch (err) {
-      addToast({
-        type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Stock out failed',
-      })
+      if (err instanceof PartialReduceError) {
+        addToast({ type: 'error', message: err.message })
+        await load({ silent: true })
+      } else {
+        addToast({
+          type: 'error',
+          message: err instanceof ApiClientError ? err.message : 'Stock out failed',
+        })
+      }
     } finally {
       setBusyId(null)
     }
@@ -1262,11 +1298,16 @@ export function RequisitionsPanel({
         lines: stampPayload,
       })
       let updated: Record<string, unknown> | null = null
-      for (const stockUnitId of ids) {
-        updated = (await api.fulfillRequisition(id, {
-          markShipped: false,
-          stockUnitId,
-        })) as Record<string, unknown>
+      for (let i = 0; i < ids.length; i++) {
+        try {
+          updated = (await api.fulfillRequisition(id, {
+            markShipped: false,
+            stockUnitId: ids[i],
+          })) as Record<string, unknown>
+        } catch (err) {
+          await load({ silent: true })
+          throw new PartialReduceError(i, ids.length, err)
+        }
       }
       const progress = releaseStockProgress(updated ?? {})
       // Merge expected product list so a backend under-count cannot finish early
@@ -1387,7 +1428,8 @@ export function RequisitionsPanel({
     } catch (err) {
       addToast({
         type: 'error',
-        message: err instanceof ApiClientError ? err.message : 'Release failed',
+        message:
+          err instanceof PartialReduceError || err instanceof ApiClientError ? err.message : 'Release failed',
       })
     } finally {
       setBusyId(null)
@@ -1419,36 +1461,8 @@ export function RequisitionsPanel({
               : subtitle ??
                 (queue === 'pending'
                   ? 'Sales requisitions waiting for your sign-off — highlighted in red until you Accept.'
-                  : 'One product at a time: stamp → pick unit → reduce. Then DC → Ready to ship.')}
+                  : 'Sales waiting for stock out — open one to start. Finished ones move to Shipped.')}
           </p>
-          {(queue === 'fulfill' || queue === 'approved') && canFulfill ? (
-            <div className="mt-3">
-              <FlowStepBar
-                steps={INVENTORY_FLOW_STEPS}
-                doneFlags={inventoryStepDoneFlags(
-                  items[0]
-                    ? {
-                        status: String(items[0].status),
-                        shippedAt: items[0].shippedAt
-                          ? String(items[0].shippedAt)
-                          : null,
-                        serialNo: items[0].serialNo ? String(items[0].serialNo) : null,
-                        stockUnitId: items[0].stockUnitId
-                          ? String(items[0].stockUnitId)
-                          : null,
-                        productName: items[0].productName
-                          ? String(items[0].productName)
-                          : null,
-                        customFields:
-                          items[0].customFields && typeof items[0].customFields === 'object'
-                            ? (items[0].customFields as Record<string, unknown>)
-                            : null,
-                      }
-                    : null,
-                )}
-              />
-            </div>
-          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           {canApprove ? (
@@ -1515,6 +1529,7 @@ export function RequisitionsPanel({
           }
         />
       ) : queue === 'shipped' ? (
+        <>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[880px] text-left text-sm">
             <thead className="bg-surface text-xs text-text-secondary">
@@ -1659,6 +1674,14 @@ export function RequisitionsPanel({
             </tbody>
           </table>
         </div>
+        <PaginationBar
+          page={shippedPage}
+          total={shippedTotal}
+          onPageChange={setShippedPage}
+          label="Shipped releases"
+          hideWhenSinglePage
+        />
+        </>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">

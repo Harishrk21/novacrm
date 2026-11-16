@@ -587,7 +587,9 @@ export async function demoDataCounts(tenantId: string): Promise<DemoCounts> {
 export async function demoDataStatus(tenantId: string) {
   const counts = await demoDataCounts(tenantId);
   const loaded = counts.accounts >= TARGET_CUSTOMERS;
-  return { loaded, counts, pack: DEMO_PACK, targetCustomers: TARGET_CUSTOMERS };
+  const allContacts = await prisma.contact.count({ where: { tenantId, deletedAt: null } });
+  const liveCustomers = Math.max(0, allContacts - counts.contacts);
+  return { loaded, counts, liveCustomers, pack: DEMO_PACK, targetCustomers: TARGET_CUSTOMERS };
 }
 
 async function softDeletePack(tenantId: string, pack: string) {
@@ -732,6 +734,18 @@ export async function loadDemoData(tenantId: string, userId: string) {
     return { ...status, alreadyLoaded: true as const };
   }
 
+  // Live workspace guard: never mix sample customers/tickets/bills into real company data.
+  const [allContacts, demoContacts] = await Promise.all([
+    prisma.contact.count({ where: { tenantId, deletedAt: null } }),
+    prisma.contact.count({ where: demoWhere(tenantId) }),
+  ]);
+  if (allContacts - demoContacts > 0) {
+    const { AppError } = await import("../../common/errors.js");
+    throw new AppError(
+      "This workspace already has real customers — demo data can only be loaded into an empty test workspace.",
+      409,
+    );
+  }
   // Clear partial / legacy demo packs so the demo always shows a clean Chennai set
   for (const pack of LEGACY_PACKS) {
     await softDeletePack(tenantId, pack);

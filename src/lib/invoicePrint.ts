@@ -1,5 +1,13 @@
 /** Proforma invoice printable (browser Print → Save as PDF). GST tax invoice stays in Tally. */
 import { openPrintHtml } from '@/lib/openPrintHtml'
+import {
+  LETTERHEAD_CSS,
+  amountInWordsInr,
+  fmtDate,
+  letterFooterHtml,
+  letterheadHtml,
+  printCompany,
+} from '@/lib/printLetterhead'
 
 function escapeHtml(value: string) {
   return value
@@ -40,7 +48,7 @@ export type InvoicePrintOpts = {
 }
 
 export function openPrintableInvoice(opts: InvoicePrintOpts): boolean {
-  const currency = opts.currency || 'INR'
+
   const rows = opts.lines
     .map(
       (l, i) => `
@@ -55,6 +63,7 @@ export function openPrintableInvoice(opts: InvoicePrintOpts): boolean {
     )
     .join('')
   const balance = Math.max(0, opts.grandTotal - (opts.amountPaid ?? 0))
+  const company = printCompany({ name: opts.sellerName, phone: opts.sellerPhone, email: opts.sellerEmail })
 
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"/><title>${escapeHtml(opts.invoiceNumber)}</title>
@@ -96,31 +105,33 @@ export function openPrintableInvoice(opts: InvoicePrintOpts): boolean {
   .btn-print{background:var(--brand);color:#fff}
   .btn-close{background:#fff;border:1px solid #cbd5e1!important}
   @media print{body{background:#fff}.sheet{margin:0;box-shadow:none;border-radius:0}.toolbar{display:none}}
+${LETTERHEAD_CSS}
 </style></head><body>
   <div class="sheet">
     <div class="toolbar">
       <button class="btn-print" onclick="window.print()">Print / Save as PDF</button>
       <button class="btn-close" onclick="window.close()">Close</button>
     </div>
-    <div class="hero">
-      <div class="hero-top">
-        <div>
-          <div class="brand">${escapeHtml(opts.sellerName || 'HMS Enterprises')}</div>
-          <div class="tag">Proforma Invoice</div>
-        </div>
-        <div class="inv-meta">
-          <div class="inv-no">${escapeHtml(opts.invoiceNumber)}</div>
-          <div style="opacity:.9;margin-top:4px">${escapeHtml(opts.status)} · ${escapeHtml(currency)}</div>
-        </div>
-      </div>
-    </div>
+    ${letterheadHtml({
+      company,
+      title: 'Proforma Invoice',
+      subtitle: opts.ticketRef ? 'Service job' : undefined,
+      number: opts.invoiceNumber,
+      meta: [
+        ['Date', fmtDate(opts.invoiceDate)],
+        ['Due', opts.dueDate ? fmtDate(opts.dueDate) : null],
+        ['Job ref', opts.ticketRef],
+      ],
+      badge: balance <= 0 && opts.grandTotal > 0 ? { text: 'Paid', ok: true } : null,
+    })}
     <div class="body">
       <div class="parties">
         <div class="party from">
           <div class="label">From (Seller)</div>
-          <div class="name">${escapeHtml(opts.sellerName || 'Seller')}</div>
-          ${opts.sellerPhone ? `<div class="line">☎ ${escapeHtml(opts.sellerPhone)}</div>` : ''}
-          ${opts.sellerEmail ? `<div class="line">${escapeHtml(opts.sellerEmail)}</div>` : ''}
+          <div class="name">${escapeHtml(company.name)}</div>
+          ${company.addressLines.map((l) => `<div class="line">${escapeHtml(l)}</div>`).join('')}
+          ${company.gstin ? `<div class="line">GSTIN: ${escapeHtml(company.gstin)}</div>` : ''}
+          ${company.phone ? `<div class="line">Ph: ${escapeHtml(company.phone)}</div>` : ''}
         </div>
         <div class="party to">
           <div class="label">Bill To</div>
@@ -128,12 +139,6 @@ export function openPrintableInvoice(opts: InvoicePrintOpts): boolean {
           ${opts.contactName ? `<div class="line">Attn: ${escapeHtml(opts.contactName)}</div>` : ''}
           ${opts.billingAddress ? `<div class="line">${escapeHtml(opts.billingAddress)}</div>` : ''}
         </div>
-      </div>
-      <div class="facts">
-        <div class="fact"><span>Proforma date</span><strong>${escapeHtml(opts.invoiceDate || '—')}</strong></div>
-        <div class="fact"><span>Due date</span><strong>${escapeHtml(opts.dueDate || '—')}</strong></div>
-        <div class="fact"><span>Job ref</span><strong>${escapeHtml(opts.ticketRef || '—')}</strong></div>
-        <div class="fact"><span>Currency</span><strong>${escapeHtml(currency)}</strong></div>
       </div>
       <table>
         <thead><tr><th>#</th><th>Description</th><th style="text-align:right">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Tax</th><th style="text-align:right">Amount</th></tr></thead>
@@ -143,15 +148,18 @@ export function openPrintableInvoice(opts: InvoicePrintOpts): boolean {
         <div class="totals">
           <div><span>Subtotal</span><span>${money(opts.subtotal)}</span></div>
           <div><span>Tax</span><span>${money(opts.taxTotal)}</span></div>
-          <div><span>Discount</span><span>${money(opts.discountTotal)}</span></div>
+          ${opts.discountTotal ? `<div><span>Discount</span><span>${money(opts.discountTotal)}</span></div>` : ''}
           <div class="grand"><span>Grand total</span><span>${money(opts.grandTotal)}</span></div>
           ${opts.amountPaid != null ? `<div><span>Amount paid</span><span>${money(opts.amountPaid)}</span></div>` : ''}
           <div class="balance"><span>Balance due</span><span>${money(balance)}</span></div>
         </div>
       </div>
+      <div class="words" style="text-align:right">Amount in words: <b>${escapeHtml(amountInWordsInr(opts.grandTotal))}</b></div>
       ${opts.notes ? `<div class="notes"><strong>Notes</strong><br/>${escapeHtml(opts.notes)}</div>` : ''}
-      <div class="notes" style="margin-top:12px">This is a <strong>proforma invoice</strong> only. Final GST tax invoice is issued from Tally by HMS Enterprises.</div>
+      <div class="notes" style="margin-top:12px">This is a <strong>proforma invoice</strong> only. Final GST tax invoice is issued separately by ${escapeHtml(company.name)}.</div>
+      <div style="display:flex;justify-content:flex-end;margin-top:36px"><div style="border-top:1px solid #a1a1aa;padding-top:6px;min-width:220px;text-align:center;font-size:12px;color:#52525b">For ${escapeHtml(company.name)}<br/>Authorised signatory</div></div>
     </div>
+    ${letterFooterHtml(company)}
   </div>
 </body></html>`
 

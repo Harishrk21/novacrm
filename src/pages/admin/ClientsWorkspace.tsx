@@ -123,6 +123,14 @@ export function ClientsWorkspace({
 
   async function toggleSuspend(c: ClientRow) {
     if (!liveMode) return
+    if (
+      (c.status === 'ACTIVE' || c.status === 'TRIAL') &&
+      !window.confirm(
+        `Suspend ${c.name}? Every user of this company is signed out and can't log in until you reactivate it.`,
+      )
+    ) {
+      return
+    }
     try {
       if (c.status === 'ACTIVE' || c.status === 'TRIAL') {
         await api.suspendTenant(c.id)
@@ -301,37 +309,40 @@ export function ClientsWorkspace({
                       <div className="mt-0.5 font-medium">{formatDate(c.createdAt)}</div>
                     </div>
                   </div>
-                  <div className="mt-3 text-xs font-medium text-accent-blue">
-                    Open full client page →
-                  </div>
                 </button>
                 <div className="flex flex-wrap gap-1 border-t border-border px-3 py-2">
+                  <Button size="sm" onClick={() => openDetail(c)}>
+                    <Users size={12} /> Open client
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
+                    title={clientLoginUrl(c.slug)}
                     onClick={() => void handleCopy(clientLoginUrl(c.slug), `url-${c.id}`)}
                   >
                     {copiedKey === `url-${c.id}` ? <Check size={12} /> : <Copy size={12} />}
-                    Login
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => openDetail(c)}>
-                    <Palette size={12} /> Open
+                    {copiedKey === `url-${c.id}` ? 'Copied' : 'Copy login link'}
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => navigate(`/admin/clients/${c.id}`)}
+                    onClick={() => window.open(clientLoginUrl(c.slug), '_blank', 'noopener')}
                   >
-                    <Users size={12} /> Detail
+                    <Palette size={12} /> Visit login page
                   </Button>
                   {liveMode ? (
-                    <Button size="sm" variant="outline" onClick={() => void toggleSuspend(c)}>
-                      {c.status === 'SUSPENDED' ? 'Reactivate' : 'Suspend'}
+                    <Button size="sm" variant="outline" onClick={() => onResetAdmin(c)}>
+                      <KeyRound size={12} /> Reset admin password
                     </Button>
                   ) : null}
                   {liveMode ? (
-                    <Button size="sm" variant="outline" onClick={() => onResetAdmin(c)}>
-                      <KeyRound size={12} /> Reset
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className={c.status === 'SUSPENDED' ? 'text-emerald-600' : 'text-rose-600 hover:bg-rose-500/10'}
+                      onClick={() => void toggleSuspend(c)}
+                    >
+                      {c.status === 'SUSPENDED' ? 'Reactivate' : 'Suspend'}
                     </Button>
                   ) : null}
                 </div>

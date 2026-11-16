@@ -1,4 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  LETTERHEAD_CSS,
+  amountInWordsInr,
+  fmtDate,
+  letterFooterHtml,
+  letterheadHtml,
+  printCompany,
+} from '@/lib/printLetterhead'
 import { Link, Navigate, useSearchParams } from 'react-router-dom'
 import { Download, Eye, Plus, Trash2 } from 'lucide-react'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
@@ -22,6 +30,7 @@ import { AiAssistCard } from '@/components/ai/AiAssistCard'
 import { WhatsAppSendConfirm, type WhatsAppConfirmPayload } from '@/components/whatsapp/WhatsAppSendConfirm'
 import { can } from '@/lib/permissions'
 import { useAuthStore } from '@/store/authStore'
+import { HmsLogo } from '@/components/HmsLogo'
 import {
   HMS_FAMILY_OPTIONS,
   familyByCode,
@@ -134,6 +143,13 @@ function openPrintableInvoice(opts: {
     .join('')
 
   const balance = Math.max(0, opts.grandTotal - (opts.amountPaid ?? 0))
+  const company = printCompany({
+    name: opts.sellerName,
+    phone: opts.sellerPhone,
+    email: opts.sellerEmail,
+    gstin: opts.sellerGstin,
+    address: opts.sellerAddress,
+  })
 
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"/><title>${escapeHtml(opts.invoiceNumber)}</title>
@@ -190,38 +206,32 @@ function openPrintableInvoice(opts: {
     .sheet{margin:0;box-shadow:none;border-radius:0}
     .toolbar{display:none}
   }
+${LETTERHEAD_CSS}
 </style></head><body>
   <div class="sheet">
     <div class="toolbar">
       <button class="btn-print" onclick="window.print()">Print / Save as PDF</button>
       <button class="btn-close" onclick="window.close()">Close</button>
     </div>
-    <div class="hero">
-      <div class="hero-top">
-        <div>
-          <div class="brand-row" style="display:flex;align-items:center;gap:14px;margin-bottom:8px">
-            <img src="${typeof window !== 'undefined' ? window.location.origin : ''}/hms-logo.png" alt="HMS Enterprises" style="height:48px;width:auto;object-fit:contain;background:#fff;border-radius:8px;padding:4px" onerror="this.style.display='none'" />
-            <div>
-              <div class="brand">${escapeHtml(opts.sellerName || 'HMS Enterprises')}</div>
-              <div class="tag">Proforma Invoice</div>
-            </div>
-          </div>
-        </div>
-        <div class="inv-meta">
-          <div class="inv-no">${escapeHtml(opts.invoiceNumber)}</div>
-          <div style="opacity:.9;margin-top:4px">${escapeHtml(opts.status)} · ${escapeHtml(opts.currency)}</div>
-        </div>
-      </div>
-    </div>
+    ${letterheadHtml({
+      company,
+      title: 'Proforma Invoice',
+      number: opts.invoiceNumber,
+      meta: [
+        ['Date', fmtDate(opts.invoiceDate)],
+        ['Valid / due', opts.dueDate ? fmtDate(opts.dueDate) : null],
+        ['PO / ref', opts.poNumber],
+      ],
+      badge: balance <= 0 && opts.grandTotal > 0 ? { text: 'Paid', ok: true } : null,
+    })}
     <div class="body">
       <div class="parties">
         <div class="party from">
           <div class="label">From (Seller)</div>
-          <div class="name">${escapeHtml(opts.sellerName || 'Seller')}</div>
-          ${opts.sellerAddress ? `<div class="line">${escapeHtml(opts.sellerAddress)}</div>` : ''}
-          ${opts.sellerPhone ? `<div class="line">☎ ${escapeHtml(opts.sellerPhone)}</div>` : ''}
-          ${opts.sellerEmail ? `<div class="line">${escapeHtml(opts.sellerEmail)}</div>` : ''}
-          ${opts.sellerGstin ? `<div class="line">GSTIN: ${escapeHtml(opts.sellerGstin)}</div>` : ''}
+          <div class="name">${escapeHtml(company.name)}</div>
+          ${company.addressLines.map((l) => `<div class="line">${escapeHtml(l)}</div>`).join('')}
+          ${company.gstin ? `<div class="line">GSTIN: ${escapeHtml(company.gstin)}</div>` : ''}
+          ${company.phone ? `<div class="line">Ph: ${escapeHtml(company.phone)}</div>` : ''}
         </div>
         <div class="party to">
           <div class="label">Bill To (Customer)</div>
@@ -231,12 +241,7 @@ function openPrintableInvoice(opts: {
           ${opts.placeOfSupply ? `<div class="line">Place of supply: ${escapeHtml(opts.placeOfSupply)}</div>` : ''}
         </div>
       </div>
-      <div class="facts">
-        <div class="fact"><span>Proforma date</span><strong>${escapeHtml(opts.invoiceDate || '—')}</strong></div>
-        <div class="fact"><span>Due date</span><strong>${escapeHtml(opts.dueDate || '—')}</strong></div>
-        <div class="fact"><span>Payment terms</span><strong>${escapeHtml(opts.paymentTerms || '—')}</strong></div>
-        <div class="fact"><span>PO / Ref</span><strong>${escapeHtml(opts.poNumber || '—')}</strong></div>
-      </div>
+      ${opts.paymentTerms ? `<p style="margin:0 0 14px;color:var(--muted)">Payment terms: <strong style="color:var(--ink)">${escapeHtml(opts.paymentTerms)}</strong></p>` : ''}
       <table>
         <thead><tr><th>#</th><th>Description</th><th style="text-align:right">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Tax</th><th style="text-align:right">Amount</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="6" style="text-align:center;color:#64748b">No line items</td></tr>`}</tbody>
@@ -245,18 +250,20 @@ function openPrintableInvoice(opts: {
         <div class="totals">
           <div><span>Subtotal</span><span>${formatCurrency(opts.subtotal)}</span></div>
           <div><span>Tax</span><span>${formatCurrency(opts.taxTotal)}</span></div>
-          <div><span>Discount</span><span>${formatCurrency(opts.discountTotal)}</span></div>
+          ${opts.discountTotal ? `<div><span>Discount</span><span>${formatCurrency(opts.discountTotal)}</span></div>` : ''}
           <div class="grand"><span>Grand total</span><span>${formatCurrency(opts.grandTotal)}</span></div>
           ${opts.amountPaid != null ? `<div><span>Amount paid</span><span>${formatCurrency(opts.amountPaid)}</span></div>` : ''}
           <div class="balance"><span>Balance due</span><span>${formatCurrency(balance)}</span></div>
         </div>
       </div>
+      <div class="words" style="text-align:right">Amount in words: <b>${escapeHtml(amountInWordsInr(opts.grandTotal))}</b></div>
       ${opts.notes ? `<div class="notes"><strong>Notes</strong><br/>${escapeHtml(opts.notes)}</div>` : ''}
       <div class="footer">
-        <div>This is a <strong>proforma invoice</strong> for estimate / advance purposes only.<br/>Final GST tax invoice is issued from Tally by HMS Enterprises.</div>
-        <div class="sign">Authorized signatory<br/><strong style="color:#0f172a">${escapeHtml(opts.sellerName || '')}</strong></div>
+        <div>This is a <strong>proforma invoice</strong> for estimate / advance purposes only.<br/>Final GST tax invoice is issued separately by ${escapeHtml(company.name)}.</div>
+        <div class="sign">For ${escapeHtml(company.name)}<br/><strong style="color:#18181b">Authorised signatory</strong></div>
       </div>
     </div>
+    ${letterFooterHtml(company)}
   </div>
 </body></html>`
 
@@ -640,13 +647,13 @@ export function InvoicesPage() {
       const [invR, lookupsR, accountsR, tenantR, unitsInStockR, unitsDemoR] = await Promise.allSettled([
         api.invoices({ limit: 50, status: statusFilter || undefined }),
         needMeta ? api.lookups() : Promise.resolve(null),
-        needMeta ? api.accounts({ limit: 100 }) : Promise.resolve(null),
+        needMeta && can(authUser?.role, 'accounts:view') ? api.accounts({ limit: 100 }) : Promise.resolve(null),
         needMeta ? api.myTenant() : Promise.resolve(null),
         needMeta && !silent
-          ? api.stockUnits({ status: 'IN_STOCK', limit: 200 })
+          ? api.stockUnitsAll({ status: 'IN_STOCK' })
           : Promise.resolve([]),
         needMeta && !silent
-          ? api.stockUnits({ status: 'DEMO', limit: 200 })
+          ? api.stockUnitsAll({ status: 'DEMO' })
           : Promise.resolve([]),
       ])
       if (invR.status !== 'fulfilled') {
@@ -1604,7 +1611,7 @@ export function InvoicesPage() {
         }}
         tabs={[
           { id: 'list', label: 'All invoices', count: items.length },
-          { id: 'create', label: 'New invoice' },
+          { id: 'create', label: 'New proforma' },
           { id: 'upload', label: 'Upload copy' },
         ]}
       />
@@ -1627,8 +1634,7 @@ export function InvoicesPage() {
               ]}
             />
             <p className="text-sm text-text-secondary">
-              CRM issues <strong>proforma</strong> only — final GST bills stay in <strong>Tally</strong>. Status here is
-              for warehouse/billing tracking (draft → sent → paid after Tally collection).
+              Status tracks the bill: draft → sent → paid (after collection in Tally).
             </p>
           </Card>
 
@@ -2001,11 +2007,7 @@ export function InvoicesPage() {
           }
         >
           <div className="mb-4 flex items-center gap-3 rounded-[10px] border border-border bg-surface/80 px-4 py-3">
-            <img
-              src="/hms-logo.png"
-              alt="HMS Enterprises"
-              className="h-10 w-auto object-contain"
-            />
+            <HmsLogo size="md" alt="HMS Enterprises" />
             <div>
               <div className="text-sm font-semibold text-text-primary">HMS Enterprises</div>
               <div className="text-xs text-text-secondary">

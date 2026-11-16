@@ -6,6 +6,8 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { createPortal } from 'react-dom'
+import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from './Button'
 import { Drawer } from './Drawer'
@@ -45,6 +47,12 @@ interface FormPanelProps {
   dirty?: boolean
   /** Message shown in the discard dialog */
   unsavedReason?: string
+  /**
+   * drawer (default) = right-side resizable drawer.
+   * page = full-width card in the page body with a sticky footer (same header, fields,
+   * discard guard and Cancel behaviour) — for long multi-step forms.
+   */
+  layout?: 'drawer' | 'page'
 }
 
 const FormPanelCloseCtx = createContext<(() => void) | null>(null)
@@ -70,6 +78,8 @@ export function FormPanel({
   guardUnsaved = true,
   dirty,
   unsavedReason = 'You have unsaved changes. Leaving will discard them.',
+  layout = 'drawer',
+  className,
 }: FormPanelProps) {
   const [touched, setTouched] = useState(false)
   useEffect(() => {
@@ -89,6 +99,67 @@ export function FormPanel({
     setTouched(true)
   }, [])
 
+  const heading = (
+    <div>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
+        {eyebrow}
+      </div>
+      <div className="text-lg font-semibold tracking-tight text-text-primary">{title}</div>
+      {subtitle ? <p className="mt-0.5 text-sm font-normal text-text-secondary">{subtitle}</p> : null}
+    </div>
+  )
+
+  if (layout === 'page') {
+    if (!open) return null
+    const card = (
+        <section
+          className={cn(
+            'mx-auto flex w-full max-w-6xl flex-col rounded-2xl border border-border bg-card shadow-[var(--shadow-card)]',
+            className,
+          )}
+        >
+          <header className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+            {heading}
+            <button
+              type="button"
+              onClick={guardedClose}
+              aria-label="Close"
+              className="rounded-lg p-1.5 text-text-secondary transition hover:bg-muted hover:text-text-primary"
+            >
+              <X size={18} />
+            </button>
+          </header>
+          <div
+            className={cn('p-5', bodyClassName)}
+            onChange={dirty === undefined ? markTouched : undefined}
+          >
+            {children}
+          </div>
+          {footer ? (
+            <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 rounded-b-2xl border-t border-border bg-card/95 px-5 py-3 backdrop-blur">
+              {footer}
+            </footer>
+          ) : null}
+        </section>
+    )
+    // Cover the app content area (sidebar + topbar stay visible) with its own scroll,
+    // so the form reads as its own page wherever it is opened from.
+    const root = typeof document !== 'undefined' ? document.getElementById('page-form-root') : null
+    return (
+      <FormPanelCloseCtx.Provider value={guardedClose}>
+        {root
+          ? createPortal(
+              <div className="absolute inset-0 z-40 overflow-y-auto overscroll-contain bg-surface p-3 sm:p-4 lg:p-5">
+                {card}
+              </div>,
+              root,
+            )
+          : card}
+        {dialog}
+      </FormPanelCloseCtx.Provider>
+    )
+  }
+
   return (
     <FormPanelCloseCtx.Provider value={guardedClose}>
       <Drawer
@@ -99,17 +170,7 @@ export function FormPanel({
         maxWidth={maxWidth}
         storageKey={storageKey}
         resizable
-        title={
-          <div>
-            <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
-              {eyebrow}
-            </div>
-            <div className="text-lg font-semibold tracking-tight text-text-primary">{title}</div>
-            {subtitle ? (
-              <p className="mt-0.5 text-sm font-normal text-text-secondary">{subtitle}</p>
-            ) : null}
-          </div>
-        }
+        title={heading}
         footer={
           footer ? (
             <div className="flex flex-wrap items-center justify-end gap-2">{footer}</div>

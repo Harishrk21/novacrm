@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { success } from "../../common/utils/response.js";
+import { systemHealth } from "./systemHealth.js";
 import { authenticate, requirePlatform, requirePlatformRoles } from "../../middleware/auth.middleware.js";
 import { validate } from "../../middleware/validate.middleware.js";
 import * as c from "./platform.controller.js";
@@ -13,6 +15,8 @@ platformRouter.get("/tenants", c.listTenants);
 platformRouter.get("/business-categories", c.listCategories);
 platformRouter.get("/tips", c.listTips);
 platformRouter.get("/dashboard/stats", c.stats);
+// Real dependency checks for the super admin System health page
+platformRouter.get("/system-health", async (_q, r) => success(r, await systemHealth()));
 
 /** Onboard — SUPER_ADMIN only */
 platformRouter.post(

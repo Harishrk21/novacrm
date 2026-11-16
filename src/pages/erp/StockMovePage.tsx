@@ -7,7 +7,6 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
-import { PageTabs } from '@/components/ui/PageTabs'
 import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError } from '@/lib/api'
@@ -297,8 +296,9 @@ export function StockMovePage() {
   }
 
   useEffect(() => {
-    if (mode === 'reduce') void loadReduceHistory()
-  }, [mode, histMonth])
+    // Only when History is opened — it was fetching 400 rows on every visit
+    if (mode === 'reduce' && reducePageTab === 'history') void loadReduceHistory()
+  }, [mode, histMonth, reducePageTab])
 
   // Server HMS preview when model + qty ready
   useEffect(() => {
@@ -579,6 +579,15 @@ export function StockMovePage() {
     }
   }
 
+  const reduceButtonLabel = (() => {
+    const n = reduceUnitIds.length
+    if (category !== 'MACHINE' || !n) return 'Reduce stock'
+    const units = n + (n === 1 ? ' unit' : ' units')
+    if (reducePurpose === 'DEMO') return 'Issue ' + units + ' for demo'
+    if (reducePurpose === 'SALE') return 'Reduce ' + units + ' — sold'
+    return 'Reduce ' + units
+  })()
+
   async function reduceMachineStock() {
     if (!stockMachineType) {
       addToast({ type: 'error', message: 'Select machine type (Billing / Weighing / …)' })
@@ -601,8 +610,13 @@ export function StockMovePage() {
       addToast({ type: 'error', message: 'Select reason: Sale or Demo' })
       return
     }
-    if (reducePurpose === 'DEMO' && !demoContact?.id) {
-      addToast({ type: 'error', message: 'Map this demo to a customer' })
+    // Sale or demo — the unit must belong to a customer (a customer-less sale was invisible
+    // in the customer's machines and in Sales reports)
+    if (!demoContact?.id) {
+      addToast({
+        type: 'error',
+        message: reducePurpose === 'DEMO' ? 'Pick the customer this demo is going to' : 'Pick the customer this sale is for',
+      })
       return
     }
     const reason =
@@ -746,18 +760,20 @@ export function StockMovePage() {
         >
           <ArrowUpFromLine size={16} /> Reduce stock
         </button>
+        {mode === 'reduce' ? (
+          <button
+            type="button"
+            onClick={() => setReducePageTab(reducePageTab === 'history' ? 'form' : 'history')}
+            className={`inline-flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition-colors ${
+              reducePageTab === 'history'
+                ? 'border-accent-blue bg-accent-blue/10 text-accent-blue'
+                : 'border-border text-text-secondary hover:bg-muted/40'
+            }`}
+          >
+            {reducePageTab === 'history' ? '← Back to reduce' : 'Reduce history'}
+          </button>
+        ) : null}
       </div>
-
-      {mode === 'reduce' ? (
-        <PageTabs
-          tabs={[
-            { id: 'form', label: 'Reduce' },
-            { id: 'history', label: 'Reduce history', count: reduceHistory.length },
-          ]}
-          active={reducePageTab}
-          onChange={(id) => setReducePageTab(id === 'history' ? 'history' : 'form')}
-        />
-      ) : null}
 
       {mode === 'reduce' && reducePageTab === 'history' ? (
         <Card className="space-y-4 p-4">
@@ -926,6 +942,7 @@ export function StockMovePage() {
                 { value: 'SPARE', label: 'Spare' },
               ]}
             />
+            {mode === 'reduce' && category === 'MACHINE' ? null : (
             <Select
               label="Machine type *"
               value={stockMachineType}
@@ -941,6 +958,7 @@ export function StockMovePage() {
                 ...STOCK_MACHINE_TYPES.map((t) => ({ value: t.value, label: t.label })),
               ]}
             />
+            )}
           </div>
 
           {mode === 'add' && category === 'MACHINE' ? (
@@ -1153,40 +1171,7 @@ export function StockMovePage() {
 
           {mode === 'reduce' && category === 'MACHINE' ? (
             <div className="space-y-4">
-              <ol className="flex flex-wrap gap-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
-                {[
-                  { n: 1, label: 'Category', done: true },
-                  { n: 2, label: 'Machine type', done: Boolean(stockMachineType) },
-                  { n: 3, label: 'Model', done: Boolean(productId) },
-                  { n: 4, label: 'Pick unit(s)', done: reduceUnitIds.length > 0 },
-                  { n: 5, label: 'Reason', done: Boolean(reducePurpose) },
-                  {
-                    n: 6,
-                    label: 'Customer',
-                    done: reducePurpose !== 'DEMO' || Boolean(demoContact?.id),
-                  },
-                ].map((s) => (
-                  <li
-                    key={s.n}
-                    className={`rounded-full border px-2.5 py-1 ${
-                      s.done
-                        ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-700'
-                        : 'border-border bg-muted/30'
-                    }`}
-                  >
-                    {s.n}. {s.label}
-                  </li>
-                ))}
-              </ol>
-
-              <p className="text-xs text-text-secondary">
-                Path: Machine → type → model → pick unit(s) → reason (Sale / Demo). Select more
-                than one unit when the customer ordered multiple of the same model.
-                {isWeighingStock
-                  ? ' Weighing units use HMS Unique ID only (no manufacturer serial).'
-                  : ' Billing / other: each unit has serial + HMS Unique ID.'}
-              </p>
-
+              <h3 className="text-sm font-semibold text-text-primary">1 · Machine type</h3>
               {!stockMachineType ? (
                 <div className="grid gap-2 sm:grid-cols-2">
                   {STOCK_MACHINE_TYPES.map((t) => {
@@ -1202,13 +1187,14 @@ export function StockMovePage() {
                       <button
                         key={t.value}
                         type="button"
+                        disabled={count === 0}
                         onClick={() => {
                           setStockMachineType(t.value)
                           setProductId('')
                           setReduceUnitIds([])
                           setReducePurpose('')
                         }}
-                        className="rounded-lg border border-border bg-card px-3 py-3 text-left transition hover:border-accent-blue/50"
+                        className="rounded-lg border border-border bg-card px-3 py-3 text-left transition hover:border-accent-blue/50 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-border"
                       >
                         <div className="text-sm font-semibold text-text-primary">{t.label}</div>
                         <div className="mt-0.5 text-[11px] text-text-secondary">
@@ -1240,7 +1226,7 @@ export function StockMovePage() {
 
               {stockMachineType ? (
                 <SearchableSelect
-                  label="Model *"
+                  label="2 · Model *"
                   value={productId}
                   onChange={(v) => {
                     setProductId(v)
@@ -1262,7 +1248,8 @@ export function StockMovePage() {
                 <div>
                   <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
                     <h3 className="text-sm font-semibold text-text-primary">
-                      Units in stock — select one or more
+                      3 · Units — tick one or more
+                      {isWeighingStock ? ' (HMS ID)' : ' (serial + HMS ID)'}
                     </h3>
                     <div className="flex flex-wrap items-center gap-2 text-xs">
                       <span className="text-text-secondary">
@@ -1295,9 +1282,6 @@ export function StockMovePage() {
                       ) : null}
                     </div>
                   </div>
-                  <p className="mb-2 text-xs text-text-secondary">
-                    Tick every unit you need (same model, qty 2+). Then choose Sale or Demo below.
-                  </p>
                   {reduceProductUnits.filter((u) => String(u.status) === 'IN_STOCK').length ===
                   0 ? (
                     <p className="rounded-lg border border-dashed border-border px-3 py-6 text-sm text-text-secondary">
@@ -1349,7 +1333,7 @@ export function StockMovePage() {
                                         : isWeighingStock
                                           ? 'none (weighing)'
                                           : '—'}{' '}
-                                      · {String(u.status)}
+                                      · {String(u.status) === 'IN_STOCK' ? 'In stock' : String(u.status).toLowerCase().replace('_', ' ')}
                                     </div>
                                   </div>
                                 </div>
@@ -1372,13 +1356,7 @@ export function StockMovePage() {
               {reduceUnitIds.length > 0 ? (
                 <div className="space-y-3 rounded-xl border border-border bg-muted/20 p-4">
                   <div>
-                    <h3 className="text-sm font-semibold text-text-primary">
-                      Reason * — why reduce stock?
-                    </h3>
-                    <p className="mt-0.5 text-xs text-text-secondary">
-                      Warehouse / inventory: Sale removes units for a customer order. Demo issues
-                      units temporarily to the customer site (still trackable, can return).
-                    </p>
+                    <h3 className="text-sm font-semibold text-text-primary">4 · Sale or demo, and customer</h3>
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2">
                     {(
@@ -1417,9 +1395,9 @@ export function StockMovePage() {
                       )
                     })}
                   </div>
-                  {reducePurpose === 'DEMO' ? (
+                  {reducePurpose ? (
                     <ContactPicker
-                      label="Demo customer *"
+                      label={reducePurpose === 'DEMO' ? 'Demo customer *' : 'Sold to (customer) *'}
                       valueId={demoContact?.id ?? ''}
                       selected={demoContact}
                       onSelect={setDemoContact}
@@ -1504,13 +1482,16 @@ export function StockMovePage() {
             <Button
               variant={mode === 'add' ? 'primary' : 'danger'}
               onClick={submit}
-              disabled={saving}
+              disabled={
+                saving ||
+                // Add machine stock: brand, model, supplier and warehouse are required
+                (mode === 'add' && category === 'MACHINE' && (!brandId || !productId || !vendorId || !warehouseId)) ||
+                (mode === 'reduce' &&
+                  category === 'MACHINE' &&
+                  (!reduceUnitIds.length || !reducePurpose || !demoContact?.id))
+              }
             >
-              {saving
-                ? 'Saving…'
-                : mode === 'add'
-                  ? 'Add to stock'
-                  : 'Reduce stock'}
+              {saving ? 'Saving…' : mode === 'add' ? 'Add to stock' : reduceButtonLabel}
             </Button>
           </div>
         </Card>
@@ -1593,14 +1574,14 @@ export function StockMovePage() {
             </Card>
           ) : (
             <>
+              {category === 'MACHINE' ? (
               <Card className="space-y-3 p-4">
                 <h2 className="text-sm font-semibold text-text-primary">
                   Selected unit{reduceUnitIds.length === 1 ? '' : 's'}
                 </h2>
                 {!stockMachineType || !productId ? (
                   <p className="text-xs text-text-secondary">
-                    Choose type → model → unit(s) → Sale or Demo. Same model can pick multiple
-                    units (e.g. customer ordered 2).
+                    Nothing selected yet.
                   </p>
                 ) : reduceUnitIds.length === 0 ? (
                   <p className="text-xs text-text-secondary">
@@ -1652,15 +1633,7 @@ export function StockMovePage() {
                   })()
                 )}
               </Card>
-              <Card className="space-y-3 p-4">
-                <h2 className="text-sm font-semibold text-text-primary">Reduce history</h2>
-                <p className="text-xs text-text-secondary">
-                  Monthly sale / demo report with HMS ID, serial, and mapped customer.
-                </p>
-                <Button variant="outline" onClick={() => setReducePageTab('history')}>
-                  Open reduce history
-                </Button>
-              </Card>
+              ) : null}
             </>
           )}
         </div>

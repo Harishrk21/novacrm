@@ -102,3 +102,18 @@ export async function buildAttendanceLaunchUrl(opts: {
     attendanceSlug: tenant.attendanceSlug ?? "hms",
   };
 }
+
+let lastWake = 0;
+/**
+ * Free hosting sleeps the Attendance API after ~15 min idle (≈30 s cold start on first open).
+ * Ping it when someone signs in / resumes HMS so it is awake before they tap Attendance.
+ * Fire-and-forget, throttled to once per 5 minutes per HMS server.
+ */
+export function wakeAttendanceApi(attendanceEnabled: boolean | null | undefined): void {
+  if (!attendanceEnabled) return;
+  const now = Date.now();
+  if (now - lastWake < 5 * 60_000) return;
+  lastWake = now;
+  const base = env.ATTENDANCE_API_URL.replace(/\/$/, "");
+  void fetch(`${base}/health`, { signal: AbortSignal.timeout(60_000) }).catch(() => undefined);
+}

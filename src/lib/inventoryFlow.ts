@@ -229,7 +229,7 @@ export function parseProductStampLines(productName?: string | null): string[] {
   const raw = String(productName ?? '').trim()
   if (!raw) return ['Product']
   const parts = raw
-    .split(/[,;/|]+/)
+    .split(/[,;|]+/)
     .map((s) => s.trim())
     .filter(Boolean)
   return parts.length ? parts : [raw]

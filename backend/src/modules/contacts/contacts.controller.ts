@@ -9,7 +9,13 @@ const t = (q: Request) => q.auth!.tenantId!;
 export const list = async (q: Request, r: Response) => success(r, await s.list(t(q), q.query));
 export const get = async (q: Request, r: Response) => success(r, await s.get(t(q), paramId(q)));
 export const create = async (q: Request, r: Response) =>
-  success(r, await s.create(t(q), q.body), "Contact created", 201);
+  success(
+    r,
+    // Whoever adds the customer owns it unless an owner is picked (was "Unassigned" for desk-added customers)
+    await s.create(t(q), { ...q.body, ownerUserId: q.body?.ownerUserId ?? q.auth?.userId ?? null }),
+    "Contact created",
+    201,
+  );
 export const update = async (q: Request, r: Response) =>
   success(r, await s.update(t(q), paramId(q), q.body));
 export const remove = async (q: Request, r: Response) => {

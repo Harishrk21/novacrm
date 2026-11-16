@@ -316,3 +316,10 @@ main {
     animation: none !important;
   }
 }
+
+/* Loading skeletons follow the theme everywhere (raw <Skeleton> used without SkeletonTheme
+   fell back to the library's light grey — bright white boxes in dark mode). */
+.react-loading-skeleton {
+  --base-color: var(--color-muted);
+  --highlight-color: var(--color-card);
+}

@@ -7,6 +7,8 @@ const body = z.object({
   assetId: z.string().min(1).max(36).nullable().optional(),
   ticketId: z.string().min(1).max(36).nullable().optional(),
   partName: z.string().min(1).max(191),
+  /** Catalogue spare (Spare stock) — fitted parts come out of that stock */
+  sparePartId: z.string().min(1).max(36).nullable().optional(),
   partCode: z.string().max(64).nullable().optional(),
   changeType: z.enum(changeTypes).optional(),
   quantity: z.coerce.number().int().min(1).max(999).optional(),

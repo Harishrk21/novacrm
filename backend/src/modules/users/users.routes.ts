@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { recordEvent } from "../../common/history.js";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
@@ -12,6 +13,7 @@ import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { AppError, notFound } from "../../common/errors.js";
 import { requirePermission } from "../../middleware/permissions.middleware.js";
+import { syncAttendanceEmployeeAccess } from "../attendance/attendanceProvision.service.js";
 import {
   mergePreferencesWithInventoryAreas,
   resolveInventoryAreas,
@@ -535,6 +537,19 @@ usersRouter.post("/", requirePermission("users:write"), validate(createSchema), 
     { name: user.name, email: user.email, phone: user.phone },
     d,
   );
+  // Re-added employee (same email) may have an Attendance account switched off on removal
+  if (String(user.status) === "ACTIVE") {
+    void syncAttendanceEmployeeAccess(t, { id: user.id, email: user.email }, true);
+    recordEvent({
+      tenantId: t,
+      action: "team.employee_added",
+      area: "Team",
+      entityType: "user",
+      entityId: user.id,
+      label: user.email,
+      summary: "Employee added",
+    });
+  }
   const { preferences, ...userRest } = user;
   return success(
     r,
@@ -629,6 +644,27 @@ usersRouter.patch("/:id", requirePermission("users:write"), validate(updateSchem
     },
   });
   if (!user) throw notFound("User");
+  // Status change: inactive / locked ⇒ end HMS sessions + switch off Attendance; active ⇒ restore
+  if (d.status && d.status !== existing.status) {
+    const active = d.status === "ACTIVE";
+    if (!active) {
+      await prisma.refreshToken.updateMany({
+        where: { userId: id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      dropLiveConnections(q, id);
+    }
+    void syncAttendanceEmployeeAccess(t, { id: user.id, email: user.email }, active);
+    recordEvent({
+      tenantId: t,
+      action: active ? "team.employee_activated" : "team.employee_deactivated",
+      area: "Team",
+      entityType: "user",
+      entityId: user.id,
+      label: user.email,
+      summary: active ? "Employee login switched on" : `Employee login switched off (${d.status})`,
+    });
+  }
   const role = await prisma.role.findFirst({
     where: { id: user.roleId },
     select: { id: true, code: true, name: true },
@@ -649,6 +685,12 @@ usersRouter.patch("/:id", requirePermission("users:write"), validate(updateSchem
   });
 });
 
+/** Close any open live-notification sockets for this user (removed / deactivated staff). */
+function dropLiveConnections(q: Request, userId: string) {
+  const io = q.app.get("io") as { in: (room: string) => { disconnectSockets: (close?: boolean) => void } } | undefined;
+  io?.in(`user:${userId}`).disconnectSockets(true);
+}
+
 usersRouter.delete("/:id", requirePermission("users:delete"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
@@ -661,6 +703,23 @@ usersRouter.delete("/:id", requirePermission("users:delete"), validate(idSchema)
   await prisma.employee.updateMany({
     where: { tenantId: t, userId: id, deletedAt: null },
     data: { deletedAt: new Date(), status: "RESIGNED" },
+  });
+  // Removed employee: end every HMS session now and switch off their Attendance login
+  await prisma.refreshToken.updateMany({
+    where: { userId: id, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+  dropLiveConnections(q, id);
+  const removedUser = await prisma.user.findFirst({ where: { id, tenantId: t }, select: { email: true } });
+  if (removedUser) await syncAttendanceEmployeeAccess(t, { id, email: removedUser.email }, false);
+  recordEvent({
+    tenantId: t,
+    action: "team.employee_removed",
+    area: "Team",
+    entityType: "user",
+    entityId: id,
+    label: removedUser?.email ?? "Employee",
+    summary: "Employee removed — HMS and Attendance access ended",
   });
   return success(r, null, "Employee removed");
 });

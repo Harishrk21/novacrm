@@ -14,7 +14,7 @@ import {
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
 import { Avatar } from '@/components/ui/Avatar'
-import { Badge, activityStatusColor, leadStatusColor } from '@/components/ui/Badge'
+import { Badge, leadStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Modal } from '@/components/ui/Modal'
@@ -23,17 +23,13 @@ import { api, ApiClientError, isTenantSession } from '@/lib/api'
 import { cn, formatDateTime, timeAgo } from '@/lib/utils'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
+import { useWhatsAppOn } from '@/lib/whatsappOn'
+import { FieldHome } from '@/components/field/FieldHome'
 import { BlockSkeleton } from '@/components/ui/Skeleton'
 import { saleIsCompleted } from '@/lib/salesFlow'
 import { isServiceEngineer } from '@/lib/roles'
 import { useFieldShell } from '@/hooks/useFieldShell'
-import {
-  activityKindLabel,
-  activityReminderKind,
-  activityWorkqueueNav,
-  formatActivityDueLabel,
-  isActivityDueTodayOrOverdue,
-} from '@/lib/activityReminders'
+import { DueTodayRemindersCard } from '@/components/dashboard/DueTodayRemindersCard'
 
 type Row = Record<string, unknown>
 
@@ -51,6 +47,7 @@ function sortSla(a: Row, b: Row) {
 export function EmployeeDashboardPage() {
   const user = useAuthStore((s) => s.user)
   const addToast = useUIStore((s) => s.addToast)
+  const waOn = useWhatsAppOn()
   const fieldShell = useFieldShell()
   const engineer = isServiceEngineer(user?.role)
   const [loading, setLoading] = useState(true)
@@ -64,6 +61,11 @@ export function EmployeeDashboardPage() {
   const [completeOpen, setCompleteOpen] = useState(false)
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
+    // Phone engineers see FieldHome, which loads its own data
+    if (fieldShell && engineer) {
+      setLoading(false)
+      return
+    }
     if (!isTenantSession() || !user?.id) {
       setLoading(false)
       return
@@ -110,7 +112,7 @@ export function EmployeeDashboardPage() {
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [addToast, engineer, user?.id])
+  }, [addToast, engineer, fieldShell, user?.id])
 
   useEffect(() => {
     void load()
@@ -136,11 +138,6 @@ export function EmployeeDashboardPage() {
           return as - bs
         }),
     [activities],
-  )
-
-  const dueTodayActs = useMemo(
-    () => pendingActs.filter((a) => isActivityDueTodayOrOverdue(a)),
-    [pendingActs],
   )
 
   useEffect(() => {
@@ -187,7 +184,8 @@ export function EmployeeDashboardPage() {
       }
       const updated = await api.updateTicket(String(current.id), { status: 'RESOLVED' })
       addToast({ type: 'success', message: 'Service completed' })
-      if (updated.whatsapp?.fallbackWaLink && !updated.whatsapp.notified) {
+      // Never pop open WhatsApp unless the company has WhatsApp switched on
+      if (waOn && updated.whatsapp?.fallbackWaLink && !updated.whatsapp.notified) {
         window.open(updated.whatsapp.fallbackWaLink, '_blank', 'noopener,noreferrer')
       }
       await load({ silent: true })
@@ -244,6 +242,11 @@ export function EmployeeDashboardPage() {
       tint: 'bg-blue-50 text-accent-blue',
     },
   ]
+
+  const openLeads = leads.filter((lead) => !saleIsCompleted(lead))
+
+  // Engineers on a phone get the app-style home
+  if (fieldShell && engineer) return <FieldHome />
 
   return (
     <div className="space-y-5">
@@ -309,8 +312,6 @@ export function EmployeeDashboardPage() {
         }
       />
 
-      {!fieldShell ? <PageTip moduleKey="crm.employee" /> : null}
-
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {stats.map((s) => (
           <Link key={s.label} to={s.to}>
@@ -328,6 +329,21 @@ export function EmployeeDashboardPage() {
           </Link>
         ))}
       </div>
+
+      {!fieldShell ? <PageTip moduleKey="crm.employee" /> : null}
+
+      <DueTodayRemindersCard
+        title="My due today"
+        subtitle={
+          engineer
+            ? 'Your Workqueue dues mixed with open / in-progress tickets assigned to you'
+            : 'Your Workqueue dues mixed with live open tickets'
+        }
+        includeOpenTickets
+        ticketMode="mine"
+        primaryLinkLabel="Tickets →"
+        primaryLinkTo="/tickets"
+      />
 
       <Card className="border-accent-blue/30 bg-gradient-to-br from-amber-50/90 to-card dark:from-amber-950/35 dark:to-card">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -484,115 +500,65 @@ export function EmployeeDashboardPage() {
         </Card>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card padding={false}>
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <h2 className="font-semibold">My jobs ({tickets.length})</h2>
-            <Link to="/tickets" className="text-sm text-accent-blue hover:underline">
-              All my tickets
-            </Link>
-          </div>
-          <div className="divide-y divide-border">
-            {tickets.slice(0, 8).map((t) => (
-              <Link
-                key={String(t.id)}
-                to={`/tickets/${t.id}`}
-                className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface"
-              >
-                <div className="min-w-0">
-                  <div className="truncate font-medium">
-                    {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} — {String(t.subject)}
-                  </div>
-                  <div className="text-xs text-text-secondary">
-                    {t.slaDueAt ? `SLA ${formatDateTime(String(t.slaDueAt))}` : timeAgo(String(t.createdAt))}
-                  </div>
-                </div>
-                <Badge color={String(t.slaBreached) === 'true' || t.slaBreached === true ? 'red' : 'amber'}>
-                  {labelize(String(t.status))}
-                </Badge>
-              </Link>
-            ))}
-            {!loading && !tickets.length && (
-              <p className="p-6 text-center text-sm text-text-secondary">
-                {engineer
-                  ? 'No jobs assigned to you yet. Check Ready to accept for open pool tickets.'
-                  : 'No jobs assigned to you yet. When an admin assigns a ticket, it appears here live.'}
-              </p>
-            )}
-          </div>
-        </Card>
-
-        <Card padding={false}>
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <div>
-              <h2 className="font-semibold">
-                {dueTodayActs.length ? 'Due today' : 'Pending tasks'}
-              </h2>
-              {dueTodayActs.length > 0 ? (
-                <p className="text-xs text-text-secondary">
-                  Calls, tasks & meetings from Workqueue — {dueTodayActs.length} due
-                </p>
-              ) : null}
-            </div>
-            <Link to="/workqueue" className="text-sm text-accent-blue hover:underline">
-              Workqueue
-            </Link>
-          </div>
-          <div className="divide-y divide-border">
-            {(dueTodayActs.length ? dueTodayActs : pendingActs).slice(0, 6).map((act) => {
-              const kind = activityReminderKind(act.type)
-              return (
-                <Link
-                  key={String(act.id)}
-                  to={activityWorkqueueNav(kind)}
-                  className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate font-medium">{String(act.title)}</div>
-                    <div className="text-xs text-text-secondary">
-                      {activityKindLabel(kind)}
-                      {' · '}
-                      {act.scheduledAt
-                        ? formatActivityDueLabel(act.scheduledAt)
-                        : timeAgo(String(act.createdAt))}
-                    </div>
-                  </div>
-                  <Badge
-                    color={
-                      isActivityDueTodayOrOverdue(act)
-                        ? 'amber'
-                        : (activityStatusColor[String(act.status)] ?? 'slate')
-                    }
-                  >
-                    {isActivityDueTodayOrOverdue(act) ? 'Due' : labelize(String(act.status))}
-                  </Badge>
-                </Link>
-              )
-            })}
-            {!loading && !pendingActs.length && (
-              <p className="p-6 text-center text-sm text-text-secondary">
-                No pending calls, tasks or meetings. Create them from Workqueue — you&apos;ll see a reminder here on that day.
-              </p>
-            )}
-          </div>
-        </Card>
-      </div>
-
       <Card padding={false}>
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <h2 className="font-semibold">My leads</h2>
+          <h2 className="font-semibold">My jobs ({tickets.length})</h2>
+          <Link to="/tickets" className="text-sm text-accent-blue hover:underline">
+            All my tickets
+          </Link>
+        </div>
+        <div className="divide-y divide-border">
+          {tickets.slice(0, 8).map((t) => (
+            <Link
+              key={String(t.id)}
+              to={`/tickets/${t.id}`}
+              className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface"
+            >
+              <div className="min-w-0">
+                <div className="truncate font-medium">
+                  {formatServiceId(t.ticketNo != null ? String(t.ticketNo) : undefined)} —{' '}
+                  {String(t.subject)}
+                </div>
+                <div className="text-xs text-text-secondary">
+                  {t.slaDueAt
+                    ? `SLA ${formatDateTime(String(t.slaDueAt))}`
+                    : timeAgo(String(t.createdAt))}
+                </div>
+              </div>
+              <Badge
+                color={
+                  String(t.slaBreached) === 'true' || t.slaBreached === true ? 'red' : 'amber'
+                }
+              >
+                {labelize(String(t.status))}
+              </Badge>
+            </Link>
+          ))}
+          {!loading && !tickets.length && (
+            <p className="p-6 text-center text-sm text-text-secondary">
+              {engineer
+                ? 'No jobs assigned to you yet. Check Ready to accept for open pool tickets.'
+                : 'No jobs assigned to you yet. When an admin assigns a ticket, it appears here live.'}
+            </p>
+          )}
+        </div>
+      </Card>
+
+      {openLeads.length > 0 ? (
+      <Card padding={false}>
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <h2 className="font-semibold">My leads ({openLeads.length})</h2>
           <Link to="/sale-tracking" className="text-sm text-accent-blue hover:underline">
             Open leads
           </Link>
         </div>
         <div className="divide-y divide-border">
-          {leads
-            .filter((lead) => !saleIsCompleted(lead))
+          {openLeads
             .slice(0, 5)
             .map((lead) => (
             <Link
               key={String(lead.id)}
-              to="/sale-tracking"
+              to={`/sale-tracking/${String(lead.id)}`}
               className="flex items-center justify-between gap-2 px-4 py-3 hover:bg-surface"
             >
               <span className="flex min-w-0 items-center gap-2 truncate font-medium">
@@ -608,11 +574,9 @@ export function EmployeeDashboardPage() {
               )}
             </Link>
           ))}
-          {!loading && !leads.filter((lead) => !saleIsCompleted(lead)).length && (
-            <p className="p-6 text-center text-sm text-text-secondary">No open leads assigned.</p>
-          )}
         </div>
       </Card>
+      ) : null}
 
       <Modal
         open={completeOpen}
@@ -638,7 +602,7 @@ export function EmployeeDashboardPage() {
         }
       >
         <p className="text-sm leading-relaxed text-text-secondary">
-          This marks the job as done and notifies the customer on WhatsApp when possible.
+          This marks the job as done and sends it to the desk for approval and closing.
         </p>
       </Modal>
     </div>

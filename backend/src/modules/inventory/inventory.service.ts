@@ -354,7 +354,8 @@ async function hydrateUnitsLite(t: string, units: Array<Record<string, unknown>>
   if (!units.length) return [];
   const productIds = [...new Set(units.map((u) => String(u.productId)))];
   const brandIds = [...new Set(units.map((u) => u.brandId).filter(Boolean).map(String))];
-  const [products, brands] = await Promise.all([
+  const warehouseIds = [...new Set(units.map((u) => u.warehouseId).filter(Boolean).map(String))];
+  const [products, brands, warehouses] = await Promise.all([
     prisma.product.findMany({
       where: { tenantId: t, id: { in: productIds } },
       select: {
@@ -363,6 +364,7 @@ async function hydrateUnitsLite(t: string, units: Array<Record<string, unknown>>
         name: true,
         attributes: true,
         imageUrl: true,
+        salePrice: true,
       },
     }),
     brandIds.length
@@ -371,9 +373,17 @@ async function hydrateUnitsLite(t: string, units: Array<Record<string, unknown>>
           select: { id: true, name: true, code: true },
         })
       : Promise.resolve([]),
+    // Names only — cheap, and lists (e.g. stamping register) show where the unit is
+    warehouseIds.length
+      ? prisma.warehouse.findMany({
+          where: { tenantId: t, id: { in: warehouseIds } },
+          select: { id: true, name: true, code: true },
+        })
+      : Promise.resolve([]),
   ]);
   const pMap = Object.fromEntries(products.map((p) => [p.id, p]));
   const bMap = Object.fromEntries(brands.map((b) => [b.id, b]));
+  const wMap = Object.fromEntries(warehouses.map((w) => [w.id, w]));
   return units.map((u) => ({
     ...u,
     unitCost: u.unitCost != null ? Number(u.unitCost) : null,
@@ -382,7 +392,7 @@ async function hydrateUnitsLite(t: string, units: Array<Record<string, unknown>>
       : null,
     product: pMap[String(u.productId)] ?? null,
     brand: u.brandId ? bMap[String(u.brandId)] ?? null : null,
-    warehouse: null,
+    warehouse: u.warehouseId ? wMap[String(u.warehouseId)] ?? null : null,
     lead: null,
     contact: null,
     receipt: null,
@@ -414,8 +424,10 @@ export async function listUnits(t: string, q: Record<string, unknown>) {
   };
   const rows = await prisma.stockUnit.findMany({
     where,
-    orderBy: { createdAt: "desc" },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: Math.min(Number(q.limit) || 200, 500),
+    // offset paging — lists must not silently stop at the first 500 units
+    ...(Number(q.offset) > 0 ? { skip: Math.floor(Number(q.offset)) } : {}),
     ...(lite
       ? {
           select: {
@@ -2919,7 +2931,7 @@ export async function listDeliveryChallans(t: string): Promise<DeliveryChallanLi
     prisma.salesRequisition
       .findMany({
         where: { tenantId: t, deletedAt: null },
-        take: 300,
+        take: 3000, // was 300 — older challans disappeared from the list
         orderBy: { updatedAt: "desc" },
         select: {
           id: true,
@@ -2938,7 +2950,7 @@ export async function listDeliveryChallans(t: string): Promise<DeliveryChallanLi
       }>),
     prisma.stockUnit.findMany({
       where: { tenantId: t, deletedAt: null, status: "DEMO" },
-      take: 300,
+      take: 3000,
       orderBy: { updatedAt: "desc" },
       select: {
         id: true,

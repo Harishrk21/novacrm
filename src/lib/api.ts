@@ -1,5 +1,13 @@
 import { notifyStockChanged } from '@/lib/stockEvents'
-import { tenantLoginPath } from '@/lib/lastTenantSlug'
+import { shrinkImage } from '@/lib/shrinkImage'
+import { loginPathFor } from '@/lib/lastTenantSlug'
+import { pageCacheClear } from '@/lib/pageCache'
+import {
+  clearBrowserSession,
+  markBrowserSession,
+  setSignOutReason,
+  touchActivity,
+} from '@/lib/sessionPolicy'
 
 const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:3001/api'
 
@@ -38,7 +46,15 @@ export function setAuth(bundle: TokenBundle | null) {
   if (!bundle) {
     localStorage.removeItem(TOKEN_KEY)
     clearLookupsCache()
-  } else localStorage.setItem(TOKEN_KEY, JSON.stringify(bundle))
+    pageCacheClear()
+    // Keep the activity stamp: other open tabs use it to tell "idle" from "session ended".
+    clearBrowserSession()
+  } else {
+    const isNewSession = !localStorage.getItem(TOKEN_KEY)
+    localStorage.setItem(TOKEN_KEY, JSON.stringify(bundle))
+    markBrowserSession()
+    if (isNewSession) touchActivity()
+  }
 }
 
 export function isTenantSession() {
@@ -109,7 +125,30 @@ async function refreshAccessToken(): Promise<string | null> {
   return refreshInFlight
 }
 
+/**
+ * Identical GETs already in flight share one network call (dashboards + their cards ask for the same
+ * lists at the same moment). Only in-flight requests are shared — nothing is cached after it lands,
+ * and each caller gets its own copy so one screen can't mutate another's data.
+ */
+const getsInFlight = new Map<string, Promise<unknown>>()
+
 export async function apiFetch<T>(
+  path: string,
+  options: RequestInit & { skipAuth?: boolean; noRetry?: boolean } = {},
+): Promise<T> {
+  const method = (options.method ?? 'GET').toUpperCase()
+  if (method !== 'GET' || options.body || options.signal) return apiFetchOnce<T>(path, options)
+  const key = `${getAuth()?.accessToken?.slice(-16) ?? 'anon'}|${options.skipAuth ? 1 : 0}|${path}`
+  let shared = getsInFlight.get(key) as Promise<T> | undefined
+  if (!shared) {
+    shared = apiFetchOnce<T>(path, options).finally(() => getsInFlight.delete(key))
+    getsInFlight.set(key, shared)
+  }
+  const data = await shared
+  return data && typeof data === 'object' ? (structuredClone(data) as T) : data
+}
+
+async function apiFetchOnce<T>(
   path: string,
   options: RequestInit & { skipAuth?: boolean; noRetry?: boolean } = {},
 ): Promise<T> {
@@ -126,6 +165,8 @@ export async function apiFetch<T>(
   let res = await fetchWithRetry(`${API_BASE}${path}`, { ...options, headers }, attempts)
 
   if (res.status === 401 && !options.skipAuth) {
+    // Read before refresh — a failed refresh clears the stored session.
+    const sessionKind = getAuth()?.kind
     const next = await refreshAccessToken()
     if (next) {
       headers.set('Authorization', `Bearer ${next}`)
@@ -138,7 +179,8 @@ export async function apiFetch<T>(
         /* ignore */
       }
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-        window.location.assign(tenantLoginPath())
+        setSignOutReason('expired')
+        window.location.assign(loginPathFor(sessionKind))
       }
     }
   }
@@ -334,6 +376,8 @@ export const api = {
     ticketStatus?: string
     leadStatus?: string
     city?: string
+    /** '1' = skip the 2-minute summary cache (Refresh button) */
+    refresh?: string
   }) =>
     apiFetch<{
       range: string
@@ -421,6 +465,51 @@ export const api = {
       cities?: string[]
     }>(`/analytics/summary${qs(params ?? {})}`),
 
+  /** Business registers (Reports page) */
+  reportCatalog: () => apiFetch<ReportCatalogItem[]>('/reports'),
+  reportRun: (key: string, params: { from?: string; to?: string; personId?: string; status?: string }) =>
+    apiFetch<ReportResult>(`/reports/${encodeURIComponent(key)}${qs(params)}`),
+
+  /** Ask your data — AI plans, server computes a table from Reports */
+  /** Field tracking — engineer's location (phone) and the owner's view */
+  fieldLocation: (body: { lat: number; lng: number; accuracy?: number | null; event: FieldEvent; ticketId?: string | null }) =>
+    apiFetch<{ ok: boolean; distanceM: number | null; atSite: boolean | null; pinnedCustomer: boolean }>('/field/location', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      noRetry: true,
+    }),
+  fieldEngineers: () => apiFetch<{ items: FieldEngineer[]; atSiteMeters: number }>('/field/engineers'),
+  /** Monthly stock register — opening / received / out / closing (machines + spares) */
+  stockRegister: (from: string, to: string) =>
+    apiFetch<ReportResult>(`/inventory/stock-register?from=${from}&to=${to}`),
+  /** Renewals tracker — stamping, AMC, guarantee ending, AMC offers (admin / sales / desk). */
+  renewals: () => apiFetch<{ items: RenewalItem[]; today: string }>('/renewals'),
+  renewalFollowUp: (
+    id: string,
+    body: { kind: RenewalKind; status: RenewalStatus; note?: string; nextFollowUp?: string | null },
+  ) => apiFetch<{ ok: boolean }>(`/renewals/${id}/follow-up`, { method: 'POST', body: JSON.stringify(body) }),
+  renewalRenew: (
+    id: string,
+    body:
+      | { kind: 'STAMPING'; date: string; number?: string | null; note?: string }
+      | { kind: 'AMC'; startDate?: string | null; amount?: number | null; note?: string },
+  ) =>
+    apiFetch<{ ok: boolean; nextDueDate?: string; amcStartDate?: string; amcEndDate?: string }>(`/renewals/${id}/renew`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  aiDataQuery: (question: string) =>
+    apiFetch<{
+      kind: 'table' | 'none'
+      answer: string
+      title?: string
+      report?: { key: string; title: string; from: string | null; to: string | null }
+      columns?: ReportColumn[]
+      rows?: Array<Record<string, string | number | null>>
+      totalRows?: number
+      model?: string
+    }>('/ai/data-query', { method: 'POST', body: JSON.stringify({ question }) }),
+
   aiDashboardAsk: (body: { question: string; range?: string; mode?: 'ask' | 'overview' | 'spikes' }) =>
     apiFetch<{
       answer: string
@@ -502,6 +591,13 @@ export const api = {
     }>('/inventory/import', { method: 'POST', body: JSON.stringify(body) }),
 
   platformStats: () => apiFetch<Record<string, unknown>>('/platform/dashboard/stats'),
+  platformSystemHealth: () =>
+    apiFetch<{
+      checkedAt: string
+      overall: 'ok' | 'warn' | 'down'
+      checks: Array<{ key: string; label: string; status: 'ok' | 'warn' | 'down'; detail: string; ms?: number }>
+      server: { uptimeMinutes: number; node: string; timezone: string; memoryMb: number; environment: string }
+    }>('/platform/system-health'),
   listTenants: () => apiFetch<unknown[]>('/platform/tenants'),
   createTenant: (body: Record<string, unknown>) =>
     apiFetch<unknown>('/platform/tenants', { method: 'POST', body: JSON.stringify(body) }),
@@ -761,6 +857,12 @@ export const api = {
     apiFetch<Record<string, unknown>>(`/requisitions/${id}/delivery-challan`, {
       method: 'POST',
       body: JSON.stringify(body ?? {}),
+    }),
+  /** Absolute Total / Advance from the lead Payment card — updates requisition + lead together. */
+  setRequisitionPayment: (id: string, body: { total: number; advance: number }) =>
+    apiFetch<Record<string, unknown>>(`/requisitions/${id}/payment`, {
+      method: 'POST',
+      body: JSON.stringify(body),
     }),
   notifyRequisitionInventory: (id: string) =>
     apiFetch<Record<string, unknown>>(`/requisitions/${id}/notify-inventory`, {
@@ -1104,6 +1206,18 @@ export const api = {
     }),
   stockUnits: (params?: Record<string, string | number | undefined>) =>
     apiFetch<Array<Record<string, unknown>>>(`/inventory/units${qs(params)}`),
+  /** Every matching unit (pages of 500) — use for registers / counts, never a fixed limit */
+  stockUnitsAll: async (params?: Record<string, string | number | undefined>) => {
+    const out: Array<Record<string, unknown>> = []
+    for (let page = 0; page < 40; page++) {
+      const rows = await apiFetch<Array<Record<string, unknown>>>(
+        `/inventory/units${qs({ ...params, limit: 500, offset: page * 500 })}`,
+      )
+      out.push(...rows)
+      if (rows.length < 500) break
+    }
+    return out
+  },
   /** Sale + demo delivery challans archive */
   deliveryChallans: () =>
     apiFetch<
@@ -1512,6 +1626,14 @@ export const api = {
     )
   },
 
+  /** Attendance 'Back to dashboard' return pass → counts time in Attendance as activity. */
+  verifyAttendanceReturn: (token: string) =>
+    apiFetch<{ ok: boolean }>('/integrations/attendance/return', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+      noRetry: true,
+    }),
+
   attendanceStatus: () =>
     apiFetch<{
       enabled: boolean
@@ -1523,7 +1645,8 @@ export const api = {
 
   uploadImage: async (file: File) => {
     const form = new FormData()
-    form.append('file', file)
+    // Big phone photos are shrunk first — faster upload, small enough to keep in the database
+    form.append('file', await shrinkImage(file))
     const auth = getAuth()
     const headers = new Headers()
     if (auth?.accessToken) headers.set('Authorization', `Bearer ${auth.accessToken}`)
@@ -1602,6 +1725,7 @@ export const api = {
   demoDataStatus: () =>
     apiFetch<{
       loaded: boolean
+      liveCustomers?: number
       pack: string
       counts: {
         accounts: number
@@ -1688,4 +1812,78 @@ export async function isApiOnline(): Promise<boolean> {
 export function num(v: unknown, fallback = 0) {
   const n = typeof v === 'number' ? v : Number(v)
   return Number.isFinite(n) ? n : fallback
+}
+
+export type ReportColumn = { key: string; label: string; type?: 'text' | 'date' | 'money' | 'number' }
+export type ReportCatalogItem = {
+  key: string
+  group: 'Service' | 'Sales' | 'Billing' | 'Stock' | 'Customers' | 'History'
+  title: string
+  description: string
+  dateFilter: boolean
+  statuses: Array<{ value: string; label: string }>
+  people: Array<{ id: string; name: string }>
+}
+export type ReportResult = {
+  key: string
+  title: string
+  subtitle: string
+  dateFilter: boolean
+  columns: ReportColumn[]
+  rows: Array<Record<string, string | number | null>>
+  totals?: Record<string, number>
+}
+
+export type RenewalKind = 'STAMPING' | 'AMC' | 'VISIT' | 'GC' | 'NGC'
+export type RenewalStatus = 'CALLED' | 'INTERESTED' | 'NO_ANSWER' | 'CALL_BACK' | 'NOT_INTERESTED' | 'RENEWED'
+export type RenewalFollowUp = {
+  status: RenewalStatus
+  note: string
+  nextFollowUp: string | null
+  by: string
+  at: string
+  history?: RenewalFollowUp[]
+}
+export type RenewalItem = {
+  id: string
+  name: string
+  model: string | null
+  serialNo: string | null
+  capacity: string | null
+  machineType: string
+  origin: 'SOLD_BY_US' | 'THIRD_PARTY'
+  plan: 'GC' | 'NGC' | 'AMC' | 'NON_AMC'
+  warrantyEndDate: string | null
+  amcStartDate: string | null
+  amcEndDate: string | null
+  nextServiceDueDate: string | null
+  stampingDate: string | null
+  nextDueDate: string | null
+  stampingNumber: string | null
+  createdAt: string
+  renewal: Partial<Record<RenewalKind, RenewalFollowUp>>
+  customer: { id: string; name: string; code: string | null; phone: string | null; area: string | null; city: string | null; company: string | null }
+}
+
+export type FieldEvent = 'PING' | 'ACCEPT' | 'CHECK_IN' | 'START' | 'REPORT' | 'COMPLETE'
+export type FieldEngineer = {
+  id: string
+  name: string
+  phone: string | null
+  avatarUrl: string | null
+  last: { lat: number; lng: number; at: string | null; accuracy: number | null; event: string } | null
+  currentJob: {
+    id: string
+    ticketNo: number
+    status: string
+    subject: string
+    customer: string | null
+    area: string | null
+    customerPinned: boolean
+    distanceM: number | null
+    atSite: boolean | null
+  } | null
+  openJobs: number
+  today: Array<{ at: string; event: string; job: string | null; ticketId: string | null; customer: string | null; distanceM: number | null; lat: number; lng: number }>
+  updatesToday: number
 }

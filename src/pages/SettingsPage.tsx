@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { strongPassword } from '@/lib/strongPassword'
 import { Link } from 'react-router-dom'
 import {
   Bot,
@@ -38,6 +39,7 @@ import { useAuthStore } from '@/store/authStore'
 import { PALETTES, type ColorPalette } from '@/lib/theme'
 import { isCompanyAdmin } from '@/lib/roles'
 import { WhatsAppCloudPanel } from '@/components/whatsapp/WhatsAppCloudPanel'
+import { SidebarMenuSettings } from '@/components/settings/SidebarMenuSettings'
 import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import { BlockSkeleton, TableSkeleton } from '@/components/ui/Skeleton'
 
@@ -49,6 +51,7 @@ const adminTabs = [
   'Pipeline Stages',
   'Lead Sources',
   'Users & Roles',
+  'Sidebar menu',
   'Email Templates',
   'Integrations',
   'Automation',
@@ -133,6 +136,7 @@ export function SettingsPage() {
           {isAdmin && active === 'Pipeline Stages' && <Pipeline />}
           {isAdmin && active === 'Lead Sources' && <Sources />}
           {isAdmin && active === 'Users & Roles' && <UsersSettings />}
+          {isAdmin && active === 'Sidebar menu' && <SidebarMenuSettings />}
           {isAdmin && active === 'Email Templates' && <EmailTemplates />}
           {isAdmin && active === 'Integrations' && <Integrations />}
           {isAdmin && active === 'Automation' && <Automation />}
@@ -156,13 +160,14 @@ function Appearance() {
   const [demoStatus, setDemoStatus] = useState<{
     loaded: boolean
     counts: Record<string, number>
+    liveCustomers?: number
   } | null>(null)
 
   useEffect(() => {
     if (!isAdmin) return
     void api
       .demoDataStatus()
-      .then((r) => setDemoStatus({ loaded: r.loaded, counts: r.counts }))
+      .then((r) => setDemoStatus({ loaded: r.loaded, counts: r.counts, liveCustomers: r.liveCustomers }))
       .catch(() => setDemoStatus(null))
   }, [isAdmin])
 
@@ -305,7 +310,8 @@ function Appearance() {
         )}
       </Card>
 
-      {isAdmin ? (
+      {/* Hidden on live workspaces (real customers) unless a demo pack is still there to remove */}
+      {isAdmin && demoStatus && (demoStatus.loaded || !(demoStatus.liveCustomers ?? 0)) ? (
         <Card>
           <Heading
             title="Workspace demo data"
@@ -1262,7 +1268,7 @@ export function UsersSettings() {
   const [saving, setSaving] = useState(false)
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('Demo@12345')
+  const [password, setPassword] = useState(() => strongPassword())
   const [phone, setPhone] = useState('')
   const [roleCode, setRoleCode] = useState('SERVICE_ENGINEER')
 
@@ -1313,7 +1319,7 @@ export function UsersSettings() {
       setName('')
       setEmail('')
       setPhone('')
-      setPassword('Demo@12345')
+      setPassword(strongPassword())
       setRoleCode('SERVICE_ENGINEER')
       await load({ silent: true })
     } catch (err) {

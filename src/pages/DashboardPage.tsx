@@ -37,6 +37,8 @@ import {
   type DueReminderItem,
 } from '@/lib/activityReminders'
 import { DueTodayRemindersCard } from '@/components/dashboard/DueTodayRemindersCard'
+import { saleAllStepsDone, salePaymentSettled, salesStepDoneFlags } from '@/lib/salesFlow'
+import { leadOutcome } from '@/lib/leadStage'
 import { BlockSkeleton, PageSkeleton, TableSkeleton, Skeleton } from '@/components/ui/Skeleton'
 
 const AdminAnalyticsDashboard = lazy(() =>
@@ -86,6 +88,8 @@ function SalesExecutiveHomePage() {
     completed: 0,
   })
   const [openEnquiries, setOpenEnquiries] = useState<Array<Record<string, unknown>>>([])
+  /** All required steps done + payment settled, but nobody clicked Mark sale complete yet. */
+  const [readyToClose, setReadyToClose] = useState<Array<Record<string, unknown>>>([])
   const [dueReminders, setDueReminders] = useState<DueReminderItem[]>([])
   const [weekReminders, setWeekReminders] = useState<DueReminderItem[]>([])
   const [pipeline, setPipeline] = useState<Array<{ label: string; count: number; to: string; color: string }>>([])
@@ -105,8 +109,12 @@ function SalesExecutiveHomePage() {
         if (cancelled) return
         const items = leadPage.items ?? []
         const acts = actPage.items ?? []
-        const open = items.filter(
-          (l) => !['LOST', 'CONVERTED', 'UNQUALIFIED'].includes(String(l.status)),
+        // Same rule as My leads: open = not closed (sale completed) and not lost
+        const open = items.filter((l) => leadOutcome(l) === 'OPEN')
+        setReadyToClose(
+          open.filter(
+            (l) => saleAllStepsDone(salesStepDoneFlags({ lead: l })) && salePaymentSettled(l).ok,
+          ),
         )
         const endToday = new Date()
         endToday.setHours(23, 59, 59, 999)
@@ -262,45 +270,6 @@ function SalesExecutiveHomePage() {
     }
   }, [addToast, user?.id])
 
-  const quickActions = [
-    {
-      title: 'New enquiry',
-      body: 'Create lead + follow-up date',
-      to: '/sale-tracking?open=1',
-      icon: <Plus size={18} />,
-    },
-    {
-      title: 'Due today',
-      body: `${counts.followupsDue} call / task / meeting / follow-up`,
-      to: '/workqueue',
-      icon: <Clock size={18} />,
-    },
-    {
-      title: 'My workqueue',
-      body: 'Calls, tasks, meetings',
-      to: '/workqueue',
-      icon: <ListTodo size={18} />,
-    },
-    {
-      title: 'All my leads',
-      body: `${counts.open} open`,
-      to: '/sale-tracking',
-      icon: <Users size={18} />,
-    },
-    {
-      title: 'Customers',
-      body: 'Contacts & machines',
-      to: '/contacts',
-      icon: <UserRound size={18} />,
-    },
-    {
-      title: 'Notifications',
-      body: 'Ship / stock updates',
-      to: '/notifications',
-      icon: <Ticket size={18} />,
-    },
-  ]
-
   return (
     <div className="space-y-4">
       <PageHeader
@@ -319,20 +288,20 @@ function SalesExecutiveHomePage() {
       />
 
       {/* KPI strip — all clickable */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
         {[
           { label: 'Open leads', value: counts.open, to: '/sale-tracking', hint: 'Active pipeline' },
           {
             label: 'Due today',
             value: counts.followupsDue,
-            to: '/workqueue',
+            to: '/workqueue?date=today_overdue',
             hint: 'Call now',
             alert: counts.followupsDue > 0,
           },
           {
             label: 'This week',
             value: counts.followupsWeek,
-            to: '/workqueue',
+            to: '/workqueue?date=week',
             hint: 'Upcoming FUs',
           },
           { label: 'Demos', value: counts.demo, to: '/sale-tracking?status=DEMO', hint: 'On demo' },
@@ -345,14 +314,14 @@ function SalesExecutiveHomePage() {
           {
             label: 'Awaiting ship',
             value: counts.awaitingShip,
-            to: '/sale-tracking',
+            to: '/sale-tracking?status=CONVERTED',
             hint: 'Stock out done',
           },
           {
             label: 'Completed',
             value: counts.completed,
             to: '/sale-tracking?status=COMPLETED',
-            hint: 'Payment marked complete',
+            hint: 'Sales closed',
           },
         ].map((s) => (
           <button
@@ -375,29 +344,49 @@ function SalesExecutiveHomePage() {
         ))}
       </div>
 
-      {/* Quick actions */}
-      <div>
-        <h2 className="mb-2 text-sm font-semibold text-text-primary">Quick actions</h2>
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {quickActions.map((a) => (
-            <button
-              key={a.title}
-              type="button"
-              onClick={() => navigate(a.to)}
-              className="flex items-start gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left transition hover:border-accent-blue/50 hover:bg-muted/30"
-            >
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent-blue/10 text-accent-blue">
-                {a.icon}
-              </span>
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold text-text-primary">{a.title}</span>
-                <span className="block text-xs text-text-secondary">{a.body}</span>
-              </span>
-              <ArrowRight size={16} className="ml-auto mt-1 shrink-0 text-text-secondary" />
-            </button>
-          ))}
-        </div>
-      </div>
+      {readyToClose.length > 0 ? (
+        <Card className="border-emerald-400/60 bg-emerald-500/10 p-4 ring-2 ring-emerald-400/30">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                </span>
+                Ready to close · {readyToClose.length}
+              </h2>
+              <p className="mt-0.5 text-xs text-text-secondary">
+                All steps done and payment settled — open each sale and click <b>Mark sale complete</b>.
+              </p>
+            </div>
+          </div>
+          <ul className="mt-3 divide-y divide-emerald-400/20 rounded-lg border border-emerald-400/30 bg-card">
+            {readyToClose.slice(0, 5).map((l) => (
+              <li key={String(l.id)}>
+                <button
+                  type="button"
+                  onClick={() => navigate(`/sale-tracking/${String(l.id)}`)}
+                  className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left hover:bg-emerald-500/5"
+                >
+                  <span className="min-w-0 truncate text-sm font-medium text-text-primary">{String(l.name)}</span>
+                  <span className="shrink-0 rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white">
+                    Mark sale complete →
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
+
+      <DueTodayRemindersCard
+        title="My due today"
+        subtitle="Today's calls, tasks & enquiry follow-ups — one list"
+        includeLeadFollowups
+        ticketMode="mine"
+        primaryLinkLabel="Workqueue →"
+        primaryLinkTo="/workqueue"
+      />
 
       {/* Pipeline */}
       <Card className="p-4">
@@ -428,115 +417,57 @@ function SalesExecutiveHomePage() {
         </div>
       </Card>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card padding={false}>
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <div>
-              <h2 className="text-sm font-semibold text-text-primary">Due today</h2>
-              <p className="text-xs text-text-secondary">
-                Calls, tasks, meetings & lead follow-ups — today & overdue
-              </p>
-            </div>
-            <button
-              type="button"
-              className="text-xs font-medium text-accent-blue hover:underline"
-              onClick={() => navigate('/workqueue')}
-            >
-              Workqueue →
-            </button>
+      <Card padding={false}>
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold text-text-primary">My open leads</h2>
+            <p className="text-xs text-text-secondary">Tap a row to open the sale</p>
           </div>
-          {loading ? (
-            <BlockSkeleton lines={4} />
-          ) : dueReminders.length === 0 ? (
-            <div className="space-y-3 p-4">
-              <p className="text-sm text-text-secondary">
-                Nothing due today.
-                {weekReminders.length > 0
-                  ? ` ${weekReminders.length} item(s) coming up this week.`
-                  : ' Create a call, task or meeting from Workqueue — it will remind you on that day.'}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" onClick={() => navigate('/workqueue')}>
-                  Open workqueue
-                </Button>
-                <Button size="sm" onClick={() => navigate('/sale-tracking?open=1')}>
-                  New enquiry
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <ul className="divide-y divide-border">
-              {dueReminders.map((r) => (
-                <li key={r.id}>
-                  <button
-                    type="button"
-                    onClick={() => navigate(r.to)}
-                    className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-surface"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-text-primary">{r.title}</div>
-                      <div className="truncate text-xs text-text-secondary">{r.subtitle}</div>
-                    </div>
-                    <Badge color="amber">{r.dueLabel}</Badge>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-
-        <Card padding={false}>
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <div>
-              <h2 className="text-sm font-semibold text-text-primary">My open leads</h2>
-              <p className="text-xs text-text-secondary">Tap a row to open the sale</p>
-            </div>
-            <button
-              type="button"
-              className="text-xs font-medium text-accent-blue hover:underline"
-              onClick={() => navigate('/sale-tracking')}
-            >
-              All leads →
-            </button>
+          <button
+            type="button"
+            className="text-xs font-medium text-accent-blue hover:underline"
+            onClick={() => navigate('/sale-tracking')}
+          >
+            All leads →
+          </button>
+        </div>
+        {loading ? (
+          <BlockSkeleton lines={4} />
+        ) : openEnquiries.length === 0 ? (
+          <div className="space-y-3 p-4">
+            <p className="text-sm text-text-secondary">
+              No open leads yet. Create an enquiry to start your pipeline.
+            </p>
+            <Button size="sm" onClick={() => navigate('/sale-tracking?open=1')}>
+              <Plus size={14} /> New enquiry
+            </Button>
           </div>
-          {loading ? (
-            <BlockSkeleton lines={4} />
-          ) : openEnquiries.length === 0 ? (
-            <div className="space-y-3 p-4">
-              <p className="text-sm text-text-secondary">
-                No open leads yet. Create an enquiry to start your pipeline.
-              </p>
-              <Button size="sm" onClick={() => navigate('/sale-tracking?open=1')}>
-                <Plus size={14} /> New lead
-              </Button>
-            </div>
-          ) : (
-            <ul className="divide-y divide-border">
-              {openEnquiries.map((l) => (
-                <li key={String(l.id)}>
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/sale-tracking/${String(l.id)}`)}
-                    className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-surface"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-text-primary">
-                        {String(l.name)}
-                      </div>
-                      <div className="truncate text-xs text-text-secondary">
-                        {[l.phone, l.company].filter(Boolean).map(String).join(' · ') || '—'}
-                      </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {openEnquiries.map((l) => (
+              <li key={String(l.id)}>
+                <button
+                  type="button"
+                  onClick={() => navigate(`/sale-tracking/${String(l.id)}`)}
+                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-surface"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-text-primary">
+                      {String(l.name)}
                     </div>
-                    <Badge color={String(l.status) === 'DEMO' ? 'amber' : 'blue'}>
-                      {String(l.status)}
-                    </Badge>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      </div>
+                    <div className="truncate text-xs text-text-secondary">
+                      {[l.phone, l.company].filter(Boolean).map(String).join(' · ') || '—'}
+                    </div>
+                  </div>
+                  <Badge color={String(l.status) === 'DEMO' ? 'amber' : 'blue'}>
+                    {String(l.status)}
+                  </Badge>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
 
       {weekReminders.length > 0 && dueReminders.length === 0 ? (
         <Card padding={false}>
@@ -707,6 +638,36 @@ function WarehouseHomePage() {
         }
       />
 
+      {loading ? (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Card key={i} className="p-4">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="mt-3 h-8 w-12" />
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {kpis.map((k) => (
+            <Link key={k.label} to={k.to}>
+              <Card
+                className={cn(
+                  'h-full p-4 transition hover:shadow-[var(--shadow-hover)]',
+                  toneClass[k.tone],
+                )}
+              >
+                <div className="text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+                  {k.label}
+                </div>
+                <div className="mt-1 text-2xl font-bold tabular-nums text-text-primary">{k.value}</div>
+                <p className="mt-1 text-xs text-text-secondary">{k.hint}</p>
+              </Card>
+            </Link>
+          ))}
+        </div>
+      )}
+
       <DueTodayRemindersCard
         title="My due today"
         subtitle="Calls, tasks & meetings from Workqueue for your warehouse login"
@@ -774,36 +735,6 @@ function WarehouseHomePage() {
           )}
         </div>
       </Card>
-
-      {loading ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Card key={i} className="p-4">
-              <Skeleton className="h-3 w-24" />
-              <Skeleton className="mt-3 h-8 w-12" />
-            </Card>
-          ))}
-        </div>
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {kpis.map((k) => (
-            <Link key={k.label} to={k.to}>
-              <Card
-                className={cn(
-                  'h-full p-4 transition hover:shadow-[var(--shadow-hover)]',
-                  toneClass[k.tone],
-                )}
-              >
-                <div className="text-[11px] font-medium uppercase tracking-wide text-text-secondary">
-                  {k.label}
-                </div>
-                <div className="mt-1 text-2xl font-bold tabular-nums text-text-primary">{k.value}</div>
-                <p className="mt-1 text-xs text-text-secondary">{k.hint}</p>
-              </Card>
-            </Link>
-          ))}
-        </div>
-      )}
 
       <div className="grid gap-4 lg:grid-cols-5">
         <Card padding={false} className="lg:col-span-3">
@@ -961,7 +892,6 @@ function WarehouseHomePage() {
 }
 
 function ServiceDeskHomePage() {
-  const navigate = useNavigate()
   const addToast = useUIStore((s) => s.addToast)
   const user = useAuthStore((s) => s.user)
   const [loading, setLoading] = useState(true)
@@ -976,7 +906,6 @@ function ServiceDeskHomePage() {
   const [recent, setRecent] = useState<Array<Record<string, unknown>>>([])
   const [pendingApproval, setPendingApproval] = useState<Array<Record<string, unknown>>>([])
   const [unassigned, setUnassigned] = useState<Array<Record<string, unknown>>>([])
-  const [dueReminders, setDueReminders] = useState<DueReminderItem[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -986,14 +915,11 @@ function ServiceDeskHomePage() {
         return
       }
       try {
-        const [tSum, tickets, unassignedPage, resolvedPage, actPage] = await Promise.all([
+        const [tSum, tickets, unassignedPage, resolvedPage] = await Promise.all([
           api.ticketsSummary(),
           api.tickets({ limit: 10, sort: 'sla' }),
           api.tickets({ limit: 6, assignedToId: 'unassigned', sort: 'sla' }),
           api.tickets({ limit: 8, status: 'RESOLVED', sort: 'newest' }),
-          user?.id
-            ? api.activities({ limit: 50, assignedToId: user.id }).catch(() => ({ items: [] }))
-            : Promise.resolve({ items: [] as Array<Record<string, unknown>> }),
         ])
         if (cancelled) return
         const byStatus = tSum.byStatus ?? {}
@@ -1019,13 +945,6 @@ function ServiceDeskHomePage() {
             .filter((t) => ['OPEN', 'IN_PROGRESS', 'PENDING'].includes(String(t.status)))
             .slice(0, 6),
         )
-        setDueReminders(
-          (actPage.items ?? [])
-            .filter((a) => isActivityDueTodayOrOverdue(a))
-            .map((a) => reminderFromActivity(a))
-            .sort((a, b) => a.dueAt - b.dueAt)
-            .slice(0, 8),
-        )
       } catch (e) {
         if (!cancelled) {
           addToast({
@@ -1040,7 +959,7 @@ function ServiceDeskHomePage() {
     return () => {
       cancelled = true
     }
-  }, [addToast, user?.id])
+  }, [addToast])
 
   const metrics = [
     {
@@ -1104,67 +1023,6 @@ function ServiceDeskHomePage() {
         }
       />
 
-      <Card className="border-sky-200/70 bg-gradient-to-r from-sky-50/70 via-card to-card p-4 dark:border-sky-900/40 dark:from-sky-950/30">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold text-text-primary">
-              Welcome{user?.name ? `, ${user.name.split(' ')[0]}` : ''}
-            </p>
-            <p className="mt-0.5 text-xs text-text-secondary">
-              Log the call → create OPEN ticket → engineer Accepts. You Mark complete, collect
-              payment, and close.
-            </p>
-          </div>
-          <ol className="flex flex-wrap gap-1.5 text-[11px] font-medium text-text-secondary">
-            {['1. Customer', '2. Machine', '3. Issue log', '4. Create OPEN'].map((step) => (
-              <li
-                key={step}
-                className="rounded-md border border-border/80 bg-card/80 px-2 py-1 text-text-primary"
-              >
-                {step}
-              </li>
-            ))}
-          </ol>
-        </div>
-      </Card>
-
-      {dueReminders.length > 0 ? (
-        <Card padding={false}>
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <div>
-              <h2 className="text-sm font-semibold text-text-primary">Due today</h2>
-              <p className="text-xs text-text-secondary">
-                Your Workqueue calls, tasks & meetings for today
-              </p>
-            </div>
-            <button
-              type="button"
-              className="text-xs font-medium text-accent-blue hover:underline"
-              onClick={() => navigate('/workqueue')}
-            >
-              Workqueue →
-            </button>
-          </div>
-          <ul className="divide-y divide-border">
-            {dueReminders.map((r) => (
-              <li key={r.id}>
-                <button
-                  type="button"
-                  onClick={() => navigate(r.to)}
-                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-surface"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium text-text-primary">{r.title}</div>
-                    <div className="truncate text-xs text-text-secondary">{r.subtitle}</div>
-                  </div>
-                  <Badge color="amber">{r.dueLabel}</Badge>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      ) : null}
-
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {metrics.map((s) => {
           const Icon = s.icon
@@ -1199,6 +1057,39 @@ function ServiceDeskHomePage() {
           )
         })}
       </div>
+
+      <Card className="border-sky-200/70 bg-gradient-to-r from-sky-50/70 via-card to-card p-4 dark:border-sky-900/40 dark:from-sky-950/30">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-text-primary">
+              Welcome{user?.name ? `, ${user.name.split(' ')[0]}` : ''}
+            </p>
+            <p className="mt-0.5 text-xs text-text-secondary">
+              Log the call → create OPEN ticket → engineer Accepts. You Mark complete, collect
+              payment, and close.
+            </p>
+          </div>
+          <ol className="flex flex-wrap gap-1.5 text-[11px] font-medium text-text-secondary">
+            {['1. Customer', '2. Machine', '3. Issue log', '4. Create OPEN'].map((step) => (
+              <li
+                key={step}
+                className="rounded-md border border-border/80 bg-card/80 px-2 py-1 text-text-primary"
+              >
+                {step}
+              </li>
+            ))}
+          </ol>
+        </div>
+      </Card>
+
+      <DueTodayRemindersCard
+        title="My due today"
+        subtitle="Your Workqueue dues mixed with open / in-progress / pending service tickets"
+        includeOpenTickets
+        ticketMode="desk"
+        primaryLinkLabel="Tickets →"
+        primaryLinkTo="/tickets"
+      />
 
       <div className="grid gap-4 lg:grid-cols-5">
         <Card padding={false} className="lg:col-span-3">

@@ -1,5 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { Button } from '@/components/ui/Button'
+import { getAuth } from '@/lib/api'
+import { loginPathFor } from '@/lib/lastTenantSlug'
 
 type Props = { children: ReactNode }
 type State = { error: Error | null }
@@ -24,7 +26,7 @@ export class ErrorBoundary extends Component<Props, State> {
         <Button
           onClick={() => {
             this.setState({ error: null })
-            window.location.assign('/login')
+            window.location.assign(loginPathFor(getAuth()?.kind))
           }}
         >
           Go to login

@@ -48,6 +48,9 @@ export function defaultAllowedModulesForRole(
         'crm.deals',
         'crm.activities',
         'erp.products',
+        // HMS sales desk refills spares, adds spare products and checks machine + spare stock
+        'erp.inventory',
+        'erp.purchase_orders',
         'erp.invoices',
         'engagement.whatsapp',
       ].forEach((k) => on.add(k))

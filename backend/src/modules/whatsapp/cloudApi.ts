@@ -1,3 +1,4 @@
+import { whatsappOn } from '../../common/whatsappGate.js'
 /**
  * Meta WhatsApp Cloud API client.
  *
@@ -182,6 +183,7 @@ export async function sendCloudText(
   body: string,
   opts?: SendOpts,
 ): Promise<CloudSendResult> {
+  if (opts?.tenantId && !(await whatsappOn(opts.tenantId))) return { ok: false, error: 'whatsapp_off', provider: 'META_CLOUD' }
   const to = digitsE164(toPhone)
   if (!to) return { ok: false, error: 'invalid_phone', provider: 'META_CLOUD' }
   const cloud = await resolveTenantCloudCfg(opts?.tenantId)
@@ -209,6 +211,7 @@ export async function sendCloudTemplate(opts: {
   components?: Array<Record<string, unknown>>
   tenantId?: string
 }): Promise<CloudSendResult> {
+  if (opts.tenantId && !(await whatsappOn(opts.tenantId))) return { ok: false, error: 'whatsapp_off', provider: 'META_CLOUD' }
   const to = digitsE164(opts.toPhone)
   if (!to) return { ok: false, error: 'invalid_phone', provider: 'META_CLOUD' }
   const cloud = await resolveTenantCloudCfg(opts.tenantId)

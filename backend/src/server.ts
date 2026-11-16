@@ -1,3 +1,4 @@
+import "./config/timezone.js";
 import http from "node:http";
 import jwt from "jsonwebtoken";
 import { Server } from "socket.io";
@@ -5,9 +6,11 @@ import { app } from "./app.js";
 import { env } from "./config/env.js";
 import { logger } from "./config/logger.js";
 import { prisma } from "./config/database.js";
+import { roleHasPermission } from "./common/permissions.js";
 import { redis } from "./config/redis.js";
 import { runServiceReminders } from "./modules/assets/reminder.service.js";
 import { runAutomationPass } from "./modules/automation/automation.service.js";
+import { runPoolReminders } from "./modules/tickets/poolReminder.service.js";
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -18,7 +21,7 @@ void import("./modules/notifications/notify.service.js").then(({ bindNotificatio
   bindNotificationIo(io);
 });
 
-io.use((socket, next) => {
+io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth.token as string | undefined;
     if (!token) throw new Error("missing token");
@@ -27,8 +30,18 @@ io.use((socket, next) => {
       tenantId?: string;
       userId?: string;
       adminId?: string;
+      role?: string;
+      exp?: number;
     };
     if (!claims.userId && !claims.adminId) throw new Error("invalid token");
+    // Removed / deactivated staff must not keep a live channel open
+    if (claims.userId) {
+      const user = await prisma.user.findFirst({
+        where: { id: claims.userId, tenantId: claims.tenantId, status: "ACTIVE", deletedAt: null },
+        select: { id: true },
+      });
+      if (!user) throw new Error("inactive user");
+    }
     socket.data.auth = claims;
     next();
   } catch {
@@ -37,9 +50,20 @@ io.use((socket, next) => {
 });
 
 io.on("connection", (socket) => {
-  const auth = socket.data.auth as { kind: string; tenantId?: string; userId?: string };
+  const auth = socket.data.auth as { kind: string; tenantId?: string; userId?: string; role?: string; exp?: number };
   if (auth.tenantId) void socket.join(`tenant:${auth.tenantId}`);
   if (auth.userId) void socket.join(`user:${auth.userId}`);
+  // Inbox events (customer WhatsApp text) only reach roles allowed to read WhatsApp
+  if (auth.tenantId && auth.role && roleHasPermission(auth.role, "whatsapp:view")) {
+    void socket.join(`tenant:${auth.tenantId}:whatsapp`);
+  }
+  // A socket lives no longer than the token that opened it; the client reconnects with a fresh
+  // token, which re-runs the active-user check above.
+  if (auth.exp) {
+    const ms = auth.exp * 1000 - Date.now();
+    const timer = setTimeout(() => socket.disconnect(true), Math.max(1000, ms));
+    socket.on("disconnect", () => clearTimeout(timer));
+  }
 });
 
 server.listen(env.PORT, () =>
@@ -55,6 +79,7 @@ const hourlyJobsEnabled =
 async function hourlyJobs() {
   await runServiceReminders().catch((err) => logger.warn("Service reminders failed", { err }));
   await runAutomationPass().catch((err) => logger.warn("Automation pass failed", { err }));
+  await runPoolReminders().catch((err) => logger.warn("Pool reminders failed", { err }));
 }
 
 let reminderTimer: ReturnType<typeof setInterval> | undefined;

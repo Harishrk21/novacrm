@@ -39,6 +39,8 @@ import {
   AlertTriangle,
   ClipboardList,
   Clock,
+  CalendarClock,
+  MapPin,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useUIStore } from '@/store/uiStore'
@@ -47,6 +49,8 @@ import { Badge } from '@/components/ui/Badge'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { HmsLogo } from '@/components/HmsLogo'
 import { useAuthStore } from '@/store/authStore'
+import { useMediaQuery } from '@/hooks/useMediaQuery'
+import { tenantLoginPath } from '@/lib/lastTenantSlug'
 import { useModulesStore } from '@/store/modulesStore'
 import {
   isCompanyAdmin,
@@ -60,6 +64,13 @@ import { can, type Permission } from '@/lib/permissions'
 import { pathToModuleKey } from '@/lib/userModules'
 import { hasAnyInventoryArea, resolveInventoryAreas } from '@/lib/inventoryAreas'
 import { APP_NAME } from '@/lib/branding'
+import {
+  applySidebarConfig,
+  sidebarRoleKey,
+  toCatalog,
+  useSidebarConfigStore,
+  type SidebarRoleKey,
+} from '@/lib/sidebarConfig'
 
 type NavQuickAction = {
   label: string
@@ -438,12 +449,20 @@ function NavItemRow({
 export function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
-  const collapsed = useUIStore((s) => s.sidebarCollapsed)
-  const toggleSidebar = useUIStore((s) => s.toggleSidebar)
+  const isDesktop = useMediaQuery('(min-width: 1024px)')
+  const storedCollapsed = useUIStore((s) => s.sidebarCollapsed)
+  const toggleCollapsed = useUIStore((s) => s.toggleSidebar)
+  const setMobileNavOpen = useUIStore((s) => s.setMobileNavOpen)
+  // Phone/tablet drawer is always full width; its chevron closes the drawer.
+  const collapsed = storedCollapsed && isDesktop
+  const toggleSidebar = isDesktop ? toggleCollapsed : () => setMobileNavOpen(false)
   const addToast = useUIStore((s) => s.addToast)
   const authUser = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
   const moduleOn = useModulesStore((s) => s.enabled)
+  // Re-render when the module list arrives — `enabled` is a stable function, so subscribing to it
+  // alone left the menu built from the "everything on" fallback (switched-off modules still showed)
+  useModulesStore((s) => s.modules)
   const displayName = authUser?.name ?? 'User'
   const role = authUser?.role
   const isAdmin = isCompanyAdmin(role)
@@ -470,7 +489,7 @@ export function Sidebar() {
       await logout()
       addToast({ type: 'success', message: 'Signed out' })
     } finally {
-      navigate(authUser?.tenantSlug ? `/login/${authUser.tenantSlug}` : '/login', { replace: true })
+      navigate(tenantLoginPath(authUser?.tenantSlug), { replace: true })
     }
   }
 
@@ -482,9 +501,9 @@ export function Sidebar() {
   ]
 
   const leadsActions: NavQuickAction[] = [
-    { label: 'New lead', to: '/sale-tracking?open=1', icon: Plus },
+    { label: 'New enquiry', to: '/sale-tracking?open=1', icon: Plus },
     { label: 'Awaiting accept', to: '/sale-tracking?queue=requisitions', icon: AlertTriangle },
-    { label: 'My leads', to: '/sale-tracking', icon: Filter },
+    { label: isAdmin ? 'All leads' : 'My leads', to: '/sale-tracking', icon: Filter },
   ]
 
   const ticketsActions: NavQuickAction[] = [
@@ -540,7 +559,7 @@ export function Sidebar() {
               {
                 to: '/sale-tracking',
                 icon: UserPlus,
-                label: 'My leads',
+                label: isAdmin ? 'Leads' : 'My leads',
                 quickActions: leadsActions,
               } as NavItem,
             ]
@@ -604,6 +623,8 @@ export function Sidebar() {
               } as NavItem,
             ]
           : []),
+        ...(can(role, 'field:track') ? [{ to: '/field-tracking', icon: MapPin, label: 'Field tracking' } as NavItem] : []),
+        ...(can(role, 'renewals:view') ? [{ to: '/renewals', icon: CalendarClock, label: 'Renewals' } as NavItem] : []),
         ...(moduleOn('crm.amc')
           ? [{ to: '/amc', icon: Shield, label: 'AMC / Non-AMC', quickActions: amcActions } as NavItem]
           : []),
@@ -744,6 +765,7 @@ export function Sidebar() {
           quickActions: spareActions,
         },
         { to: '/service-reports', icon: FileText, label: 'Service reports' },
+        ...(can(role, 'renewals:view') ? [{ to: '/renewals', icon: CalendarClock, label: 'Renewals' } as NavItem] : []),
         ...(moduleOn('crm.amc')
           ? [{ to: '/amc', icon: Shield, label: 'AMC / Non-AMC', quickActions: amcActions } as NavItem]
           : []),
@@ -894,6 +916,7 @@ export function Sidebar() {
           label: 'Contacts',
           quickActions: contactsActions,
         },
+        ...(can(role, 'renewals:view') ? [{ to: '/renewals', icon: CalendarClock, label: 'Renewals' } as NavItem] : []),
         ...(moduleOn('crm.deals')
           ? [{ to: '/deals', icon: ClipboardList, label: 'Deals' } as NavItem]
           : []),
@@ -917,11 +940,30 @@ export function Sidebar() {
       label: 'Inventory',
       icon: Boxes,
       collapsible: true,
+      // Same as admin: sales desk adds spare products, refills / reduces spares, sees all stock.
+      // Admin can narrow per user (Users & Roles → modules / inventory areas).
       items: [
-        { to: '/erp/products', icon: Package, label: 'Products' },
-        { to: '/erp/stock', icon: Warehouse, label: 'Stock' },
-        { to: '/erp/suppliers', icon: Truck, label: 'Suppliers' },
+        {
+          to: '/erp/products',
+          icon: Package,
+          label: 'Products',
+          quickActions: [{ label: 'Add product', to: '/erp/products?open=1', icon: Plus }],
+        },
+        {
+          to: '/erp/stock',
+          icon: Warehouse,
+          label: 'Stock',
+          quickActions: [
+            { label: 'Add stock', to: '/erp/stock/move', icon: Plus },
+            { label: 'Reduce stock', to: '/erp/stock/move?mode=reduce', icon: Filter },
+            { label: 'History', to: '/erp/stock?view=history', icon: Filter },
+            { label: 'Monthly report', to: '/erp/stock/report', icon: Filter },
+          ],
+        },
         { to: '/erp/releases', icon: PackageCheck, label: 'Approved releases' },
+        { to: '/erp/delivery-challans', icon: ClipboardList, label: 'Delivery challans' },
+        { to: '/erp/suppliers', icon: Truck, label: 'Suppliers' },
+        { to: '/erp/purchase-orders', icon: ShoppingCart, label: 'Purchase Orders' },
       ],
     },
     {
@@ -1048,7 +1090,43 @@ export function Sidebar() {
             ? warehouseNav
             : fallbackNav
 
-  const navSections = filterNavByModules(rawNav, moduleOn, inventoryUnlocked)
+  // Company admin decides (Settings → Sidebar menu) which sections / links / dropdown items each role sees
+  const roleKey = sidebarRoleKey(role)
+  const sidebarConfig = useSidebarConfigStore((s) => s.config)
+  const setSidebarCatalog = useSidebarConfigStore((s) => s.setCatalog)
+  const navSections = applySidebarConfig(
+    filterNavByModules(rawNav, moduleOn, inventoryUnlocked),
+    roleKey,
+    sidebarConfig,
+  )
+
+  // Admin: publish every role's full menu so the Settings editor can show it
+  useEffect(() => {
+    if (!isAdmin) return
+    const roleCode: Record<SidebarRoleKey, string> = {
+      ADMIN: 'ADMIN',
+      SERVICE_DESK: 'SERVICE_DESK',
+      SALES_EXECUTIVE: 'SALES_EXECUTIVE',
+      SERVICE_ENGINEER: 'SERVICE_ENGINEER',
+      WAREHOUSE: 'WAREHOUSE',
+      OTHER: 'READ_ONLY',
+    }
+    const build = (key: SidebarRoleKey, sections: NavSection[]) =>
+      toCatalog(
+        key,
+        filterNavByModules(sections, moduleOn, true).map((sec) => ({
+          ...sec,
+          items: sec.items.map((it) => ({ ...it, quickActions: filterQuickActions(it.quickActions, roleCode[key]) })),
+        })),
+      )
+    setSidebarCatalog({
+      ADMIN: build('ADMIN', adminNav),
+      SERVICE_DESK: build('SERVICE_DESK', deskNav),
+      SERVICE_ENGINEER: build('SERVICE_ENGINEER', engineerNav),
+      SALES_EXECUTIVE: build('SALES_EXECUTIVE', salesNav),
+      WAREHOUSE: build('WAREHOUSE', warehouseNav),
+    })
+  })
 
   useEffect(() => {
     setOpenSections((prev) => {
@@ -1078,7 +1156,7 @@ export function Sidebar() {
       : isSalesExecutive(role)
         ? { title: 'Sales executive', body: 'Create leads, issue demos, post day-wise updates' }
         : isServiceEngineer(role)
-          ? { title: 'Field engineer', body: 'Work assigned tickets and log day notes' }
+          ? { title: 'Field engineer', body: 'Work assigned tickets and fill the work report' }
           : isWarehouse(role)
             ? {
                 title: 'Warehouse & billing',
@@ -1114,7 +1192,7 @@ export function Sidebar() {
             aria-label="Expand sidebar"
           >
             <img
-              src="/hms-logo.png"
+              src="/hms-logo-dark.png"
               alt={APP_NAME}
               className="h-7 w-auto max-w-[36px] object-contain"
               draggable={false}
@@ -1124,7 +1202,7 @@ export function Sidebar() {
         ) : (
           <>
             <div className="min-w-0 flex-1 px-1 py-1">
-              <HmsLogo size="sm" />
+              <HmsLogo size="sm" tone="dark" />
             </div>
             <button
               type="button"
@@ -1166,6 +1244,7 @@ export function Sidebar() {
                 {section.collapsible !== false ? (
                   <button
                     type="button"
+                    aria-expanded={isOpen}
                     onClick={() => toggleSection(section.label)}
                     className={cn(
                       'mx-2 flex w-[calc(100%-1rem)] items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors',

@@ -175,7 +175,7 @@ export function ContactFilterSidebar({
 
   return (
     <aside
-      className="relative flex h-full min-h-0 shrink-0 flex-col border-r border-border bg-card"
+      className="relative flex h-full min-h-0 shrink-0 flex-col border-r border-border bg-card max-md:fixed max-md:inset-0 max-md:z-[60] max-md:w-full! max-md:border-r-0 max-md:pb-14"
       style={{ width }}
       aria-label="Filter customers"
     >

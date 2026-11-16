@@ -549,6 +549,19 @@ export async function updateTenant(id: string, data: Record<string, unknown>) {
   const tenant = await prisma.tenant.findFirst({ where: { id, deletedAt: null } });
   if (!tenant) throw notFound("Tenant");
 
+  // Seat cap can't go below the people already using the workspace
+  if (data.maxUsers != null) {
+    const cap = Number(data.maxUsers);
+    const used = await prisma.user.count({ where: { tenantId: id, deletedAt: null } });
+    if (!Number.isFinite(cap) || cap < 1) throw new AppError("Seat cap must be at least 1", 422);
+    if (cap < used) {
+      throw new AppError(
+        `This company already has ${used} logins — set the cap to at least ${used}, or remove logins first.`,
+        409,
+      );
+    }
+  }
+
   const allowed = [
     "name",
     "email",
@@ -609,7 +622,19 @@ export async function updateTenant(id: string, data: Record<string, unknown>) {
       planFeatures: planned.features,
     };
     if (packChanged || "modulesEnabled" in data) {
-      patch.modulesEnabled = planned.modules;
+      // A pack only describes its own modules. Anything it doesn't mention — Attendance and other
+      // add-ons — keeps its current setting (before, applying any pack switched Attendance OFF and
+      // unlinked the company from the Attendance app).
+      const current = await prisma.tenantModule.findMany({
+        where: { tenantId: id },
+        select: { moduleKey: true, isEnabled: true },
+      });
+      const keep = Object.fromEntries(
+        current
+          .filter((m) => !(m.moduleKey in planned.modules))
+          .map((m) => [m.moduleKey, m.isEnabled]),
+      );
+      patch.modulesEnabled = { ...keep, ...planned.modules };
     }
   }
 
@@ -762,6 +787,14 @@ export async function applySubscriptionPack(tenantId: string, pack: Subscription
 }
 
 export async function softDeleteCategory(id: string) {
+  // Don't archive an industry a live company is filed under
+  const inUse = await prisma.tenant.count({ where: { businessCategoryId: id, deletedAt: null } });
+  if (inUse) {
+    throw new AppError(
+      `${inUse} compan${inUse === 1 ? "y uses" : "ies use"} this category — move ${inUse === 1 ? "it" : "them"} to another category first.`,
+      409,
+    );
+  }
   const r = await prisma.businessCategory.updateMany({
     where: { id, deletedAt: null },
     data: { deletedAt: new Date(), isActive: false },
@@ -776,6 +809,11 @@ export async function stats() {
   const cached = await cacheGet<Record<string, unknown>>(cacheKey);
   if (cached) return cached;
 
+  // Only count people in live companies — deleted workspaces kept inflating "End users" / seat use
+  const liveTenantIds = (
+    await prisma.tenant.findMany({ where: { deletedAt: null }, select: { id: true } })
+  ).map((x) => x.id);
+
   const [
     total,
     active,
@@ -788,17 +826,19 @@ export async function stats() {
     invoices,
     products,
     tenants,
+    tickets,
   ] = await Promise.all([
     prisma.tenant.count({ where: { deletedAt: null } }),
     prisma.tenant.count({ where: { status: "ACTIVE", deletedAt: null } }),
     prisma.tenant.count({ where: { status: "TRIAL", deletedAt: null } }),
     prisma.tenant.count({ where: { status: "SUSPENDED", deletedAt: null } }),
     prisma.businessCategory.count({ where: { deletedAt: null, isActive: true } }),
-    prisma.user.count({ where: { deletedAt: null } }),
-    prisma.lead.count({ where: { deletedAt: null } }),
-    prisma.deal.count({ where: { deletedAt: null } }),
-    prisma.invoice.count({ where: { deletedAt: null } }),
-    prisma.product.count({ where: { deletedAt: null } }),
+    prisma.user.count({ where: { deletedAt: null, tenantId: { in: liveTenantIds } } }),
+    prisma.lead.count({ where: { deletedAt: null, tenantId: { in: liveTenantIds } } }),
+    prisma.deal.count({ where: { deletedAt: null, tenantId: { in: liveTenantIds } } }),
+    prisma.invoice.count({ where: { deletedAt: null, tenantId: { in: liveTenantIds } } }),
+    prisma.product.count({ where: { deletedAt: null, tenantId: { in: liveTenantIds } } }),
+    // (tenant list below, then service jobs — the figure HMS-style clients care about)
     prisma.tenant.findMany({
       where: { deletedAt: null },
       orderBy: { createdAt: "desc" },
@@ -815,6 +855,7 @@ export async function stats() {
         businessCategoryId: true,
       },
     }),
+    prisma.ticket.count({ where: { deletedAt: null, tenantId: { in: liveTenantIds } } }),
   ]);
 
   const [byPlan, byCategoryRaw, cats] = await Promise.all([
@@ -845,6 +886,7 @@ export async function stats() {
     users,
     leads,
     deals,
+    tickets,
     invoices,
     products,
     byPlan: byPlan.map((r) => ({ plan: r.plan, count: r._count._all })),

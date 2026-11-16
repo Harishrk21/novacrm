@@ -162,7 +162,7 @@ export function leadOrderedProducts(
   ).trim()
   if (!blob) return []
   return blob
-    .split(/[,;/|]+/)
+    .split(/[,;|]+/)
     .map((s) => s.trim())
     .filter(Boolean)
     .map((name) => ({ name, qty: 1 }))

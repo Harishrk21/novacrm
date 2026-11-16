@@ -88,7 +88,7 @@ const SETUP_PANELS: Array<{
     items: [
       { title: 'Dashboards & KPIs', to: '/' },
       { title: 'Reports', to: '/reports' },
-      { title: 'Sales targets', to: '/settings?tab=Sales%20Targets' },
+      { title: 'Work history', to: '/reports?report=history' },
     ],
   },
   {

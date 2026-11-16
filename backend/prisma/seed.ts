@@ -18,7 +18,7 @@ const tips=[
 ];
 async function main(){
  // Master platform SUPER_ADMIN — onboard clients, plans, modules (separate from HMS staff login).
- const passwordHash=await bcrypt.hash(env.PLATFORM_ADMIN_PASSWORD, 10);
+ if(!env.PLATFORM_ADMIN_PASSWORD) throw new Error("Set PLATFORM_ADMIN_PASSWORD (12+ chars) in .env before seeding");const passwordHash=await bcrypt.hash(env.PLATFORM_ADMIN_PASSWORD, 10);
  await prisma.platformAdmin.upsert({
   where:{email:env.PLATFORM_ADMIN_EMAIL},
   update:{passwordHash,status:"ACTIVE",deletedAt:null,name:"Meister Super Admin",role:"SUPER_ADMIN"},
@@ -28,8 +28,9 @@ async function main(){
  for(const c of categories){await prisma.businessCategory.upsert({where:{code:c.code},update:{isActive:true,deletedAt:null,defaultModules:c.defaultModules,terminology:c.terminology,templateConfig:c.templateConfig,name:c.name,description:c.description},create:{id:uuid(),...c}})}
  const category=await prisma.businessCategory.findUniqueOrThrow({where:{code:"WEIGHING_MACHINES"}});
  const salesSettings={revenueTarget:500000,targetPeriod:"month",currency:"INR"};
+ // Find HMS by its unique code (slug was renamed precision-scales-india → hms)
  const tenant=await prisma.tenant.upsert({
-  where:{slug:"precision-scales-india"},
+  where:{code:"HMS01"},
   update:{
     name:"HMS Enterprises",
     code:"HMS01",
@@ -44,7 +45,7 @@ async function main(){
     id:uuid(),
     code:"HMS01",
     name:"HMS Enterprises",
-    slug:"precision-scales-india",
+    slug:"hms",
     businessCategoryId:category.id,
     status:"ACTIVE",
     plan:"GROWTH",

@@ -79,7 +79,7 @@ export function MyTasksPage() {
       // Sales desk has no tickets:view — activities only
       const [page, ticketPage] = await Promise.all([
         api.activities({ limit: 200, assignedToId: user.id }),
-        salesDesk
+        salesDesk || !can(user.role, 'tickets:view')
           ? Promise.resolve({ items: [] as Row[] })
           : api.tickets({ limit: 100, mine: 1, sort: 'sla' }).catch(() => ({ items: [] as Row[] })),
       ])
@@ -212,7 +212,7 @@ export function MyTasksPage() {
       <p className="text-sm text-text-secondary">
         {salesDesk
           ? 'Follow-up tasks from your leads (created when a lead is assigned or a follow-up/reminder is set).'
-          : 'Live work assigned to you — service tickets and follow-up tasks from the database.'}
+          : 'Work assigned to you — service jobs first, then follow-up tasks.'}
       </p>
 
       <div className={cn('grid gap-3', salesDesk ? 'sm:grid-cols-2' : 'sm:grid-cols-3')}>

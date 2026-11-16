@@ -102,7 +102,8 @@ export function reminderFromActivity(a: Record<string, unknown>): DueReminderIte
     subtitle: [activityKindLabel(kind), contact?.name, leadName].filter(Boolean).join(' · ') || activityKindLabel(kind),
     dueLabel: formatActivityDueLabel(a.scheduledAt),
     dueAt: Number.isNaN(dueAt) ? 0 : dueAt,
-    to: activityWorkqueueNav(kind),
+    // Due list = today & overdue → open Workqueue on that filter and highlight this row
+    to: `${activityWorkqueueNav(kind)}&date=today_overdue&focus=${encodeURIComponent(String(a.id))}`,
     source: 'activity',
   }
 }

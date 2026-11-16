@@ -66,9 +66,14 @@ const schema = z.object({
   JWT_ACCESS_SECRET: z.string().min(24),
   JWT_REFRESH_SECRET: z.string().min(24),
   JWT_ACCESS_EXPIRY: z.string().default("15m"),
-  JWT_REFRESH_EXPIRY: z.string().default("7d"),
+  /**
+   * Hard cap on a login session (refresh token chain). Refreshing never extends it,
+   * so everyone signs in again at least this often. Format: 30m / 12h / 1d.
+   */
+  SESSION_MAX_AGE: z.string().regex(/^\d+[dhm]$/, "Use e.g. 12h, 30m or 1d").default("12h"),
   PLATFORM_ADMIN_EMAIL: z.string().email().default("admin@novacrm.com"),
-  PLATFORM_ADMIN_PASSWORD: z.string().min(8).default("Admin@Nova2026"),
+  /** Only the seed script uses this — no default: a password must never live in source */
+  PLATFORM_ADMIN_PASSWORD: z.string().min(12).optional(),
   /** Meister Attendance SPA origin (local default; staging/prod Vercel URL later) */
   ATTENDANCE_APP_URL: z.string().url().default("http://localhost:5173"),
   /** Must match Attendance API SSO_AUDIENCE */

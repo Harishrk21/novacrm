@@ -18,35 +18,27 @@ import { useUIStore } from '@/store/uiStore'
 import { ApiClientError, api } from '@/lib/api'
 import { PALETTES, type ColorPalette } from '@/lib/theme'
 import { SessionSkeleton } from '@/components/ui/Skeleton'
+import { SignOutNotice } from '@/components/auth/SignOutNotice'
+import { publicLoginSlug } from '@/lib/lastTenantSlug'
 import { assetUrl } from '@/lib/formValidation'
 
-/** HMS Enterprises staff demo logins (generic /login only) */
+/**
+ * HMS testing-phase role shortcuts on the login page (Harish 2026-11-12: keep during testing).
+ * ⚠ REMOVE BEFORE GO-LIVE — this password ships in the public JS whenever the panel is enabled.
+ */
+const SHOW_DEMO_LOGINS = import.meta.env.DEV || import.meta.env.VITE_SHOW_DEMO_LOGINS === 'true'
+const DEMO_PASSWORD: string = SHOW_DEMO_LOGINS ? String(import.meta.env.VITE_DEMO_PASSWORD || 'Demo@12345') : ''
+const demoLogin = (title: string, email: string) => ({
+  title,
+  fill: { email, password: DEMO_PASSWORD },
+  lines: [email, DEMO_PASSWORD],
+})
 const DEMO = {
-  admin: {
-    title: 'HMS Admin',
-    fill: { email: 'admin@hmsenterprises.in', password: 'Demo@12345' },
-    lines: ['admin@hmsenterprises.in', 'Demo@12345'],
-  },
-  desk: {
-    title: 'Service desk',
-    fill: { email: 'desk@hmsenterprises.in', password: 'Demo@12345' },
-    lines: ['desk@hmsenterprises.in', 'Demo@12345'],
-  },
-  engineer: {
-    title: 'Service engineer',
-    fill: { email: 'engineer@hmsenterprises.in', password: 'Demo@12345' },
-    lines: ['engineer@hmsenterprises.in', 'Demo@12345'],
-  },
-  warehouse: {
-    title: 'Warehouse & billing',
-    fill: { email: 'warehouse@hmsenterprises.in', password: 'Demo@12345' },
-    lines: ['warehouse@hmsenterprises.in', 'Demo@12345'],
-  },
-  sales: {
-    title: 'Sales executive',
-    fill: { email: 'sales@hmsenterprises.in', password: 'Demo@12345' },
-    lines: ['sales@hmsenterprises.in', 'Demo@12345'],
-  },
+  admin: demoLogin('HMS Admin', 'admin@hmsenterprises.in'),
+  desk: demoLogin('Service desk', 'desk@hmsenterprises.in'),
+  engineer: demoLogin('Service engineer', 'engineer@hmsenterprises.in'),
+  warehouse: demoLogin('Warehouse & billing', 'warehouse@hmsenterprises.in'),
+  sales: demoLogin('Sales executive', 'sales@hmsenterprises.in'),
 } as const
 
 const DEMO_BLOCKS = [DEMO.admin, DEMO.sales, DEMO.desk, DEMO.engineer, DEMO.warehouse] as const
@@ -111,11 +103,10 @@ export function LoginPage() {
   const [workspaceLoading, setWorkspaceLoading] = useState(Boolean(brandedSlug))
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
 
-  const showDemoLogins =
-    import.meta.env.DEV || import.meta.env.VITE_SHOW_DEMO_LOGINS === 'true'
+  const showDemoLogins = SHOW_DEMO_LOGINS
   const [email, setEmail] = useState<string>(
     mode === 'platform'
-      ? 'admin@novacrm.com'
+      ? import.meta.env.DEV ? 'admin@novacrm.com' : ''
       : brandedSlug
         ? ''
         : showDemoLogins
@@ -549,7 +540,7 @@ export function LoginPage() {
 
   return (
     <div
-      className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-10 font-sans"
+      className="relative flex min-h-[100svh] items-stretch justify-center overflow-hidden font-sans sm:items-center sm:px-4 sm:py-10"
       style={{ backgroundColor: mode === 'platform' ? MEISTER_COLORS.ink : HMS_COLORS.black }}
     >
       <div className="pointer-events-none absolute inset-0">
@@ -569,7 +560,7 @@ export function LoginPage() {
         />
       </div>
 
-      <div className="relative z-10 grid w-full max-w-5xl overflow-hidden rounded-2xl border border-white/10 bg-[#111111] shadow-2xl lg:grid-cols-[1fr_1.05fr]">
+      <div className="relative z-10 grid min-h-[100svh] w-full max-w-5xl overflow-hidden bg-[#111111] shadow-2xl sm:min-h-0 sm:rounded-2xl sm:border sm:border-white/10 lg:grid-cols-[1fr_1.05fr]">
         <div
           className="relative hidden flex-col justify-between p-10 lg:flex"
           style={{
@@ -604,7 +595,7 @@ export function LoginPage() {
                 </div>
                 <div className="mt-4">
                   <div className="text-lg font-semibold tracking-tight text-white">{companyName}</div>
-                  <div className="mt-0.5 text-sm text-white/50">/{workspace.slug}</div>
+                  <div className="mt-0.5 text-sm text-white/50">/{publicLoginSlug(workspace.slug)}</div>
                 </div>
               </div>
             ) : workspace ? (
@@ -617,7 +608,7 @@ export function LoginPage() {
                 </div>
                 <div>
                   <div className="text-xl font-semibold tracking-tight text-white">{companyName}</div>
-                  <div className="mt-0.5 text-sm text-white/50">Company workspace · /{workspace.slug}</div>
+                  <div className="mt-0.5 text-sm text-white/50">Company workspace · /{publicLoginSlug(workspace.slug)}</div>
                 </div>
               </div>
             ) : null}
@@ -658,7 +649,7 @@ export function LoginPage() {
           )}
         </div>
 
-        <div className="flex flex-col justify-center p-8 sm:p-10">
+        <div className="flex flex-col justify-center px-6 pb-[max(2rem,env(safe-area-inset-bottom))] pt-12 sm:p-10">
           {/* Mobile brand lockup — desktop shows the large stage logo */}
           {mode === 'platform' ? (
             <div className="mb-6 lg:hidden">
@@ -712,16 +703,20 @@ export function LoginPage() {
                 : 'Staff email & password for your company'}
           </p>
 
+          <SignOutNotice />
           <form onSubmit={(e) => void submit(e)} className="mt-6 space-y-4">
             <div>
               <label className="mb-1.5 block text-xs font-medium text-white/60">Email</label>
               <input
                 type="email"
+                inputMode="email"
+                autoCapitalize="none"
+                autoCorrect="off"
                 autoComplete="username"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="h-10 w-full rounded-lg border border-white/15 bg-black/40 px-3 text-sm text-white outline-none placeholder:text-white/30 focus:border-white/40"
+                className="h-12 w-full rounded-xl border border-white/15 bg-black/40 px-3.5 text-base text-white outline-none placeholder:text-white/30 focus:border-white/40 sm:h-10 sm:rounded-lg sm:px-3 sm:text-sm"
               />
             </div>
 
@@ -734,7 +729,7 @@ export function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
-                  className="h-10 w-full rounded-lg border border-white/15 bg-black/40 px-3 pr-10 text-sm text-white outline-none placeholder:text-white/30 focus:border-white/40"
+                  className="h-12 w-full rounded-xl border border-white/15 bg-black/40 px-3.5 pr-11 text-base text-white outline-none placeholder:text-white/30 focus:border-white/40 sm:h-10 sm:rounded-lg sm:px-3 sm:pr-10 sm:text-sm"
                 />
                 <button
                   type="button"
@@ -760,7 +755,7 @@ export function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="flex h-11 w-full items-center justify-center rounded-lg text-sm font-semibold text-white transition disabled:opacity-60"
+              className="flex h-12 w-full items-center justify-center rounded-xl text-base font-semibold text-white transition active:brightness-95 disabled:opacity-60 sm:h-11 sm:rounded-lg sm:text-sm"
               style={{ backgroundColor: accent }}
             >
               {loading

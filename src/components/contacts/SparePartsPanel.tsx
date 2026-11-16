@@ -93,6 +93,25 @@ export function SparePartsPanel({
   const [saving, setSaving] = useState(false)
   const [confirmId, setConfirmId] = useState<string | null>(null)
   const [sectionOpen, setSectionOpen] = useState(!collapsible || defaultOpen)
+  // Spare stock catalogue — a fitted part with a catalogue name comes out of that stock
+  const [spareItems, setSpareItems] = useState<Array<{ id: string; name: string; partCode?: string | null; qty: number }>>([])
+  useEffect(() => {
+    if (!formOpen || spareItems.length) return
+    void api
+      .spareStockItems()
+      .then((rows) =>
+        setSpareItems(
+          (rows ?? []).map((r) => ({
+            id: String(r.id),
+            name: String(r.name ?? ''),
+            partCode: r.partCode ? String(r.partCode) : null,
+            qty: Number(r.quantityOnHand ?? 0) || 0,
+          })),
+        ),
+      )
+      .catch(() => undefined)
+  }, [formOpen, spareItems.length])
+  const pickedSpare = spareItems.find((i) => i.name.toLowerCase() === form.partName.trim().toLowerCase()) ?? null
 
   useEffect(() => {
     if (collapsible && defaultOpen) setSectionOpen(true)
@@ -555,13 +574,31 @@ export function SparePartsPanel({
               value={form.changedAt}
               onChange={(e) => setForm({ ...form, changedAt: e.target.value })}
             />
-            <Input
-              label="Part name *"
-              value={form.partName}
-              onChange={(e) => setForm({ ...form, partName: e.target.value })}
-              placeholder="Load cell / Printer head / Battery"
-              className="sm:col-span-2"
-            />
+            <div className="sm:col-span-2">
+              <Input
+                label="Part name *"
+                value={form.partName}
+                list="spare-stock-items"
+                onChange={(e) => {
+                  const name = e.target.value
+                  const hit = spareItems.find((i) => i.name.toLowerCase() === name.trim().toLowerCase())
+                  setForm({ ...form, partName: name, partCode: form.partCode || hit?.partCode || '' })
+                }}
+                placeholder="Pick from spare stock, or type a part name"
+              />
+              <datalist id="spare-stock-items">
+                {spareItems.map((i) => (
+                  <option key={i.id} value={i.name}>{`${i.qty} in spare stock`}</option>
+                ))}
+              </datalist>
+              {form.partName.trim() ? (
+                <p className="mt-1 text-xs text-text-secondary">
+                  {pickedSpare
+                    ? `Uses the parts the engineer collected at the counter first, then spare stock (${pickedSpare.qty} in store)`
+                    : 'Not in the spare stock catalogue — stock is not changed'}
+                </p>
+              ) : null}
+            </div>
             <Input
               label="Part code / SKU"
               value={form.partCode}

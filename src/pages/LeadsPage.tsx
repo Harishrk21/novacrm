@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { fetchAllAsPage } from '@/lib/fetchAllPages'
+import { pageCacheGet, pageCacheSet } from '@/lib/pageCache'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Plus,
@@ -16,7 +18,7 @@ import {
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ContactPicker, type ContactPick } from '@/components/contacts/ContactPicker'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
-import { Badge, leadStatusColor } from '@/components/ui/Badge'
+import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import {
   BulkActionBar,
@@ -29,6 +31,21 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
 import { PhoneInput } from '@/components/ui/PhoneInput'
 import { FormPanel, FormPanelCancel } from '@/components/ui/FormPanel'
+import { UnlistedProductAdder } from '@/components/sales/UnlistedProductAdder'
+import { LeadStatusBadges } from '@/components/sales/LeadStatusBadges'
+import {
+  LEAD_OUTCOMES,
+  LEAD_STAGES,
+  decodeLeadFilter,
+  encodeLeadFilter,
+  filterFromLegacyStatus,
+  leadMatchesFilter,
+  leadOutcome,
+  leadStage,
+  leadStripe,
+  type LeadOutcome,
+  type LeadStage,
+} from '@/lib/leadStage'
 import { ConfirmModal } from '@/components/ui/Modal'
 import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
@@ -63,7 +80,6 @@ import { formatEnquiryId } from '@/lib/serviceId'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 import { PaginationBar } from '@/components/ui/PaginationBar'
 import {
-  HMS_LEAD_PIPELINE,
   HMS_SERVICE_TYPES,
   HMS_WAY_OF_ENQUIRIES,
   leadPipelineLabel,
@@ -72,13 +88,6 @@ import {
 } from '@/lib/hmsLead'
 import { saleIsCompleted } from '@/lib/salesFlow'
 
-/** Desk statuses — aligned with Zoho-style pipeline */
-const STATUS_OPTIONS = HMS_LEAD_PIPELINE.map((s) => ({
-  value: s.value,
-  label: s.label,
-}))
-
-const ALL_STATUS_VALUES = STATUS_OPTIONS.map((s) => s.value)
 
 type LeadCreateStep =
   | 'source'
@@ -128,27 +137,6 @@ function statusLabel(code: string) {
   return leadPipelineLabel(code)
 }
 
-function statusStripe(code: string): string {
-  switch (code) {
-    case 'NEW':
-      return 'border-l-indigo-500'
-    case 'CONTACTED':
-      return 'border-l-cyan-500'
-    case 'QUALIFIED':
-      return 'border-l-teal-500'
-    case 'DEMO':
-      return 'border-l-amber-500'
-    case 'CONVERTED':
-      return 'border-l-emerald-500'
-    case 'LOST':
-      return 'border-l-slate-400'
-    case 'UNQUALIFIED':
-      return 'border-l-rose-500'
-    default:
-      return 'border-l-border'
-  }
-}
-
 const emptyForm = {
   contactId: '',
   name: '',
@@ -168,6 +156,8 @@ const emptyForm = {
   productInterest: '',
   productId: '',
   productIds: [] as string[],
+  /** Products the customer asked for that are not in the catalogue (free text, any number). */
+  customProducts: [] as string[],
   productSearch: '',
   familyCode: '',
   industryCode: '',
@@ -222,9 +212,9 @@ export function LeadsPage() {
   const [convertBusy, setConvertBusy] = useState(false)
   const [pickedContact, setPickedContact] = useState<ContactPick | null>(null)
   const [search, setSearch] = useState('')
-  const initialStatus = searchParams.get('status') ?? ''
-  const [status, setStatus] = useState(
-    ALL_STATUS_VALUES.includes(initialStatus as (typeof ALL_STATUS_VALUES)[number]) ? initialStatus : '',
+  // '' = all open · 'OPEN:<stage>' · 'CLOSED' · 'LOST' (see lib/leadStage)
+  const [status, setStatus] = useState(() =>
+    encodeLeadFilter(filterFromLegacyStatus(searchParams.get('status'))),
   )
   const [ownerFilter, setOwnerFilter] = useState('')
   const [typeFilter, setTypeFilter] = useState(() => searchParams.get('type') ?? '')
@@ -292,9 +282,7 @@ export function LeadsPage() {
   }, [selected?.id])
 
   const visibleItems = useMemo(() => {
-    if (status === 'COMPLETED') return items.filter((l) => saleIsCompleted(l))
-    if (status) return items.filter((l) => String(l.status) === status && !saleIsCompleted(l))
-    return items.filter((l) => !saleIsCompleted(l))
+    return items.filter((l) => leadMatchesFilter(l, status))
   }, [items, status])
   const paged = usePagedRows(
     visibleItems,
@@ -306,7 +294,18 @@ export function LeadsPage() {
   const lookupsReadyRef = useRef(false)
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
-    const silent = Boolean(opts?.silent)
+    let silent = Boolean(opts?.silent)
+    const leadQuery = {
+      search, typeFilter, areaFilter, todayOnly, ownerFilter, me: isSales ? authUser?.id : '',
+    }
+    const cacheKey = `leads:${JSON.stringify(leadQuery)}`
+    const cached = pageCacheGet<Record<string, unknown>[]>(cacheKey)
+    if (cached) {
+      // Coming back to the list: show last rows instantly, refresh quietly
+      setItems(cached)
+      setLoading(false)
+      silent = true
+    }
     // Keep the list visible after create/save — only skeleton on first open
     if (!silent) setLoading(true)
     setLoadError(null)
@@ -316,8 +315,9 @@ export function LeadsPage() {
       // Product catalog for the enquiry form already comes from lookups.products.
       const needLookups = !lookupsReadyRef.current
       const [leads, lookups] = await Promise.all([
-        api.leads({
-          limit: 100,
+        // Every lead — chip counts (Open / Closed · sold / Lost) were computed from the first 100 only
+        fetchAllAsPage((p) => api.leads({
+          ...p,
           search: search || undefined,
           // Status / Completed filtered client-side so chips stay accurate
           ...(typeFilter ? { serviceType: typeFilter } : {}),
@@ -328,21 +328,21 @@ export function LeadsPage() {
             : ownerFilter && ownerFilter !== 'unassigned'
               ? { assignedToId: ownerFilter }
               : {}),
-        }),
+        })),
         needLookups ? api.lookups({ scope: 'full' }) : Promise.resolve(null),
       ])
       let rows = leads.items ?? []
       if (!isSales && ownerFilter === 'unassigned') {
         rows = rows.filter((l) => !l.assignedToId)
       }
-      setItems(
-        [...rows].sort((a, b) => {
-          // createdAt desc client — newest enquiries on top
-          const ta = new Date(String(a.createdAt ?? 0)).getTime()
-          const tb = new Date(String(b.createdAt ?? 0)).getTime()
-          return tb - ta
-        }),
-      )
+      const sorted = [...rows].sort((a, b) => {
+        // createdAt desc client — newest enquiries on top
+        const ta = new Date(String(a.createdAt ?? 0)).getTime()
+        const tb = new Date(String(b.createdAt ?? 0)).getTime()
+        return tb - ta
+      })
+      setItems(sorted)
+      pageCacheSet(cacheKey, sorted)
       if (lookups) {
         setSources(lookups.sources)
         setUsers(lookups.users)
@@ -409,14 +409,7 @@ export function LeadsPage() {
   }, [load])
 
   useEffect(() => {
-    const next = searchParams.get('status') ?? ''
-    if (
-      next === '' ||
-      next === 'COMPLETED' ||
-      ALL_STATUS_VALUES.includes(next as (typeof ALL_STATUS_VALUES)[number])
-    ) {
-      setStatus(next)
-    }
+    setStatus(encodeLeadFilter(filterFromLegacyStatus(searchParams.get('status'))))
   }, [searchParams])
 
   const userName = useMemo(() => Object.fromEntries(users.map((u) => [u.id, u.name])), [users])
@@ -646,24 +639,14 @@ export function LeadsPage() {
   }, [demoUnits, products, demoFamilyCode, demoIndustryCode])
 
   const statusCounts = useMemo(() => {
-    const counts = {
-      NEW: 0,
-      CONTACTED: 0,
-      QUALIFIED: 0,
-      DEMO: 0,
-      CONVERTED: 0,
-      LOST: 0,
-      COMPLETED: 0,
-    }
+    const outcome: Record<LeadOutcome, number> = { OPEN: 0, CLOSED: 0, LOST: 0 }
+    const stage: Record<LeadStage, number> = { NOT_CONTACTED: 0, CONTACTED: 0, PREQUALIFIED: 0, DEMO: 0, READY: 0 }
     for (const l of items) {
-      if (saleIsCompleted(l)) {
-        counts.COMPLETED += 1
-        continue
-      }
-      const s = String(l.status)
-      if (s in counts) counts[s as keyof typeof counts] += 1
+      const o = leadOutcome(l)
+      outcome[o] += 1
+      if (o === 'OPEN') stage[leadStage(l)] += 1
     }
-    return counts
+    return { outcome, stage }
   }, [items])
 
   useEffect(() => {
@@ -760,6 +743,7 @@ export function LeadsPage() {
         form.productInterest.trim() ||
         form.productId ||
         form.productIds.length > 0 ||
+        form.customProducts.length > 0 ||
         form.productSearch.trim() ||
         form.familyCode ||
         form.industryCode ||
@@ -855,8 +839,8 @@ export function LeadsPage() {
     if (!form.area.trim()) nextErrors.area = 'Area is required'
 
     if (form.serviceType === 'SALES') {
-      if (form.productIds.length === 0 && !form.productId) {
-        nextErrors.productIds = 'Select at least one interested product'
+      if (form.productIds.length === 0 && !form.productId && form.customProducts.length === 0) {
+        nextErrors.productIds = 'Select at least one interested product (or add one that is not listed)'
       }
       if (!form.assignedToId && !isSales) {
         nextErrors.assignedToId = 'Assign a sales executive'
@@ -911,14 +895,16 @@ export function LeadsPage() {
       const customFields: Record<string, unknown> = {}
       if (form.contactId) customFields.contact_id = form.contactId
       if (form.enquiryDate) customFields.enquiry_date = form.enquiryDate
-      if (form.productIds.length) {
-        const selected = form.productIds.map((id) => ({
-          id,
-          name: productName[id] ?? id,
-        }))
+      if (form.productIds.length || form.customProducts.length) {
+        const selected: Array<{ id?: string; name: string; unlisted?: boolean }> = [
+          ...form.productIds.map((id) => ({ id, name: productName[id] ?? id })),
+          // Not in catalogue: name only, flagged so admin can add it to the catalogue later
+          ...form.customProducts.map((name) => ({ name, unlisted: true })),
+        ]
         customFields.interested_products = selected
-        customFields.interested_product_id = selected[0]!.id
+        if (form.productIds[0]) customFields.interested_product_id = form.productIds[0]
         customFields.interested_product_name = selected.map((p) => p.name).join(', ')
+        if (form.customProducts.length) customFields.unlisted_products = form.customProducts
       } else if (form.productId) {
         customFields.interested_product_id = form.productId
         customFields.interested_product_name = productName[form.productId] ?? form.productInterest
@@ -1135,7 +1121,7 @@ export function LeadsPage() {
     try {
       const cf = (selected.customFields as Record<string, unknown> | null) ?? {}
       const interestedProductId = String(cf.interested_product_id ?? cf.demoProductId ?? '')
-      const units = await api.stockUnits({ status: 'IN_STOCK', limit: 300 })
+      const units = await api.stockUnitsAll({ status: 'IN_STOCK' })
       const mapped = (units as Array<Record<string, unknown>>).map((u) => {
         const product = (u.product as Record<string, unknown> | null) ?? null
         return {
@@ -1330,17 +1316,17 @@ export function LeadsPage() {
   return (
     <div className="min-w-0 max-w-full">
       <PageHeader
-        title="My leads"
+        title={isSales ? 'My leads' : 'Leads'}
         count={pageTab === 'list' ? items.length : undefined}
         breadcrumbs={[
           { label: 'Home', to: '/' },
-          { label: 'My leads', to: '/sale-tracking' },
-          ...(pageTab === 'create' ? [{ label: 'New lead' }] : []),
+          { label: isSales ? 'My leads' : 'Leads', to: '/sale-tracking' },
+          ...(pageTab === 'create' ? [{ label: 'New enquiry' }] : []),
         ]}
         actions={
           pageTab === 'list' && canCreateLead ? (
             <Button onClick={() => openCreateEnquiry()} className="w-full sm:w-auto">
-              <Plus size={16} /> New lead
+              <Plus size={16} /> New enquiry
             </Button>
           ) : undefined
         }
@@ -1368,14 +1354,14 @@ export function LeadsPage() {
           else go()
         }}
         tabs={[
-          { id: 'list', label: isSales ? 'My leads' : 'All leads', count: items.filter((l) => !saleIsCompleted(l)).length },
+          { id: 'list', label: isSales ? 'My leads' : 'Leads', count: items.filter((l) => !saleIsCompleted(l)).length },
           ...(isAdmin
             ? [{ id: 'demo-updates', label: 'Daily updates', count: demoUpdateFeed.length }]
             : []),
           ...(canApproveReq
             ? [{ id: 'requisitions', label: 'Awaiting accept' }]
             : []),
-          ...(canCreateLead ? [{ id: 'create', label: 'New lead' }] : []),
+          // "New enquiry" lives in the header button — no duplicate tab
         ]}
       />
 
@@ -1442,9 +1428,10 @@ export function LeadsPage() {
           <FeatureTip title={tip.title} body={tip.body} tipType={tip.tipType} />
           <FormPanel
             open
+            layout="page"
             accent="sky"
             eyebrow="My leads"
-            title="New lead"
+            title="New enquiry"
             width={820}
             storageKey="nova.drawer.leads.create"
             dirty={createDirty}
@@ -1604,9 +1591,9 @@ export function LeadsPage() {
               <p className="mt-2 rounded-lg border border-sky-200 bg-sky-50/80 px-3 py-2 text-xs text-sky-900 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-100">
                 Saving notifies the <strong>service desk</strong> (chat + notification). Then issue the
                 machine from{' '}
-                <a href="/rentals" className="font-semibold underline">
+                <button type="button" className="font-semibold underline" onClick={() => navigate('/rentals')}>
                   Service → Rentals
-                </a>{' '}
+                </button>{' '}
                 so stock is reduced.
               </p>
             ) : form.serviceType !== 'SALES' ? (
@@ -1837,17 +1824,52 @@ export function LeadsPage() {
                         )
                       })}
                   </div>
-                  {form.productIds.length ? (
+                  <UnlistedProductAdder
+                    search={form.productSearch}
+                    noMatches={
+                      Boolean(form.productSearch.trim()) &&
+                      !products.some((p) => {
+                        const q = form.productSearch.trim().toLowerCase()
+                        return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q)
+                      })
+                    }
+                    onAdd={(name) => {
+                      if (form.customProducts.some((n) => n.toLowerCase() === name.toLowerCase())) return
+                      clearFieldError('productIds')
+                      clearFieldError('productId')
+                      setForm({ ...form, customProducts: [...form.customProducts, name], productSearch: '' })
+                    }}
+                  />
+                  {form.productIds.length || form.customProducts.length ? (
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {form.productIds.map((id) => (
                         <Badge key={id} color="purple">
                           {productName[id] ?? id}
                         </Badge>
                       ))}
+                      {form.customProducts.map((name) => (
+                        <span
+                          key={`custom:${name}`}
+                          className="inline-flex items-center gap-1 rounded-full border border-amber-400/50 bg-amber-400/10 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300"
+                        >
+                          {name}
+                          <span className="text-[10px] opacity-75">· not listed</span>
+                          <button
+                            type="button"
+                            aria-label={`Remove ${name}`}
+                            className="ml-0.5 rounded-full px-1 leading-none hover:bg-amber-400/20"
+                            onClick={() =>
+                              setForm({ ...form, customProducts: form.customProducts.filter((n) => n !== name) })
+                            }
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
                     </div>
                   ) : (
                     <p className="mt-2 text-xs text-amber-700">
-                      Select at least one interested product for Sales.
+                      Select at least one interested product for Sales — or add one that is not listed.
                     </p>
                   )}
                 </div>
@@ -2062,23 +2084,31 @@ export function LeadsPage() {
                 }
                 disabled={isSales}
               />
-              <Select
-                label="Lead stage / status"
-                value={form.status}
-                onChange={(e) =>
-                  setForm({
-                    ...form,
-                    status: e.target.value,
-                    demoSerialId: e.target.value === 'DEMO' ? form.demoSerialId : '',
-                    familyCode: e.target.value === 'DEMO' ? form.familyCode : '',
-                    industryCode: e.target.value === 'DEMO' ? form.industryCode : '',
-                  })
-                }
-                options={STATUS_OPTIONS.map((s) => ({
-                  value: s.value,
-                  label: s.label,
-                }))}
-              />
+              {/* Stage is automatic (Not contacted → Contacted → Pre-qualified → Demo → Ready to buy).
+                  Only a demo can be started here, because it needs a demo serial. */}
+              <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={form.status === 'DEMO'}
+                  onChange={(e) => {
+                    const demo = e.target.checked
+                    setForm({
+                      ...form,
+                      status: demo ? 'DEMO' : 'NEW',
+                      demoSerialId: demo ? form.demoSerialId : '',
+                      familyCode: demo ? form.familyCode : '',
+                      industryCode: demo ? form.industryCode : '',
+                    })
+                  }}
+                />
+                <span>
+                  <span className="block text-sm font-medium text-text-primary">Start a demo now</span>
+                  <span className="block text-xs text-text-secondary">
+                    Lead stage updates automatically as you call, qualify, demo and convert.
+                  </span>
+                </span>
+              </label>
             </div>
             {isSales ? (
               <p className="mt-2 text-xs text-text-secondary">
@@ -2285,8 +2315,10 @@ export function LeadsPage() {
                     <ReviewRow
                       label="Products"
                       value={
-                        form.productIds
-                          .map((id) => productName[id] ?? id)
+                        [
+                          ...form.productIds.map((id) => productName[id] ?? id),
+                          ...form.customProducts.map((n) => `${n} (not listed)`),
+                        ]
                           .filter(Boolean)
                           .join(', ') || form.productInterest
                       }
@@ -2397,72 +2429,54 @@ export function LeadsPage() {
                 <p className="mt-0.5 text-[11px] leading-snug text-text-secondary">
                   {isWh
                     ? 'Read-only sales list — same leads sales created. Open a row for products, then release from Approved releases.'
-                    : 'Open / pending only — completed sales leave this list (Completed chip). You own lead & demo · convert notifies billing · warehouse/admin raise CRM proforma · GST invoice in Tally'}
+                    : 'Open = still being worked · Closed · sold = sale marked complete · Lost = no sale.'}
                 </p>
               </div>
             </div>
-            <div className="mt-2 flex flex-wrap gap-1.5 border-t border-border pt-2">
-              {[
-                {
-                  label: 'New',
-                  value: statusCounts.NEW,
-                  filter: 'NEW',
-                  activeCls: 'bg-indigo-600 text-white',
-                },
-                {
-                  label: 'Contacted',
-                  value: statusCounts.CONTACTED,
-                  filter: 'CONTACTED',
-                  activeCls: 'bg-sky-600 text-white',
-                },
-                {
-                  label: 'Qualified',
-                  value: statusCounts.QUALIFIED,
-                  filter: 'QUALIFIED',
-                  activeCls: 'bg-violet-600 text-white',
-                },
-                {
-                  label: 'On demo',
-                  value: statusCounts.DEMO,
-                  filter: 'DEMO',
-                  activeCls: 'bg-amber-500 text-white',
-                },
-                {
-                  label: 'Converted',
-                  value: statusCounts.CONVERTED,
-                  filter: 'CONVERTED',
-                  activeCls: 'bg-emerald-600 text-white',
-                },
-                {
-                  label: 'Completed',
-                  value: statusCounts.COMPLETED,
-                  filter: 'COMPLETED',
-                  activeCls: 'bg-emerald-700 text-white',
-                },
-                {
-                  label: 'Closed / lost',
-                  value: statusCounts.LOST,
-                  filter: 'LOST',
-                  activeCls: 'bg-slate-600 text-white',
-                },
-              ].map((s) => {
-                const active = status === s.filter
-                return (
-                  <button
-                    key={s.label}
-                    type="button"
-                    onClick={() => setStatus(active ? '' : s.filter)}
-                    className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition ${
-                      active
-                        ? `${s.activeCls} border-transparent`
-                        : 'border-border bg-muted/40 text-text-secondary hover:bg-muted'
-                    }`}
-                  >
-                    <span className="tabular-nums font-bold">{s.value}</span>
-                    {s.label}
-                  </button>
-                )
-              })}
+            <div className="mt-2 space-y-1.5 border-t border-border pt-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {LEAD_OUTCOMES.map((o) => {
+                  const active = decodeLeadFilter(status).outcome === o.value && (o.value !== 'OPEN' || !decodeLeadFilter(status).stage)
+                  return (
+                    <button
+                      key={o.value}
+                      type="button"
+                      onClick={() => setStatus(o.value === 'OPEN' ? '' : o.value)}
+                      className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-semibold transition ${
+                        active
+                          ? 'border-transparent bg-accent-blue text-white'
+                          : 'border-border bg-muted/40 text-text-secondary hover:bg-muted'
+                      }`}
+                    >
+                      <span className="tabular-nums font-bold">{statusCounts.outcome[o.value]}</span>
+                      {o.label}
+                    </button>
+                  )
+                })}
+              </div>
+              {decodeLeadFilter(status).outcome === 'OPEN' ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-text-secondary">Open by stage:</span>
+                {LEAD_STAGES.map((st) => {
+                  const active = status === `OPEN:${st.value}`
+                  return (
+                    <button
+                      key={st.value}
+                      type="button"
+                      onClick={() => setStatus(active ? '' : `OPEN:${st.value}`)}
+                      className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition ${
+                        active
+                          ? 'border-accent-blue bg-accent-blue/15 text-text-primary'
+                          : 'border-border bg-muted/40 text-text-secondary hover:bg-muted'
+                      }`}
+                    >
+                      <span className="tabular-nums font-bold">{statusCounts.stage[st.value]}</span>
+                      {st.label}
+                    </button>
+                  )
+                })}
+              </div>
+              ) : null}
             </div>
           </div>
 
@@ -2479,16 +2493,6 @@ export function LeadsPage() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
-            <Select
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              options={[
-                { value: '', label: 'Open / pending' },
-                ...STATUS_OPTIONS.map((s) => ({ value: s.value, label: s.label })),
-                { value: 'COMPLETED', label: 'Completed (payment done)' },
-              ]}
-              className="w-full sm:w-44"
-            />
             <Select
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value)}
@@ -2538,15 +2542,19 @@ export function LeadsPage() {
               />
             ) : visibleItems.length === 0 ? (
               <EmptyState
-                title={status === 'COMPLETED' ? 'No completed sales' : 'No open leads'}
-                subtitle={
-                  status === 'COMPLETED'
-                    ? 'Mark sale complete on the lead after payment — they appear here.'
-                    : 'Completed sales leave this list. Open the Completed chip to find them.'
+                title={
+                  status === 'CLOSED' ? 'No closed sales yet' : status === 'LOST' ? 'No lost leads' : 'No open leads here'
                 }
-                actionLabel={status === 'COMPLETED' || !canCreateLead ? undefined : 'Add lead'}
+                subtitle={
+                  status === 'CLOSED'
+                    ? 'Mark sale complete on the lead after payment — it moves to Closed.'
+                    : status === 'LOST'
+                      ? 'Leads marked as lost / not interested appear here.'
+                      : 'Try another stage, or Closed / Lost to find finished leads.'
+                }
+                actionLabel={status === 'CLOSED' || status === 'LOST' || !canCreateLead ? undefined : 'New enquiry'}
                 onAction={
-                  status === 'COMPLETED' || !canCreateLead ? undefined : () => openCreateEnquiry()
+                  status === 'CLOSED' || status === 'LOST' || !canCreateLead ? undefined : () => openCreateEnquiry()
                 }
               />
             ) : (
@@ -2584,7 +2592,7 @@ export function LeadsPage() {
                       !cf.serviceTicketId &&
                       !cf.rentalAgreementId
                     const busy = triageBusy === id
-                    const stripe = statusStripe(st)
+                    const stripe = leadStripe(lead)
                     const handoffLabel =
                       stype === 'RENTAL'
                         ? 'Issue rental'
@@ -2612,15 +2620,7 @@ export function LeadsPage() {
                                 {enquiryId}
                               </div>
                               <div className="flex flex-wrap items-center gap-1">
-                                {cf.saleCompletedAt ? (
-                                  <Badge color="green" solid>
-                                    Completed
-                                  </Badge>
-                                ) : (
-                                  <Badge color={leadStatusColor[st] ?? 'gray'} solid>
-                                    {statusLabel(st)}
-                                  </Badge>
-                                )}
+                                <LeadStatusBadges lead={lead} />
                                 {stype !== 'SALES' ? (
                                   <Badge color="blue">{stype.replaceAll('_', ' ')}</Badge>
                                 ) : null}
@@ -2744,7 +2744,7 @@ export function LeadsPage() {
                           !cf.serviceTicketId &&
                           !cf.rentalAgreementId
                         const busy = triageBusy === id
-                        const stripe = statusStripe(st)
+                        const stripe = leadStripe(lead)
                         const handoffLabel =
                           stype === 'RENTAL'
                             ? 'Issue rental'
@@ -2814,15 +2814,7 @@ export function LeadsPage() {
                             </td>
                             <td className="px-3 py-3.5 align-top">
                               <div className="flex flex-col items-start gap-1">
-                                {cf.saleCompletedAt ? (
-                                  <Badge color="green" solid>
-                                    Completed
-                                  </Badge>
-                                ) : (
-                                  <Badge color={leadStatusColor[st] ?? 'gray'} solid>
-                                    {statusLabel(st)}
-                                  </Badge>
-                                )}
+                                <LeadStatusBadges lead={lead} />
                                 {cf.verified === false && !cf.saleCompletedAt ? (
                                   <Badge color="amber">Unverified</Badge>
                                 ) : null}

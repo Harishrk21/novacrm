@@ -23,6 +23,7 @@ import {
   sanitizeHostReturnUrl,
 } from '../attendance/attendance.service.js'
 import { env } from '../../config/env.js'
+import jwt from 'jsonwebtoken'
 
 export const integrationsRouter = Router()
 
@@ -70,6 +71,46 @@ integrationsRouter.get('/attendance/launch', authenticate, requireTenant, async 
       returnUrl,
     })
     return success(res, result)
+  } catch (e) {
+    next(e)
+  }
+})
+
+/** Single-use guard for Attendance return passes (60 s tokens → in-memory is enough). */
+const usedReturnPasses = new Map<string, number>()
+
+/**
+ * Verify Attendance's "Back to dashboard" return pass. Proves the user was active in
+ * Attendance just now, so the client counts that time as activity (no idle sign-out).
+ */
+integrationsRouter.post('/attendance/return', authenticate, requireTenant, async (req, res, next) => {
+  try {
+    const token = typeof req.body?.token === 'string' ? req.body.token : ''
+    if (!token) throw new AppError('Missing return pass', 400)
+    const tenant = await prisma.tenant.findFirst({
+      where: { id: req.auth!.tenantId!, deletedAt: null },
+      select: { attendanceSsoIssuer: true, attendanceSsoSecret: true },
+    })
+    if (!tenant?.attendanceSsoIssuer || !tenant.attendanceSsoSecret) {
+      throw new AppError('Attendance SSO is not configured', 409)
+    }
+    let claims: jwt.JwtPayload
+    try {
+      claims = jwt.verify(token, tenant.attendanceSsoSecret, {
+        algorithms: ['HS256'],
+        issuer: env.ATTENDANCE_SSO_AUDIENCE,
+        audience: tenant.attendanceSsoIssuer,
+        maxAge: '120s',
+      }) as jwt.JwtPayload
+    } catch {
+      throw new AppError('Return pass is invalid or expired', 401)
+    }
+    if (claims.sub !== req.auth!.userId) throw new AppError('Return pass is for a different user', 403)
+    const now = Date.now()
+    for (const [id, exp] of usedReturnPasses) if (exp < now) usedReturnPasses.delete(id)
+    if (!claims.jti || usedReturnPasses.has(claims.jti)) throw new AppError('Return pass already used', 409)
+    usedReturnPasses.set(claims.jti, (claims.exp ?? 0) * 1000)
+    return success(res, { ok: true })
   } catch (e) {
     next(e)
   }
@@ -520,7 +561,8 @@ integrationsRouter.post('/whatsapp/webhook', requireWebhookSecret, validate(webh
     })
 
     const io = req.app.get('io') as { to: (room: string) => { emit: (e: string, p: unknown) => void } } | undefined
-    io?.to(`tenant:${tid}`).emit('whatsapp:message', {
+    // Only WhatsApp-permitted roles (admin / desk / sales) — never engineers or warehouse
+    io?.to(`tenant:${tid}:whatsapp`).emit('whatsapp:message', {
       conversationId: conversation.id,
       message,
       contactId: contact?.id,
@@ -594,7 +636,7 @@ integrationsRouter.post(
       let externalId: string | null = null
       let deliveryStatus: 'SENT' | 'FAILED' = 'SENT'
       if (isWhatsAppCloudConfigured()) {
-        const cloud = await sendCloudText(conversation.phone, req.body.body)
+        const cloud = await sendCloudText(conversation.phone, req.body.body, { tenantId })
         if (!cloud.ok) throw new AppError(cloud.error || 'WhatsApp Cloud send failed', 502)
         externalId = cloud.messageId ?? null
       }

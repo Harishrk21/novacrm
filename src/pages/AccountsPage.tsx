@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { fetchAllAsPage } from '@/lib/fetchAllPages'
 import { Link, useNavigate } from 'react-router-dom'
 import { Building2, Search } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
@@ -66,7 +67,7 @@ export function AccountsPage() {
     try {
       const needLookups = !lookupsReadyRef.current
       const [res, lookups] = await Promise.all([
-        api.accounts({ limit: 100, search: search || undefined }),
+        fetchAllAsPage((p) => api.accounts({ ...p, search: search || undefined })),
         needLookups ? api.lookups() : Promise.resolve(null),
       ])
       setItems(res.items ?? [])
@@ -113,7 +114,7 @@ export function AccountsPage() {
       const created = await api.createAccount(formToPayload(form))
       resetCreate()
       addToast({ type: 'success', message: 'Account saved' })
-      window.location.href = `/accounts/${created.id}`
+      navigate(`/accounts/${created.id}`)
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Create failed' })
     }

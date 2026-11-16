@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { fetchAllAsPage } from '@/lib/fetchAllPages'
 import { Link, useNavigate } from 'react-router-dom'
 import { CalendarClock, Package, Shield, ShieldOff, UserPlus, Wrench } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -115,7 +116,7 @@ export function AmcPage() {
     const silent = Boolean(opts?.silent)
     if (!silent) setLoading(true)
     try {
-      const res = await api.assets({ limit: 200 })
+      const res = await fetchAllAsPage((p) => api.assets(p))
       setRows(res.items ?? [])
     } catch (err) {
       if (!silent) setRows([])
@@ -398,6 +399,13 @@ export function AmcPage() {
         title="AMC & Service"
         count={rows.length}
         breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'AMC / Service' }]}
+        actions={
+          <Link to="/tickets?queue=closed&type=AMC%20visit">
+            <Button variant="outline" size="sm">
+              Completed AMC visits
+            </Button>
+          </Link>
+        }
       />
 
       <Card className="mb-3 border-emerald-200/60 bg-emerald-50/40 p-4 dark:border-emerald-900/40 dark:bg-emerald-950/20">

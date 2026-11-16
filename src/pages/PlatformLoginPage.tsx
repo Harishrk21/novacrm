@@ -5,6 +5,7 @@ import { PRODUCT_NAME, PLATFORM_NAME, MEISTER_COLORS } from '@/lib/branding'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { ApiClientError } from '@/lib/api'
+import { SignOutNotice } from '@/components/auth/SignOutNotice'
 
 function IconEye({ off = false }: { off?: boolean }) {
   return (
@@ -249,6 +250,7 @@ export function PlatformLoginPage() {
               Platform operators only. Client staff use /login/&#123;slug&#125;.
             </p>
 
+            <SignOutNotice />
             <form onSubmit={(e) => void submit(e)} className="mt-8 space-y-4">
               <div>
                 <label htmlFor="platform-email" className="mb-1.5 block text-[12px] font-medium text-white/50">

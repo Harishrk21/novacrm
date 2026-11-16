@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { logTicketEvent } from "./ticketHistory.js";
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
@@ -129,6 +130,43 @@ function parseDate(v: unknown): Date | null {
   if (v == null || v === "") return null;
   const d = new Date(String(v));
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Stamp result sanity: not in the future (1-day grace for time zones), valid-till after stamp date. */
+function assertStampDates(stamp: Date | null | undefined, due: Date | null | undefined) {
+  if (stamp && stamp.getTime() > Date.now() + 36 * 3600_000) {
+    throw new AppError("Stamping date can't be in the future — enter the date the machine was actually stamped", 400);
+  }
+  if (stamp && due && due.getTime() <= stamp.getTime()) {
+    throw new AppError("Next due / valid till must be after the stamping date", 400);
+  }
+}
+
+/**
+ * Auto "Service SVC-…" follow-up tasks (ticket_create / ticket_assign / ticket_claim) must not
+ * outlive the job: complete them when the job is done, cancel them on delete or for a previous
+ * assignee. Never fails the ticket action.
+ */
+async function settleTicketTasks(
+  tenantId: string,
+  ticketId: string,
+  outcome: "COMPLETED" | "CANCELLED",
+  onlyUserId?: string | null,
+) {
+  try {
+    await prisma.activity.updateMany({
+      where: {
+        tenantId,
+        deletedAt: null,
+        status: { in: ["PENDING", "OVERDUE"] },
+        customFields: { path: "$.ticketId", equals: ticketId },
+        ...(onlyUserId ? { assignedToId: onlyUserId } : {}),
+      },
+      data: { status: outcome, ...(outcome === "COMPLETED" ? { completedAt: new Date() } : {}) },
+    });
+  } catch (err) {
+    console.error("settle ticket tasks failed", err);
+  }
 }
 
 function addOneYear(d: Date): Date {
@@ -670,6 +708,21 @@ ticketsRouter.get("/", requirePermission("tickets:view"), async (q: Request, r: 
     });
   }
 
+  // Job type (customFields.category). Old jobs with no / "Service" category are breakdown visits.
+  if (q.query.category) {
+    const cat = String(q.query.category).trim();
+    const KNOWN = ["Stamping", "Installation", "AMC visit", "Other"];
+    const rows =
+      cat === "Breakdown"
+        ? await prisma.$queryRaw<Array<{ id: string }>>`
+            SELECT id FROM tickets WHERE tenant_id = ${t} AND deleted_at IS NULL
+              AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(custom_fields, '$.category')), '') NOT IN (${Prisma.join(KNOWN)})`
+        : await prisma.$queryRaw<Array<{ id: string }>>`
+            SELECT id FROM tickets WHERE tenant_id = ${t} AND deleted_at IS NULL
+              AND JSON_UNQUOTE(JSON_EXTRACT(custom_fields, '$.category')) = ${cat}`;
+    and.push({ id: { in: rows.map((x) => x.id) } });
+  }
+
   if (and.length) where.AND = and;
 
   const orderBy =
@@ -732,7 +785,7 @@ ticketsRouter.get("/", requirePermission("tickets:view"), async (q: Request, r: 
     contactIds.length
       ? prisma.contact.findMany({
           where: { tenantId: t, id: { in: contactIds } },
-          select: { id: true, name: true, phone: true, customerCode: true, area: true, location: true },
+          select: { id: true, name: true, phone: true, mobile: true, customerCode: true, area: true, location: true, doorNo: true, street: true, city: true, pincode: true },
         })
       : [],
     assetIds.length
@@ -785,7 +838,27 @@ ticketsRouter.get("/", requirePermission("tickets:view"), async (q: Request, r: 
   return success(r, pageResult(enriched, total, p.page, p.limit));
 });
 
-ticketsRouter.post("/", requirePermission("tickets:create"), validate(createSchema), async (q: Request, r: Response) => {
+/** Record a work-history step once the route has answered successfully. */
+function ticketHistoryAfter(action: string, summary: string) {
+  return (q: Request, r: Response, next: () => void) => {
+    const json = r.json.bind(r);
+    r.json = (body: unknown) => {
+      try {
+        const b = body as { success?: boolean; data?: { id?: unknown } | null } | null;
+        if (r.statusCode < 400 && b && b.success !== false) {
+          const id = String(b.data?.id ?? q.params.id ?? "");
+          if (id && q.auth?.tenantId) void logTicketEvent(q.auth.tenantId, id, action, summary);
+        }
+      } catch {
+        /* never break the response */
+      }
+      return json(body);
+    };
+    next();
+  };
+}
+
+ticketsRouter.post("/", requirePermission("tickets:create"), ticketHistoryAfter("service.created", "Service job created"), validate(createSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const role = q.auth?.role;
   if (!canCreateTicketsRole(role)) {
@@ -818,8 +891,15 @@ ticketsRouter.post("/", requirePermission("tickets:create"), validate(createSche
 
   const ticketNo = await nextTicketNo(t);
   const slaDueAt = d.slaHours ? new Date(Date.now() + d.slaHours * 3600_000) : null;
-  const stampingDate = parseDate(d.stampingDate);
-  const nextDueDate = parseDate(d.nextDueDate);
+  // A stamping job is only being *logged* here — the stamp happens later (Save stamp result).
+  // Never write stamp dates onto the ticket / customer machine at create.
+  const stampingAtCreate =
+    d.category === "Stamping" ||
+    String(ticketCf(d.customFields).category ?? "") === "Stamping" ||
+    String(ticketCf(d.customFields).visitPurpose ?? "") === "STAMPING";
+  const stampingDate = stampingAtCreate ? null : parseDate(d.stampingDate);
+  const nextDueDate = stampingAtCreate ? null : parseDate(d.nextDueDate);
+  assertStampDates(stampingDate, nextDueDate);
   const paymentTotal = d.paymentTotal ?? 0;
   const advanceAmount = d.advanceAmount ?? 0;
   const customFields = {
@@ -995,91 +1075,69 @@ ticketsRouter.post("/", requirePermission("tickets:create"), validate(createSche
 ticketsRouter.get("/:id", requirePermission("tickets:view"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
-  await refreshSlaBreached(t, [id]);
-  const ticket = await prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } });
+  // Speed: the DB is remote (RDS us-east-1) — every sequential query is a full round trip.
+  // Was up to 10 queries in a row (≈5 s); now 2 rounds: SLA flag + ticket, then everything else at once.
+  const [, ticket] = await Promise.all([
+    refreshSlaBreached(t, [id]),
+    prisma.ticket.findFirst({ where: { id, tenantId: t, deletedAt: null } }),
+  ]);
   if (!ticket) throw notFound("Ticket");
   assertCanAccessTicket(q.auth?.role, q.auth?.userId, ticket);
-  const messages = await prisma.ticketMessage.findMany({
-    where: { tenantId: t, ticketId: id },
-    orderBy: { createdAt: "asc" },
-  });
-  let product: { id: string; name: string; sku: string } | null = null;
-  let contact: {
-    id: string;
-    name: string;
-    phone: string | null;
-    customerCode: string | null;
-    street: string | null;
-    doorNo: string | null;
-    area: string | null;
-    pincode: string | null;
-    location: string | null;
-  } | null = null;
-  let account: { id: string; name: string } | null = null;
-  let assignee: { id: string; name: string } | null = null;
-  let asset: Record<string, unknown> | null = null;
-  let receivedBy: { id: string; name: string } | null = null;
-  let deliveredBy: { id: string; name: string } | null = null;
-
-  if (ticket.productId) {
-    product = await prisma.product.findFirst({
-      where: { id: ticket.productId, tenantId: t },
-      select: { id: true, name: true, sku: true },
-    });
+  // SLA flag set in parallel above — mirror it on this response
+  if (
+    !ticket.slaBreached &&
+    ticket.slaDueAt &&
+    ticket.slaDueAt < new Date() &&
+    ["OPEN", "IN_PROGRESS", "PENDING"].includes(ticket.status)
+  ) {
+    ticket.slaBreached = true;
   }
-  if (ticket.contactId) {
-    contact = await prisma.contact.findFirst({
-      where: { id: ticket.contactId, tenantId: t },
-      select: {
-        id: true,
-        name: true,
-        phone: true,
-        customerCode: true,
-        street: true,
-        doorNo: true,
-        area: true,
-        pincode: true,
-        location: true,
-      },
-    });
-  }
-  if (ticket.accountId) {
-    account = await prisma.account.findFirst({
-      where: { id: ticket.accountId, tenantId: t },
-      select: { id: true, name: true },
-    });
-  }
-  if (ticket.assignedToId) {
-    assignee = await prisma.user.findFirst({
-      where: { id: ticket.assignedToId, tenantId: t },
-      select: { id: true, name: true },
-    });
-  }
-  if (ticket.assetId) {
-    const a = await prisma.customerAsset.findFirst({ where: { id: ticket.assetId, tenantId: t } });
-    if (a) {
-      asset = {
-        ...a,
-        stampingDate: a.stampingDate ? a.stampingDate.toISOString().slice(0, 10) : null,
-        nextDueDate: a.nextDueDate ? a.nextDueDate.toISOString().slice(0, 10) : null,
-        amcEndDate: a.amcEndDate ? a.amcEndDate.toISOString().slice(0, 10) : null,
-        amcStartDate: a.amcStartDate ? a.amcStartDate.toISOString().slice(0, 10) : null,
-        origin: a.origin,
-      };
-    }
-  }
-  if (ticket.receivedByUserId) {
-    receivedBy = await prisma.user.findFirst({
-      where: { id: ticket.receivedByUserId, tenantId: t },
-      select: { id: true, name: true },
-    });
-  }
-  if (ticket.deliveredByUserId) {
-    deliveredBy = await prisma.user.findFirst({
-      where: { id: ticket.deliveredByUserId, tenantId: t },
-      select: { id: true, name: true },
-    });
-  }
+  const userSel = { id: true, name: true } as const;
+  const [messages, product, contact, account, assignee, assetRow, receivedBy, deliveredBy] = await Promise.all([
+    prisma.ticketMessage.findMany({ where: { tenantId: t, ticketId: id }, orderBy: { createdAt: "asc" } }),
+    ticket.productId
+      ? prisma.product.findFirst({ where: { id: ticket.productId, tenantId: t }, select: { id: true, name: true, sku: true } })
+      : null,
+    ticket.contactId
+      ? prisma.contact.findFirst({
+          where: { id: ticket.contactId, tenantId: t },
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            customerCode: true,
+            street: true,
+            doorNo: true,
+            area: true,
+            pincode: true,
+            location: true,
+            city: true,
+            mobile: true,
+          },
+        })
+      : null,
+    ticket.accountId
+      ? prisma.account.findFirst({ where: { id: ticket.accountId, tenantId: t }, select: { id: true, name: true } })
+      : null,
+    ticket.assignedToId ? prisma.user.findFirst({ where: { id: ticket.assignedToId, tenantId: t }, select: userSel }) : null,
+    ticket.assetId ? prisma.customerAsset.findFirst({ where: { id: ticket.assetId, tenantId: t } }) : null,
+    ticket.receivedByUserId
+      ? prisma.user.findFirst({ where: { id: ticket.receivedByUserId, tenantId: t }, select: userSel })
+      : null,
+    ticket.deliveredByUserId
+      ? prisma.user.findFirst({ where: { id: ticket.deliveredByUserId, tenantId: t }, select: userSel })
+      : null,
+  ]);
+  const asset: Record<string, unknown> | null = assetRow
+    ? {
+        ...assetRow,
+        stampingDate: assetRow.stampingDate ? assetRow.stampingDate.toISOString().slice(0, 10) : null,
+        nextDueDate: assetRow.nextDueDate ? assetRow.nextDueDate.toISOString().slice(0, 10) : null,
+        amcEndDate: assetRow.amcEndDate ? assetRow.amcEndDate.toISOString().slice(0, 10) : null,
+        amcStartDate: assetRow.amcStartDate ? assetRow.amcStartDate.toISOString().slice(0, 10) : null,
+        origin: assetRow.origin,
+      }
+    : null;
 
   return success(r, {
     ...serializeTicket(ticket as unknown as Record<string, unknown>),
@@ -1204,6 +1262,38 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
     });
   }
 
+  // Explicit "Free job (GC / AMC / warranty)" flag — saved in customFields.freeJob
+  const freeJobFlag = Boolean(
+    { ...ticketCf(existing.customFields), ...ticketCf(d.customFields) }.freeJob,
+  );
+  // Engineer Mark complete needs at least one work report entry (what was found / changed) —
+  // the desk builds the service report from it. Stamping jobs use the stamp result instead.
+  if (
+    String(nextStatus) === "RESOLVED" &&
+    prevStatus !== "RESOLVED" &&
+    prevStatus !== "CLOSED" &&
+    isScopedEmployeeRole(role) &&
+    !stampingJob
+  ) {
+    const cfNotes = { ...ticketCf(existing.customFields), ...ticketCf(d.customFields) }.dayNotes;
+    if (!Array.isArray(cfNotes) || cfNotes.length === 0) {
+      throw new AppError(
+        "Add a work report entry (what you found and changed) before marking this job complete",
+        400,
+      );
+    }
+  }
+  // Stamping: the stamp result is the work proof — check it before payment so the message
+  // points at the step actually missing (any role).
+  if (
+    stampingJob &&
+    String(nextStatus) === "RESOLVED" &&
+    (prevStatus === "OPEN" || prevStatus === "IN_PROGRESS" || prevStatus === "PENDING") &&
+    !{ ...ticketCf(existing.customFields), ...ticketCf(d.customFields) }.stampResultSavedAt
+  ) {
+    throw new AppError("Save the stamp result (stamp date + valid till) before marking this stamping job complete", 400);
+  }
+
   if (String(nextStatus) === "RESOLVED" && prevStatus !== "RESOLVED" && prevStatus !== "CLOSED") {
     const payTotal = "paymentTotal" in d ? num(d.paymentTotal) : num(existing.paymentTotal);
     const adv = "advanceAmount" in d ? num(d.advanceAmount) : num(existing.advanceAmount);
@@ -1215,8 +1305,9 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
       paymentStatus: payStatus,
       paymentTotal: payTotal,
       advanceAmount: adv,
+      freeJob: freeJobFlag,
     });
-    if (isFreeJob(payTotal, adv) && payStatus !== "PAID") {
+    if (isFreeJob(payTotal, adv, freeJobFlag) && payStatus !== "PAID") {
       data.paymentStatus = "PAID";
       data.paidAt = new Date();
     }
@@ -1233,20 +1324,33 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
       paymentStatus: payStatus,
       paymentTotal: payTotal,
       advanceAmount: adv,
+      freeJob: freeJobFlag,
     });
-    if (isFreeJob(payTotal, adv) && payStatus !== "PAID") {
+    if (isFreeJob(payTotal, adv, freeJobFlag) && payStatus !== "PAID") {
       data.paymentStatus = "PAID";
       data.paidAt = new Date();
     }
   }
 
-  if (d.status === "RESOLVED") data.resolvedAt = new Date();
+  if (d.status === "RESOLVED") {
+    data.resolvedAt = new Date();
+    // One engineer field in the UI — the job sheet / service report still print received & delivered by
+    const eng = nextAssignee ?? existing.assignedToId;
+    if (eng && !existing.receivedByUserId && !("receivedByUserId" in d)) data.receivedByUserId = eng;
+    if (eng && !existing.deliveredByUserId && !("deliveredByUserId" in d)) data.deliveredByUserId = eng;
+  }
   if (d.status === "CLOSED" || data.status === "CLOSED") data.closedAt = new Date();
   if ("signatureUrl" in d && d.signatureUrl) {
     data.customerSignedAt = new Date();
   }
   if ("stampingDate" in d) data.stampingDate = parseDate(d.stampingDate);
   if ("nextDueDate" in d) data.nextDueDate = parseDate(d.nextDueDate);
+  if ("stampingDate" in d || "nextDueDate" in d) {
+    assertStampDates(
+      "stampingDate" in data ? (data.stampingDate as Date | null) : existing.stampingDate,
+      "nextDueDate" in data ? (data.nextDueDate as Date | null) : existing.nextDueDate,
+    );
+  }
 
   // Stamping complete: stamp date + Save stamp result required; next due defaults to +1 year.
   if (stampingJob && (String(nextStatus) === "RESOLVED" || String(nextStatus) === "CLOSED")) {
@@ -1287,6 +1391,8 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
       ...("category" in d ? { category: d.category ?? null } : {}),
       ...("channel" in d ? { channel: d.channel ?? null } : {}),
     };
+    // Site visits (engineer check-ins) are written only by /field/location — never by a page's stale copy
+    if (existingCf.siteVisits !== undefined) mergedCf.siteVisits = existingCf.siteVisits;
     if ("paymentTotal" in d) {
       const spareTotal = Number(mergedCf.sparePartsTotal) || 0;
       mergedCf.baseServiceCharge = Math.max(0, num(d.paymentTotal) - spareTotal);
@@ -1300,24 +1406,6 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
       }));
     }
     data.customFields = mergedCf;
-  }
-
-  // Engineer Mark complete: day notes required on non-stamping jobs (was UI-only).
-  if (
-    role === "SERVICE_ENGINEER" &&
-    !stampingJob &&
-    String(nextStatus) === "RESOLVED" &&
-    prevStatus !== "RESOLVED" &&
-    prevStatus !== "CLOSED"
-  ) {
-    const cfForNotes = ticketCf(data.customFields ?? existing.customFields);
-    const notes = Array.isArray(cfForNotes.dayNotes) ? cfForNotes.dayNotes : [];
-    if (notes.length === 0) {
-      throw new AppError(
-        "Add at least one daily tracking note before marking the job complete",
-        400,
-      );
-    }
   }
 
   const nextPaymentTotal = "paymentTotal" in d ? num(d.paymentTotal) : num(existing.paymentTotal);
@@ -1375,6 +1463,39 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
   if (!updated.count) throw notFound("Ticket");
   const ticket = await prisma.ticket.findFirst({ where: { id, tenantId: t } });
   if (!ticket) throw notFound("Ticket");
+
+  // Work history: every status change and hand-over is saved with the job's figures
+  if (ticket.status !== prevStatus) {
+    const st = String(ticket.status);
+    const reopened = (prevStatus === "RESOLVED" || prevStatus === "CLOSED") && !["RESOLVED", "CLOSED"].includes(st);
+    void logTicketEvent(
+      t,
+      ticket.id,
+      reopened ? "service.reopened" : st === "RESOLVED" ? "service.completed" : st === "CLOSED" ? "service.closed" : "service.status",
+      reopened
+        ? `Reopened (was ${prevStatus})`
+        : st === "RESOLVED"
+          ? "Work completed by engineer — waiting for desk to collect & close"
+          : st === "CLOSED"
+            ? "Job closed"
+            : `Status ${prevStatus} → ${st}`,
+      { previousStatus: prevStatus },
+    );
+  }
+  if (ticket.assignedToId !== prevAssignee && ticket.assignedToId) {
+    void logTicketEvent(t, ticket.id, "service.assigned", prevAssignee ? "Handed to another engineer" : "Engineer assigned");
+  }
+
+  // Job done → close its follow-up tasks; handed to someone else → drop the old owner's task
+  if (
+    (ticket.status === "RESOLVED" || ticket.status === "CLOSED") &&
+    prevStatus !== "RESOLVED" &&
+    prevStatus !== "CLOSED"
+  ) {
+    await settleTicketTasks(t, ticket.id, "COMPLETED");
+  } else if (prevAssignee && ticket.assignedToId !== prevAssignee) {
+    await settleTicketTasks(t, ticket.id, "CANCELLED", prevAssignee);
+  }
 
   // Notify assignee via My Tasks when ownership changes (never fail the assign itself)
   if (
@@ -1610,8 +1731,9 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
     }
   }
 
-  // After AMC service job completes, schedule next free visit in 4 months
-  if (becameResolved && ticket.assetId) {
+  // After an AMC *visit* completes, schedule the next free visit (+6 months — 2 visits a year).
+  // Breakdown / installation / stamping jobs on an AMC machine must not move the AMC schedule.
+  if (becameResolved && ticket.assetId && String(ticketCf(ticket.customFields).category ?? "") === "AMC visit") {
     const asset = await prisma.customerAsset.findFirst({
       where: { id: ticket.assetId, tenantId: t, deletedAt: null },
       select: { id: true, servicePlan: true },
@@ -1666,7 +1788,7 @@ ticketsRouter.patch("/:id", requirePermission("tickets:write"), validate(updateS
   });
 });
 
-ticketsRouter.post("/:id/mark-paid", requirePermission("tickets:write"), validate(markPaidSchema), async (q: Request, r: Response) => {
+ticketsRouter.post("/:id/mark-paid", requirePermission("tickets:write"), ticketHistoryAfter("service.paid", "Payment collected — marked paid"), validate(markPaidSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const role = q.auth?.role;
@@ -1848,7 +1970,7 @@ ticketsRouter.post("/:id/invoice", requirePermission("tickets:approve"), validat
   );
 });
 
-ticketsRouter.post("/:id/claim", requirePermission("tickets:write"), validate(idSchema), async (q: Request, r: Response) => {
+ticketsRouter.post("/:id/claim", requirePermission("tickets:write"), ticketHistoryAfter("service.accepted", "Engineer accepted the job"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   const userId = q.auth!.userId!;
@@ -2051,7 +2173,7 @@ ticketsRouter.post("/:id/messages", requirePermission("tickets:write"), validate
   return success(r, msg, "Message added", 201);
 });
 
-ticketsRouter.delete("/:id", requirePermission("tickets:delete"), validate(idSchema), async (q: Request, r: Response) => {
+ticketsRouter.delete("/:id", requirePermission("tickets:delete"), ticketHistoryAfter("service.deleted", "Service job deleted"), validate(idSchema), async (q: Request, r: Response) => {
   const t = q.auth!.tenantId!;
   const id = paramId(q);
   if (!canApproveTicketsRole(q.auth?.role)) {
@@ -2062,5 +2184,6 @@ ticketsRouter.delete("/:id", requirePermission("tickets:delete"), validate(idSch
     data: { deletedAt: new Date() },
   });
   if (!updated.count) throw notFound("Ticket");
+  await settleTicketTasks(t, id, "CANCELLED");
   return success(r, null, "Service job deleted");
 });

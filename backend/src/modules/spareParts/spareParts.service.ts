@@ -192,6 +192,91 @@ export async function create(t: string, userId: string, d: Record<string, unknow
     if (!performer) throw notFound("Technician");
   }
 
+  // A part fitted from our spare stock comes out of that stock against this job (keeps stock right).
+  // Matched by the catalogue id, or by the exact catalogue name typed on the job.
+  const changeType = ((d.changeType as SparePartChangeType) || "REPLACED") as SparePartChangeType;
+  const quantity = Number(d.quantity) || 1;
+  let stockOut: { txnId: string; sparePartId: string } | null = null;
+  // Parts the engineer already collected at the counter (issued to them, not yet fitted) are used first —
+  // the counter issue already took them out of stock, so they must not be deducted twice.
+  const fromHand: Array<{ txnId: string; qty: number }> = [];
+  if (changeType === "REPLACED" || changeType === "INSTALLED") {
+    let item = d.sparePartId
+      ? await prisma.sparePartItem.findFirst({ where: { id: String(d.sparePartId), tenantId: t, deletedAt: null } })
+      : null;
+    if (!item) {
+      // Same name can exist for weighing and billing (e.g. "Battery") — pick by the job's machine, then by
+      // what the engineer holds
+      const named = await prisma.sparePartItem.findMany({
+        where: { tenantId: t, deletedAt: null, isActive: true, name: String(d.partName ?? "").trim() },
+      });
+      if (named.length > 1 && d.assetId) {
+        const asset = await prisma.customerAsset.findFirst({ where: { id: String(d.assetId), tenantId: t }, select: { machineType: true } });
+        const family = asset?.machineType === "WEIGHING" ? "WEIGHING" : asset ? "BILLING" : null;
+        item = named.find((n) => String(n.machineFamily) === family) ?? null;
+      }
+      if (!item && named.length > 1) {
+        const engineerId = d.performedByUserId ? String(d.performedByUserId) : userId;
+        const held = await prisma.spareStockTxn.findFirst({
+          where: { tenantId: t, txnType: "OUT", deletedAt: null, issuedToUserId: engineerId, sparePartId: { in: named.map((n) => n.id) } },
+          orderBy: { txnDate: "desc" },
+        });
+        item = named.find((n) => n.id === held?.sparePartId) ?? null;
+      }
+      item = item ?? named[0] ?? null;
+    }
+    if (item) {
+      const ticket = d.ticketId
+        ? await prisma.ticket.findFirst({ where: { id: String(d.ticketId), tenantId: t }, select: { ticketNo: true } })
+        : null;
+      const jobRef = ticket ? `SVC-${String(ticket.ticketNo).padStart(5, "0")}` : "job";
+      const engineerId = d.performedByUserId ? String(d.performedByUserId) : userId;
+      let remaining = quantity;
+      const handTxns = await prisma.spareStockTxn.findMany({
+        where: { tenantId: t, sparePartId: item.id, txnType: "OUT", deletedAt: null, issuedToUserId: engineerId },
+        orderBy: { txnDate: "asc" },
+      });
+      for (const tx of handTxns) {
+        if (remaining <= 0) break;
+        const tcf = (tx.customFields && typeof tx.customFields === "object" ? tx.customFields : {}) as Record<string, unknown>;
+        if (tcf.source === "job") continue; // a stock-out made by a job, not a counter issue
+        const used = Number(tcf.usedQty ?? 0) || 0;
+        const left = Number(tx.quantity) - used;
+        if (left <= 0) continue;
+        const take = Math.min(left, remaining);
+        await prisma.spareStockTxn.update({
+          where: { id: tx.id },
+          data: {
+            customFields: {
+              ...tcf,
+              usedQty: used + take,
+              usedOn: [...(Array.isArray(tcf.usedOn) ? (tcf.usedOn as unknown[]) : []), { ticketId: d.ticketId ?? null, job: jobRef, qty: take }],
+            } as Prisma.InputJsonValue,
+          },
+        });
+        fromHand.push({ txnId: tx.id, qty: take });
+        remaining -= take;
+      }
+      if (remaining > 0) {
+        const spareStock = await import("../spareStock/spareStock.service.js");
+        const out = await spareStock.issue(t, userId, {
+          sparePartId: item.id,
+          quantity: remaining,
+          issuedToUserId: engineerId,
+          ticketId: d.ticketId ? String(d.ticketId) : null,
+          reason: `Fitted on ${jobRef} — ${contact.name}`,
+        });
+        await prisma.spareStockTxn.update({
+          where: { id: out.txn.id },
+          data: { customFields: { ...((out.txn.customFields ?? {}) as Record<string, unknown>), source: "job" } as Prisma.InputJsonValue },
+        });
+        stockOut = { txnId: out.txn.id, sparePartId: item.id };
+      } else {
+        stockOut = { txnId: "", sparePartId: item.id };
+      }
+    }
+  }
+
   const row = await prisma.sparePartChange.create({
     data: {
       id: newId(),
@@ -201,8 +286,8 @@ export async function create(t: string, userId: string, d: Record<string, unknow
       ticketId: d.ticketId ? String(d.ticketId) : null,
       partName: String(d.partName).trim(),
       partCode: d.partCode ? String(d.partCode).trim() : null,
-      changeType: (d.changeType as SparePartChangeType) || "REPLACED",
-      quantity: Number(d.quantity) || 1,
+      changeType,
+      quantity,
       oldSerialNo: d.oldSerialNo ? String(d.oldSerialNo).trim() : null,
       newSerialNo: d.newSerialNo ? String(d.newSerialNo).trim() : null,
       changedAt: parseDate(d.changedAt),
@@ -213,7 +298,11 @@ export async function create(t: string, userId: string, d: Record<string, unknow
           : null,
       underWarranty: Boolean(d.underWarranty),
       notes: d.notes ? String(d.notes).trim() : null,
-      customFields: d.customFields ?? undefined,
+      customFields: {
+        ...((d.customFields && typeof d.customFields === "object" ? d.customFields : {}) as Record<string, unknown>),
+        ...(stockOut ? { spareStockTxnId: stockOut.txnId || null, sparePartId: stockOut.sparePartId } : {}),
+        ...(fromHand.length ? { fromHand } : {}),
+      } as Prisma.InputJsonValue,
     },
   });
   if (row.ticketId) await syncTicketPaymentFromSpares(t, row.ticketId);
@@ -291,5 +380,23 @@ export async function remove(t: string, id: string) {
     data: { deletedAt: new Date() },
   });
   if (!r.count) throw notFound("Spare part record");
+  // Put the part back: parts taken from the engineer's hand go back to their hand; a job stock-out is cancelled
+  const ecf = (existing.customFields ?? {}) as Record<string, unknown>;
+  for (const h of Array.isArray(ecf.fromHand) ? (ecf.fromHand as Array<{ txnId: string; qty: number }>) : []) {
+    const tx = await prisma.spareStockTxn.findFirst({ where: { id: h.txnId, tenantId: t } });
+    if (!tx) continue;
+    const tcf = (tx.customFields && typeof tx.customFields === "object" ? tx.customFields : {}) as Record<string, unknown>;
+    await prisma.spareStockTxn.update({
+      where: { id: tx.id },
+      data: { customFields: { ...tcf, usedQty: Math.max(0, (Number(tcf.usedQty ?? 0) || 0) - h.qty) } as Prisma.InputJsonValue },
+    });
+  }
+  const txnId = ecf.spareStockTxnId;
+  if (txnId) {
+    await prisma.spareStockTxn.updateMany({
+      where: { id: String(txnId), tenantId: t, deletedAt: null },
+      data: { deletedAt: new Date() },
+    });
+  }
   if (existing.ticketId) await syncTicketPaymentFromSpares(t, existing.ticketId);
 }

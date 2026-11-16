@@ -14,6 +14,8 @@ import { integrationsRouter } from '../modules/integrations/integrations.routes.
 import { accountsRouter } from '../modules/accounts/accounts.routes.js'
 import { ticketsRouter } from '../modules/tickets/tickets.routes.js'
 import { assetsRouter } from '../modules/assets/assets.routes.js'
+import { renewalsRouter } from '../modules/renewals/renewals.routes.js'
+import { fieldRouter } from '../modules/field/field.routes.js'
 import { purchaseOrdersRouter } from '../modules/purchaseOrders/purchaseOrders.routes.js'
 import { metaRouter } from '../modules/meta/meta.routes.js'
 import { usersRouter } from '../modules/users/users.routes.js'
@@ -28,6 +30,7 @@ import { publicRouter } from '../modules/public/public.routes.js'
 import { teamChatRouter } from '../modules/teamChat/teamChat.routes.js'
 import { rentalsRouter } from '../modules/rentals/rentals.routes.js'
 import { requisitionsRouter } from '../modules/requisitions/requisitions.routes.js'
+import { reportsRouter } from '../modules/reports/reports.routes.js'
 
 export const apiRouter = Router()
 apiRouter.use('/public', publicRouter)
@@ -36,6 +39,7 @@ apiRouter.use('/platform', platformRouter)
 apiRouter.use('/tenants', tenantsRouter)
 apiRouter.use('/meta', metaRouter)
 apiRouter.use('/analytics', analyticsRouter)
+apiRouter.use('/reports', reportsRouter)
 apiRouter.use('/ai', aiRouter)
 apiRouter.use('/activities', activitiesRouter)
 apiRouter.use('/users', usersRouter)
@@ -47,6 +51,8 @@ apiRouter.use('/contacts', contactsRouter)
 apiRouter.use('/deals', dealsRouter)
 apiRouter.use('/tickets', ticketsRouter)
 apiRouter.use('/assets', assetsRouter)
+apiRouter.use('/renewals', renewalsRouter)
+apiRouter.use('/field', fieldRouter)
 apiRouter.use('/spare-parts', sparePartsRouter)
 apiRouter.use('/spare-stock', spareStockRouter)
 apiRouter.use('/products', productsRouter)

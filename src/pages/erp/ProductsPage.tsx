@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { PaginationBar } from '@/components/ui/PaginationBar'
+import { usePagedRows } from '@/hooks/usePagedRows'
+import { fetchAllAsPage } from '@/lib/fetchAllPages'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Package, SlidersHorizontal, X } from 'lucide-react'
 import { ProductImage } from '@/components/ProductImage'
@@ -150,7 +153,7 @@ export function ProductsPage() {
   const load = useCallback(async (_opts?: { silent?: boolean }) => {
     try {
       const [products, lookups, brandRows] = await Promise.all([
-        api.products({ limit: 200 }),
+        fetchAllAsPage((p) => api.products(p)),
         api.lookups(),
         api.inventoryBrands().catch(() => [] as Array<Record<string, unknown>>),
       ])
@@ -731,6 +734,8 @@ export function ProductsPage() {
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
   }, [items])
 
+  // filtered can grow large — 25 rows a page
+  const pagedProducts = usePagedRows(filtered, filtered.length)
   return (
     <div className="space-y-4">
       <PageHeader
@@ -846,7 +851,7 @@ export function ProductsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((p) => {
+                  {pagedProducts.rows.map((p) => {
                     const id = String(p.id)
                     const meta = productCatalogMeta(productAttrs(p))
                     const a = productAttrs(p)
@@ -907,14 +912,16 @@ export function ProductsPage() {
                   })}
                 </tbody>
               </table>
+              <PaginationBar page={pagedProducts.page} total={pagedProducts.total} onPageChange={pagedProducts.setPage} hideWhenSinglePage />
             </div>
           )}
         </Card>
       ) : (
         <FormPanel
           open
+          layout="page"
           accent="theme"
-          eyebrow="CATALOG"
+          eyebrow="Inventory · Product catalogue"
           title="Add product"
           subtitle="Weighing: Product → Industry → Machine. Others: Product → Machine."
           onClose={() => setTab('list')}

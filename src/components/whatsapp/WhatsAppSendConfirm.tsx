@@ -1,4 +1,6 @@
+import { useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/Button'
+import { useWhatsAppOn } from '@/lib/whatsappOn'
 import { Modal } from '@/components/ui/Modal'
 import { WhatsAppIcon, WhatsAppWord, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 
@@ -33,7 +35,16 @@ export function WhatsAppSendConfirm({
   onConfirmSend,
   onConfirmSkip,
 }: Props) {
-  if (!payload) return null
+  const waOn = useWhatsAppOn()
+  // WhatsApp off for this company → never ask; just carry on without a message
+  const skipped = useRef<WhatsAppConfirmPayload | null>(null)
+  useEffect(() => {
+    if (!waOn && open && payload && !busy && skipped.current !== payload) {
+      skipped.current = payload
+      onConfirmSkip()
+    }
+  }, [waOn, open, payload, busy, onConfirmSkip])
+  if (!payload || !waOn) return null
   return (
     <Modal
       open={open}

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { CustomerOverview } from '@/components/contacts/CustomerOverview'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft,
-  Briefcase,
   Building2,
   CalendarClock,
   Clock,
@@ -14,7 +14,6 @@ import {
   Loader2,
   Mail,
   Package,
-  Phone,
   ShoppingBag,
   Sparkles,
   Stamp,
@@ -24,21 +23,6 @@ import {
   UserRound,
   Wrench,
 } from 'lucide-react'
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
 import { Avatar } from '@/components/ui/Avatar'
 import { Badge, ticketStatusColor } from '@/components/ui/Badge'
 import { machineSourceTagsFromCf } from '@/lib/assetOrigin'
@@ -77,7 +61,7 @@ import {
   isWeighingMachine,
   stampQuarterOf,
 } from '@/lib/hmsCoverage'
-import { formatCurrency, formatDate, formatPhone, cn } from '@/lib/utils'
+import { formatCurrency, formatDate, cn } from '@/lib/utils'
 import { indianMobileLocal, toStoredIndianMobile } from '@/lib/phoneIndia'
 import { firstError, validateContactForm } from '@/lib/formValidation'
 import { useUIStore } from '@/store/uiStore'
@@ -133,7 +117,6 @@ export function ContactDetailPage() {
     spares: Array<Record<string, unknown>>
   }>({ activities: [], spares: [] })
   const [timelineLoading, setTimelineLoading] = useState(false)
-  const [detailsOpen, setDetailsOpen] = useState(true)
   const [relatedWidth, setRelatedWidth] = useState(() => {
     try {
       const n = Number(localStorage.getItem('nova.contact.relatedWidth'))
@@ -701,7 +684,6 @@ export function ContactDetailPage() {
   }
 
   const account = contact.account as Record<string, unknown> | null | undefined
-  const deals = (contact.deals as Array<Record<string, unknown>>) ?? []
   const tickets = (contact.tickets as Array<Record<string, unknown>>) ?? []
   const notes = (contact.notes as Array<Record<string, unknown>>) ?? []
   const invoices = (contact.invoices as Array<Record<string, unknown>>) ?? []
@@ -1318,9 +1300,6 @@ export function ContactDetailPage() {
             }),
           ),
         ).length
-        const openTickets = tickets.filter(
-          (t) => !['RESOLVED', 'CLOSED'].includes(String(t.status)),
-        )
         const owner = users.find((u) => u.id === String(contact.ownerUserId ?? ''))
         const related: Array<{
           id: Tab
@@ -1455,290 +1434,18 @@ export function ContactDetailPage() {
 
               <div className="p-4 sm:p-5">
                 {tab === 'Overview' ? (
-                  <div className="space-y-5">
-                    <div className="flex items-center justify-between gap-2">
-                      <h2 className="text-sm font-semibold text-text-primary">Overview</h2>
-                      <button
-                        type="button"
-                        className="text-xs font-medium text-accent-blue hover:underline"
-                        onClick={() => setDetailsOpen((v) => !v)}
-                      >
-                        {detailsOpen ? 'Hide details' : 'Show details'}
-                      </button>
-                    </div>
-
-                    {/* Quick info */}
-                    <div className="grid gap-x-8 gap-y-3 sm:grid-cols-2">
-                      {(
-                        [
-                          {
-                            label: 'Contact owner',
-                            value: owner?.name || 'Unassigned',
-                          },
-                          {
-                            label: 'Email',
-                            value: contact.email ? (
-                              <a
-                                href={`mailto:${String(contact.email)}`}
-                                className="text-accent-blue hover:underline"
-                              >
-                                {String(contact.email)}
-                              </a>
-                            ) : (
-                              '—'
-                            ),
-                          },
-                          {
-                            label: 'Phone',
-                            value: contact.phone || contact.mobile ? (
-                              <span className="inline-flex items-center gap-1.5">
-                                <Phone size={12} className="text-accent-green" />
-                                {formatPhone(String(contact.phone || contact.mobile))}
-                              </span>
-                            ) : (
-                              '—'
-                            ),
-                          },
-                          {
-                            label: 'Mobile',
-                            value: contact.mobile
-                              ? formatPhone(String(contact.mobile))
-                              : '—',
-                          },
-                          {
-                            label: 'WhatsApp',
-                            value: custom.whatsapp
-                              ? formatPhone(String(custom.whatsapp))
-                              : '—',
-                          },
-                          {
-                            label: 'Area / city',
-                            value:
-                              [contact.area, contact.city].filter(Boolean).join(', ') || '—',
-                          },
-                        ] as Array<{ label: string; value: ReactNode }>
-                      ).map((row) => (
-                        <div key={row.label} className="flex gap-3 text-sm">
-                          <div className="w-32 shrink-0 text-text-secondary">{row.label}</div>
-                          <div className="min-w-0 font-medium text-text-primary">{row.value}</div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Next action — open tickets */}
-                    <div>
-                      <h3 className="mb-2 text-sm font-semibold text-text-primary">Next action</h3>
-                      {openTickets.length === 0 ? (
-                        <p className="rounded-lg border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
-                          No open service jobs. Create a ticket when the customer walks in.
-                        </p>
-                      ) : (
-                        <ul className="space-y-2">
-                          {openTickets.slice(0, 5).map((t) => {
-                            const due = t.dueAt || t.createdAt
-                            const dueLabel = due
-                              ? new Date(String(due)).toLocaleString('en-US', {
-                                  month: 'short',
-                                  day: 'numeric',
-                                })
-                              : '—'
-                            return (
-                              <li key={String(t.id)}>
-                                <Link
-                                  to={`/tickets/${t.id}`}
-                                  className="flex items-start gap-3 rounded-lg border border-border px-3 py-2.5 hover:bg-muted/40"
-                                >
-                                  <span className="inline-flex min-w-[2.75rem] flex-col items-center rounded-sm bg-accent-red px-1 py-1 text-[10px] font-bold uppercase leading-tight text-white">
-                                    {dueLabel}
-                                  </span>
-                                  <div className="min-w-0 flex-1">
-                                    <div className="truncate text-sm font-medium text-text-primary">
-                                      {String(t.subject)}
-                                    </div>
-                                    <div className="mt-0.5 text-xs text-text-secondary">
-                                      {formatServiceId(
-                                        t.ticketNo != null ? String(t.ticketNo) : undefined,
-                                      )}{' '}
-                                      · {String(t.status).replaceAll('_', ' ')}
-                                    </div>
-                                  </div>
-                                </Link>
-                              </li>
-                            )
-                          })}
-                        </ul>
-                      )}
-                    </div>
-
-                    {detailsOpen ? (
-                      <div className="space-y-6">
-                        <section>
-                          <h3 className="mb-3 border-b border-border pb-2 text-sm font-semibold text-text-primary">
-                            Contact information
-                          </h3>
-                          <div className="grid gap-x-10 gap-y-2.5 sm:grid-cols-2">
-                            {(
-                              [
-                                ['Contact owner', owner?.name || 'Unassigned'],
-                                [
-                                  'Account name',
-                                  account ? (
-                                    <Link
-                                      to={`/accounts/${account.id}`}
-                                      className="text-accent-blue hover:underline"
-                                    >
-                                      {String(account.name)}
-                                    </Link>
-                                  ) : (
-                                    '—'
-                                  ),
-                                ],
-                                [
-                                  'Email',
-                                  contact.email ? (
-                                    <a
-                                      href={`mailto:${String(contact.email)}`}
-                                      className="text-accent-blue hover:underline"
-                                    >
-                                      {String(contact.email)}
-                                    </a>
-                                  ) : (
-                                    '—'
-                                  ),
-                                ],
-                                [
-                                  'Phone / landline',
-                                  contact.phone
-                                    ? formatPhone(String(contact.phone))
-                                    : custom.landline
-                                      ? String(custom.landline)
-                                      : '—',
-                                ],
-                                [
-                                  'Mobile',
-                                  contact.mobile ? formatPhone(String(contact.mobile)) : '—',
-                                ],
-                                [
-                                  'Mobile 2',
-                                  custom.mobile_2 ? formatPhone(String(custom.mobile_2)) : '—',
-                                ],
-                                [
-                                  'Mobile 3',
-                                  custom.mobile_3 ? formatPhone(String(custom.mobile_3)) : '—',
-                                ],
-                                [
-                                  'WhatsApp',
-                                  custom.whatsapp ? formatPhone(String(custom.whatsapp)) : '—',
-                                ],
-                                [
-                                  'Customer ID',
-                                  contact.customerCode ? (
-                                    <span className="font-mono">{String(contact.customerCode)}</span>
-                                  ) : (
-                                    '—'
-                                  ),
-                                ],
-                                [
-                                  'Created',
-                                  contact.createdAt ? formatDate(String(contact.createdAt)) : '—',
-                                ],
-                              ] as Array<[string, ReactNode]>
-                            ).map(([label, value]) => (
-                              <div key={label} className="flex gap-3 text-sm">
-                                <div className="w-36 shrink-0 text-text-secondary">{label}</div>
-                                <div className="min-w-0 break-words font-medium text-text-primary">
-                                  {value}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </section>
-
-                        <section>
-                          <h3 className="mb-3 border-b border-border pb-2 text-sm font-semibold text-text-primary">
-                            Address information
-                          </h3>
-                          <div className="grid gap-x-10 gap-y-2.5 sm:grid-cols-2">
-                            {(
-                              [
-                                ['Door no', contact.doorNo ? String(contact.doorNo) : '—'],
-                                [
-                                  'Building',
-                                  custom.building_name ? String(custom.building_name) : '—',
-                                ],
-                                ['Street', contact.street ? String(contact.street) : '—'],
-                                ['Area', contact.area ? String(contact.area) : '—'],
-                                ['City', contact.city ? String(contact.city) : '—'],
-                                ['State', contact.state ? String(contact.state) : '—'],
-                                ['Pincode', contact.pincode ? String(contact.pincode) : '—'],
-                                [
-                                  'Landmark',
-                                  contact.location ? String(contact.location) : '—',
-                                ],
-                                [
-                                  'GPS',
-                                  custom.gps_location ? String(custom.gps_location) : '—',
-                                ],
-                              ] as Array<[string, ReactNode]>
-                            ).map(([label, value]) => (
-                              <div key={label} className="flex gap-3 text-sm">
-                                <div className="w-36 shrink-0 text-text-secondary">{label}</div>
-                                <div className="min-w-0 break-words font-medium text-text-primary">
-                                  {value}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </section>
-
-                        <section>
-                          <h3 className="mb-3 border-b border-border pb-2 text-sm font-semibold text-text-primary">
-                            Service snapshot
-                          </h3>
-                          <div className="grid gap-x-10 gap-y-2.5 sm:grid-cols-2">
-                            {(
-                              [
-                                ['Machines on file', `${assets.length}`],
-                                ['Open service jobs', `${openTickets.length}`],
-                                ['Total tickets', `${tickets.length}`],
-                                [
-                                  'Lifetime billed',
-                                  formatCurrency(purchaseSummary.totalBilled),
-                                ],
-                                [
-                                  'Active rentals',
-                                  `${rentals.filter((r) => String(r.status) === 'ACTIVE').length}`,
-                                ],
-                              ] as Array<[string, ReactNode]>
-                            ).map(([label, value]) => (
-                              <div key={label} className="flex gap-3 text-sm">
-                                <div className="w-36 shrink-0 text-text-secondary">{label}</div>
-                                <div className="min-w-0 break-words font-medium text-text-primary">
-                                  {value}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          {contact.description ? (
-                            <p className="mt-4 rounded-lg bg-muted/40 px-3 py-2 text-sm text-text-secondary">
-                              {String(contact.description)}
-                            </p>
-                          ) : null}
-                        </section>
-                      </div>
-                    ) : null}
-
-                    <ContactAnalytics
-                      contact={contact}
-                      custom={custom}
-                      deals={deals}
-                      tickets={tickets}
-                      invoices={invoices}
-                      productsBought={purchaseSummary.productsBought}
-                      totalPaid={purchaseSummary.totalPaid}
-                      totalBilled={purchaseSummary.totalBilled}
-                    />
-                  </div>
+                  <CustomerOverview
+                    contact={contact}
+                    custom={custom}
+                    ownerName={owner?.name ?? null}
+                    account={account}
+                    tickets={tickets}
+                    assets={assets}
+                    invoices={invoices}
+                    sales={(contact.sales as Array<Record<string, unknown>>) ?? []}
+                    units={(contact.units as Array<Record<string, unknown>>) ?? []}
+                    onOpenTab={(t) => setTab(t)}
+                  />
                 ) : null}
 
                 {tab === 'Timeline' ? (
@@ -2836,216 +2543,4 @@ function csvEscape(value: string) {
   return value
 }
 
-const CHART_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444', '#06B6D4']
 
-function ContactAnalytics({
-  contact,
-  custom,
-  deals,
-  tickets,
-  invoices,
-  productsBought,
-  totalPaid,
-  totalBilled,
-}: {
-  contact: Record<string, unknown>
-  custom: Record<string, unknown>
-  deals: Array<Record<string, unknown>>
-  tickets: Array<Record<string, unknown>>
-  invoices: Array<Record<string, unknown>>
-  productsBought: Array<{ id: string; sku: string; name: string; qty: number; amount: number }>
-  totalPaid: number
-  totalBilled: number
-}) {
-  const spendOverTime = useMemo(() => {
-    const map: Record<string, number> = {}
-    for (const inv of invoices) {
-      const d = inv.invoiceDate ? new Date(String(inv.invoiceDate)) : null
-      if (!d || Number.isNaN(d.getTime())) continue
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-      map[key] = (map[key] ?? 0) + num(inv.grandTotal)
-    }
-    return Object.entries(map)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, spend]) => ({ month, spend }))
-  }, [invoices])
-
-  const dealMix = useMemo(() => {
-    const open = deals.filter((d) => !d.closedAt).length
-    const won = deals.filter((d) => d.closedAt && num(d.probability) >= 100).length
-    const closed = deals.filter((d) => d.closedAt).length
-    const lost = Math.max(0, closed - won)
-    return [
-      { name: 'Open', value: open || 0 },
-      { name: 'Won', value: won || 0 },
-      { name: 'Lost/Other', value: lost || 0 },
-    ].filter((x) => x.value > 0)
-  }, [deals])
-
-  const productBars = useMemo(
-    () =>
-      productsBought.slice(0, 6).map((p) => ({
-        name: p.name.length > 18 ? `${p.name.slice(0, 16)}…` : p.name,
-        qty: p.qty,
-        amount: p.amount,
-      })),
-    [productsBought],
-  )
-
-  const ticketStatus = useMemo(() => {
-    const map: Record<string, number> = {}
-    for (const t of tickets) {
-      const s = String(t.status ?? 'OPEN')
-      map[s] = (map[s] ?? 0) + 1
-    }
-    return Object.entries(map).map(([name, value]) => ({ name, value }))
-  }, [tickets])
-
-  const openPipeline = deals.filter((d) => !d.closedAt).reduce((s, d) => s + num(d.amount), 0)
-
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {[
-          { label: 'Lifetime billed', value: formatCurrency(totalBilled), icon: CircleDollarSign, tint: 'bg-blue-50 text-accent-blue' },
-          { label: 'Amount paid', value: formatCurrency(totalPaid), icon: ShoppingBag, tint: 'bg-emerald-50 text-accent-green' },
-          { label: 'Open pipeline', value: formatCurrency(openPipeline), icon: Briefcase, tint: 'bg-violet-50 text-accent-purple' },
-          { label: 'Products bought', value: productsBought.length, icon: Package, tint: 'bg-amber-50 text-accent-amber' },
-        ].map((k) => (
-          <Card key={k.label}>
-            <div className="flex items-center gap-3">
-              <div className={`flex h-10 w-10 items-center justify-center rounded-[8px] ${k.tint}`}>
-                <k.icon size={18} />
-              </div>
-              <div>
-                <div className="text-lg font-semibold">{k.value}</div>
-                <div className="text-xs text-text-secondary">{k.label}</div>
-              </div>
-            </div>
-          </Card>
-        ))}
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <h3 className="mb-3 font-semibold">Spend over time</h3>
-          {spendOverTime.length ? (
-            <div className="h-56">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={spendOverTime}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
-                  <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip formatter={(v) => formatCurrency(num(v))} />
-                  <Line type="monotone" dataKey="spend" stroke="#3B82F6" strokeWidth={2} dot={{ r: 3 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <p className="py-10 text-center text-sm text-text-secondary">No invoice spend yet</p>
-          )}
-        </Card>
-
-        <Card>
-          <h3 className="mb-3 font-semibold">Deal mix</h3>
-          {dealMix.length ? (
-            <div className="h-56">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={dealMix} dataKey="value" nameKey="name" innerRadius={45} outerRadius={75} paddingAngle={2}>
-                    {dealMix.map((_, i) => (
-                      <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <p className="py-10 text-center text-sm text-text-secondary">No deals linked</p>
-          )}
-        </Card>
-
-        <Card>
-          <h3 className="mb-3 font-semibold">Purchases by product</h3>
-          {productBars.length ? (
-            <div className="h-56">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={productBars}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Bar dataKey="qty" fill="#10B981" name="Qty" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <p className="py-10 text-center text-sm text-text-secondary">No products purchased</p>
-          )}
-        </Card>
-
-        <Card>
-          <h3 className="mb-3 font-semibold">Ticket status</h3>
-          {ticketStatus.length ? (
-            <div className="h-56">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={ticketStatus} dataKey="value" nameKey="name" outerRadius={75}>
-                    {ticketStatus.map((_, i) => (
-                      <Cell key={i} fill={CHART_COLORS[(i + 2) % CHART_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-          ) : (
-            <p className="py-10 text-center text-sm text-text-secondary">No support tickets</p>
-          )}
-        </Card>
-      </div>
-
-      <Card>
-        <h3 className="mb-3 font-semibold">Profile</h3>
-        <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {[
-            ['Full name', contact.name],
-            ['Title', contact.title],
-            ['Department', contact.department],
-            ['Email', contact.email],
-            ['Alternate email', custom.alternate_email],
-            ['Phone', contact.phone],
-            ['Mobile', contact.mobile],
-            ['WhatsApp', custom.whatsapp],
-            ['LinkedIn', custom.linkedin],
-            ['Address', custom.address_line],
-            ['City', contact.city],
-            ['State', contact.state],
-            ['Pincode', custom.pincode],
-            ['Country', contact.country],
-            ['Created', contact.createdAt ? formatDate(String(contact.createdAt)) : '—'],
-          ].map(([label, value]) => (
-            <div key={String(label)}>
-              <dt className="text-xs text-text-secondary">
-                {label === 'WhatsApp' ? (
-                  <span className="inline-flex items-center gap-1" style={{ color: WA_GREEN }}>
-                    <WhatsAppIcon size={12} /> WhatsApp
-                  </span>
-                ) : (
-                  String(label)
-                )}
-              </dt>
-              <dd className="text-sm font-medium text-text-primary">{String(value ?? '—')}</dd>
-            </div>
-          ))}
-        </dl>
-        {contact.description ? (
-          <p className="mt-4 rounded-lg bg-muted p-3 text-sm text-text-primary">{String(contact.description)}</p>
-        ) : null}
-      </Card>
-    </div>
-  )
-}

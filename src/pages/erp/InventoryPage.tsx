@@ -24,6 +24,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 import { Drawer } from '@/components/ui/Drawer'
 import { Modal } from '@/components/ui/Modal'
 import { Input } from '@/components/ui/Input'
@@ -316,6 +317,8 @@ export function InventoryPage() {
   const [units, setUnits] = useState<StockUnit[]>([])
   const [history, setHistory] = useState<HistoryRow[]>([])
   const [levels, setLevels] = useState<Array<Record<string, unknown>>>([])
+  /** False until the first stock load finishes — tiles show “…” instead of a false 0 / ₹0 */
+  const [stockLoaded, setStockLoaded] = useState(false)
   const [products, setProducts] = useState<CatalogProduct[]>([])
   const [warehouses, setWarehouses] = useState<Array<{ id: string; name: string; code?: string }>>([])
   const [brands, setBrands] = useState<BrandRow[]>([])
@@ -470,7 +473,7 @@ export function InventoryPage() {
       }
 
       const settled = await Promise.allSettled([
-        api.stockUnits({ limit: 200 }),
+        api.stockUnitsAll(),
         api.inventoryHistory({ limit: 200 }),
         api.inventory(),
         api.inventoryBrands(),
@@ -531,6 +534,8 @@ export function InventoryPage() {
         type: 'error',
         message: err instanceof ApiClientError ? err.message : 'Failed to load inventory',
       })
+    } finally {
+      setStockLoaded(true)
     }
   }, [addToast, preselectProduct, invAreas.machines])
 
@@ -1476,10 +1481,10 @@ export function InventoryPage() {
 
       <div className="mb-3 flex flex-wrap gap-2">
         {[
-          { label: 'Models', value: String(summary.models) },
-          { label: 'In stock', value: String(summary.inStock) },
-          { label: 'Demo', value: String(summary.demo) },
-          { label: 'Value', value: formatCurrency(summary.value) },
+          { label: 'Models', value: stockLoaded ? String(summary.models) : '…' },
+          { label: 'In stock', value: stockLoaded ? String(summary.inStock) : '…' },
+          { label: 'Demo', value: stockLoaded ? String(summary.demo) : '…' },
+          { label: 'Value', value: stockLoaded ? formatCurrency(summary.value) : '…' },
         ].map((card) => (
           <div
             key={card.label}
@@ -1660,7 +1665,9 @@ export function InventoryPage() {
             </div>
           ) : (
             <Card padding={false}>
-              {groups.length === 0 ? (
+              {!stockLoaded ? (
+                <TableSkeleton />
+              ) : groups.length === 0 ? (
                 <EmptyState
                   icon={<WarehouseIcon size={22} />}
                   title={
@@ -1816,7 +1823,7 @@ export function InventoryPage() {
               title="No demo units out"
               subtitle="When a sale enquiry moves to Demo and a serial is issued, it appears here."
               actionLabel="Sale tracking"
-              onAction={() => window.location.assign('/sale-tracking')}
+              onAction={() => navigate('/sale-tracking')}
             />
           ) : (
             <div className="overflow-x-auto">

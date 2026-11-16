@@ -1,6 +1,7 @@
 import { prisma } from "../../config/database.js";
 import { AppError } from "../../common/errors.js";
 import { env } from "../../config/env.js";
+import { isHmsTenantSlug } from "../../common/tenantSlugs.js";
 
 type PlatformTokenCache = { token: string; expiresAt: number };
 let tokenCache: PlatformTokenCache | null = null;
@@ -215,7 +216,7 @@ export async function provisionAttendanceForHmsTenant(
   // Prefer existing Phase-1 slug `hms` only when already stored; else derive from HMS slug
   let slug =
     tenant.attendanceSlug ||
-    (tenant.slug === "precision-scales-india" ? "hms" : attendanceSlugFromHms(tenant.slug));
+    (isHmsTenantSlug(tenant.slug) ? "hms" : attendanceSlugFromHms(tenant.slug));
 
   const status =
     tenant.status === "ACTIVE" || tenant.status === "TRIAL" ? "active" : "trial";
@@ -344,6 +345,65 @@ export async function syncAttendanceGeofence(tenantId: string): Promise<void> {
       radiusM: tenant.attendanceGeofenceRadiusM || 10,
     }),
   });
+}
+
+/**
+ * Mirror an HMS employee's access into Attendance: deleted / inactive / locked in HMS ⇒ the
+ * Attendance login, SSO and any open Attendance session stop; re-added / reactivated ⇒ restored.
+ * Best-effort — never blocks the HMS user change (logged on failure).
+ */
+export async function syncAttendanceEmployeeAccess(
+  tenantId: string,
+  user: { id: string; email: string },
+  active: boolean,
+): Promise<void> {
+  try {
+    const tenant = await prisma.tenant.findFirst({
+      where: { id: tenantId },
+      select: { attendanceTenantId: true, attendanceEnabled: true },
+    });
+    if (!tenant?.attendanceTenantId) return;
+    await attendanceFetch(`/v1/platform/tenants/${tenant.attendanceTenantId}/employees/access`, {
+      method: "POST",
+      body: JSON.stringify({ email: user.email.toLowerCase(), externalRef: user.id, active }),
+    });
+  } catch (err) {
+    console.error("[attendance] employee access sync failed", user.email, active, err);
+  }
+  await reconcileAttendanceRoster(tenantId);
+}
+
+/**
+ * Only active HMS employees may use Attendance: send the full active HMS staff list and let
+ * Attendance switch off everyone else in this company (sample staff, removed people, rows
+ * added directly in Attendance). Best-effort; returns who was switched off.
+ */
+export async function reconcileAttendanceRoster(tenantId: string): Promise<{ deactivated: string[] } | null> {
+  try {
+    const tenant = await prisma.tenant.findFirst({
+      where: { id: tenantId },
+      select: { attendanceTenantId: true },
+    });
+    if (!tenant?.attendanceTenantId) return null;
+    const people = await prisma.user.findMany({
+      where: { tenantId, status: "ACTIVE", deletedAt: null },
+      select: { id: true, email: true },
+    });
+    // Never send an empty roster — that would switch everyone off on a bad read
+    if (!people.length) return null;
+    const res = await attendanceFetch<{ deactivated: string[] }>(
+      `/v1/platform/tenants/${tenant.attendanceTenantId}/employees/reconcile`,
+      {
+        method: "POST",
+        body: JSON.stringify({ people: people.map((p) => ({ email: p.email.toLowerCase(), externalRef: p.id })) }),
+      },
+    );
+    if (res?.deactivated?.length) console.info("[attendance] roster reconcile switched off", res.deactivated);
+    return res ?? null;
+  } catch (err) {
+    console.error("[attendance] roster reconcile failed", tenantId, err);
+    return null;
+  }
 }
 
 /** Hide Attendance in HMS and optionally suspend the Attendance company. */

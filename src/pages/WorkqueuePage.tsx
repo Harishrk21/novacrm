@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   ArrowDown,
@@ -53,6 +53,7 @@ import {
   isSalesDesk,
   isServiceDesk,
   isServiceEngineer,
+  isWarehouse,
 } from '@/lib/roles'
 import { can } from '@/lib/permissions'
 import { useRowSelection } from '@/hooks/useRowSelection'
@@ -272,9 +273,14 @@ export function WorkqueuePage() {
     if (isSalesDesk(r)) return 'followups'
     return 'tasks'
   })
-  const [dateFilter, setDateFilter] = useState<DateFilter>(() =>
-    isSalesDesk(useAuthStore.getState().user?.role) ? 'week' : 'today_overdue',
-  )
+  const [dateFilter, setDateFilter] = useState<DateFilter>(() => {
+    // Links (e.g. home 'My due today') can pick the filter: ?date=today_overdue
+    const fromUrl = new URLSearchParams(window.location.search).get('date')
+    if (fromUrl && DATE_FILTERS.some((f) => f.value === fromUrl)) return fromUrl as DateFilter
+    return isSalesDesk(useAuthStore.getState().user?.role) ? 'week' : 'today_overdue'
+  })
+  // ?focus=<activity id>: highlight + scroll to the row the user clicked on the home page
+  const [focusId] = useState(() => new URLSearchParams(window.location.search).get('focus'))
   const [ticketStatusFilter, setTicketStatusFilter] = useState<TicketStatusFilter>('')
   const [filterOpen, setFilterOpen] = useState(true)
   const [localFilter, setLocalFilter] = useState('')
@@ -320,7 +326,8 @@ export function WorkqueuePage() {
       const scoped = !isCompanyAdmin(role)
       const wantsSalesQueues = salesDesk || isCompanyAdmin(role)
       // Sales desk has no tickets:view — never call /tickets for them (was blanking the page).
-      const wantsTickets = !salesDesk
+      // Only call what this role may read — a 403 shows an error toast (warehouse has no tickets:view)
+      const wantsTickets = !salesDesk && can(role, 'tickets:view')
 
       const settled = await Promise.allSettled([
         api.activities({
@@ -344,7 +351,8 @@ export function WorkqueuePage() {
             })
           : Promise.resolve({ items: [] as Row[] }),
         // Sales + service desk both link activities to customers
-        wantsSalesQueues || isServiceDesk(role) || isServiceEngineer(role) || isCompanyAdmin(role)
+        (wantsSalesQueues || isServiceDesk(role) || isServiceEngineer(role) || isCompanyAdmin(role)) &&
+          can(role, 'contacts:view')
           ? api.contacts({ limit: 100 })
           : Promise.resolve({ items: [] as Row[] }),
       ])
@@ -859,6 +867,15 @@ export function WorkqueuePage() {
     `${nav}|${dateFilter}|${ticketStatusFilter}|${localFilter}|${sortKey}|${sortDir}`,
   )
   const pageRows = paged.rows
+  const scrolledToFocus = useRef(false)
+  useEffect(() => {
+    if (!focusId || scrolledToFocus.current) return
+    if (!pageRows.some((r) => String(r.id) === focusId)) return
+    scrolledToFocus.current = true
+    requestAnimationFrame(() =>
+      document.querySelector(`[data-row-id="${CSS.escape(focusId)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }),
+    )
+  }, [focusId, pageRows])
   const isActivityNav = nav === 'tasks' || nav === 'meetings' || nav === 'calls'
   const isLeadNav = nav === 'followups' || nav === 'leads' || nav === 'touched-leads'
   const canDeleteNav =
@@ -1111,7 +1128,7 @@ export function WorkqueuePage() {
     >
       <div
         className={cn(
-          'flex min-h-0 flex-1 overflow-hidden border-border bg-card',
+          'flex min-h-0 flex-1 flex-col overflow-hidden border-border bg-card md:flex-row',
           fieldShell
             ? 'flex-col rounded-none border-0'
             : 'rounded-none border-y sm:rounded-xl sm:border',
@@ -1120,11 +1137,11 @@ export function WorkqueuePage() {
         {/* Left nav — desktop / non-field */}
         <aside
           className={cn(
-            'flex w-[240px] shrink-0 flex-col border-r border-border bg-card',
+            'flex w-full shrink-0 flex-col border-b border-border bg-card md:w-[240px] md:border-b-0 md:border-r',
             fieldShell && 'hidden',
           )}
         >
-          <div className="border-b border-border px-3 py-3">
+          <div className="hidden border-b border-border px-3 py-3 md:block">
             <div className="relative">
               <select
                 value={dateFilter}
@@ -1144,13 +1161,13 @@ export function WorkqueuePage() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-2 py-3">
+          <div className="max-h-[40vh] overflow-y-auto px-2 py-2 md:max-h-none md:flex-1 md:py-3">
             {salesDesk ? (
               <>
                 <p className="mb-1.5 px-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
                   Sales desk
                 </p>
-                <div className="space-y-0.5">
+                <div className="grid grid-cols-2 gap-0.5 md:block md:space-y-0.5">
                   <NavItem
                     id="followups"
                     label="Follow-ups due"
@@ -1200,7 +1217,7 @@ export function WorkqueuePage() {
                 <p className="mb-1.5 px-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
                   My Open Activity
                 </p>
-                <div className="space-y-0.5">
+                <div className="grid grid-cols-2 gap-0.5 md:block md:space-y-0.5">
                   <NavItem
                     id="tasks"
                     label="Tasks"
@@ -1221,10 +1238,13 @@ export function WorkqueuePage() {
                   />
                 </div>
 
+                {/* Warehouse: no service jobs or sales leads — only tasks/calls/meetings + contacts */}
+                {!isWarehouse(role) ? (
+                <>
                 <p className="mb-1.5 mt-4 px-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
                   My Jobs
                 </p>
-                <div className="space-y-0.5">
+                <div className="grid grid-cols-2 gap-0.5 md:block md:space-y-0.5">
                   {isServiceEngineer(role) ? (
                     <NavItem
                       id="claimable"
@@ -1241,22 +1261,29 @@ export function WorkqueuePage() {
                   />
                 </div>
 
+                </>
+                ) : null}
+
                 <p className="mb-1.5 mt-4 px-2 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
                   My Workqueue
                 </p>
-                <div className="space-y-0.5">
-                  <NavItem
-                    id="leads"
-                    label="My Leads"
-                    icon={<Users size={13} />}
-                    iconClass="bg-[#eab308]"
-                  />
-                  <NavItem
-                    id="touched-leads"
-                    label="Touched Leads This Month"
-                    icon={<Users size={13} />}
-                    iconClass="bg-[#ca8a04]"
-                  />
+                <div className="grid grid-cols-2 gap-0.5 md:block md:space-y-0.5">
+                  {!isWarehouse(role) && !isServiceEngineer(role) ? (
+                    <>
+                      <NavItem
+                        id="leads"
+                        label="My Leads"
+                        icon={<Users size={13} />}
+                        iconClass="bg-[#eab308]"
+                      />
+                      <NavItem
+                        id="touched-leads"
+                        label="Touched Leads This Month"
+                        icon={<Users size={13} />}
+                        iconClass="bg-[#ca8a04]"
+                      />
+                    </>
+                  ) : null}
                   <NavItem
                     id="contacts"
                     label="My Contacts"
@@ -1374,7 +1401,7 @@ export function WorkqueuePage() {
               </button>
               {nav === 'leads' ? (
                 <Button size="sm" onClick={() => navigate('/sale-tracking?open=1')}>
-                  <Plus size={14} /> New lead
+                  <Plus size={14} /> New enquiry
                 </Button>
               ) : null}
               {createAction ? (
@@ -1606,11 +1633,13 @@ export function WorkqueuePage() {
                     return (
                     <tr
                       key={tid}
+                      data-row-id={tid}
                       role={href ? 'link' : undefined}
                       tabIndex={href ? 0 : undefined}
                       className={cn(
                         'border-b border-border/80 transition hover:bg-muted/40',
                         href && 'cursor-pointer',
+                        focusId === tid && 'bg-accent-blue/10 ring-2 ring-inset ring-accent-blue/60',
                       )}
                       onClick={() => {
                         if (href) navigate(href)

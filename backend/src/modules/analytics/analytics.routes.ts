@@ -301,6 +301,7 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
     ? new Set(accounts.filter((a) => cityMatch(a.city)).map((a) => a.id))
     : null;
   const invoices = invoicesRaw.filter((i) => {
+    if (String(i.status) === "VOID") return false; // cancelled proformas are not revenue
     if (filterAssignee && i.createdById !== filterAssignee) return false;
     if (accountIdsInCity && i.accountId && !accountIdsInCity.has(i.accountId)) return false;
     return true;
@@ -345,19 +346,23 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
       const pending = owned.filter((l) =>
         ["NEW", "CONTACTED", "QUALIFIED"].includes(l.status),
       ).length;
-      const convertedInRange = owned.filter((l) => {
-        const at = l.convertedAt ?? (l.status === "CONVERTED" ? l.updatedAt : null);
-        return at != null && at >= from && at <= to;
-      }).length;
+      // Same rule as Reports → Sales closed: a sale counts on the day it was marked complete
+      const doneAt = (l: (typeof owned)[number]) => {
+        const done = leadCf(l).saleCompletedAt;
+        return done ? new Date(String(done)) : l.convertedAt ?? l.updatedAt;
+      };
+      const soldInRange = convertedLeads.filter((l) => {
+        const at = doneAt(l);
+        return at >= from && at <= to;
+      });
+      const convertedInRange = soldInRange.length;
       const saleRevenue = convertedLeads.reduce((s, l) => {
         return s + (Number(leadCf(l).salePaymentTotal ?? 0) || 0);
       }, 0);
-      const saleRevenueInRange = owned
-        .filter((l) => {
-          const at = l.convertedAt ?? (l.status === "CONVERTED" ? l.updatedAt : null);
-          return at != null && at >= from && at <= to;
-        })
-        .reduce((s, l) => s + (Number(leadCf(l).salePaymentTotal ?? 0) || 0), 0);
+      const saleRevenueInRange = soldInRange.reduce((s, l) => s + (Number(leadCf(l).salePaymentTotal ?? 0) || 0), 0);
+      const lost = owned.filter((l) => l.status === "LOST" || l.status === "UNQUALIFIED").length;
+      const newInRange = owned.filter((l) => l.createdAt >= from && l.createdAt <= to).length;
+      const decided = converted + lost;
       return {
         id: u.id,
         name: u.name,
@@ -368,7 +373,11 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
         convertedInRange,
         saleRevenue,
         saleRevenueInRange,
-        conversionRate: owned.length ? Math.round((converted / owned.length) * 1000) / 10 : 0,
+        lost,
+        newInRange,
+        avgSale: converted ? Math.round(saleRevenue / converted) : 0,
+        // Won ÷ (won + lost) — open enquiries are not failures yet
+        conversionRate: decided ? Math.round((converted / decided) * 1000) / 10 : 0,
       };
     })
     .filter((row) => row.total > 0)
@@ -592,15 +601,20 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
   const enquiriesLost = leads.filter((l) => l.status === "LOST" || l.status === "UNQUALIFIED").length;
 
   // Sales closed in the selected range (using convertedAt when available)
+  /** A sale counts on the day it was marked complete (Leads → Closed · sold), else converted date */
+  const saleDoneAt = (l: { customFields: unknown; convertedAt: Date | null; updatedAt: Date }) => {
+    const done = leadCf(l).saleCompletedAt;
+    return done ? new Date(String(done)) : l.convertedAt ?? l.updatedAt;
+  };
   const salesTotalInRange = leads.filter((l) => {
     if (l.status !== "CONVERTED") return false;
-    const at = l.convertedAt ?? null;
+    const at = saleDoneAt(l);
     return at != null && at >= from && at <= to;
   }).length;
   const saleRevenueInRange = leads
     .filter((l) => {
       if (l.status !== "CONVERTED") return false;
-      const at = l.convertedAt ?? null;
+      const at = saleDoneAt(l);
       return at != null && at >= from && at <= to;
     })
     .reduce((s, l) => s + (Number(leadCf(l).salePaymentTotal ?? 0) || 0), 0);
@@ -647,7 +661,7 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
       slaBreached: x.slaBreached,
       assignedToId: x.assignedToId,
       paymentStatus: x.paymentStatus,
-      balanceDue: Math.max(0, Number(x.paymentTotal ?? 0) - Number(x.advanceAmount ?? 0)),
+      balanceDue: String(x.paymentStatus) === "PAID" ? 0 : Math.max(0, Number(x.paymentTotal ?? 0) - Number(x.advanceAmount ?? 0)),
     }));
 
   const ticketGrowth =
@@ -734,21 +748,27 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
 
   const ticketsByAssignee = users
     .map((u) => {
-      const owned = tickets.filter((x) => x.assignedToId === u.id);
-      const open = owned.filter((x) => openTicketStatuses.has(x.status)).length;
-      const resolved = owned.filter((x) => x.status === "RESOLVED" || x.status === "CLOSED").length;
-      const breached = owned.filter((x) => x.slaBreached).length;
+      const mine = tickets.filter((x) => x.assignedToId === u.id);
+      const owned = mine.filter((x) => x.createdAt >= from && x.createdAt <= to);
+      const done = owned.filter((x) => x.status === "RESOLVED" || x.status === "CLOSED");
+      const hours = done
+        .map((x) => ((x.resolvedAt ?? x.closedAt ?? x.createdAt).getTime() - x.createdAt.getTime()) / 36e5)
+        .filter((h) => h >= 0);
+      const collected = owned.reduce((s2, x) => s2 + serviceCollectedAmount(x), 0);
       return {
         id: u.id,
         name: u.name,
         total: owned.length,
-        open,
-        resolved,
-        breached,
+        open: owned.length - done.length,
+        resolved: done.length,
+        breached: owned.filter((x) => x.slaBreached).length,
+        avgHours: hours.length ? Math.round((hours.reduce((a, b) => a + b, 0) / hours.length) * 10) / 10 : 0,
+        collected,
+        openNow: mine.filter((x) => openTicketStatuses.has(x.status)).length,
       };
     })
-    .filter((row) => row.total > 0)
-    .sort((a, b) => b.total - a.total);
+    .filter((row) => row.total > 0 || row.openNow > 0)
+    .sort((a, b) => b.resolved - a.resolved || b.collected - a.collected);
 
   const unassignedTickets = tickets.filter((x) => !x.assignedToId).length;
 
@@ -784,22 +804,24 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
     ? Math.round((resolutionHours.reduce((s, h) => s + h, 0) / resolutionHours.length) * 10) / 10
     : 0;
 
-  const balanceOutstanding = openTickets.reduce(
-    (s, x) => s + Math.max(0, Number(x.paymentTotal ?? 0) - Number(x.advanceAmount ?? 0)),
-    0,
-  );
+  const balanceDue = (x: { paymentStatus: string | null; paymentTotal: unknown; advanceAmount: unknown }) =>
+    String(x.paymentStatus) === "PAID"
+      ? 0
+      : Math.max(0, Number(x.paymentTotal ?? 0) - Number(x.advanceAmount ?? 0));
+  const balanceOutstanding = tickets.reduce((s, x) => s + balanceDue(x), 0);
+  const unpaidJobs = tickets.filter((x) => balanceDue(x) > 0).length;
   const in30 = new Date(now);
   in30.setDate(in30.getDate() + 30);
-  const [machinesDueSoon, machinesStampingDue] = await Promise.all([
+  // nextServiceDueDate = service / AMC visit due; nextDueDate = government stamping validity
+  const [machinesDueSoon, machinesStampingDue, machinesNoStampDate] = await Promise.all([
+    prisma.customerAsset.count({
+      where: { tenantId: t, deletedAt: null, nextServiceDueDate: { lte: in30, not: null } },
+    }),
     prisma.customerAsset.count({
       where: { tenantId: t, deletedAt: null, nextDueDate: { lte: in30, not: null } },
     }),
     prisma.customerAsset.count({
-      where: {
-        tenantId: t,
-        deletedAt: null,
-        OR: [{ stampingDate: null }, { nextDueDate: { lte: in30, not: null } }],
-      },
+      where: { tenantId: t, deletedAt: null, stampingDate: null, nextDueDate: null },
     }),
   ]);
 
@@ -911,6 +933,8 @@ analyticsRouter.get("/summary", requirePermission("analytics:view"), requireTena
       balanceOutstanding,
       machinesDueSoon,
       machinesStampingDue,
+      machinesNoStampDate,
+      unpaidJobs,
       stockUnits,
       demoOut,
       inStock,

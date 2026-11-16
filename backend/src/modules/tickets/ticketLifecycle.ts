@@ -39,20 +39,24 @@ export function assertStatusTransition(
   }
 }
 
-/** Zero-charge AMC / free jobs may close without a cash collection. */
-export function isFreeJob(paymentTotal: number, advanceAmount: number) {
-  return paymentTotal <= 0 && advanceAmount <= 0;
+/**
+ * Free job = explicitly marked free (GC / AMC / warranty) AND no charge entered.
+ * A forgotten amount (₹0 but not marked) is NOT free — it must be charged or marked free.
+ */
+export function isFreeJob(paymentTotal: number, advanceAmount: number, markedFree = false) {
+  return markedFree && paymentTotal <= 0 && advanceAmount <= 0;
 }
 
 export function assertCanClosePayment(opts: {
   paymentStatus: string;
   paymentTotal: number;
   advanceAmount: number;
+  freeJob?: boolean;
 }) {
-  if (isFreeJob(opts.paymentTotal, opts.advanceAmount)) return;
+  if (isFreeJob(opts.paymentTotal, opts.advanceAmount, opts.freeJob)) return;
   if (opts.paymentStatus !== "PAID") {
     throw new AppError(
-      "Mark the job paid (with payment method / proof) before approving & closing",
+      "Mark the job paid (with payment method / proof) — or mark it as a Free job (GC / AMC) — before approving & closing",
       400,
     );
   }
@@ -63,11 +67,12 @@ export function assertCanCompletePayment(opts: {
   paymentStatus: string;
   paymentTotal: number;
   advanceAmount: number;
+  freeJob?: boolean;
 }) {
-  if (isFreeJob(opts.paymentTotal, opts.advanceAmount)) return;
+  if (isFreeJob(opts.paymentTotal, opts.advanceAmount, opts.freeJob)) return;
   if (opts.paymentStatus !== "PAID") {
     throw new AppError(
-      "Mark the job paid fully (with payment method / proof) before marking complete",
+      "Mark the job paid fully (with payment method / proof) — or mark it as a Free job (GC / AMC) — before marking complete",
       400,
     );
   }

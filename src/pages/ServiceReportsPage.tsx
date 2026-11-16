@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { PaginationBar } from '@/components/ui/PaginationBar'
+import { usePagedRows } from '@/hooks/usePagedRows'
 import { Link, useNavigate } from 'react-router-dom'
 import { Download, FileText, RefreshCw } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -209,6 +211,8 @@ export function ServiceReportsPage() {
     addToast({ type: 'success', message: `Excel downloaded (${filtered.length} reports)` })
   }
 
+  // filtered can grow large — 25 rows a page
+  const pagedReports = usePagedRows(filtered, filtered.length)
   return (
     <div className="space-y-4">
       <PageHeader
@@ -328,7 +332,7 @@ export function ServiceReportsPage() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((r) => (
+              {pagedReports.rows.map((r) => (
                 <tr
                   key={r.ticketId}
                   className="cursor-pointer border-t border-border hover:bg-surface"
@@ -404,6 +408,7 @@ export function ServiceReportsPage() {
               ))}
             </tbody>
           </table>
+          <PaginationBar page={pagedReports.page} total={pagedReports.total} onPageChange={pagedReports.setPage} hideWhenSinglePage />
         </Card>
       )}
     </div>

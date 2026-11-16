@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { strongPassword } from '@/lib/strongPassword'
 import {
   Link,
   NavLink,
@@ -273,7 +274,7 @@ function AdminShell() {
     }>
   >([])
   const [resetTarget, setResetTarget] = useState<ClientRow | null>(null)
-  const [resetPassword, setResetPassword] = useState('Demo@12345')
+  const [resetPassword, setResetPassword] = useState(() => strongPassword())
   const [resetResult, setResetResult] = useState<{ email: string; password: string } | null>(null)
   const [liveMode, setLiveMode] = useState(true)
   const [seedStatusFilter, setSeedStatusFilter] = useState<'ALL' | ClientStatus>('ALL')
@@ -504,7 +505,7 @@ function AdminShell() {
     createCompany,
     onResetAdmin: (c) => {
       setResetTarget(c)
-      setResetPassword('Demo@12345')
+      setResetPassword(strongPassword())
       setResetResult(null)
     },
     seedStatusFilter,
@@ -903,7 +904,7 @@ function OverviewDashboard({
 
   const usage = [
     { label: 'Leads', value: stats?.leads ?? 0, icon: TrendingUp },
-    { label: 'Deals', value: stats?.deals ?? 0, icon: Activity },
+    { label: 'Service jobs', value: Number((stats as { tickets?: number } | null)?.tickets ?? 0), icon: Activity },
     { label: 'Invoices', value: stats?.invoices ?? 0, icon: FileText },
     { label: 'Products', value: stats?.products ?? 0, icon: Package },
   ]
@@ -1399,7 +1400,7 @@ function CreateCompanyPage() {
   const [gstin, setGstin] = useState('')
   const [adminName, setAdminName] = useState('Workspace Admin')
   const [adminEmail, setAdminEmail] = useState('')
-  const [adminPassword, setAdminPassword] = useState('Demo@12345')
+  const [adminPassword, setAdminPassword] = useState(() => strongPassword())
   const [geofence, setGeofence] = useState<GeofenceForm>(emptyGeofence)
   const [palette, setPalette] = useState<ColorPalette>('ocean')
   const [logoUrl, setLogoUrl] = useState('')
@@ -1460,7 +1461,7 @@ function CreateCompanyPage() {
     setWebsite('')
     setGstin('')
     setAdminEmail('')
-    setAdminPassword('Demo@12345')
+    setAdminPassword(strongPassword())
     setAdminName('Workspace Admin')
     setGeofence(emptyGeofence())
     setCategoryId(categories[0]?.id ?? '')
@@ -1765,6 +1766,7 @@ function CreateCompanyPage() {
                 <input
                   type="file"
                   accept="image/*"
+                  className="block w-full text-sm text-text-secondary file:mr-3 file:cursor-pointer file:rounded-md file:border file:border-border file:bg-card file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-text-primary hover:file:bg-muted"
                   onChange={(e) => {
                     const f = e.target.files?.[0]
                     if (!f) return
@@ -1778,7 +1780,6 @@ function CreateCompanyPage() {
                     })()
                     e.currentTarget.value = ''
                   }}
-                  className="text-sm"
                 />
               </div>
               <Input

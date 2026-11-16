@@ -49,11 +49,12 @@ export async function createNotifications(
     if (!item.userId) continue;
     unique.set(`${item.userId}:${item.type}:${item.entityId ?? ""}:${item.title}`, item);
   }
-  const rows = [...unique.values()];
+  // Id chosen up front so the live event carries the same id as the stored row (tabs dedupe the bell)
+  const rows = [...unique.values()].map((n) => ({ ...n, id: newId() }));
   try {
     await prisma.notification.createMany({
       data: rows.map((n) => ({
-        id: newId(),
+        id: n.id,
         tenantId: n.tenantId,
         userId: n.userId,
         title: n.title.slice(0, 160),
@@ -72,6 +73,7 @@ export async function createNotifications(
   if (!io) return;
   for (const n of rows) {
     io.to(`user:${n.userId}`).emit("notification", {
+      id: n.id,
       title: n.title,
       message: n.message,
       type: n.type,

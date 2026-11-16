@@ -10,11 +10,31 @@ import {
   resolveAllowedModules,
 } from "../../common/userModules.js";
 import { newId } from "../../common/utils/id.js";
+import { tenantSlugCandidates } from "../../common/tenantSlugs.js";
+import { wakeAttendanceApi } from "../attendance/attendance.service.js";
 type Meta = { userAgent?: string; ip?: string };
 const hash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
-const expiryDate = () => { const match = env.JWT_REFRESH_EXPIRY.match(/^(\d+)([dhm])$/); const n = Number(match?.[1] ?? 7); const unit = match?.[2] ?? "d"; return new Date(Date.now() + n * (unit === "d" ? 86400000 : unit === "h" ? 3600000 : 60000)); };
+const UNIT_MS = { d: 86_400_000, h: 3_600_000, m: 60_000 } as const;
+/** "12h" → ms. Validated by env schema; falls back to 12h. */
+function durationMs(value: string): number {
+  const match = value.match(/^(\d+)([dhm])$/);
+  if (!match) return 12 * UNIT_MS.h;
+  return Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
+}
+/** Absolute end of a session that starts now (fixed at login, never extended by refresh). */
+const sessionEndFromNow = () => new Date(Date.now() + durationMs(env.SESSION_MAX_AGE));
 function accessToken(payload: object) { return jwt.sign(payload, env.JWT_ACCESS_SECRET, { expiresIn: env.JWT_ACCESS_EXPIRY as SignOptions["expiresIn"] }); }
-async function issueRefresh(subject: { userId?: string; platformAdminId?: string }, meta: Meta) { const id = newId(); const token = jwt.sign({ kind: "refresh", tokenId: id }, env.JWT_REFRESH_SECRET, { expiresIn: env.JWT_REFRESH_EXPIRY as SignOptions["expiresIn"], jwtid: id }); await prisma.refreshToken.create({ data: { id, ...subject, tokenHash: hash(token), expiresAt: expiryDate(), userAgent: meta.userAgent?.slice(0,255), ipAddress: meta.ip } }); return token; }
+async function issueRefresh(
+  subject: { userId?: string; platformAdminId?: string },
+  meta: Meta,
+  expiresAt: Date = sessionEndFromNow(),
+) {
+  const id = newId();
+  const expiresInSec = Math.max(1, Math.floor((expiresAt.getTime() - Date.now()) / 1000));
+  const token = jwt.sign({ kind: "refresh", tokenId: id }, env.JWT_REFRESH_SECRET, { expiresIn: expiresInSec, jwtid: id });
+  await prisma.refreshToken.create({ data: { id, ...subject, tokenHash: hash(token), expiresAt, userAgent: meta.userAgent?.slice(0, 255), ipAddress: meta.ip } });
+  return token;
+}
 
 /** Legacy Precision demo emails → HMS Enterprises (single-company dashboard). */
 const LEGACY_STAFF_EMAILS: Record<string, string> = {
@@ -81,22 +101,17 @@ export async function tenantLogin(
   const slugRaw = locator.tenantSlug?.trim().toLowerCase() || "";
   const codeRaw = locator.tenantCode?.trim() || "";
 
-  /** Common aliases people type on the login form for HMS Enterprises */
-  const SLUG_ALIASES: Record<string, string> = {
-    hms: "precision-scales-india",
-    "hms-enterprises": "precision-scales-india",
-    hmsenterprises: "precision-scales-india",
-    "hms-enterprises-in": "precision-scales-india",
-  };
-  const resolvedSlug = slugRaw ? SLUG_ALIASES[slugRaw] || slugRaw : "";
+  // HMS aliases (hms / precision-scales-india / …) all resolve to the same tenant.
+  const slugCandidates = tenantSlugCandidates(slugRaw);
+  const hasSlug = slugCandidates.length > 0;
 
   // Parallel first hop: resolve workspace + candidate users (no Prisma User↔Tenant relation).
   const [locatedTenant, candidates] = await Promise.all([
-    resolvedSlug || codeRaw
+    hasSlug || codeRaw
       ? prisma.tenant.findFirst({
           where: {
             deletedAt: null,
-            ...(resolvedSlug ? { slug: resolvedSlug } : { code: codeRaw }),
+            ...(hasSlug ? { slug: { in: slugCandidates } } : { code: codeRaw }),
             status: { in: ["ACTIVE", "TRIAL"] },
           },
           select: { id: true, slug: true, name: true, branding: true, attendanceEnabled: true },
@@ -171,10 +186,12 @@ export async function tenantLogin(
     loadTenantEnabledModuleKeys(user.tenantId),
     // Don't block token on lastLogin write
     prisma.user
-      .update({ where: { id: user.id }, data: { lastLoginAt: new Date() } })
+      // First sign-in done: forget the plaintext starting password (bcrypt hash stays)
+      .update({ where: { id: user.id }, data: { lastLoginAt: new Date(), tempPassword: null } })
       .catch(() => undefined),
   ]);
   if (!role) throw new AppError("User role is unavailable", 403);
+  wakeAttendanceApi(tenantFresh?.attendanceEnabled);
 
   return {
     accessToken: accessToken({
@@ -202,7 +219,27 @@ export async function tenantLogin(
     },
   };
 }
-export async function refresh(raw: string, meta: Meta) { try { jwt.verify(raw, env.JWT_REFRESH_SECRET); } catch { throw new AppError("Invalid refresh token", 401); } const old = await prisma.refreshToken.findUnique({ where: { tokenHash: hash(raw) } }); if (!old || old.revokedAt || old.expiresAt <= new Date()) throw new AppError("Invalid refresh token", 401); await prisma.refreshToken.update({ where: { id: old.id }, data: { revokedAt: new Date() } }); if (old.platformAdminId) { const admin = await prisma.platformAdmin.findFirst({ where: { id: old.platformAdminId, status: "ACTIVE", deletedAt: null } }); if (!admin) throw new AppError("Account unavailable", 401); return { accessToken: accessToken({ kind: "platform", adminId: admin.id, role: admin.role }), refreshToken: await issueRefresh({ platformAdminId: admin.id }, meta) }; } const user = await prisma.user.findFirst({ where: { id: old.userId ?? "", status: "ACTIVE", deletedAt: null } }); if (!user) throw new AppError("Account unavailable", 401); const role = await prisma.role.findFirst({ where: { id: user.roleId, tenantId: user.tenantId, deletedAt: null } }); if (!role) throw new AppError("Role unavailable", 401); return { accessToken: accessToken({ kind: "tenant", userId: user.id, tenantId: user.tenantId, role: role.code }), refreshToken: await issueRefresh({ userId: user.id }, meta) }; }
+export async function refresh(raw: string, meta: Meta) {
+  try { jwt.verify(raw, env.JWT_REFRESH_SECRET); } catch { throw new AppError("Session expired — please sign in again", 401); }
+  const old = await prisma.refreshToken.findUnique({ where: { tokenHash: hash(raw) } });
+  if (!old || old.revokedAt || old.expiresAt <= new Date()) throw new AppError("Session expired — please sign in again", 401);
+  await prisma.refreshToken.update({ where: { id: old.id }, data: { revokedAt: new Date() } });
+  // Rotated token inherits the session end — refreshing never extends the session.
+  // Legacy tokens (issued with a 7-day expiry) are also capped to SESSION_MAX_AGE from their issue time.
+  const legacyCap = new Date(old.createdAt.getTime() + durationMs(env.SESSION_MAX_AGE));
+  const sessionEnd = old.expiresAt < legacyCap ? old.expiresAt : legacyCap;
+  if (sessionEnd <= new Date()) throw new AppError("Session expired — please sign in again", 401);
+  if (old.platformAdminId) {
+    const admin = await prisma.platformAdmin.findFirst({ where: { id: old.platformAdminId, status: "ACTIVE", deletedAt: null } });
+    if (!admin) throw new AppError("Account unavailable", 401);
+    return { accessToken: accessToken({ kind: "platform", adminId: admin.id, role: admin.role }), refreshToken: await issueRefresh({ platformAdminId: admin.id }, meta, sessionEnd) };
+  }
+  const user = await prisma.user.findFirst({ where: { id: old.userId ?? "", status: "ACTIVE", deletedAt: null } });
+  if (!user) throw new AppError("Account unavailable", 401);
+  const role = await prisma.role.findFirst({ where: { id: user.roleId, tenantId: user.tenantId, deletedAt: null } });
+  if (!role) throw new AppError("Role unavailable", 401);
+  return { accessToken: accessToken({ kind: "tenant", userId: user.id, tenantId: user.tenantId, role: role.code }), refreshToken: await issueRefresh({ userId: user.id }, meta, sessionEnd) };
+}
 export async function logout(raw: string) { await prisma.refreshToken.updateMany({ where: { tokenHash: hash(raw), revokedAt: null }, data: { revokedAt: new Date() } }); }
 export async function me(auth: Express.Request["auth"]) {
   if (!auth) throw new AppError("Authentication required", 401);
@@ -246,6 +283,7 @@ export async function me(auth: Express.Request["auth"]) {
     }),
     loadTenantEnabledModuleKeys(user.tenantId),
   ]);
+  wakeAttendanceApi(tenant?.attendanceEnabled);
   const { preferences, ...rest } = user;
   return {
     ...rest,

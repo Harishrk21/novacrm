@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -8,6 +8,7 @@ import { api, ApiClientError } from '@/lib/api'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { formatPhone } from '@/lib/utils'
+import { normalizeWorkEntries, serviceReportDraft } from '@/lib/workReport'
 
 const CHANGE_TYPES = [
   { value: 'REPLACED', label: 'Replaced' },
@@ -95,7 +96,24 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
   const [issues, setIssues] = useState('')
   const [workDone, setWorkDone] = useState('')
   const [lines, setLines] = useState<SpareLine[]>([emptyLine()])
+  /** Parts already logged on this ticket (Spare parts section / earlier report saves) */
+  const [logged, setLogged] = useState<Array<Record<string, unknown>>>([])
+  const [fromWorkReport, setFromWorkReport] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  const ticketCfAll =
+    ticket?.customFields && typeof ticket.customFields === 'object'
+      ? (ticket.customFields as Record<string, unknown>)
+      : {}
+  const workEntries = useMemo(() => normalizeWorkEntries(ticketCfAll.dayNotes), [ticketCfAll.dayNotes])
+  const complaint = String(ticket?.description || ticket?.subject || '')
+
+  function refillFromWorkReport() {
+    const d = serviceReportDraft(workEntries, complaint)
+    setIssues(d.issues)
+    setWorkDone(d.workDone)
+    setFromWorkReport(true)
+  }
 
   const contact = ticket?.contact ?? null
   const asset = ticket?.asset ?? null
@@ -117,35 +135,33 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
         ? (ticket.customFields as Record<string, unknown>)
         : {}
     const existing = cf.serviceReport as Record<string, unknown> | undefined
-    setIssues(
-      existing?.issues
-        ? String(existing.issues)
-        : String(ticket.description || ticket.subject || ''),
-    )
-    setWorkDone(existing?.workDone ? String(existing.workDone) : '')
-    const savedParts = Array.isArray(existing?.spareParts)
-      ? (existing.spareParts as Array<Record<string, unknown>>)
-      : []
-    if (savedParts.length > 0) {
-      setLines(
-        savedParts.map((p) => ({
-          key: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          partName: String(p.partName || ''),
-          partCode: String(p.partCode || ''),
-          changeType: String(p.changeType || 'REPLACED'),
-          quantity: String(p.quantity ?? '1'),
-          oldSerialNo: String(p.oldSerialNo || ''),
-          newSerialNo: String(p.newSerialNo || ''),
-          chargeAmount:
-            p.chargeAmount != null && p.chargeAmount !== ''
-              ? String(p.chargeAmount)
-              : '',
-          underWarranty: Boolean(p.underWarranty),
-          notes: String(p.notes || ''),
-        })),
-      )
+    const savedText = Boolean(existing?.issues || existing?.workDone)
+    if (savedText) {
+      setIssues(String(existing?.issues ?? ''))
+      setWorkDone(String(existing?.workDone ?? ''))
+      setFromWorkReport(false)
     } else {
-      setLines([emptyLine()])
+      // Auto-draft from the engineer's work report — desk edits before saving
+      const d = serviceReportDraft(
+        normalizeWorkEntries(cf.dayNotes),
+        String(ticket.description || ticket.subject || ''),
+      )
+      setIssues(d.issues)
+      setWorkDone(d.workDone)
+      setFromWorkReport(normalizeWorkEntries(cf.dayNotes).length > 0)
+    }
+    // New parts only — parts already logged on the ticket are listed separately (no re-create)
+    setLines([emptyLine()])
+    setLogged([])
+    let cancelled = false
+    void api
+      .spareParts({ ticketId: String(ticket.id), limit: 200 })
+      .then((res) => {
+        if (!cancelled) setLogged(res.items ?? [])
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
     }
   }, [open, ticket])
 
@@ -160,7 +176,7 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
       return
     }
     const spareRows = lines.filter((l) => l.partName.trim())
-    if (!issues.trim() && spareRows.length === 0) {
+    if (!issues.trim() && !workDone.trim() && spareRows.length === 0) {
       addToast({ type: 'error', message: 'Enter issues / work done, or at least one spare part change' })
       return
     }
@@ -205,7 +221,18 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
           : ticket.assignee?.name
             ? String(ticket.assignee.name)
             : null
-      const spareParts = spareRows.map((line) => ({
+      const loggedParts = logged.map((p) => ({
+        partName: String(p.partName ?? ''),
+        partCode: p.partCode ? String(p.partCode) : null,
+        changeType: String(p.changeType ?? 'REPLACED'),
+        quantity: Math.max(1, Number(p.quantity) || 1),
+        oldSerialNo: p.oldSerialNo ? String(p.oldSerialNo) : null,
+        newSerialNo: p.newSerialNo ? String(p.newSerialNo) : null,
+        chargeAmount: p.chargeAmount != null && p.chargeAmount !== '' ? Number(p.chargeAmount) : null,
+        underWarranty: Boolean(p.underWarranty),
+        notes: p.notes ? String(p.notes) : null,
+      }))
+      const newParts = spareRows.map((line) => ({
         partName: line.partName.trim(),
         partCode: line.partCode.trim() || null,
         changeType: line.changeType,
@@ -220,12 +247,14 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
         underWarranty: line.underWarranty,
         notes: line.notes.trim() || null,
       }))
+      const spareParts = [...loggedParts, ...newParts]
       await api.updateTicket(String(ticket.id), {
         customFields: {
           ...cf,
           serviceReport: {
             issues: issues.trim(),
             workDone: workDone.trim(),
+            fromWorkReport: workEntries.length > 0,
             sparePartsCount: spareParts.length,
             spareParts,
             savedAt: new Date().toISOString(),
@@ -326,6 +355,23 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
           </div>
         </section>
 
+        {workEntries.length > 0 ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-sky-200 bg-sky-50/70 px-3 py-2 text-xs text-sky-900 dark:border-sky-900/50 dark:bg-sky-950/30 dark:text-sky-100">
+            <span>
+              {fromWorkReport
+                ? `Drafted from the engineer’s work report (${workEntries.length} visit${workEntries.length === 1 ? '' : 's'}) — edit anything before saving.`
+                : `Engineer’s work report has ${workEntries.length} visit${workEntries.length === 1 ? '' : 's'}.`}
+            </span>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 font-semibold hover:underline"
+              onClick={refillFromWorkReport}
+            >
+              <RotateCcw size={12} /> {fromWorkReport ? 'Reset to draft' : 'Fill from work report'}
+            </button>
+          </div>
+        ) : null}
+
         <label className="block text-sm">
           <span className="mb-1 block font-medium text-text-secondary">Issues / complaint *</span>
           <textarea
@@ -339,7 +385,7 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
         <label className="block text-sm">
           <span className="mb-1 block font-medium text-text-secondary">Work done / remarks</span>
           <textarea
-            className="min-h-[72px] w-full rounded-[6px] border border-border bg-card px-3 py-2 text-sm outline-none focus:border-accent-blue"
+            className="min-h-[120px] w-full rounded-[6px] border border-border bg-card px-3 py-2 text-sm outline-none focus:border-accent-blue"
             value={workDone}
             onChange={(e) => setWorkDone(e.target.value)}
             placeholder="What was done on site…"
@@ -351,7 +397,8 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
             <div>
               <h3 className="text-sm font-semibold text-text-primary">Spare parts change</h3>
               <p className="text-xs text-text-secondary">
-                Saved under this machine on the customer’s contact → Spare parts / Machines.
+                Parts the engineer logged are included automatically. Add any missing part below — saved
+                under this machine on the customer.
               </p>
             </div>
             <Button
@@ -371,6 +418,28 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
             </p>
           ) : null}
 
+          {logged.length > 0 ? (
+            <ul className="divide-y divide-border rounded-lg border border-border bg-muted/20 text-sm">
+              {logged.map((p) => (
+                <li key={String(p.id)} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-3 py-2">
+                  <span className="font-medium text-text-primary">{String(p.partName ?? 'Part')}</span>
+                  <span className="text-xs text-text-secondary">
+                    {[
+                      String(p.changeType ?? '').toLowerCase(),
+                      `qty ${String(p.quantity ?? 1)}`,
+                      p.oldSerialNo ? `old ${String(p.oldSerialNo)}` : '',
+                      p.newSerialNo ? `new ${String(p.newSerialNo)}` : '',
+                      p.underWarranty ? 'warranty' : p.chargeAmount != null ? `₹${String(p.chargeAmount)}` : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                  <span className="ml-auto text-[11px] text-text-secondary">already logged</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
           <div className="space-y-3">
             {lines.map((line, idx) => (
               <div
@@ -378,7 +447,9 @@ export function ServiceReportModal({ open, ticket, onClose, onSaved }: Props) {
                 className="rounded-lg border border-border bg-card p-3 shadow-sm"
               >
                 <div className="mb-2 flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold text-text-secondary">Part {idx + 1}</span>
+                  <span className="text-xs font-semibold text-text-secondary">
+                    {logged.length ? `Extra part ${idx + 1}` : `Part ${idx + 1}`} (optional)
+                  </span>
                   {lines.length > 1 ? (
                     <button
                       type="button"

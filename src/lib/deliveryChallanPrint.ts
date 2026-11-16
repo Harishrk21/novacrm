@@ -1,5 +1,13 @@
 /** Delivery challan for demo issue or sale dispatch (browser Print → Save as PDF). */
 import { openPrintHtml } from '@/lib/openPrintHtml'
+import {
+  LETTERHEAD_CSS,
+  amountInWordsInr,
+  fmtDate,
+  letterFooterHtml,
+  letterheadHtml,
+  printCompany,
+} from '@/lib/printLetterhead'
 
 function escapeHtml(value: string) {
   return value
@@ -18,6 +26,10 @@ function formatInr(n: number | null | undefined) {
 export type DeliveryChallanLine = {
   productName: string
   productSku?: string | null
+  brand?: string | null
+  spec?: string | null
+  /** Guarantee (GC) end date */
+  warrantyEnd?: string | null
   serialNo?: string | null
   hmsUniqId?: string | null
   qty?: number
@@ -79,6 +91,9 @@ export function parseDeliveryChallan(source: unknown): DeliveryChallan | null {
     .map((l) => ({
       productName: String(l.productName ?? l.label ?? 'Product'),
       productSku: l.productSku != null ? String(l.productSku) : null,
+      brand: l.brand != null ? String(l.brand) : null,
+      spec: l.spec != null ? String(l.spec) : null,
+      warrantyEnd: l.warrantyEnd != null ? String(l.warrantyEnd) : null,
       serialNo: l.serialNo != null ? String(l.serialNo) : null,
       hmsUniqId: l.hmsUniqId != null ? String(l.hmsUniqId) : null,
       qty: Number(l.qty ?? 1) || 1,
@@ -235,7 +250,14 @@ export function buildDeliveryChallanHtml(
   opts: DeliveryChallan,
   fallbackSellerName = 'HMS Enterprises',
 ): string {
-  const seller = escapeHtml(opts.sellerName || fallbackSellerName)
+  const company = printCompany({
+    name: opts.sellerName || fallbackSellerName,
+    phone: opts.sellerPhone,
+    email: opts.sellerEmail,
+    gstin: opts.sellerGstin,
+    address: opts.sellerAddress,
+  })
+  const seller = escapeHtml(company.name)
   const dcNo = escapeHtml(opts.number)
   const place = [opts.city, opts.state].filter(Boolean).join(', ')
   const familyLine = [opts.catalogFamily, opts.catalogIndustry].filter(Boolean).join(' · ')
@@ -266,8 +288,12 @@ export function buildDeliveryChallanHtml(
     .map((l, i) => {
       const idParts = [
         l.serialNo && !l.weighing ? `S/No ${l.serialNo}` : null,
-        l.hmsUniqId ? `HMS ${l.hmsUniqId}` : null,
-        l.weighing && !l.hmsUniqId && l.serialNo ? `HMS ${l.serialNo}` : null,
+        l.hmsUniqId ? (/^HMS/i.test(l.hmsUniqId) ? l.hmsUniqId : `HMS ${l.hmsUniqId}`) : null,
+        l.weighing && !l.hmsUniqId && l.serialNo
+          ? /^HMS/i.test(l.serialNo)
+            ? l.serialNo
+            : `HMS ${l.serialNo}`
+          : null,
       ].filter(Boolean)
       const idCell = idParts.length ? idParts.join(' · ') : '—'
       const qty = l.qty ?? 1
@@ -282,8 +308,10 @@ export function buildDeliveryChallanHtml(
           <td class="num">${i + 1}</td>
           <td>
             <strong>${escapeHtml(l.productName)}</strong>
+            ${l.brand || l.spec ? `<div style="font-size:12px;margin-top:2px">${escapeHtml([l.brand, l.spec].filter(Boolean).join(' · '))}</div>` : ''}
             ${l.productSku ? `<div style="color:var(--muted);font-size:12px;margin-top:2px">SKU ${escapeHtml(l.productSku)}</div>` : ''}
-            ${l.stampingDate ? `<div style="color:var(--muted);font-size:12px;margin-top:2px">Stamping: ${escapeHtml(String(l.stampingDate).slice(0, 10))}</div>` : ''}
+            ${l.warrantyEnd ? `<div style="color:var(--muted);font-size:12px;margin-top:2px">Guarantee (GC) till ${escapeHtml(fmtDate(l.warrantyEnd))}</div>` : ''}
+            ${l.stampingDate ? `<div style="color:var(--muted);font-size:12px;margin-top:2px">Stamped: ${escapeHtml(fmtDate(l.stampingDate))}</div>` : ''}
             ${l.weighing ? `<div style="color:var(--muted);font-size:12px;margin-top:2px">Weighing · HMS ID</div>` : ''}
           </td>
           <td style="font-family:ui-monospace,monospace;font-weight:700">${escapeHtml(idCell)}</td>
@@ -349,30 +377,24 @@ export function buildDeliveryChallanHtml(
   .btn-print{background:var(--brand);color:#fff}
   .btn-close{background:#e2e8f0;color:#0f172a}
   @media print{.toolbar{display:none}body{background:#fff}.sheet{margin:0;box-shadow:none;border-radius:0}}
+${LETTERHEAD_CSS}
 </style></head><body>
 <div class="toolbar">
   <button class="btn-print" onclick="window.print()">Print / Save PDF</button>
   <button class="btn-close" onclick="window.close()">Close</button>
 </div>
 <div class="sheet">
-  <div class="hero">
-    <div class="hero-top">
-      <div>
-        <div class="brand">${seller}</div>
-        <div class="tag">Delivery challan · ${isSale ? 'Sale' : 'Demo'}</div>
-        ${opts.sellerGstin ? `<div style="margin-top:8px;opacity:.9;font-size:12px">GSTIN ${escapeHtml(opts.sellerGstin)}</div>` : ''}
-        ${opts.sellerAddress ? `<div style="margin-top:4px;opacity:.85;font-size:12px;max-width:360px">${escapeHtml(opts.sellerAddress)}</div>` : ''}
-        ${opts.sellerPhone || opts.sellerEmail ? `<div style="margin-top:4px;opacity:.85;font-size:12px">${escapeHtml([opts.sellerPhone, opts.sellerEmail].filter(Boolean).join(' · '))}</div>` : ''}
-      </div>
-      <div class="meta">
-        <div class="dc-no">${dcNo}</div>
-        <div style="margin-top:6px;opacity:.95">Date: ${escapeHtml(opts.date || '—')}</div>
-        <div style="margin-top:4px;opacity:.9;font-size:12px">Purpose: ${isSale ? 'Sale delivery' : 'Demonstration'}</div>
-        ${opts.reqNumber ? `<div style="margin-top:4px;opacity:.9;font-size:12px">Req: ${escapeHtml(opts.reqNumber)}</div>` : ''}
-        ${showMoney && saleTotal != null ? `<div style="margin-top:8px;font-size:14px;font-weight:800">Total ${escapeHtml(formatInr(saleTotal))}</div>` : ''}
-      </div>
-    </div>
-  </div>
+  ${letterheadHtml({
+    company,
+    title: 'Delivery Challan',
+    subtitle: isSale ? 'Sale dispatch' : 'Demo / trial — not a sale',
+    number: opts.number,
+    meta: [
+      ['Date', fmtDate(opts.date)],
+      ['Req. ref', opts.reqNumber],
+      ['Prepared by', opts.executiveName],
+    ],
+  })}
   <div class="body">
     <div class="banner">${
       isSale
@@ -383,7 +405,8 @@ export function buildDeliveryChallanHtml(
       <div class="party from">
         <div class="label">From (consignor)</div>
         <div class="name">${seller}</div>
-        <div class="line">${opts.sellerAddress ? escapeHtml(opts.sellerAddress) : 'Warehouse / dispatch'}</div>
+        <div class="line">${company.addressLines.length ? company.addressLines.map(escapeHtml).join('<br/>') : 'Warehouse / dispatch'}</div>
+        ${company.gstin ? `<div class="line">GSTIN: ${escapeHtml(company.gstin)}</div>` : ''}
         ${opts.executiveName ? `<div class="line" style="margin-top:6px">Prepared by: <strong>${escapeHtml(opts.executiveName)}</strong></div>` : ''}
       </div>
       <div class="party to">
@@ -421,19 +444,21 @@ export function buildDeliveryChallanHtml(
       <div class="trow"><span>Goods total</span><span>${escapeHtml(formatInr(saleTotal))}</span></div>
       <div class="trow"><span>Advance received</span><span>${escapeHtml(formatInr(advance))}</span></div>
       <div class="trow"><span>Balance due</span><span>${escapeHtml(formatInr(balance))}</span></div>
-    </div>`
+    </div>
+    <div class="words" style="text-align:right">Goods total in words: <b>${escapeHtml(amountInWordsInr(saleTotal))}</b></div>`
         : ''
     }
     ${opts.notes ? `<p style="margin-top:16px;color:var(--muted)">${escapeHtml(opts.notes)}</p>` : ''}
     <div class="footer">
       <div>
-        <div class="sign">Prepared / dispatched by</div>
+        <div class="sign">For ${seller} — authorised signatory</div>
       </div>
       <div>
-        <div class="sign">Received by (customer)</div>
+        <div class="sign">Received in good condition (customer signature)</div>
       </div>
     </div>
   </div>
+  ${letterFooterHtml(company)}
 </div>
 </body></html>`
 }

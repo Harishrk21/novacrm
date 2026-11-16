@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { strongPassword } from '@/lib/strongPassword'
 import { useSearchParams } from 'react-router-dom'
 import { Building2, Pencil, UserPlus, Users } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -121,7 +122,7 @@ function defaultAreasForRole(roleCode: string) {
 const emptyForm = (tenantKeys: string[] = [], roleCode = 'WAREHOUSE'): FormState => ({
   name: '',
   email: '',
-  password: 'Demo@12345',
+  password: strongPassword(),
   phone: '',
   avatarUrl: '',
   roleCode,
@@ -490,7 +491,7 @@ export function UsersPage() {
         required
         value={form.phone}
         onChange={(phone) => setForm((f) => ({ ...f, phone }))}
-        hint="India (+91) — 10 digits for WhatsApp alerts"
+        hint="India (+91) — 10 digits"
       />
       <p className="-mt-2 text-xs text-text-secondary sm:col-span-2">
         Required for every employee. Used for{' '}
@@ -738,7 +739,7 @@ export function UsersPage() {
       <Card className="mb-4 border-sky-200/80 bg-sky-50/50 p-4 text-sm text-text-secondary dark:border-sky-900/40 dark:bg-sky-950/20">
         <strong className="text-text-primary">Where employees live:</strong> create every team login here
         (Admin → Users &amp; Roles). Set <strong>role</strong> and a required{' '}
-        <strong>WhatsApp / mobile</strong> for every person. Seat limit comes from your platform
+        <strong>mobile number</strong> for every person. Seat limit comes from your platform
         subscription
         {data?.maxUsers != null
           ? ` (${data.used ?? 0}/${data.maxUsers} used${
@@ -747,7 +748,7 @@ export function UsersPage() {
           : data
             ? ' (unlimited)'
             : ''}
-        . Assignee dropdowns only list the matching role; WhatsApp alerts use that number.
+        . Assignee dropdowns only list the matching role.
       </Card>
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -935,7 +936,7 @@ export function UsersPage() {
         accent="theme"
         size="xl"
         title={formMode === 'create' ? 'Add employee' : 'Edit employee'}
-        subtitle="Login + role + employee profile. WhatsApp / mobile is required for every employee."
+        subtitle="Login + role + employee profile. A mobile number is required for every employee."
         footer={
           <>
             <Button variant="outline" onClick={() => setFormOpen(false)} disabled={saving}>

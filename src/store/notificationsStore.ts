@@ -121,7 +121,7 @@ export const useNotificationsStore = create<State>((set, get) => ({
         const fresh = items.find((n) => !n.isRead && !prevIds.has(n.id) && !n.id.startsWith('live-'))
         if (fresh) {
           void import('@/lib/notificationSound').then(({ playNotificationBell }) => {
-            playNotificationBell()
+            playNotificationBell(fresh.id)
           })
           emitNotificationArrived({
             id: fresh.id,
@@ -231,10 +231,22 @@ export function connectNotificationsSocket(
     if (cancelled) return
     const base = (import.meta.env.VITE_API_URL ?? 'http://localhost:3001/api').replace(/\/api\/?$/, '')
     const s = io(base, {
-      auth: { token: auth.accessToken },
+      // Read the token on every (re)connect — the first one expires after 15 min
+      auth: (cb: (data: Record<string, unknown>) => void) => cb({ token: getAuth()?.accessToken ?? '' }),
       transports: ['websocket', 'polling'],
     })
     socket = s
+    // Server closes the socket when the token that opened it expires: refresh the session via a
+    // normal API call, then reconnect. (A removed user's reconnect is refused — no loop.)
+    s.on('disconnect', (reason: unknown) => {
+      if (reason !== 'io server disconnect' || cancelled) return
+      void useNotificationsStore
+        .getState()
+        .load()
+        .finally(() => {
+          if (!cancelled && getAuth()?.accessToken) (s as unknown as { connect: () => void }).connect()
+        })
+    })
     s.on('notification', (payload: unknown) => {
       const p = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>
       useNotificationsStore.getState().prependLive({
@@ -246,7 +258,7 @@ export function connectNotificationsSocket(
         createdAt: String(p.createdAt ?? new Date().toISOString()),
       })
       void import('@/lib/notificationSound').then(({ playNotificationBell }) => {
-        playNotificationBell()
+        playNotificationBell(p.id ? String(p.id) : undefined)
       })
       onEvent?.(p)
       // Refresh from server shortly so IDs persist for mark-read

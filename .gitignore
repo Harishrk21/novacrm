@@ -43,3 +43,6 @@ backend/.env.*
 *.sw?
 dev-dist/
 e2e/**/out/
+
+# Data backups / exports contain customer + staff records — never commit
+backend/backups/

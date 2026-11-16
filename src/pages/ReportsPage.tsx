@@ -1,899 +1,629 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { AskDashboardPanel } from '@/components/ai/AskDashboardPanel'
+import { useSearchParams } from 'react-router-dom'
 import {
-  Award,
+  ClipboardList,
   Download,
-  FileJson,
   FileSpreadsheet,
   FileText,
+  History,
+  Package,
   Printer,
+  Receipt,
   RefreshCw,
+  TrendingUp,
+  Users,
+  Wrench,
 } from 'lucide-react'
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Legend,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
-import { AskDashboardPanel } from '@/components/ai/AskDashboardPanel'
+import * as XLSX from 'xlsx'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { PageTip } from '@/components/tips/PageTip'
-import { Badge, ticketPriorityColor, ticketStatusColor } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
-import { Input } from '@/components/ui/Input'
-import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
-import { api, ApiClientError, isTenantSession, num } from '@/lib/api'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 import {
-  downloadCsv,
-  downloadJson,
-  downloadXlsx,
-  printReportHtml,
-  tableHtml,
-} from '@/lib/reportExport'
-import { formatCurrency } from '@/lib/utils'
+  ApiClientError,
+  api,
+  type ReportCatalogItem,
+  type ReportColumn,
+  type ReportResult,
+} from '@/lib/api'
+import {
+  LETTERHEAD_CSS,
+  escapeHtml,
+  letterFooterHtml,
+  letterheadHtml,
+  primePrintCompany,
+  printCompany,
+} from '@/lib/printLetterhead'
 import { useUIStore } from '@/store/uiStore'
-import { PageSkeleton } from '@/components/ui/Skeleton'
+import { cn } from '@/lib/utils'
 
-const CHART_FALLBACK = ['#3b82f6', '#f59e0b', '#10b981', '#8b5cf6', '#ef4444', '#64748b', '#06b6d4']
+/* ─── Date presets (India: financial year Apr–Mar) ─── */
 
-const TICKET_STATUS_HEX: Record<string, string> = {
-  OPEN: '#2563eb',
-  IN_PROGRESS: '#f59e0b',
-  PENDING: '#f97316',
-  RESOLVED: '#10b981',
-  CLOSED: '#64748b',
+const pad = (n: number) => String(n).padStart(2, '0')
+const ymd = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+
+type PresetId = 'this-month' | 'last-month' | 'this-quarter' | 'this-fy' | 'last-fy' | 'next-30' | 'custom'
+
+function presetRange(id: PresetId): { from: string; to: string } | null {
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = now.getMonth()
+  const fyStart = m >= 3 ? y : y - 1
+  switch (id) {
+    case 'this-month':
+      return { from: ymd(new Date(y, m, 1)), to: ymd(now) }
+    case 'last-month':
+      return { from: ymd(new Date(y, m - 1, 1)), to: ymd(new Date(y, m, 0)) }
+    case 'this-quarter': {
+      // Indian FY quarters: Apr–Jun, Jul–Sep, Oct–Dec, Jan–Mar
+      const qStart = Math.floor(((m + 9) % 12) / 3) * 3 // months since April
+      const start = new Date(fyStart, 3 + qStart, 1)
+      return { from: ymd(start), to: ymd(now) }
+    }
+    case 'this-fy':
+      return { from: ymd(new Date(fyStart, 3, 1)), to: ymd(now) }
+    case 'last-fy':
+      return { from: ymd(new Date(fyStart - 1, 3, 1)), to: ymd(new Date(fyStart, 2, 31)) }
+    case 'next-30': {
+      const end = new Date(now)
+      end.setDate(end.getDate() + 30)
+      return { from: ymd(now), to: ymd(end) }
+    }
+    default:
+      return null
+  }
 }
 
-const TICKET_PRIORITY_HEX: Record<string, string> = {
-  LOW: '#10b981',
-  MEDIUM: '#f59e0b',
-  HIGH: '#f97316',
-  CRITICAL: '#ef4444',
-}
-
-const labelize = (value: string) =>
-  value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
-
-type Analytics = Awaited<ReturnType<typeof api.analytics>>
-type Tab = 'overview' | 'leads' | 'service' | 'team' | 'stock'
-
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'leads', label: 'Leads' },
-  { id: 'service', label: 'Service' },
-  { id: 'team', label: 'Team & performers' },
-  { id: 'stock', label: 'Stock & billing' },
+const PRESETS: Array<{ value: PresetId; label: string }> = [
+  { value: 'this-month', label: 'This month' },
+  { value: 'last-month', label: 'Last month' },
+  { value: 'this-quarter', label: 'This quarter' },
+  { value: 'this-fy', label: 'This financial year' },
+  { value: 'last-fy', label: 'Last financial year' },
+  { value: 'next-30', label: 'Next 30 days' },
+  { value: 'custom', label: 'Custom dates' },
 ]
 
-function Kpi({
-  label,
-  value,
-  hint,
-  to,
-}: {
-  label: string
-  value: string | number
-  hint?: string
-  to?: string
-}) {
-  const inner = (
-    <>
-      <div className="text-xs text-text-secondary">{label}</div>
-      <div className="mt-1 text-xl font-semibold tabular-nums">{value}</div>
-      {hint ? <div className="mt-0.5 text-[11px] text-text-muted">{hint}</div> : null}
-    </>
-  )
-  if (to) {
-    return (
-      <Link
-        to={to}
-        className="block rounded-lg border border-border bg-card p-3 transition-colors hover:border-accent-blue/40 hover:bg-muted/40"
-      >
-        {inner}
-      </Link>
-    )
-  }
-  return <div className="rounded-lg border border-border bg-card p-3">{inner}</div>
+const GROUP_ICON: Record<string, typeof Wrench> = {
+  Service: Wrench,
+  Sales: TrendingUp,
+  Billing: Receipt,
+  Stock: Package,
+  Customers: Users,
+  History: History,
 }
 
-function EmptyChart({ label = 'No data for current filters' }: { label?: string }) {
-  return (
-    <div className="flex h-[220px] items-center justify-center text-sm text-text-secondary">{label}</div>
-  )
+/* ─── Formatting ─── */
+
+const inr = new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const int = new Intl.NumberFormat('en-IN')
+
+function fmtCell(v: unknown, type: ReportColumn['type']): string {
+  if (v == null || v === '') return type === 'money' || type === 'number' ? '0' : ''
+  if (type === 'money') return `₹${inr.format(Number(v) || 0)}`
+  if (type === 'number') return int.format(Number(v) || 0)
+  if (type === 'date') {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v))
+    if (!m) return String(v)
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    })
+  }
+  return String(v)
 }
+const isNum = (c: ReportColumn) => c.type === 'money' || c.type === 'number'
+
+function periodLabel(r: ReportResult, from: string, to: string) {
+  if (!r.dateFilter) return `As on ${fmtCell(ymd(new Date()), 'date')}`
+  return `${fmtCell(from, 'date')} – ${fmtCell(to, 'date')}`
+}
+
+function fileBase(r: ReportResult, from: string, to: string) {
+  const period = r.dateFilter ? `${from}_to_${to}` : `as-on-${ymd(new Date())}`
+  return `HMS-${r.key}-${period}`
+}
+
+/* ─── Exports ─── */
+
+function exportExcel(r: ReportResult, from: string, to: string, companyName: string) {
+  const header = r.columns.map((c) => c.label)
+  const body = r.rows.map((row) =>
+    r.columns.map((c) => {
+      const v = row[c.key]
+      if (isNum(c)) return Number(v ?? 0) || 0
+      if (c.type === 'date') return v ? fmtCell(v, 'date') : ''
+      return v ?? ''
+    }),
+  )
+  const totalsRow = r.totals
+    ? r.columns.map((c, i) => (i === 0 ? 'Total' : r.totals && c.key in r.totals ? r.totals[c.key] : ''))
+    : null
+  const aoa: unknown[][] = [
+    [companyName],
+    [r.title],
+    [periodLabel(r, from, to)],
+    [],
+    header,
+    ...body,
+    ...(totalsRow ? [totalsRow] : []),
+  ]
+  const ws = XLSX.utils.aoa_to_sheet(aoa)
+  // Money columns as ₹ numbers so Excel can sum them
+  const firstData = 5
+  r.columns.forEach((c, ci) => {
+    if (!isNum(c)) return
+    for (let ri = firstData; ri < aoa.length; ri++) {
+      const ref = XLSX.utils.encode_cell({ r: ri, c: ci })
+      const cell = ws[ref]
+      if (cell && typeof cell.v === 'number') cell.z = c.type === 'money' ? '#,##0.00' : '#,##0'
+    }
+  })
+  ws['!cols'] = r.columns.map((c) => ({
+    wch: Math.min(
+      40,
+      Math.max(c.label.length, ...r.rows.slice(0, 200).map((row) => fmtCell(row[c.key], c.type).length)) + 2,
+    ),
+  }))
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, r.title.slice(0, 31))
+  XLSX.writeFile(wb, `${fileBase(r, from, to)}.xlsx`)
+}
+
+function exportCsv(r: ReportResult, from: string, to: string) {
+  const esc = (v: unknown) => {
+    const s = v == null ? '' : String(v)
+    return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s
+  }
+  const lines = [
+    r.columns.map((c) => esc(c.label)).join(','),
+    ...r.rows.map((row) => r.columns.map((c) => esc(isNum(c) ? Number(row[c.key] ?? 0) : row[c.key])).join(',')),
+  ]
+  if (r.totals) {
+    lines.push(r.columns.map((c, i) => (i === 0 ? 'Total' : r.totals && c.key in r.totals ? r.totals[c.key] : '')).join(','))
+  }
+  // BOM so Excel opens ₹ / Tamil names correctly
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${fileBase(r, from, to)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function reportPrintHtml(r: ReportResult, from: string, to: string) {
+  const company = printCompany()
+  const wide = r.columns.length > 7
+  const head = r.columns
+    .map((c) => `<th class="${isNum(c) ? 'num' : ''}">${escapeHtml(c.label)}</th>`)
+    .join('')
+  const body = r.rows
+    .map(
+      (row, i) =>
+        `<tr><td class="sn">${i + 1}</td>${r.columns
+          .map((c) => `<td class="${isNum(c) ? 'num' : ''}">${escapeHtml(fmtCell(row[c.key], c.type))}</td>`)
+          .join('')}</tr>`,
+    )
+    .join('')
+  const totals = r.totals
+    ? `<tr class="tot"><td></td>${r.columns
+        .map((c, i) =>
+          i === 0
+            ? '<td>Total</td>'
+            : `<td class="${isNum(c) ? 'num' : ''}">${
+                r.totals && c.key in r.totals ? escapeHtml(fmtCell(r.totals[c.key], c.type)) : ''
+              }</td>`,
+        )
+        .join('')}</tr>`
+    : ''
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<title>${escapeHtml(fileBase(r, from, to))}</title>
+<style>
+${LETTERHEAD_CSS}
+@page { size: A4 ${wide ? 'landscape' : 'portrait'}; margin: 12mm; }
+body{font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;color:#0f172a;margin:0;padding:16px}
+.toolbar{display:flex;gap:8px;justify-content:flex-end;margin-bottom:12px}
+.toolbar button{font:inherit;font-size:13px;padding:7px 14px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;cursor:pointer}
+.toolbar button.primary{background:#0f172a;color:#fff;border-color:#0f172a}
+table.rep{width:100%;border-collapse:collapse;font-size:${wide ? '10px' : '11px'};margin-top:10px}
+table.rep th{background:#f1f5f9;text-align:left;font-weight:600;border-bottom:1.5px solid #334155;padding:5px 6px}
+table.rep td{border-bottom:1px solid #e2e8f0;padding:4px 6px;vertical-align:top}
+table.rep .num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+table.rep .sn{color:#64748b;width:22px}
+table.rep tr.tot td{font-weight:700;border-top:1.5px solid #334155;border-bottom:none;background:#f8fafc}
+table.rep thead{display:table-header-group}
+table.rep tr{page-break-inside:avoid}
+.empty{padding:28px;text-align:center;color:#64748b;border:1px dashed #cbd5e1;border-radius:8px;margin-top:12px}
+@media print{.toolbar{display:none}body{padding:0}}
+</style></head><body>
+<div class="toolbar"><button onclick="window.close()">Close</button><button class="primary" onclick="window.print()">Print / Save as PDF</button></div>
+${letterheadHtml({
+  company,
+  title: r.title,
+  subtitle: periodLabel(r, from, to),
+  number: `RPT-${ymd(new Date()).replaceAll('-', '')}-${pad(new Date().getHours())}${pad(new Date().getMinutes())}`,
+  meta: [
+    ['Printed', fmtCell(ymd(new Date()), 'date')],
+    ['Rows', String(r.rows.length)],
+  ],
+})}
+${
+  r.rows.length
+    ? `<table class="rep"><thead><tr><th class="sn">#</th>${head}</tr></thead><tbody>${body}${totals}</tbody></table>`
+    : '<div class="empty">No records for this period.</div>'
+}
+${letterFooterHtml(company, r.subtitle)}
+</body></html>`
+}
+
+/* ─── Page ─── */
+
+const PREVIEW_ROWS = 500
 
 export function ReportsPage() {
   const addToast = useUIStore((s) => s.addToast)
-  const [searchParams] = useSearchParams()
-  const rangeFromUrl = searchParams.get('range')
-  const initialRange =
-    rangeFromUrl === 'week' ||
-    rangeFromUrl === 'month' ||
-    rangeFromUrl === 'quarter' ||
-    rangeFromUrl === 'year'
-      ? rangeFromUrl
-      : 'month'
-  const [tab, setTab] = useState<Tab>('overview')
-  const [range, setRange] = useState(initialRange)
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
-  const [assigneeId, setAssigneeId] = useState('')
-  const [sourceId, setSourceId] = useState('')
-  const [ticketStatus, setTicketStatus] = useState('')
-  const [leadStatus, setLeadStatus] = useState('')
-  const [city, setCity] = useState('')
-  const [data, setData] = useState<Analytics | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [exportOpen, setExportOpen] = useState(false)
+  const [params, setParams] = useSearchParams()
+  const [catalog, setCatalog] = useState<ReportCatalogItem[] | null>(null)
+  const [selected, setSelected] = useState<string>(params.get('report') ?? '')
+  const [preset, setPreset] = useState<PresetId>('this-month')
+  const [from, setFrom] = useState(() => presetRange('this-month')!.from)
+  const [to, setTo] = useState(() => presetRange('this-month')!.to)
+  const [personId, setPersonId] = useState('')
+  const [status, setStatus] = useState('')
+  const [result, setResult] = useState<ReportResult | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  // Links like /reports?report=sales&from=2026-11-01&to=2026-11-30 (Ask HMS "Open report →", Setup)
+  // must switch the report even when this page is already open.
+  const urlReport = params.get('report')
+  const urlFrom = params.get('from')
+  const urlTo = params.get('to')
+  /** Period carried by the link — applied once when that report opens, then dropped from the URL. */
+  const linkRange = useRef<{ from: string; to: string } | null>(null)
+  /** Report whose default filters were last applied — filters reset only when the report really changes. */
+  const appliedKey = useRef('')
+  useEffect(() => {
+    if (urlReport) setSelected(urlReport)
+    if (urlFrom && urlTo && /^\d{4}-\d{2}-\d{2}$/.test(urlFrom) && /^\d{4}-\d{2}-\d{2}$/.test(urlTo)) {
+      // Same report already open → no report change will consume the period; apply it here only
+      linkRange.current = urlReport && urlReport === appliedKey.current ? null : { from: urlFrom, to: urlTo }
+      setPreset('custom')
+      setFrom(urlFrom)
+      setTo(urlTo)
+    }
+  }, [urlReport, urlFrom, urlTo])
 
   useEffect(() => {
-    if (
-      rangeFromUrl === 'week' ||
-      rangeFromUrl === 'month' ||
-      rangeFromUrl === 'quarter' ||
-      rangeFromUrl === 'year'
-    ) {
-      setRange(rangeFromUrl)
-    }
-  }, [rangeFromUrl])
+    void primePrintCompany()
+    api
+      .reportCatalog()
+      .then((list) => {
+        setCatalog(list)
+        setSelected((cur) => (cur && list.some((r) => r.key === cur) ? cur : list[0]?.key ?? ''))
+      })
+      .catch((e) => {
+        setCatalog([])
+        addToast({ type: 'error', message: e instanceof ApiClientError ? e.message : 'Could not load reports' })
+      })
+  }, [addToast])
 
-  const load = useCallback(async () => {
-    if (!isTenantSession()) {
-      setError('Sign in to a client workspace to view live reports.')
-      setLoading(false)
-      setData(null)
-      return
+  const def = useMemo(() => catalog?.find((r) => r.key === selected) ?? null, [catalog, selected])
+  const groups = useMemo(() => {
+    const m = new Map<string, ReportCatalogItem[]>()
+    for (const r of catalog ?? []) m.set(r.group, [...(m.get(r.group) ?? []), r])
+    return [...m.entries()]
+  }, [catalog])
+
+  // New report ⇒ clear filters that belonged to the previous one; "machines due" defaults to next 30 days
+  useEffect(() => {
+    if (!def) return
+    const link = linkRange.current
+    linkRange.current = null
+    if (def.key === appliedKey.current) return
+    appliedKey.current = def.key
+    setPersonId('')
+    setStatus('')
+    if (link) {
+      // Opened from a link that carries its own period (Ask HMS) — keep it
+      setPreset('custom')
+      setFrom(link.from)
+      setTo(link.to)
+    } else {
+      const next: PresetId = def.key === 'machines-due' ? 'next-30' : 'this-month'
+      setPreset(next)
+      const r = presetRange(next)!
+      setFrom(r.from)
+      setTo(r.to)
     }
+    setParams((p) => {
+      const n = new URLSearchParams(p)
+      n.set('report', def.key)
+      n.delete('range')
+      n.delete('from')
+      n.delete('to')
+      return n
+    }, { replace: true })
+  }, [def, setParams])
+
+  useEffect(() => {
+    if (!def) return
+    let cancelled = false
     setLoading(true)
-    setError('')
-    try {
-      setData(
-        await api.analytics({
-          range: from || to ? 'custom' : range,
-          from: from || undefined,
-          to: to || undefined,
-          assigneeId: assigneeId || undefined,
-          sourceId: sourceId || undefined,
-          ticketStatus: ticketStatus || undefined,
-          leadStatus: leadStatus || undefined,
-          city: city || undefined,
-        }),
-      )
-    } catch (err) {
-      setError(err instanceof ApiClientError ? err.message : 'Failed to load reports')
-      setData(null)
-    } finally {
-      setLoading(false)
+    api
+      .reportRun(def.key, {
+        ...(def.dateFilter ? { from, to } : {}),
+        ...(personId ? { personId } : {}),
+        ...(status ? { status } : {}),
+      })
+      .then((r) => {
+        if (!cancelled) setResult(r)
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setResult(null)
+        addToast({ type: 'error', message: e instanceof ApiClientError ? e.message : 'Could not run report' })
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
     }
-  }, [range, from, to, assigneeId, sourceId, ticketStatus, leadStatus, city])
+  }, [def, from, to, personId, status, reloadKey, addToast])
 
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  const k = data?.kpis
-  const stamp = data?.generatedAt ? new Date(data.generatedAt).toLocaleString('en-IN') : ''
-
-  const exportPack = useMemo(() => {
-    if (!data || !k) return null
-    const overview = [
-      { metric: 'Open tickets', value: k.openTickets },
-      { metric: 'Awaiting assignment', value: k.awaitingAssignment },
-      { metric: 'Balance outstanding', value: k.balanceOutstanding },
-      { metric: 'Service collected', value: k.serviceCollected },
-      { metric: 'Sale enquiries', value: k.totalLeads },
-      { metric: 'Converted enquiries', value: k.enquiriesConverted },
-      { metric: 'Proforma revenue', value: k.invoiceRevenue },
-      { metric: 'In stock serials', value: k.inStock },
-      { metric: 'Demo out', value: k.demoOut },
-    ]
-    return {
-      overview,
-      leadsByStatus: data.leadsByStatus,
-      leadsBySource: data.leadsBySource,
-      leadsByOwner: data.leadsByOwner ?? [],
-      ticketsByStatus: data.ticketsByStatus,
-      ticketsByAssignee: data.ticketsByAssignee,
-      performers: data.performers ?? [],
-      byCity: data.byCity,
-      monthlyRevenue: data.monthlyRevenue,
-      stockByStatus: data.stockByStatus ?? [],
+  function choosePreset(id: PresetId) {
+    setPreset(id)
+    const r = presetRange(id)
+    if (r) {
+      setFrom(r.from)
+      setTo(r.to)
     }
-  }, [data, k])
-
-  function doExport(kind: 'csv' | 'xlsx' | 'json' | 'print') {
-    if (!exportPack || !data || !k) {
-      addToast({ type: 'error', message: 'Nothing to export yet' })
-      return
-    }
-    const base = `hms-reports-${range}-${tab}-${new Date().toISOString().slice(0, 10)}`
-    setExportOpen(false)
-    if (kind === 'json') {
-      downloadJson(`${base}.json`, data)
-      addToast({ type: 'success', message: 'JSON downloaded' })
-      return
-    }
-    if (kind === 'csv') {
-      // Flatten main packs so CSV is not overview-only
-      const flat = [
-        ...exportPack.overview.map((r) => ({ section: 'Overview', ...r })),
-        ...exportPack.ticketsByStatus.map((r) => ({
-          section: 'Ticket status',
-          metric: r.name,
-          value: r.value,
-        })),
-        ...exportPack.leadsByStatus.map((r) => ({
-          section: 'Lead status',
-          metric: r.name,
-          value: r.value,
-        })),
-        ...exportPack.performers.map((r) => ({
-          section: 'Performers',
-          metric: String((r as { name?: string }).name ?? ''),
-          value: JSON.stringify(r),
-        })),
-      ]
-      downloadCsv(`${base}.csv`, flat)
-      addToast({ type: 'success', message: 'CSV downloaded' })
-      return
-    }
-    if (kind === 'xlsx') {
-      downloadXlsx(`${base}.xlsx`, [
-        { name: 'Overview', rows: exportPack.overview },
-        { name: 'Leads status', rows: exportPack.leadsByStatus },
-        { name: 'Leads source', rows: exportPack.leadsBySource },
-        { name: 'Lead owners', rows: exportPack.leadsByOwner },
-        { name: 'Ticket status', rows: exportPack.ticketsByStatus },
-        { name: 'Assignees', rows: exportPack.ticketsByAssignee },
-        { name: 'Performers', rows: exportPack.performers },
-        { name: 'Cities', rows: exportPack.byCity },
-        { name: 'Billing monthly', rows: exportPack.monthlyRevenue },
-        { name: 'Stock', rows: exportPack.stockByStatus },
-      ])
-      addToast({ type: 'success', message: 'Excel downloaded' })
-      return
-    }
-    printReportHtml('HMS Enterprises — Reports', [
-      {
-        heading: 'Key metrics',
-        html: tableHtml(
-          ['Metric', 'Value'],
-          exportPack.overview.map((r) => [String(r.metric), String(r.value)]),
-        ),
-      },
-      {
-        heading: 'Top performers',
-        html: tableHtml(
-          ['Name', 'Tickets resolved', 'Leads converted', 'Service collected', 'Score'],
-          exportPack.performers.map((p) => [
-            p.name,
-            p.ticketsResolved,
-            p.leadsConverted,
-            formatCurrency(p.serviceCollected),
-            p.score,
-          ]),
-        ),
-      },
-      {
-        heading: 'Tickets by status',
-        html: tableHtml(
-          ['Status', 'Count'],
-          exportPack.ticketsByStatus.map((r) => [labelize(r.name), r.value]),
-        ),
-      },
-      {
-        heading: 'Billing by month',
-        html: tableHtml(
-          ['Month', 'Proforma', 'Service paid'],
-          exportPack.monthlyRevenue.map((r) => [
-            r.month,
-            formatCurrency(num(r.proforma)),
-            formatCurrency(num(r.servicePaid)),
-          ]),
-        ),
-      },
-    ])
   }
 
-  function clearFilters() {
-    setRange('month')
-    setFrom('')
-    setTo('')
-    setAssigneeId('')
-    setSourceId('')
-    setTicketStatus('')
-    setLeadStatus('')
-    setCity('')
+  function printPdf() {
+    if (!result) return
+    const w = window.open('', '_blank')
+    if (!w) {
+      addToast({ type: 'error', message: 'Allow pop-ups for this site to print the report' })
+      return
+    }
+    w.document.open()
+    w.document.write(reportPrintHtml(result, from, to))
+    w.document.close()
   }
+
+  const ready = !!result && !loading && result.key === def?.key
+  const shown = result?.rows.slice(0, PREVIEW_ROWS) ?? []
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="Reports"
-        actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
-            </Button>
-            <div className="relative">
-              <Button type="button" size="sm" onClick={() => setExportOpen((v) => !v)}>
-                <Download size={14} /> Download
-              </Button>
-              {exportOpen ? (
-                <div className="absolute right-0 z-20 mt-1 w-48 rounded-md border border-border bg-card p-1 shadow-lg">
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
-                    onClick={() => doExport('csv')}
-                  >
-                    <FileText size={14} /> CSV
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
-                    onClick={() => doExport('xlsx')}
-                  >
-                    <FileSpreadsheet size={14} /> Excel (.xlsx)
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
-                    onClick={() => doExport('json')}
-                  >
-                    <FileJson size={14} /> JSON
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
-                    onClick={() => doExport('print')}
-                  >
-                    <Printer size={14} /> Print / PDF
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        }
-      />
-      <p className="-mt-3 mb-4 text-sm text-text-secondary">
-        Live analytics from your database — leads, service, team performers, stock & billing. Download CSV, Excel, JSON, or Print/PDF.
-      </p>
-      <PageTip moduleKey="reports" />
+    <div className="space-y-5 pb-8">
+      <PageHeader title="Reports" breadcrumbs={[{ label: 'Home', to: '/' }, { label: 'Reports' }]} />
 
-      <AskDashboardPanel range={from || to ? 'custom' : range} />
+      {/* Ask any question — answered as a downloadable table from the same reports */}
+      <AskDashboardPanel />
 
-      <Card className="space-y-3 p-4">
-        <div className="flex flex-wrap items-end gap-3">
-          <Select
-            label="Range"
-            value={range}
-            onChange={(e) => setRange(e.target.value)}
-            options={[
-              { value: 'week', label: 'Last 7 days' },
-              { value: 'month', label: 'Last month' },
-              { value: 'quarter', label: 'Last quarter' },
-              { value: 'year', label: 'Last year' },
-            ]}
-          />
-          <Input label="From" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-          <Input label="To" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-          <Select
-            label="Assignee"
-            value={assigneeId}
-            onChange={(e) => setAssigneeId(e.target.value)}
-            options={[
-              { value: '', label: 'All people' },
-              ...(data?.users ?? []).map((u) => ({ value: u.id, label: u.name })),
-            ]}
-          />
-          <Select
-            label="Lead source"
-            value={sourceId}
-            onChange={(e) => setSourceId(e.target.value)}
-            options={[
-              { value: '', label: 'All sources' },
-              ...(data?.sources ?? []).map((s) => ({ value: s.id, label: s.name })),
-            ]}
-          />
-          <Select
-            label="Ticket status"
-            value={ticketStatus}
-            onChange={(e) => setTicketStatus(e.target.value)}
-            options={[
-              { value: '', label: 'All statuses' },
-              { value: 'OPEN', label: 'Open' },
-              { value: 'IN_PROGRESS', label: 'In progress' },
-              { value: 'PENDING', label: 'Pending' },
-              { value: 'RESOLVED', label: 'Resolved' },
-              { value: 'CLOSED', label: 'Closed' },
-            ]}
-          />
-          <Select
-            label="Lead status"
-            value={leadStatus}
-            onChange={(e) => setLeadStatus(e.target.value)}
-            options={[
-              { value: '', label: 'All leads' },
-              { value: 'NEW', label: 'New' },
-              { value: 'CONTACTED', label: 'Contacted' },
-              { value: 'QUALIFIED', label: 'Qualified' },
-              { value: 'DEMO', label: 'Demo' },
-              { value: 'CONVERTED', label: 'Converted' },
-              { value: 'LOST', label: 'Lost' },
-            ]}
-          />
-          <Select
-            label="City"
-            value={city}
-            onChange={(e) => setCity(e.target.value)}
-            options={[
-              { value: '', label: 'All cities' },
-              ...(data?.cities ?? []).map((c) => ({ value: c, label: c })),
-            ]}
-          />
-          <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
-            Reset filters
-          </Button>
-        </div>
-        {stamp ? <p className="text-xs text-text-muted">Live from DB · generated {stamp}</p> : null}
-      </Card>
-
-      <PageTabs tabs={TABS} active={tab} onChange={(id) => setTab(id as Tab)} />
-
-      {error ? (
-        <Card className="p-6 text-sm text-accent-red">{error}</Card>
-      ) : loading && !data ? (
-        <PageSkeleton cards={4} rows={6} />
-      ) : !data || !k ? (
-        <Card className="p-6 text-sm text-text-secondary">No analytics yet.</Card>
+      {catalog === null ? (
+        <TableSkeleton rows={6} />
+      ) : catalog.length === 0 ? (
+        <Card className="py-14 text-center text-sm text-text-secondary">No reports are available for your role.</Card>
       ) : (
-        <>
-          {tab === 'overview' ? (
-            <div className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Kpi
-                  label="Open tickets"
-                  value={k.openTickets}
-                  hint={`${k.awaitingAssignment} unassigned`}
-                  to="/tickets?status=OPEN"
-                />
-                <Kpi
-                  label="Balance outstanding"
-                  value={formatCurrency(k.balanceOutstanding)}
-                  to="/tickets"
-                />
-                <Kpi
-                  label="Service collected"
-                  value={formatCurrency(k.serviceCollected)}
-                  hint="Paid jobs"
-                  to="/service-reports"
-                />
-                <Kpi
-                  label="Proforma total"
-                  value={formatCurrency(k.invoiceRevenue)}
-                  hint={`${k.invoiceCount} invoices`}
-                  to="/erp/invoices"
-                />
-                <Kpi
-                  label="Sale enquiries"
-                  value={k.totalLeads}
-                  hint={`${k.enquiriesConverted} converted`}
-                  to="/sale-tracking"
-                />
-                <Kpi
-                  label="Conversion"
-                  value={`${k.conversionRate}%`}
-                  to="/sale-tracking?status=CONVERTED"
-                />
-                <Kpi
-                  label="In stock"
-                  value={k.inStock}
-                  hint={`${k.demoOut} on demo`}
-                  to="/erp/inventory"
-                />
-                <Kpi
-                  label="Customers"
-                  value={k.contacts}
-                  hint={`${k.accounts} accounts`}
-                  to="/contacts"
-                />
-              </div>
-              <div className="grid gap-4 lg:grid-cols-2">
-                <Card className="p-4">
-                  <h3 className="mb-2 text-sm font-semibold">Billing mix</h3>
-                  {(data.monthlyRevenue?.length ?? 0) === 0 ? (
-                    <EmptyChart />
-                  ) : (
-                    <ResponsiveContainer width="100%" height={260}>
-                      <BarChart data={data.monthlyRevenue}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                        <YAxis tick={{ fontSize: 11 }} />
-                        <Tooltip formatter={(v) => formatCurrency(Number(v))} />
-                        <Legend />
-                        <Bar dataKey="proforma" name="Proforma" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                        <Bar dataKey="servicePaid" name="Service paid" fill="#10b981" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  )}
-                </Card>
-                <Card className="p-4">
-                  <h3 className="mb-2 text-sm font-semibold">Ticket trend</h3>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <LineChart data={data.ticketMonthly}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                      <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                      <Tooltip />
-                      <Legend />
-                      <Line type="monotone" dataKey="created" name="Created" stroke="#3b82f6" strokeWidth={2} />
-                      <Line type="monotone" dataKey="resolved" name="Resolved" stroke="#10b981" strokeWidth={2} />
-                      <Line type="monotone" dataKey="breached" name="SLA breach" stroke="#ef4444" strokeWidth={2} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </Card>
-              </div>
-              {(data.attentionTickets?.length ?? 0) > 0 ? (
-                <Card className="overflow-hidden">
-                  <div className="border-b border-border px-4 py-3 text-sm font-semibold">Needs attention</div>
-                  <div className="divide-y divide-border">
-                    {data.attentionTickets!.map((t) => (
-                      <div key={t.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 text-sm">
-                        <div>
-                          <span className="font-medium">SVC-{String(t.ticketNo).padStart(5, '0')}</span>
-                          <span className="text-text-secondary"> — {t.subject}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge color={ticketStatusColor[t.status] ?? 'gray'}>{labelize(t.status)}</Badge>
-                          <Badge color={ticketPriorityColor[t.priority] ?? 'gray'}>{labelize(t.priority)}</Badge>
-                          {t.slaBreached ? <Badge color="red">SLA</Badge> : null}
-                        </div>
-                      </div>
-                    ))}
+        <div className="grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)]">
+          {/* Catalogue — a dropdown on phones, a grouped list on wider screens */}
+          <div className="lg:hidden">
+            <Select
+              label="Report"
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+              options={catalog.map((r) => ({ value: r.key, label: `${r.group} · ${r.title}` }))}
+            />
+          </div>
+          <nav className="hidden space-y-4 lg:block" aria-label="Reports">
+            {groups.map(([group, items]) => {
+              const Icon = GROUP_ICON[group] ?? ClipboardList
+              return (
+                <div key={group}>
+                  <div className="mb-1.5 flex items-center gap-1.5 px-2 text-xs font-semibold text-text-secondary">
+                    <Icon size={13} /> {group}
                   </div>
-                </Card>
-              ) : null}
-            </div>
-          ) : null}
-
-          {tab === 'leads' ? (
-            <div className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Kpi label="Total enquiries" value={k.totalLeads} to="/sale-tracking" />
-                <Kpi label="Pending" value={k.enquiriesPending} to="/sale-tracking?status=NEW" />
-                <Kpi label="Demo" value={k.enquiriesDemo} to="/sale-tracking?status=DEMO" />
-                <Kpi
-                  label="Converted"
-                  value={k.enquiriesConverted}
-                  hint={`${k.conversionRate}%`}
-                  to="/sale-tracking?status=CONVERTED"
-                />
-              </div>
-              <div className="grid gap-4 lg:grid-cols-2">
-                <Card className="p-4">
-                  <h3 className="mb-2 text-sm font-semibold">By status</h3>
-                  {data.leadsByStatus.length === 0 ? (
-                    <EmptyChart />
-                  ) : (
-                    <ResponsiveContainer width="100%" height={260}>
-                      <BarChart data={data.leadsByStatus}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis dataKey="name" tickFormatter={labelize} tick={{ fontSize: 10 }} />
-                        <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                        <Tooltip />
-                        <Bar dataKey="value" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  )}
-                </Card>
-                <Card className="p-4">
-                  <h3 className="mb-2 text-sm font-semibold">By source</h3>
-                  {data.leadsBySource.every((s) => s.leads === 0) ? (
-                    <EmptyChart />
-                  ) : (
-                    <ResponsiveContainer width="100%" height={260}>
-                      <BarChart data={data.leadsBySource}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                        <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                        <Tooltip />
-                        <Bar dataKey="leads" fill="#06b6d4" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  )}
-                </Card>
-                <Card className="p-4 lg:col-span-2">
-                  <h3 className="mb-2 text-sm font-semibold">Enquiry trend</h3>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <LineChart data={data.leadMonthly ?? []}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                      <Tooltip />
-                      <Legend />
-                      <Line type="monotone" dataKey="created" name="Created" stroke="#3b82f6" strokeWidth={2} />
-                      <Line type="monotone" dataKey="converted" name="Converted" stroke="#10b981" strokeWidth={2} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </Card>
-              </div>
-              <Card className="overflow-hidden">
-                <div className="border-b border-border px-4 py-3 text-sm font-semibold">Leads by owner</div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40 text-left text-xs text-text-secondary">
-                      <tr>
-                        <th className="px-4 py-2">Owner</th>
-                        <th className="px-4 py-2">Total</th>
-                        <th className="px-4 py-2">Pending</th>
-                        <th className="px-4 py-2">Demo</th>
-                        <th className="px-4 py-2">Converted</th>
-                        <th className="px-4 py-2">Conv %</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(data.leadsByOwner ?? []).map((row) => (
-                        <tr key={row.id} className="border-t border-border">
-                          <td className="px-4 py-2 font-medium">{row.name}</td>
-                          <td className="px-4 py-2 tabular-nums">{row.total}</td>
-                          <td className="px-4 py-2 tabular-nums">{row.pending}</td>
-                          <td className="px-4 py-2 tabular-nums">{row.demo}</td>
-                          <td className="px-4 py-2 tabular-nums">{row.converted}</td>
-                          <td className="px-4 py-2 tabular-nums">{row.conversionRate}%</td>
-                        </tr>
-                      ))}
-                      {(data.leadsByOwner ?? []).length === 0 ? (
-                        <tr>
-                          <td colSpan={6} className="px-4 py-6 text-center text-text-secondary">
-                            No lead owners in this filter
-                          </td>
-                        </tr>
-                      ) : null}
-                    </tbody>
-                  </table>
-                </div>
-    </Card>
-            </div>
-          ) : null}
-
-          {tab === 'service' ? (
-            <div className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Kpi
-                  label="Open"
-                  value={k.openTickets}
-                  hint={`${k.slaBreached} SLA breached`}
-                  to="/tickets?status=OPEN"
-                />
-                <Kpi
-                  label="Resolved (range)"
-                  value={k.resolvedInRange}
-                  to="/tickets?status=RESOLVED"
-                />
-                <Kpi label="Avg resolution" value={`${k.avgResolutionHours}h`} to="/tickets" />
-                <Kpi
-                  label="Outstanding"
-                  value={formatCurrency(k.balanceOutstanding)}
-                  to="/tickets"
-                />
-              </div>
-              <div className="grid gap-4 lg:grid-cols-2">
-                <Card className="p-4">
-                  <h3 className="mb-2 text-sm font-semibold">Status mix</h3>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <PieChart>
-                      <Pie
-                        data={data.ticketsByStatus.filter((x) => x.value > 0)}
-                        dataKey="value"
-                        nameKey="name"
-                        innerRadius={55}
-                        outerRadius={90}
-                        paddingAngle={2}
-                      >
-                        {data.ticketsByStatus.map((row) => (
-                          <Cell key={row.name} fill={TICKET_STATUS_HEX[row.name] ?? CHART_FALLBACK[0]} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                      <Legend formatter={labelize} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </Card>
-                <Card className="p-4">
-                  <h3 className="mb-2 text-sm font-semibold">Priority</h3>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <BarChart data={data.ticketsByPriority}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="name" tickFormatter={labelize} tick={{ fontSize: 11 }} />
-                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                      <Tooltip />
-                      <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                        {data.ticketsByPriority.map((row) => (
-                          <Cell key={row.name} fill={TICKET_PRIORITY_HEX[row.name] ?? CHART_FALLBACK[1]} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-    </Card>
-              </div>
-              <Card className="overflow-hidden">
-                <div className="border-b border-border px-4 py-3 text-sm font-semibold">Workload by assignee</div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40 text-left text-xs text-text-secondary">
-                      <tr>
-                        <th className="px-4 py-2">Engineer</th>
-                        <th className="px-4 py-2">Total</th>
-                        <th className="px-4 py-2">Open</th>
-                        <th className="px-4 py-2">Resolved</th>
-                        <th className="px-4 py-2">SLA breach</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.ticketsByAssignee.map((row) => (
-                        <tr key={row.id} className="border-t border-border">
-                          <td className="px-4 py-2 font-medium">{row.name}</td>
-                          <td className="px-4 py-2 tabular-nums">{row.total}</td>
-                          <td className="px-4 py-2 tabular-nums">{row.open}</td>
-                          <td className="px-4 py-2 tabular-nums">{row.resolved}</td>
-                          <td className="px-4 py-2 tabular-nums">{row.breached}</td>
-                        </tr>
-                      ))}
-                      {data.ticketsByAssignee.length === 0 ? (
-                        <tr>
-                          <td colSpan={5} className="px-4 py-6 text-center text-text-secondary">
-                            No assigned tickets in this filter
-                          </td>
-                        </tr>
-                      ) : null}
-                    </tbody>
-                  </table>
-                </div>
-    </Card>
-            </div>
-          ) : null}
-
-          {tab === 'team' ? (
-            <div className="space-y-4">
-              <Card className="overflow-hidden">
-                <div className="flex items-center gap-2 border-b border-border px-4 py-3 text-sm font-semibold">
-                  <Award size={16} className="text-amber-500" /> Top performers
-                  <span className="font-normal text-text-secondary">
-                    (resolved tickets + converted leads + service collected)
-                  </span>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/40 text-left text-xs text-text-secondary">
-                      <tr>
-                        <th className="px-4 py-2">#</th>
-                        <th className="px-4 py-2">Name</th>
-                        <th className="px-4 py-2">Open jobs</th>
-                        <th className="px-4 py-2">Resolved</th>
-                        <th className="px-4 py-2">Leads converted</th>
-                        <th className="px-4 py-2">Service collected</th>
-                        <th className="px-4 py-2">Score</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(data.performers ?? []).map((p, i) => (
-                        <tr key={p.id} className="border-t border-border">
-                          <td className="px-4 py-2 tabular-nums text-text-secondary">{i + 1}</td>
-                          <td className="px-4 py-2 font-medium">{p.name}</td>
-                          <td className="px-4 py-2 tabular-nums">{p.ticketsOpen}</td>
-                          <td className="px-4 py-2 tabular-nums">{p.ticketsResolved}</td>
-                          <td className="px-4 py-2 tabular-nums">
-                            {p.leadsConverted}
-                            <span className="text-text-muted"> / {p.leadsTotal}</span>
-                          </td>
-                          <td className="px-4 py-2 tabular-nums">{formatCurrency(p.serviceCollected)}</td>
-                          <td className="px-4 py-2 font-semibold tabular-nums">{p.score}</td>
-                        </tr>
-                      ))}
-                      {(data.performers ?? []).length === 0 ? (
-                        <tr>
-                          <td colSpan={7} className="px-4 py-6 text-center text-text-secondary">
-                            No performer activity for current filters
-                          </td>
-                        </tr>
-                      ) : null}
-                    </tbody>
-                  </table>
-      </div>
-              </Card>
-              <Card className="p-4">
-                <h3 className="mb-2 text-sm font-semibold">City mix (live ops revenue)</h3>
-                {data.byCity.length === 0 ? (
-                  <EmptyChart />
-                ) : (
-                  <ResponsiveContainer width="100%" height={280}>
-                    <BarChart data={data.byCity.slice(0, 10)}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="city" tick={{ fontSize: 10 }} />
-                      <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v) => formatCurrency(Number(v))} />
-                      <Legend />
-                      <Bar dataKey="revenue" name="Revenue" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="leads" name="Leads" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="tickets" name="Tickets" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                )}
-    </Card>
-  </div>
-          ) : null}
-
-          {tab === 'stock' ? (
-            <div className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Kpi label="In stock" value={k.inStock} to="/erp/inventory" />
-                <Kpi label="Demo out" value={k.demoOut} to="/erp/inventory?tab=demo" />
-                <Kpi
-                  label="Proforma revenue"
-                  value={formatCurrency(k.invoiceRevenue)}
-                  to="/erp/invoices"
-                />
-                <Kpi
-                  label="Service collected"
-                  value={formatCurrency(k.serviceCollected)}
-                  to="/service-reports"
-                />
-              </div>
-              <div className="grid gap-4 lg:grid-cols-2">
-                <Card className="p-4">
-                  <h3 className="mb-2 text-sm font-semibold">Serial stock by status</h3>
-                  {(data.stockByStatus?.length ?? 0) === 0 ? (
-                    <EmptyChart />
-                  ) : (
-                    <ResponsiveContainer width="100%" height={260}>
-                      <PieChart>
-                        <Pie
-                          data={data.stockByStatus}
-                          dataKey="value"
-                          nameKey="name"
-                          innerRadius={55}
-                          outerRadius={90}
+                  <ul className="space-y-0.5">
+                    {items.map((r) => (
+                      <li key={r.key}>
+                        <button
+                          type="button"
+                          onClick={() => setSelected(r.key)}
+                          className={cn(
+                            'w-full rounded-[8px] px-2.5 py-2 text-left text-sm transition',
+                            r.key === selected
+                              ? 'bg-accent-blue/10 font-semibold text-accent-blue'
+                              : 'text-text-primary hover:bg-muted',
+                          )}
                         >
-                          {(data.stockByStatus ?? []).map((row, i) => (
-                            <Cell key={row.name} fill={CHART_FALLBACK[i % CHART_FALLBACK.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip />
-                        <Legend />
-                      </PieChart>
-                    </ResponsiveContainer>
+                          {r.title}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )
+            })}
+          </nav>
+
+          {def ? (
+            <div className="min-w-0 space-y-4">
+              <Card className="space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h2 className="text-lg font-semibold text-text-primary">{def.title}</h2>
+                    <p className="mt-0.5 max-w-2xl text-sm text-text-secondary">{def.description}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" disabled={!ready} onClick={() => result && exportExcel(result, from, to, printCompany().name)}>
+                      <FileSpreadsheet size={14} /> Excel
+                    </Button>
+                    <Button size="sm" variant="outline" disabled={!ready} onClick={() => result && exportCsv(result, from, to)}>
+                      <Download size={14} /> CSV
+                    </Button>
+                    <Button size="sm" variant="outline" disabled={!ready} onClick={printPdf}>
+                      <Printer size={14} /> PDF
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-end gap-3">
+                  {def.dateFilter ? (
+                    <>
+                      <Select
+                        label="Period"
+                        className="w-48"
+                        value={preset}
+                        onChange={(e) => choosePreset(e.target.value as PresetId)}
+                        options={PRESETS}
+                      />
+                      <label className="text-sm">
+                        <span className="mb-1 block text-xs font-medium text-text-secondary">From</span>
+                        <input
+                          type="date"
+                          value={from}
+                          max={to}
+                          onChange={(e) => {
+                            setPreset('custom')
+                            setFrom(e.target.value)
+                          }}
+                          className="h-9 rounded-[8px] border border-border bg-card px-2 text-sm text-text-primary"
+                        />
+                      </label>
+                      <label className="text-sm">
+                        <span className="mb-1 block text-xs font-medium text-text-secondary">To</span>
+                        <input
+                          type="date"
+                          value={to}
+                          min={from}
+                          onChange={(e) => {
+                            setPreset('custom')
+                            setTo(e.target.value)
+                          }}
+                          className="h-9 rounded-[8px] border border-border bg-card px-2 text-sm text-text-primary"
+                        />
+                      </label>
+                    </>
+                  ) : (
+                    <span className="rounded-full bg-muted px-3 py-1.5 text-xs font-medium text-text-secondary">
+                      Live list — as on today
+                    </span>
                   )}
-                </Card>
-                <Card className="p-4">
-                  <h3 className="mb-2 text-sm font-semibold">Billing by month</h3>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <BarChart data={data.monthlyRevenue}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-                      <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v) => formatCurrency(Number(v))} />
-                      <Legend />
-                      <Bar dataKey="proforma" name="Proforma" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="servicePaid" name="Service paid" fill="#10b981" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </Card>
-              </div>
+                  {def.people.length ? (
+                    <Select
+                      label={def.key === 'history' ? 'Done by' : def.key.includes('enquir') || def.key === 'sales' ? 'Salesperson' : 'Engineer'}
+                      className="w-48"
+                      value={personId}
+                      onChange={(e) => setPersonId(e.target.value)}
+                      options={[{ value: '', label: 'Everyone' }, ...def.people.map((p) => ({ value: p.id, label: p.name }))]}
+                    />
+                  ) : null}
+                  {def.statuses.length ? (
+                    <Select
+                      label={def.key === 'history' ? 'Area' : 'Status'}
+                      className="w-44"
+                      value={status}
+                      onChange={(e) => setStatus(e.target.value)}
+                      options={[{ value: '', label: 'All' }, ...def.statuses]}
+                    />
+                  ) : null}
+                  <Button variant="ghost" size="sm" onClick={() => setReloadKey((k) => k + 1)} disabled={loading}>
+                    <RefreshCw size={14} className={loading ? 'animate-spin' : undefined} /> Refresh
+                  </Button>
+                </div>
+              </Card>
+
+              {/* Totals */}
+              {ready && result ? (
+                <div className="flex flex-wrap gap-2">
+                  <span className="rounded-[8px] border border-border bg-card px-3 py-2 text-sm">
+                    <span className="text-text-secondary">Rows </span>
+                    <b className="tabular-nums">{int.format(result.rows.length)}</b>
+                  </span>
+                  {result.columns
+                    .filter((c) => result.totals && c.key in result.totals)
+                    .map((c) => (
+                      <span key={c.key} className="rounded-[8px] border border-border bg-card px-3 py-2 text-sm">
+                        <span className="text-text-secondary">{c.label} </span>
+                        <b className="tabular-nums">{fmtCell(result.totals![c.key], c.type)}</b>
+                      </span>
+                    ))}
+                </div>
+              ) : null}
+
+              <Card padding={false} className="overflow-hidden">
+                {!ready ? (
+                  <div className="p-4">
+                    <TableSkeleton rows={8} />
+                  </div>
+                ) : result!.rows.length === 0 ? (
+                  <div className="flex flex-col items-center gap-2 px-4 py-14 text-center text-sm text-text-secondary">
+                    <FileText size={22} />
+                    No records for {def.dateFilter ? 'this period' : 'this report'}.
+                  </div>
+                ) : (
+                  <div className="max-h-[65vh] overflow-auto">
+                    <table className="w-full min-w-[640px] text-sm">
+                      <thead className="sticky top-0 z-[1] bg-muted text-xs text-text-secondary">
+                        <tr>
+                          {result!.columns.map((c) => (
+                            <th
+                              key={c.key}
+                              className={cn('whitespace-nowrap px-3 py-2.5 font-semibold', isNum(c) ? 'text-right' : 'text-left')}
+                            >
+                              {c.label}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {shown.map((row, i) => (
+                          <tr key={i} className="border-t border-border/70 hover:bg-surface">
+                            {result!.columns.map((c) => (
+                              <td
+                                key={c.key}
+                                className={cn(
+                                  'px-3 py-2',
+                                  isNum(c) ? 'whitespace-nowrap text-right tabular-nums' : 'max-w-[260px] truncate',
+                                )}
+                                title={isNum(c) ? undefined : String(row[c.key] ?? '')}
+                              >
+                                {fmtCell(row[c.key], c.type)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                      {result!.totals ? (
+                        <tfoot className="sticky bottom-0 bg-muted font-semibold">
+                          <tr className="border-t-2 border-border">
+                            {result!.columns.map((c, i) => (
+                              <td key={c.key} className={cn('px-3 py-2.5', isNum(c) ? 'text-right tabular-nums' : '')}>
+                                {i === 0 ? 'Total' : c.key in result!.totals! ? fmtCell(result!.totals![c.key], c.type) : ''}
+                              </td>
+                            ))}
+                          </tr>
+                        </tfoot>
+                      ) : null}
+                    </table>
+                    {result!.rows.length > PREVIEW_ROWS ? (
+                      <p className="border-t border-border px-3 py-2 text-xs text-text-secondary">
+                        Showing the first {PREVIEW_ROWS} of {int.format(result!.rows.length)} rows — downloads include all rows.
+                      </p>
+                    ) : null}
+                  </div>
+                )}
+              </Card>
             </div>
           ) : null}
-        </>
+        </div>
       )}
     </div>
   )

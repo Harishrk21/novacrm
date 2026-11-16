@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { fetchAllAsPage } from '@/lib/fetchAllPages'
+import { pageCacheGet, pageCacheSet } from '@/lib/pageCache'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   ChevronDown,
@@ -179,7 +181,10 @@ export function ContactsPage() {
   const [cityFilter, setCityFilter] = useState('')
   const [hasEmailFilter, setHasEmailFilter] = useState(false)
   const [hasWhatsappFilter, setHasWhatsappFilter] = useState(false)
-  const [filterOpen, setFilterOpen] = useState(true)
+  // Phone: start closed — the panel opens as a full-screen sheet over the list
+  const [filterOpen, setFilterOpen] = useState(
+    () => typeof window === 'undefined' || window.innerWidth >= 768,
+  )
   const [filterWidth, setFilterWidth] = useState(() => loadFilterWidth(280))
   const [tab, setTab] = useState<'list' | 'create' | 'import'>('list')
   const [createStep, setCreateStep] = useState<'customer' | 'product'>('customer')
@@ -349,23 +354,34 @@ export function ContactsPage() {
   const catalogReadyRef = useRef(false)
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
-    const silent = Boolean(opts?.silent)
+    let silent = Boolean(opts?.silent)
+    const query = {
+      limit: 100,
+      search: search || undefined,
+      accountId: accountFilter || undefined,
+      ownerUserId: ownerFilter || undefined,
+      city: cityFilter || undefined,
+      hasAccount: undefined,
+    }
+    const cacheKey = `contacts:${JSON.stringify(query)}`
+    const cached = pageCacheGet<ContactRow[]>(cacheKey)
+    if (cached) {
+      // Show last rows instantly; refresh quietly
+      setItems(cached)
+      setLoading(false)
+      silent = true
+    }
     if (!silent) setLoading(true)
     setLoadError(null)
     try {
       const needCatalog = !catalogReadyRef.current
       const [contactsRes, lookups] = await Promise.all([
-        api.contacts({
-          limit: 100,
-          search: search || undefined,
-          accountId: accountFilter || undefined,
-          ownerUserId: ownerFilter || undefined,
-          city: cityFilter || undefined,
-          hasAccount: undefined,
-        }),
+        // Every contact (API pages are capped at 200 — the list used to stop at 100)
+        fetchAllAsPage((p) => api.contacts({ ...query, ...p })),
         needCatalog ? api.lookups({ scope: 'full' }) : Promise.resolve(null),
       ])
       setItems((contactsRes.items ?? []) as ContactRow[])
+      pageCacheSet(cacheKey, contactsRes.items ?? [])
       if (lookups) {
         setAccounts(lookups.accounts)
         setUsers(lookups.users)
@@ -868,10 +884,10 @@ export function ContactsPage() {
                 ) : null}
                 <div className="overflow-hidden rounded-lg border border-border/80">
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[880px] text-left text-sm">
+                    <table className="w-full min-w-[800px] text-left text-sm">
                       <thead>
                         <tr className="border-b border-border bg-muted/50 text-[11px] uppercase tracking-[0.06em] text-text-secondary">
-                          <th className="w-10 px-4 py-3">
+                          <th className="w-10 px-3 py-3">
                             <SelectCheckbox
                               checked={selection.allSelected}
                               indeterminate={selection.someSelected && !selection.allSelected}
@@ -887,7 +903,7 @@ export function ContactsPage() {
                             'Contact owner',
                             'Actions',
                           ].map((h) => (
-                            <th key={h} className="px-4 py-3 font-semibold">
+                            <th key={h} className="px-3 py-3 font-semibold">
                               {h}
                             </th>
                           ))}
@@ -908,14 +924,14 @@ export function ContactsPage() {
                               className="group cursor-pointer border-t border-border/70 transition-colors hover:bg-accent-soft/40"
                               onClick={() => navigate(`/contacts/${c.id}`)}
                             >
-                              <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                              <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                                 <SelectCheckbox
                                   checked={selection.isSelected(c.id)}
                                   onChange={() => selection.toggle(c.id)}
                                   aria-label={`Select ${c.name}`}
                                 />
                               </td>
-                              <td className="px-4 py-2.5">
+                              <td className="px-3 py-2.5">
                                 <Link
                                   to={`/contacts/${c.id}`}
                                   className="flex min-w-0 items-center gap-2.5"
@@ -932,7 +948,7 @@ export function ContactsPage() {
                                   </div>
                                 </Link>
                               </td>
-                              <td className="px-4 py-2.5 text-text-primary">
+                              <td className="px-3 py-2.5 text-text-primary">
                                 {c.accountName ? (
                                   c.accountId ? (
                                     <Link
@@ -949,7 +965,7 @@ export function ContactsPage() {
                                   <span className="text-text-secondary">—</span>
                                 )}
                               </td>
-                              <td className="px-4 py-2.5">
+                              <td className="whitespace-nowrap px-3 py-2.5">
                                 <div className="flex items-center gap-1.5 font-medium tabular-nums text-text-primary">
                                   {rawPhone ? <Phone size={12} className="text-accent-green" /> : null}
                                   {phoneDisplay}
@@ -961,7 +977,7 @@ export function ContactsPage() {
                                   </div>
                                 ) : null}
                               </td>
-                              <td className="px-4 py-2.5">
+                              <td className="px-3 py-2.5">
                                 {machines > 0 ? (
                                   <span className="inline-flex items-center gap-1 rounded-md bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-700 dark:text-violet-300">
                                     <Package size={12} /> {machines}
@@ -970,10 +986,10 @@ export function ContactsPage() {
                                   <span className="text-xs text-text-secondary">—</span>
                                 )}
                               </td>
-                              <td className="px-4 py-2.5 text-text-secondary">
+                              <td className="px-3 py-2.5 text-text-secondary">
                                 {c.ownerName ?? 'Unassigned'}
                               </td>
-                              <td className="px-4 py-2.5" onClick={(e) => e.stopPropagation()}>
+                              <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
                                 <div className="flex items-center gap-0.5 opacity-80 transition-opacity group-hover:opacity-100">
                                   <ViewIconButton onClick={() => navigate(`/contacts/${c.id}`)} />
                                   <DeleteIconButton

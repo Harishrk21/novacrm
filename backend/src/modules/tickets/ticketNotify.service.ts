@@ -1,6 +1,7 @@
 import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { normalizePhone } from "../../common/utils/phone.js";
+import { whatsappOn } from "../../common/whatsappGate.js";
 import {
   isWhatsAppCloudConfigured,
   resolveTenantCloudCfg,
@@ -104,6 +105,7 @@ export async function sendCustomerWhatsApp(opts: {
   meta?: Record<string, unknown>;
   template?: { name: string; languageCode?: string; params: string[] };
 }): Promise<WhatsappNotifyResult> {
+  if (!(await whatsappOn(opts.tenantId))) return { notified: false, reason: "whatsapp_off" };
   const { tenantId, contactId, body, activityTitle, actorUserId, meta, template } = opts;
 
   const [contact, integration] = await Promise.all([
@@ -268,6 +270,7 @@ export async function sendPhoneWhatsApp(opts: {
   meta?: Record<string, unknown>;
   template?: { name: string; languageCode?: string; params: string[] };
 }): Promise<WhatsappNotifyResult> {
+  if (!(await whatsappOn(opts.tenantId))) return { notified: false, reason: "whatsapp_off" };
   const phone = opts.phone?.trim();
   if (!phone) return { notified: false, reason: "no_phone" };
 
@@ -364,6 +367,7 @@ export async function sendStaffWhatsApp(opts: {
   actorUserId?: string | null;
   template?: { name: string; languageCode?: string; params: string[] };
 }): Promise<WhatsappNotifyResult> {
+  if (!(await whatsappOn(opts.tenantId))) return { notified: false, reason: "whatsapp_off" };
   const [user, employee] = await Promise.all([
     prisma.user.findFirst({
       where: { id: opts.userId, tenantId: opts.tenantId, deletedAt: null },

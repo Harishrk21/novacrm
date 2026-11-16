@@ -222,7 +222,7 @@ export function RentalsPage() {
   useEffect(() => {
     if (!issueOpen) return
     void Promise.all([
-      api.stockUnits({ status: 'IN_STOCK', limit: 300 }),
+      api.stockUnitsAll({ status: 'IN_STOCK' }),
       api.products({ limit: 300 }),
     ])
       .then(([u, p]) => {

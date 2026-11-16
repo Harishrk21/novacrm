@@ -7,11 +7,9 @@ import {
   ExternalLink,
   MessageCircle,
   Mail,
-  Bot,
   Package,
   Pencil,
   Plus,
-  Radio,
   Shield,
   Sparkles,
   Trash2,
@@ -135,6 +133,67 @@ export function LoginDirectoryPanel() {
   )
 }
 
+/** Live dependency checks — database, cache, Attendance, AI, file storage, WhatsApp. */
+function DependencyChecks() {
+  const [data, setData] = useState<Awaited<ReturnType<typeof api.platformSystemHealth>> | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const run = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      setData(await api.platformSystemHealth())
+    } catch (e) {
+      setError(e instanceof ApiClientError ? e.message : 'Health check failed')
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+  useEffect(() => {
+    void run()
+  }, [run])
+  const dot = (st: 'ok' | 'warn' | 'down') =>
+    st === 'ok' ? 'bg-emerald-500' : st === 'warn' ? 'bg-amber-500' : 'bg-rose-500'
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="font-semibold">Service checks</h2>
+          <p className="mt-0.5 text-xs text-text-secondary">
+            {data ? `Checked ${new Date(data.checkedAt).toLocaleTimeString('en-IN')}` : 'Checking every dependency…'}
+          </p>
+        </div>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => void run()}>
+          {busy ? 'Checking…' : 'Run checks'}
+        </Button>
+      </div>
+      {error ? <p className="mt-3 text-sm text-rose-600">{error}</p> : null}
+      {data ? (
+        <>
+          <ul className="mt-3 divide-y divide-border">
+            {data.checks.map((c) => (
+              <li key={c.key} className="flex items-start gap-3 py-2.5 text-sm">
+                <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${dot(c.status)}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium">{c.label}</div>
+                  <div className="text-xs text-text-secondary">{c.detail}</div>
+                </div>
+                {typeof c.ms === 'number' ? (
+                  <span className="shrink-0 text-xs tabular-nums text-text-secondary">{c.ms} ms</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 border-t border-border pt-2 text-xs text-text-secondary">
+            Server: up {data.server.uptimeMinutes} min · {data.server.environment} · Node {data.server.node} ·{' '}
+            {data.server.timezone} · {data.server.memoryMb} MB
+          </p>
+        </>
+      ) : null}
+    </Card>
+  )
+}
+
 export function SystemHealthPanel() {
   const { clients, liveMode, stats } = useOutletContext<PlatformOutletContext>()
   const attention = clients.filter((c) => c.status === 'TRIAL' || c.status === 'SUSPENDED')
@@ -176,6 +235,8 @@ export function SystemHealthPanel() {
         </Card>
       </div>
 
+      <DependencyChecks />
+
       <Card>
         <h2 className="font-semibold">Trials & suspended</h2>
         {attention.length === 0 ? (
@@ -208,55 +269,38 @@ export function SystemHealthPanel() {
   )
 }
 
+/**
+ * Real add-on modules only. (Removed: "Automation rules" → switched on Reports, "Team chat" →
+ * Settings, "HMS coverage pack" → only tickets — none did what the card said. Packs live on Plans.)
+ */
 const ADDONS = [
   {
     id: 'whatsapp',
     title: 'WhatsApp Cloud',
     icon: MessageCircle,
-    module: 'engagement.whatsapp',
+    modules: ['engagement.whatsapp'],
     blurb: 'Meta Cloud API inbox, templates, and ticket handoff per tenant.',
   },
   {
     id: 'email',
     title: 'Email engagement',
     icon: Mail,
-    module: 'engagement.emails',
+    modules: ['engagement.emails'],
     blurb: 'Outbound sequences and activity logging for sales follow-ups.',
   },
   {
     id: 'attendance',
     title: 'Meister Attendance',
     icon: Shield,
-    module: 'hr.attendance',
+    modules: ['hr.attendance'],
     blurb: 'Clock-in, leave, shifts — provisions a tenant in Attendance and SSO from HMS.',
-  },
-  {
-    id: 'automation',
-    title: 'Automation rules',
-    icon: Bot,
-    module: 'reports',
-    blurb: 'Notify desk / lead routing hooks — enable with full HMS packs.',
   },
   {
     id: 'rentals',
     title: 'Rentals & stamping',
     icon: Package,
-    module: 'crm.rentals',
+    modules: ['crm.rentals', 'crm.stamping'],
     blurb: 'Weighing-ops add-ons: rental contracts and legal metrology stamping.',
-  },
-  {
-    id: 'teamchat',
-    title: 'Team chat',
-    icon: Radio,
-    module: 'settings',
-    blurb: 'Internal channels for client staff — always available with Settings.',
-  },
-  {
-    id: 'hms',
-    title: 'HMS coverage pack',
-    icon: Shield,
-    module: 'crm.tickets',
-    blurb: 'Service desk, AMC, tickets, inventory — apply HMS_FULL subscription pack.',
   },
 ] as const
 
@@ -269,9 +313,6 @@ export function AddonsPanel() {
   const [addonId, setAddonId] = useState<string>(ADDONS[0]?.id ?? '')
   const [busy, setBusy] = useState(false)
 
-  function clientsWithModule(key: string) {
-    return clients.filter((c) => c.modulesEnabled?.[key]).length
-  }
 
   async function enableAddon() {
     const addon = ADDONS.find((a) => a.id === addonId)
@@ -282,7 +323,10 @@ export function AddonsPanel() {
     }
     setBusy(true)
     try {
-      const nextMods = { ...(client.modulesEnabled ?? {}), [addon.module]: true }
+      const nextMods = {
+        ...(client.modulesEnabled ?? {}),
+        ...Object.fromEntries(addon.modules.map((m) => [m, true])),
+      }
       let note = `${addon.title} enabled on ${client.name}`
       if (liveMode) {
         const result = await api.setTenantModules(client.id, nextMods)
@@ -349,7 +393,8 @@ export function AddonsPanel() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {ADDONS.map((a) => {
           const Icon = a.icon
-          const enabled = clientsWithModule(a.module)
+          // companies with any of this add-on's modules switched on
+          const enabled = clients.filter((c) => a.modules.some((m) => c.modulesEnabled?.[m])).length
           return (
             <Card key={a.id}>
               <div className="flex items-start gap-3">
@@ -361,7 +406,7 @@ export function AddonsPanel() {
                   <p className="mt-1 text-sm text-text-secondary">{a.blurb}</p>
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
                     <Badge color="blue">{enabled} enabled</Badge>
-                    <span className="font-mono text-text-secondary">{a.module}</span>
+                    <span className="font-mono text-text-secondary">{a.modules.join(' + ')}</span>
                   </div>
                   <Button
                     className="mt-3"
@@ -569,6 +614,15 @@ export function PlansModulesPanel() {
   async function applyPack() {
     if (!clientId) {
       addToast({ type: 'error', message: 'Select a client' })
+      return
+    }
+    const target = clients.find((c) => c.id === clientId)
+    const packDefConfirm = packs.find((p) => p.code === pack)
+    if (
+      !window.confirm(
+        `Apply "${packDefConfirm?.label ?? pack}" to ${target?.name ?? 'this client'}?\n\nIts modules will be switched to this pack straight away — staff lose menus the pack doesn't include. Attendance and other add-ons stay as they are.`,
+      )
+    ) {
       return
     }
     setBusy(true)
@@ -1017,7 +1071,7 @@ export function TipsLibraryPanel() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Tips library</h1>
           <p className="mt-1 text-sm text-text-secondary">
-            Global coaching cards shown inside client apps (tenantId null).
+            Help cards shown inside every client's app, next to the screen they explain.
           </p>
         </div>
         <Button onClick={openCreate} disabled={!liveMode}>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowDownRight,
@@ -134,7 +134,6 @@ export function AdminAnalyticsDashboard() {
   const palette = useUIStore((s) => s.palette)
   const chartColors = PALETTES[palette].chart
   const addToast = useUIStore((s) => s.addToast)
-  const openHowItWorks = useUIStore((s) => s.openHowItWorks)
 
   const [pov, setPov] = useState<PovId>('overview')
   const [range, setRange] = useState('month')
@@ -156,6 +155,9 @@ export function AdminAnalyticsDashboard() {
     }>
   >([])
   const [reloadKey, setReloadKey] = useState(0)
+  /** Set by the Refresh button so the next load skips the server's short summary cache */
+  const bustCache = useRef(false)
+  const [askOpen, setAskOpen] = useState(false)
 
   useEffect(() => {
     if (!isTenantSession()) {
@@ -172,7 +174,8 @@ export function AdminAnalyticsDashboard() {
       setLoading(true)
       try {
         // Unblock skeleton as soon as the summary returns; secondary lists load after
-        const summary = await api.analytics({ range })
+        const summary = await api.analytics({ range, ...(bustCache.current ? { refresh: '1' } : {}) })
+        bustCache.current = false
         if (cancelled) return
         setAnalytics(summary)
         setRecentTickets((summary.attentionTickets ?? []) as Array<Record<string, unknown>>)
@@ -259,8 +262,6 @@ export function AdminAnalyticsDashboard() {
     [analytics?.ticketsByPriority, chartColors],
   )
 
-  const activePov = POVS.find((p) => p.id === pov) ?? POVS[0]
-  const accent = ACCENT[activePov.accent]
 
   function downloadCurrentView() {
     if (!analytics?.kpis) {
@@ -308,23 +309,10 @@ export function AdminAnalyticsDashboard() {
   return (
     <div className="space-y-5 pb-8">
       <PageHeader
-        title="Ops snapshot"
+        title="Dashboard"
         breadcrumbs={[{ label: APP_NAME }, { label: 'Home' }]}
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Link to={`/reports?range=${encodeURIComponent(range)}`}>
-              <Button size="sm">
-                <FileText size={14} /> Full reports
-              </Button>
-            </Link>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={loading || !analytics}
-              onClick={() => downloadCurrentView()}
-            >
-              <Download size={14} /> Download view
-            </Button>
             <Select
               value={range}
               onChange={(e) => setRange(e.target.value)}
@@ -336,46 +324,33 @@ export function AdminAnalyticsDashboard() {
                 { value: 'year', label: 'This year' },
               ]}
             />
-            <Button variant="outline" size="sm" onClick={() => openHowItWorks()}>
-              <BookOpen size={14} /> Guide
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setReloadKey((x) => x + 1)} disabled={loading}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                bustCache.current = true
+                setReloadKey((x) => x + 1)
+              }}
+              disabled={loading}
+              title={analytics?.generatedAt ? `Updated ${timeAgo(String(analytics.generatedAt))}` : undefined}
+            >
               <RefreshCw size={14} className={loading ? 'animate-spin' : undefined} /> Refresh
             </Button>
+            <Button size="sm" variant="outline" disabled={loading || !analytics} onClick={() => downloadCurrentView()}>
+              <Download size={14} /> Download
+            </Button>
+            <Link to={`/reports?range=${encodeURIComponent(range)}`}>
+              <Button size="sm">
+                <FileText size={14} /> Reports
+              </Button>
+            </Link>
           </div>
         }
       />
 
-      <AskDashboardPanel range={range} />
-
-      <DueTodayRemindersCard
-        title="My due today"
-        subtitle="Calls, tasks & meetings you created in Workqueue — due today or overdue for your admin login"
-      />
-
-      {/* Live status + POV switcher */}
-      <div className="overflow-hidden rounded-[12px] border border-border bg-card shadow-[var(--shadow-card)]">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-gradient-to-r from-[#0B1F3A] to-[#1e3a5f] px-4 py-3 text-white">
-          <div>
-            <div className="text-sm font-semibold tracking-tight">Company command centre</div>
-            <p className="mt-0.5 text-xs text-sky-100/80">
-              Service · sales enquiries · proformas · stock — live from your database
-              {analytics?.generatedAt ? ` · updated ${timeAgo(String(analytics.generatedAt))}` : ''}.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                live ? 'bg-emerald-400/20 text-emerald-100 ring-1 ring-emerald-300/40' : 'bg-white/10 text-white/70'
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-emerald-300 animate-pulse' : 'bg-white/40'}`} />
-              {live ? 'Live DB' : loading ? 'Loading…' : 'Offline'}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex gap-1.5 overflow-x-auto p-2">
+      {/* View tabs — straight under the header, tiles follow immediately */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 gap-1.5 overflow-x-auto" role="tablist" aria-label="Dashboard view">
           {POVS.map((p) => {
             const Icon = p.icon
             const a = ACCENT[p.accent]
@@ -384,11 +359,11 @@ export function AdminAnalyticsDashboard() {
               <button
                 key={p.id}
                 type="button"
+                role="tab"
+                aria-selected={on}
                 onClick={() => setPov(p.id)}
                 className={`inline-flex shrink-0 items-center gap-2 rounded-[8px] px-3 py-2 text-sm font-medium transition ${
-                  on
-                    ? `${a.chip} shadow-md`
-                    : 'bg-muted/60 text-text-secondary hover:bg-muted hover:text-text-primary'
+                  on ? `${a.chip} shadow-md` : 'bg-muted/60 text-text-secondary hover:bg-muted hover:text-text-primary'
                 }`}
               >
                 <Icon size={15} />
@@ -397,6 +372,11 @@ export function AdminAnalyticsDashboard() {
             )
           })}
         </div>
+        {analytics?.generatedAt ? (
+          <span className="hidden shrink-0 text-xs text-text-secondary sm:inline">
+            Updated {timeAgo(String(analytics.generatedAt))}
+          </span>
+        ) : null}
       </div>
 
       {loading && !analytics ? (
@@ -435,8 +415,23 @@ export function AdminAnalyticsDashboard() {
         </div>
       )}
 
-      {/* Soft accent strip matching active POV */}
-      <div className={`h-1 rounded-full bg-gradient-to-r ${accent.soft}`} aria-hidden />
+      <DueTodayRemindersCard
+        hideWhenEmpty
+        title="My due today"
+        subtitle="Calls, tasks & meetings due today or overdue for you"
+      />
+
+      {askOpen ? (
+        <AskDashboardPanel range={range} />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAskOpen(true)}
+          className="inline-flex items-center gap-2 rounded-[8px] border border-dashed border-border px-3 py-2 text-sm text-text-secondary hover:border-accent-blue/50 hover:text-text-primary"
+        >
+          <BookOpen size={14} /> Ask HMS about these numbers
+        </button>
+      )}
     </div>
   )
 }
@@ -566,6 +561,23 @@ function Panel({
   )
 }
 
+/** True when a chart has nothing to draw (no rows, or every plotted value is 0). */
+function noData(rows: ReadonlyArray<object> | undefined | null, keys: string[]) {
+  return !rows?.length || rows.every((r) => keys.every((k) => !Number((r as Record<string, unknown>)[k] ?? 0)))
+}
+
+/** Chart frame that shows a short note instead of empty axes. */
+function ChartBox({ className, empty, children }: { className: string; empty: boolean; children: ReactNode }) {
+  if (empty) {
+    return (
+      <div className={`${className} flex items-center justify-center rounded-[8px] border border-dashed border-border text-sm text-text-secondary`}>
+        No data for this period yet
+      </div>
+    )
+  }
+  return <div className={className}>{children}</div>
+}
+
 function EmptyHint({ children }: { children: ReactNode }) {
   return <p className="py-8 text-center text-sm text-text-secondary">{children}</p>
 }
@@ -628,6 +640,80 @@ function OverviewPov({
   return (
     <>
       <SectionHead
+        title="Operations snapshot"
+        subtitle="Live counts from tickets, leads, proformas & serial stock"
+        accent="sky"
+      />
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricTile
+          to="/sale-tracking?queue=requisitions"
+          label="Awaiting accept"
+          value={String(pendingReqCount)}
+          hint="Sales requisitions · waiting for your Accept"
+          tone="rose"
+          icon={<CheckSquare size={16} />}
+        />
+        <MetricTile
+          to="/tickets?unassigned=1"
+          label="Awaiting assign"
+          value={String(kpiNum(k, 'awaitingAssignment'))}
+          hint={`${kpiNum(k, 'openTickets')} open · ${kpiNum(k, 'slaBreached')} SLA breach`}
+          tone="rose"
+          icon={<AlertTriangle size={16} />}
+        />
+        <MetricTile
+          to="/tickets?status=RESOLVED"
+          label="Service pay & close"
+          value={String(kpiNum(k, 'awaitingApproval'))}
+          hint="Engineer complete — admin pay & close"
+          tone="amber"
+          icon={<CheckSquare size={16} />}
+        />
+        <MetricTile
+          to="/tickets"
+          label="Balance outstanding"
+          value={formatCurrency(kpiNum(k, 'balanceOutstanding'))}
+          hint={`${kpiNum(k, 'unpaidJobs')} jobs not fully paid`}
+          tone="amber"
+          icon={<CircleDollarSign size={16} />}
+        />
+        <MetricTile
+          to="/sale-tracking?status=CONVERTED"
+          label="Sales closed — period"
+          value={String(kpiNum(k, 'salesTotalInRange'))}
+          hint={`${formatCurrency(kpiNum(k, 'saleRevenueInRange'))} rev · ${kpiNum(k, 'enquiriesPending')} pending · ${kpiNum(k, 'enquiriesDemo')} demo`}
+          tone="emerald"
+          icon={<TrendingUp size={16} />}
+          delta={kpiNum(k, 'salesTotalInRange') > 0 ? `${kpiNum(k, 'salesTotalInRange')} won` : undefined}
+          deltaUp
+        />
+        <MetricTile
+          to="/erp/invoices"
+          label="Proforma total"
+          value={formatCurrency(kpiNum(k, 'invoiceRevenue'))}
+          hint={`${kpiNum(k, 'invoiceCount')} invoices · ${formatCurrency(kpiNum(k, 'invoiceRevenueInRange'))} in range`}
+          tone="cyan"
+          icon={<FileText size={16} />}
+        />
+        <MetricTile
+          to="/erp/inventory?tab=demo"
+          label="Demo units out"
+          value={String(kpiNum(k, 'demoOut'))}
+          hint={`${kpiNum(k, 'inStock')} in stock · serial inventory`}
+          tone="teal"
+          icon={<Package size={16} />}
+        />
+        <MetricTile
+          to="/contacts"
+          label="Customers"
+          value={String(kpiNum(k, 'contacts'))}
+          hint={`${kpiNum(k, 'machinesDueSoon')} service due · ${kpiNum(k, 'machinesStampingDue')} stamping due (30 days)`}
+          tone="slate"
+          icon={<Users size={16} />}
+        />
+      </div>
+
+      <SectionHead
         title="Needs attention"
         subtitle="Live queue — requisitions waiting approval, sales day updates, and urgent service jobs"
         accent="rose"
@@ -654,7 +740,7 @@ function OverviewPov({
           {pendingReqCount === 0 ? (
             <EmptyHint>No requisitions waiting for accept</EmptyHint>
           ) : (
-            <div className="space-y-2">
+            <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
               {pendingRequisitions.slice(0, 8).map((r) => {
                 const id = String(r.id)
                 const cf =
@@ -718,7 +804,7 @@ function OverviewPov({
           {salesDayUpdates.length === 0 ? (
             <EmptyHint>No day updates posted yet</EmptyHint>
           ) : (
-            <div className="space-y-2">
+            <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
               {salesDayUpdates.slice(0, 8).map((u, i) => (
                 <Link
                   key={`${u.leadId}-${u.at}-${i}`}
@@ -759,7 +845,7 @@ function OverviewPov({
           {attention.length === 0 ? (
             <EmptyHint>No urgent open service tickets</EmptyHint>
           ) : (
-            <div className="space-y-2">
+            <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
               {attention.slice(0, 8).map((t) => {
                 const id = String(t.id)
                 const breached = Boolean(t.slaBreached)
@@ -801,80 +887,6 @@ function OverviewPov({
         </Panel>
       </div>
 
-      <SectionHead
-        title="Operations snapshot"
-        subtitle="Live counts from tickets, leads, proformas & serial stock"
-        accent="sky"
-      />
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricTile
-          to="/sale-tracking?queue=requisitions"
-          label="Awaiting accept"
-          value={String(pendingReqCount)}
-          hint="Sales requisitions · waiting for your Accept"
-          tone="rose"
-          icon={<CheckSquare size={16} />}
-        />
-        <MetricTile
-          to="/tickets?unassigned=1"
-          label="Awaiting assign"
-          value={String(kpiNum(k, 'awaitingAssignment'))}
-          hint={`${kpiNum(k, 'openTickets')} open · ${kpiNum(k, 'slaBreached')} SLA breach`}
-          tone="rose"
-          icon={<AlertTriangle size={16} />}
-        />
-        <MetricTile
-          to="/tickets?status=RESOLVED"
-          label="Service pay & close"
-          value={String(kpiNum(k, 'awaitingApproval'))}
-          hint="Engineer complete — admin pay & close"
-          tone="amber"
-          icon={<CheckSquare size={16} />}
-        />
-        <MetricTile
-          to="/tickets"
-          label="Balance outstanding"
-          value={formatCurrency(kpiNum(k, 'balanceOutstanding'))}
-          hint="Open jobs · total − advance"
-          tone="amber"
-          icon={<CircleDollarSign size={16} />}
-        />
-        <MetricTile
-          to="/sale-tracking?status=CONVERTED"
-          label="Sales closed — period"
-          value={String(kpiNum(k, 'salesTotalInRange'))}
-          hint={`${formatCurrency(kpiNum(k, 'saleRevenueInRange'))} rev · ${kpiNum(k, 'enquiriesPending')} pending · ${kpiNum(k, 'enquiriesDemo')} demo`}
-          tone="emerald"
-          icon={<TrendingUp size={16} />}
-          delta={kpiNum(k, 'salesTotalInRange') > 0 ? `${kpiNum(k, 'salesTotalInRange')} won` : undefined}
-          deltaUp
-        />
-        <MetricTile
-          to="/erp/invoices"
-          label="Proforma total"
-          value={formatCurrency(kpiNum(k, 'invoiceRevenue'))}
-          hint={`${kpiNum(k, 'invoiceCount')} invoices · ${formatCurrency(kpiNum(k, 'invoiceRevenueInRange'))} in range`}
-          tone="cyan"
-          icon={<FileText size={16} />}
-        />
-        <MetricTile
-          to="/erp/inventory?tab=demo"
-          label="Demo units out"
-          value={String(kpiNum(k, 'demoOut'))}
-          hint={`${kpiNum(k, 'inStock')} in stock · serial inventory`}
-          tone="teal"
-          icon={<Package size={16} />}
-        />
-        <MetricTile
-          to="/contacts"
-          label="Customers"
-          value={String(kpiNum(k, 'contacts'))}
-          hint={`${kpiNum(k, 'machinesDueSoon')} machines due in 30 days`}
-          tone="slate"
-          icon={<Users size={16} />}
-        />
-      </div>
-
       {target > 0 ? (
         <Panel title="Revenue target" subtitle="Company setting · sale revenue + service collected + proforma in period">
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
@@ -899,7 +911,7 @@ function OverviewPov({
             </Link>
           }
         >
-          <div className="h-56">
+          <ChartBox className="h-56" empty={noData(analytics.ticketMonthly, ['created', 'resolved'])}>
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={analytics.ticketMonthly ?? []}>
                 <defs>
@@ -921,11 +933,11 @@ function OverviewPov({
                 <Area type="monotone" dataKey="resolved" name="Resolved" stroke="#10B981" fill="url(#cResolved)" />
               </AreaChart>
             </ResponsiveContainer>
-          </div>
+          </ChartBox>
         </Panel>
 
         <Panel title="Billing mix" subtitle="Proforma invoices + paid service jobs by month">
-          <div className="h-56">
+          <ChartBox className="h-56" empty={noData(monthly, ['proforma', 'servicePaid'])}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={monthly}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -937,7 +949,7 @@ function OverviewPov({
                 <Bar dataKey="servicePaid" name="Service paid" fill="#059669" radius={[4, 4, 0, 0]} stackId="a" />
               </BarChart>
             </ResponsiveContainer>
-          </div>
+          </ChartBox>
         </Panel>
 
         <Panel
@@ -945,7 +957,7 @@ function OverviewPov({
           subtitle="Pending · demo · converted · closed"
           action={
             <Link to="/sale-tracking" className="text-xs font-medium text-accent-blue hover:underline">
-              My leads →
+              All leads →
             </Link>
           }
         >
@@ -973,7 +985,7 @@ function OverviewPov({
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel title="Tickets by status">
-          <div className="h-48">
+          <ChartBox className="h-48" empty={noData(ticketStatusData, ['value'])}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={ticketStatusData} layout="vertical" margin={{ left: 8 }}>
                 <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10 }} />
@@ -986,7 +998,7 @@ function OverviewPov({
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
-          </div>
+          </ChartBox>
         </Panel>
         <Panel title="Serial stock" subtitle="Units by status">
           {stockByStatus.length === 0 ? (
@@ -1033,12 +1045,12 @@ function ServicePov({
         <MetricTile to="/tickets?status=OPEN" label="Open" value={String(kpiNum(k, 'openTickets'))} tone="blue" icon={<Ticket size={16} />} hint={`${kpiNum(k, 'tickets')} total tickets`} />
         <MetricTile to="/tickets?slaBreached=1" label="SLA breached" value={String(kpiNum(k, 'slaBreached'))} tone="rose" icon={<AlertTriangle size={16} />} hint={`${kpiNum(k, 'unassignedTickets')} unassigned`} />
         <MetricTile to="/tickets" label="Avg resolution" value={kpiNum(k, 'avgResolutionHours') ? `${kpiNum(k, 'avgResolutionHours')}h` : '—'} tone="indigo" icon={<Clock size={16} />} hint={`${kpiNum(k, 'resolvedTickets')} resolved all-time`} />
-        <MetricTile to="/tickets" label="Outstanding" value={formatCurrency(kpiNum(k, 'balanceOutstanding'))} tone="amber" icon={<CircleDollarSign size={16} />} hint={`${kpiNum(k, 'machinesDueSoon')} machines due · ${kpiNum(k, 'machinesStampingDue')} stamping`} />
+        <MetricTile to="/tickets" label="Outstanding" value={formatCurrency(kpiNum(k, 'balanceOutstanding'))} tone="amber" icon={<CircleDollarSign size={16} />} hint={`${kpiNum(k, 'unpaidJobs')} unpaid jobs · ${kpiNum(k, 'machinesStampingDue')} stamping due in 30 days`} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel title="By status">
-          <div className="h-64">
+          <ChartBox className="h-64" empty={noData(ticketStatusData, ['value'])}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={ticketStatusData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -1052,10 +1064,10 @@ function ServicePov({
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
-          </div>
+          </ChartBox>
         </Panel>
         <Panel title="By priority">
-          <div className="h-64">
+          <ChartBox className="h-64" empty={noData(priorityData, ['value'])}>
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie data={priorityData} dataKey="value" nameKey="name" innerRadius={50} outerRadius={78}>
@@ -1067,7 +1079,7 @@ function ServicePov({
                 <Legend />
               </PieChart>
             </ResponsiveContainer>
-          </div>
+          </ChartBox>
         </Panel>
       </div>
 
@@ -1149,7 +1161,7 @@ function ServicePov({
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel title="Tickets — monthly trend" subtitle="Created vs resolved vs SLA breach">
-          <div className="h-56">
+          <ChartBox className="h-56" empty={noData(analytics.ticketMonthly, ['created', 'resolved', 'breached'])}>
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={analytics.ticketMonthly ?? []}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -1162,10 +1174,10 @@ function ServicePov({
                 <Area type="monotone" dataKey="breached" stroke="#EF4444" fill="#EF444433" name="SLA breach" />
               </AreaChart>
             </ResponsiveContainer>
-          </div>
+          </ChartBox>
         </Panel>
         <Panel title="Jobs by category (count)">
-          <div className="h-56">
+          <ChartBox className="h-56" empty={noData(analytics.ticketsByCategory, ['value'])}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={analytics.ticketsByCategory ?? []}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -1175,26 +1187,38 @@ function ServicePov({
                 <Bar dataKey="value" fill={chartColors[2] ?? '#2563EB'} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
-          </div>
+          </ChartBox>
         </Panel>
       </div>
 
-      <Panel title="Engineer workload" subtitle="Jobs assigned per engineer — open / resolved / SLA breach">
+      <Panel
+        title="Engineers — this period"
+        subtitle="Jobs created in the selected period (same as Reports → Engineer performance). Open now = everything still on their plate."
+        action={
+          <Link to="/reports?report=engineer-performance" className="text-xs font-medium text-accent-blue hover:underline">
+            Engineer report →
+          </Link>
+        }
+      >
         <div className="overflow-x-auto">
           <table className="w-full min-w-[640px] text-left text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40 text-[11px] uppercase tracking-wide text-text-secondary">
                 <th className="px-3 py-2.5 font-semibold">Engineer</th>
-                <th className="px-3 py-2.5 font-semibold text-right">Total</th>
-                <th className="px-3 py-2.5 font-semibold text-right">Open</th>
-                <th className="px-3 py-2.5 font-semibold text-right">Resolved</th>
-                <th className="px-3 py-2.5 font-semibold text-right">SLA breach</th>
-                <th className="px-3 py-2.5 font-semibold">Open load</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Jobs</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Completed</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Avg hours</th>
+                <th className="px-3 py-2.5 font-semibold text-right">SLA missed</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Collected</th>
+                <th className="px-3 py-2.5 font-semibold">Open now</th>
               </tr>
             </thead>
             <tbody>
-              {(analytics.ticketsByAssignee ?? []).map((row) => {
-                const max = Math.max(...(analytics.ticketsByAssignee ?? []).map((r) => r.open), 1)
+              {((analytics.ticketsByAssignee ?? []) as Array<{
+                id: string; name: string; total: number; open: number; resolved: number; breached: number
+                avgHours?: number; collected?: number; openNow?: number
+              }>).map((row) => {
+                const max = Math.max(...((analytics.ticketsByAssignee ?? []) as Array<{ openNow?: number; open: number }>).map((r) => r.openNow ?? r.open), 1)
                 return (
                   <tr key={row.id} className="border-t border-border/70 hover:bg-surface">
                     <td className="px-3 py-2.5">
@@ -1204,11 +1228,15 @@ function ServicePov({
                       </span>
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{row.total}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums">{row.open}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums">{row.resolved}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-rose-600">{row.breached}</td>
-                    <td className="w-40 px-3 py-2.5">
-                      <ProgressTrack pct={(row.open / max) * 100} color="#2563EB" />
+                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-emerald-600">{row.resolved}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{row.avgHours ? `${row.avgHours}h` : '—'}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-rose-600">{row.breached || '—'}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{row.collected ? formatCurrency(row.collected) : '—'}</td>
+                    <td className="w-44 px-3 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <ProgressTrack pct={((row.openNow ?? row.open) / max) * 100} color="#2563EB" />
+                        <span className="w-6 text-right text-xs tabular-nums">{row.openNow ?? row.open}</span>
+                      </div>
                     </td>
                   </tr>
                 )
@@ -1255,6 +1283,7 @@ function SalesPov({
   const leadsByOwner = (analytics as Record<string, unknown>).leadsByOwner as Array<{
     id: string; name: string; total: number; pending: number; demo: number;
     converted: number; convertedInRange: number; saleRevenue: number; saleRevenueInRange: number; conversionRate: number
+    lost?: number; newInRange?: number; avgSale?: number
   }> ?? []
   const monthly = (analytics.monthlyRevenue ?? []) as Array<{ month: string; proforma?: number; servicePaid?: number }>
 
@@ -1322,11 +1351,11 @@ function SalesPov({
 
       {/* Salesperson leaderboard — who won deals this period */}
       <Panel
-        title="Who closed sales — this period"
-        subtitle="Sorted by sales won in selected range. Revenue = amount entered when sale was marked complete."
+        title="Sales by salesperson — this period"
+        subtitle="A sale counts on the day it was marked complete (same as Reports → Sales closed). Win rate = sales ÷ (sales + lost)."
         action={
-          <Link to="/sale-tracking" className="text-xs font-medium text-emerald-700 hover:underline dark:text-emerald-300">
-            All enquiries →
+          <Link to="/reports?report=sales" className="text-xs font-medium text-emerald-700 hover:underline dark:text-emerald-300">
+            Sales report →
           </Link>
         }
       >
@@ -1336,19 +1365,20 @@ function SalesPov({
               <tr className="border-b border-border bg-muted/40 text-[11px] uppercase tracking-wide text-text-secondary">
                 <th className="px-3 py-2.5 font-semibold">#</th>
                 <th className="px-3 py-2.5 font-semibold">Salesperson</th>
-                <th className="px-3 py-2.5 font-semibold text-right">Won this period</th>
-                <th className="px-3 py-2.5 font-semibold text-right">Revenue this period</th>
-                <th className="px-3 py-2.5 font-semibold text-right">All-time converted</th>
-                <th className="px-3 py-2.5 font-semibold text-right">All-time revenue</th>
-                <th className="px-3 py-2.5 font-semibold text-right">Conv. rate</th>
-                <th className="px-3 py-2.5 font-semibold text-center">Demo</th>
-                <th className="px-3 py-2.5 font-semibold text-center">Pending</th>
+                <th className="px-3 py-2.5 font-semibold text-right">New enquiries</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Sales closed</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Amount</th>
+                <th className="px-3 py-2.5 font-semibold text-right">All-time sales</th>
+                <th className="px-3 py-2.5 font-semibold text-right">All-time amount</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Avg sale</th>
+                <th className="px-3 py-2.5 font-semibold text-right">Win rate</th>
+                <th className="px-3 py-2.5 font-semibold text-center">Open · Demo · Lost</th>
               </tr>
             </thead>
             <tbody>
               {leadsByOwner.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-3 py-8 text-center text-text-secondary">
+                  <td colSpan={10} className="px-3 py-8 text-center text-text-secondary">
                     No leads assigned yet — assign enquiries to salespersons to track performance
                   </td>
                 </tr>
@@ -1366,6 +1396,7 @@ function SalesPov({
                         <span className="font-medium">{row.name}</span>
                       </span>
                     </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{row.newInRange ?? 0}</td>
                     <td className="px-3 py-2.5 text-right">
                       <span className={`font-bold tabular-nums ${row.convertedInRange > 0 ? 'text-emerald-600' : 'text-text-secondary'}`}>
                         {row.convertedInRange}
@@ -1380,13 +1411,17 @@ function SalesPov({
                     <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
                       {row.saleRevenue > 0 ? formatCurrency(row.saleRevenue) : '—'}
                     </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
+                      {row.avgSale ? formatCurrency(row.avgSale) : '—'}
+                    </td>
                     <td className="px-3 py-2.5 text-right">
                       <span className={`text-xs font-semibold ${row.conversionRate >= 50 ? 'text-emerald-600' : row.conversionRate >= 25 ? 'text-amber-600' : 'text-rose-600'}`}>
-                        {row.conversionRate}%
+                        {row.converted + (row.lost ?? 0) > 0 ? `${row.conversionRate}%` : '—'}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5 text-center tabular-nums text-amber-600">{row.demo || '—'}</td>
-                    <td className="px-3 py-2.5 text-center tabular-nums text-text-secondary">{row.pending}</td>
+                    <td className="px-3 py-2.5 text-center tabular-nums text-text-secondary">
+                      {row.pending} · <span className="text-amber-600">{row.demo}</span> · <span className="text-rose-600">{row.lost ?? 0}</span>
+                    </td>
                   </tr>
                 ))
               )}
@@ -1397,7 +1432,7 @@ function SalesPov({
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel title="Monthly sales mix" subtitle="Proforma + service paid (last 7 months)">
-          <div className="h-64">
+          <ChartBox className="h-64" empty={noData(monthly, ['proforma', 'servicePaid'])}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={monthly}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -1409,7 +1444,7 @@ function SalesPov({
                 <Bar dataKey="servicePaid" name="Service paid" fill={chartColors[1] ?? '#059669'} radius={[4, 4, 0, 0]} stackId="a" />
               </BarChart>
             </ResponsiveContainer>
-          </div>
+          </ChartBox>
         </Panel>
 
         <Panel

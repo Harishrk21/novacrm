@@ -50,6 +50,8 @@ export const RESERVED_LOGIN_SLUGS = [
 
 /** HMS lockup shipped in `public/hms-logo.png` (Vercel static). */
 export const HMS_LOGO_URL = '/hms-logo.png'
+/** Same lockup with a white "ENTERPRISES" wordmark — for dark backgrounds (sidebar, dark mode). */
+export const HMS_LOGO_DARK_URL = '/hms-logo-dark.png'
 
 /** HMS brand palette (from official logo). */
 export const HMS_COLORS = {

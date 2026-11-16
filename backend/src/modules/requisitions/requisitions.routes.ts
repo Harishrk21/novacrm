@@ -8,6 +8,35 @@ import { requirePermission } from "../../middleware/permissions.middleware.js";
 import { success } from "../../common/utils/response.js";
 import { paramId } from "../../common/utils/params.js";
 import * as svc from "./requisitions.service.js";
+import { historyOnSuccess, money, type HistoryArea } from "../../common/history.js";
+
+/** Work history for requisition steps — label "REQ-00012 · customer", figures from the response. */
+function reqHistory(action: string, area: HistoryArea, summary: string) {
+  return historyOnSuccess((req, data) => {
+    const d = (data && typeof data === "object" && "requisition" in data ? (data as { requisition: unknown }).requisition : data) as Record<string, unknown>;
+    const cf = (d?.customFields && typeof d.customFields === "object" ? d.customFields : {}) as Record<string, unknown>;
+    const lead = (d?.lead && typeof d.lead === "object" ? d.lead : {}) as Record<string, unknown>;
+    const customer = String(cf.customerName ?? lead.name ?? d?.customerName ?? "") || null;
+    return {
+      action,
+      area,
+      entityType: "requisition",
+      entityId: String(d?.id ?? req.params.id ?? "") || null,
+      label: [String(d?.reqNumber ?? "") || "Requisition", customer].filter(Boolean).join(" · "),
+      summary,
+      details: {
+        customer,
+        status: d?.status ?? null,
+        product: String(cf.productName ?? "") || null,
+        quantity: d?.quantity ?? cf.quantity ?? null,
+        serials: cf.releaseLines ?? cf.serialNo ?? null,
+        total: money(cf.salePaymentTotal ?? d?.totalAmount),
+        advance: money(d?.advanceAmount),
+        note: (req.body as { note?: unknown; reason?: unknown } | undefined)?.note ?? (req.body as { reason?: unknown } | undefined)?.reason ?? null,
+      },
+    };
+  });
+}
 
 const idParams = z.object({ id: z.string().min(1).max(36) });
 
@@ -97,6 +126,7 @@ requisitionsRouter.get(
 requisitionsRouter.post(
   "/",
   requirePermission("requisitions:write"),
+  reqHistory("sales.requisition_raised", "Sales", "Stock requested for a sale"),
   validate(z.object({ body: submitBody, query: z.any(), params: z.any() })),
   async (q: Request, r: Response) => {
     const body = submitBody.parse(q.body);
@@ -108,6 +138,7 @@ requisitionsRouter.post(
 requisitionsRouter.post(
   "/:id/approve",
   requirePermission("requisitions:approve"),
+  reqHistory("sales.requisition_accepted", "Sales", "Admin accepted the stock request"),
   validate(z.object({ body: z.any(), query: z.any(), params: idParams })),
   async (q: Request, r: Response) => {
     const data = await svc.approve(q.auth!.tenantId!, paramId(q), q.auth!.userId!, q);
@@ -118,6 +149,7 @@ requisitionsRouter.post(
 requisitionsRouter.post(
   "/:id/reject",
   requirePermission("requisitions:approve"),
+  reqHistory("sales.requisition_rejected", "Sales", "Admin rejected the stock request"),
   validate(z.object({ body: rejectBody, query: z.any(), params: idParams })),
   async (q: Request, r: Response) => {
     const body = rejectBody.parse(q.body ?? {});
@@ -139,6 +171,7 @@ requisitionsRouter.post(
 requisitionsRouter.post(
   "/:id/stamping",
   requirePermission("requisitions:fulfill"),
+  reqHistory("stock.stamping_recorded", "Stock", "Stamping recorded before dispatch"),
   validate(z.object({ body: stampingBody, query: z.any(), params: idParams })),
   async (q: Request, r: Response) => {
     const body = stampingBody.parse(q.body);
@@ -150,6 +183,7 @@ requisitionsRouter.post(
 requisitionsRouter.post(
   "/:id/fulfill",
   requirePermission("requisitions:fulfill"),
+  reqHistory("stock.released", "Stock", "Warehouse released the units"),
   validate(z.object({ body: fulfillBody.optional(), query: z.any(), params: idParams })),
   async (q: Request, r: Response) => {
     const body = fulfillBody.parse(q.body ?? {});
@@ -161,6 +195,7 @@ requisitionsRouter.post(
 requisitionsRouter.post(
   "/:id/delivery-challan",
   requirePermission("requisitions:fulfill"),
+  reqHistory("stock.dc_created", "Stock", "Delivery challan created"),
   validate(
     z.object({
       body: z.object({ notes: z.string().max(2000).nullable().optional() }).optional(),
@@ -187,10 +222,28 @@ requisitionsRouter.post(
 requisitionsRouter.post(
   "/:id/ship",
   requirePermission("requisitions:fulfill"),
+  reqHistory("stock.shipped", "Stock", "Marked shipped / ready to deliver"),
   validate(z.object({ body: z.any(), query: z.any(), params: idParams })),
   async (q: Request, r: Response) => {
     const data = await svc.markShipped(q.auth!.tenantId!, paramId(q), q.auth!.userId!, q);
     return success(r, data, "Marked ready to ship");
+  },
+);
+
+const salePaymentBody = z.object({
+  total: z.coerce.number().nonnegative(),
+  advance: z.coerce.number().nonnegative(),
+});
+
+/** Absolute Total / Advance from the lead Payment card — syncs requisition + lead. */
+requisitionsRouter.post(
+  "/:id/payment",
+  requirePermission("requisitions:write"),
+  reqHistory("sales.payment_recorded", "Sales", "Sale payment recorded"),
+  validate(z.object({ body: salePaymentBody, query: z.any(), params: idParams })),
+  async (q: Request, r: Response) => {
+    const data = await svc.setSalePayment(q.auth!.tenantId!, paramId(q), salePaymentBody.parse(q.body));
+    return success(r, data, "Payment saved");
   },
 );
 

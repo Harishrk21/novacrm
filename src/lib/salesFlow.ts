@@ -4,12 +4,14 @@ import { parseProductStampLines } from '@/lib/inventoryFlow'
 /** Demo is optional — not part of the required progress bar. */
 export const SALES_FLOW_STEPS: FlowStep[] = [
   { key: 'enquiry', label: 'Enquiry', hint: 'Details filled' },
-  { key: 'followup', label: 'Follow-up', hint: 'Call / reminder' },
-  { key: 'ready', label: 'Ready to buy', hint: 'Customer linked' },
+  // Optional: ticked when a follow-up exists, never blocks or shows as missed
+  { key: 'followup', label: 'Follow-up', hint: 'Optional', optional: true },
+  { key: 'ready', label: 'Ready to buy', hint: 'Customer confirmed' },
   { key: 'requisition', label: 'Admin sign-off', hint: 'Requisition' },
   { key: 'inventory', label: 'Stock out', hint: 'Inventory reduce' },
   { key: 'ship', label: 'Ready to ship', hint: 'Delivery' },
-  { key: 'payment', label: 'PI / Payment', hint: 'Sales team' },
+  // Payment can be recorded any time (advance at enquiry, balance after delivery)
+  { key: 'payment', label: 'PI / Payment', hint: 'Due ₹0 · any time', anytime: true },
 ]
 
 export type SalesRequisitionRow = {
@@ -86,7 +88,12 @@ export function resolveSaleRelease(
     (mirror?.productName ? String(mirror.productName) : null) ||
     null
   const nameParts = parseProductStampLines(productName)
-  const machinesNeeded = Math.max(
+  // Order lines (with quantities) decide how many machines — never stale counts / name splits
+  const orderQty = ((reqCf?.orderLines ?? mirror?.orderLines) as Array<{ qty?: unknown }> | undefined)?.reduce(
+    (sum, l) => sum + Math.max(1, Math.floor(Number(l?.qty ?? 1)) || 1),
+    0,
+  ) ?? 0
+  const machinesNeeded = orderQty > 0 ? orderQty : Math.max(
     1,
     stampLines.length,
     typeof reqCf?.machinesNeeded === 'number' ? Number(reqCf.machinesNeeded) : 0,
@@ -95,10 +102,13 @@ export function resolveSaleRelease(
     nameParts.length,
   )
   const machinesReduced = releaseLines.length
+  // Stock out = EVERY ordered machine reduced. With release lines we count them; a FULFILLED
+  // status or the first stockReducedAt alone is not enough (partial releases were marked done).
   const inventoryDone =
-    status === 'FULFILLED' ||
+    releaseLines.length > 0
+      ? machinesReduced >= machinesNeeded
+      : status === 'FULFILLED' ||
     Boolean(stockReducedAt) ||
-    machinesReduced >= machinesNeeded ||
     (Array.isArray(mirror?.products) &&
       (mirror!.products as Array<{ stockReduced?: boolean }>).length > 0 &&
       (mirror!.products as Array<{ stockReduced?: boolean }>).every((p) => p.stockReduced))
@@ -152,10 +162,8 @@ export function salesStepDoneFlags(input: {
     Boolean(cf.lastTouchedAt) ||
     ['CONTACTED', 'QUALIFIED', 'DEMO', 'CONVERTED'].includes(status)
 
-  const readyBuy =
-    status === 'CONVERTED' ||
-    Boolean(lead.convertedContactId) ||
-    Boolean(cf.contact_id)
+  // Ready to buy only after an explicit Convert (linking an existing customer at enquiry is not a purchase)
+  const readyBuy = status === 'CONVERTED' || Boolean(lead.convertedContactId)
 
   const release = resolveSaleRelease(lead, input.requisition)
   const requisitionApproved = ['APPROVED', 'FULFILLED'].includes(release.status)
@@ -222,8 +230,9 @@ export function salePaymentSettled(
   return { ok: paymentTracked && due === 0, total, advance, due, pending }
 }
 
+/** Every required step done — optional ones (follow-up) don't hold the sale back. */
 export function saleAllStepsDone(flags: boolean[]): boolean {
-  return flags.length > 0 && flags.every(Boolean)
+  return flags.length > 0 && flags.every((f, i) => f || Boolean(SALES_FLOW_STEPS[i]?.optional))
 }
 
 export function saleIsCompleted(lead: Record<string, unknown> | null | undefined): boolean {
@@ -300,10 +309,9 @@ export function salesStepBlockers(
         missing.push('Complete enquiry name + phone/email')
         break
       case 1:
-        missing.push('Log a follow-up or schedule a reminder')
-        break
+        break // follow-up is optional
       case 2:
-        missing.push('Link customer / convert (Ready to buy)')
+        missing.push('Confirm the customer is ready to buy (Convert)')
         break
       case 3:
         if (st === 'PENDING_APPROVAL') missing.push('Waiting for admin to sign the requisition')
@@ -318,7 +326,7 @@ export function salesStepBlockers(
         )
         break
       case 5:
-        missing.push('Inventory must mark ready to ship')
+        missing.push('Inventory creates the delivery challan, then marks ready to ship')
         break
       case 6: {
         const pay = salePaymentSettled(input.lead ?? null, input.requisition)

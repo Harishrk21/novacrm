@@ -49,8 +49,8 @@ export function FeatureTip({
 /** Default tips when API not connected yet */
 export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType: TipType }> = {
   'crm.dashboard': {
-    title: 'Ask HMS is fast now',
-    body: 'Overview & Explain spikes answer instantly from live KPIs. Free-text Ask uses AI and falls back to KPIs if the model is slow.',
+    title: 'Pick a range, then download',
+    body: 'Every figure here is live. Choose a date range or person, then download CSV / Excel or print. Ask HMS answers questions about these numbers.',
     tipType: 'TIP',
   },
   'crm.leads': {
@@ -70,7 +70,7 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
   },
   'crm.tickets': {
     title: 'Six clear service steps',
-    body: '1 Desk creates → 2 Admin assigns (WhatsApp) → 3 Engineer on site → 4 Daily tracking → 5 Admin pay & close → 6 Service proforma. Follow the progress bar on each ticket.',
+    body: '1 Desk creates → 2 Engineer accepts (or admin assigns) → 3 Engineer on site → 4 Work report → 5 Admin pay & close → 6 Service proforma. Follow the progress bar on each ticket.',
     tipType: 'TIP',
   },
   'erp.products': {
@@ -130,12 +130,12 @@ export const DEFAULT_TIPS: Record<string, { title: string; body: string; tipType
   },
   'crm.users': {
     title: 'Team logins',
-    body: 'Add employees with role and WhatsApp number so you can assign leads, tickets, and send alerts. No seat limit — create as many logins as you need.',
+    body: 'Add employees with role and mobile number so you can assign leads and service jobs to them. The number of logins allowed comes from your plan — see the seat count below.',
     tipType: 'BEST_PRACTICE',
   },
   'crm.employee': {
     title: 'Your service queue',
-    body: 'My Tickets come first — work by SLA, then Complete service so the customer gets a WhatsApp. Leads and tasks stay secondary under Sales.',
+    body: 'My Tickets come first — work by SLA, then fill the work report and Complete service. Ready to accept lists open jobs you can pick up.',
     tipType: 'TIP',
   },
   'crm.help': {

@@ -1,3 +1,5 @@
+import { publicLoginSlug } from '@/lib/lastTenantSlug'
+
 /** Module keys platform admin can toggle per client (drives sidebar).
  *  Settings is always on for every tenant — not shown as a checkbox. */
 export const MODULE_TOGGLE_OPTIONS: Array<{ key: string; label: string; group: string }> = [
@@ -20,7 +22,7 @@ export const MODULE_TOGGLE_OPTIONS: Array<{ key: string; label: string; group: s
 ]
 
 export function clientLoginPath(slug: string) {
-  return `/login/${encodeURIComponent(slug.toLowerCase())}`
+  return `/login/${encodeURIComponent(publicLoginSlug(slug))}`
 }
 
 export function clientLoginUrl(slug: string, origin = typeof window !== 'undefined' ? window.location.origin : '') {

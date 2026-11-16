@@ -260,6 +260,16 @@ assetsRouter.patch("/:id", requirePermission("assets:write"), validate(updateSch
   const data: Record<string, unknown> = { ...d };
   if ("stampingDate" in d) data.stampingDate = parseDate(d.stampingDate);
   if ("nextDueDate" in d) data.nextDueDate = parseDate(d.nextDueDate);
+  if ("stampingDate" in d || "nextDueDate" in d) {
+    const stamp = ("stampingDate" in data ? data.stampingDate : existing.stampingDate) as Date | null;
+    const due = ("nextDueDate" in data ? data.nextDueDate : existing.nextDueDate) as Date | null;
+    if (stamp && stamp.getTime() > Date.now() + 36 * 3600_000) {
+      throw new AppError("Stamping date can't be in the future", 400);
+    }
+    if (stamp && due && due.getTime() <= stamp.getTime()) {
+      throw new AppError("Next due / valid till must be after the stamping date", 400);
+    }
+  }
   if ("warrantyEndDate" in d) data.warrantyEndDate = parseDate(d.warrantyEndDate);
   if ("amcStartDate" in d) data.amcStartDate = parseDate(d.amcStartDate);
   if ("amcEndDate" in d) data.amcEndDate = parseDate(d.amcEndDate);

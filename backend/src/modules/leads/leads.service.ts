@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { logLeadEvent } from "./leadHistory.js";
 import { prisma } from "../../config/database.js";
 import { newId } from "../../common/utils/id.js";
 import { normalizePhone } from "../../common/utils/phone.js";
@@ -983,6 +984,35 @@ export async function update(t: string, id: string, data: Record<string, unknown
   if (patch.status === "CONVERTED" && before.status !== "CONVERTED") {
     throw new AppError("Use POST /leads/:id/convert to convert leads", 400);
   }
+  if ((patch.status === "LOST" || patch.status === "UNQUALIFIED") && before.status !== patch.status) {
+    const stockOut = await prisma.salesRequisition.findFirst({
+      where: { tenantId: t, leadId: id, deletedAt: null },
+      select: { customFields: true, status: true },
+    });
+    const rcf = (stockOut?.customFields ?? {}) as Record<string, unknown>;
+    const reduced = Array.isArray(rcf.releaseLines) && rcf.releaseLines.length > 0;
+    if (reduced || stockOut?.status === "FULFILLED" || leadCf(before).saleCompletedAt) {
+      throw new AppError("Stock has already gone out for this sale — it can't be marked lost", 409);
+    }
+  }
+  // Mark sale complete only when every step is really done (was a page-only check)
+  {
+    const nextCf = patch.customFields && typeof patch.customFields === "object" ? (patch.customFields as Record<string, unknown>) : null;
+    if (nextCf?.saleCompletedAt && !leadCf(before).saleCompletedAt) {
+      const rq = await prisma.salesRequisition.findFirst({
+        where: { tenantId: t, leadId: id, deletedAt: null },
+        select: { status: true, shippedAt: true, advanceAmount: true, customFields: true },
+      });
+      const total = Number(nextCf.salePaymentTotal ?? leadCf(before).salePaymentTotal ?? leadCf(before).budget ?? 0) || 0;
+      const advance = Math.max(Number(rq?.advanceAmount ?? 0) || 0, Number(nextCf.saleAdvanceAmount ?? 0) || 0);
+      if (!rq || rq.status !== "FULFILLED" || !rq.shippedAt) {
+        throw new AppError("Mark sale complete after every machine is out of stock and ready to ship", 409);
+      }
+      if (total > 0 && advance < total) {
+        throw new AppError(`Payment pending — ₹${(total - advance).toLocaleString("en-IN")} still due`, 409);
+      }
+    }
+  }
 
   const beforeCf = leadCf(before);
   const needsCfMerge =
@@ -1060,6 +1090,17 @@ export async function update(t: string, id: string, data: Record<string, unknown
       /* non-fatal */
     }
   }
+  // Work history: sale completed / lost / reopened are kept with the figures at that moment
+  if (!beforeCf.saleCompletedAt && afterCf.saleCompletedAt) {
+    void logLeadEvent(t, id, "sales.completed", "Sale marked complete");
+  }
+  if (before.status !== after.status) {
+    if (after.status === "LOST" || after.status === "UNQUALIFIED") {
+      void logLeadEvent(t, id, "sales.lost", "Enquiry closed — no sale", { previousStatus: before.status });
+    } else if (before.status === "LOST" || before.status === "UNQUALIFIED") {
+      void logLeadEvent(t, id, "sales.reopened", "Enquiry reopened", { previousStatus: before.status });
+    }
+  }
   await invalidate(t);
   return after;
 }
@@ -1103,6 +1144,12 @@ export const phone = (t: string, v: string) =>
     where: { tenantId: t, phoneNormalized: normalizePhone(v), deletedAt: null },
     take: 20,
   });
+
+/** Lead custom fields that describe the customer (copied on convert); everything else stays on the sale. */
+const CUSTOMER_CF_KEYS = new Set([
+  "whatsapp", "mobile_2", "mobile_3", "landline", "building_name", "gps_location",
+  "gstin", "companyName", "company_name", "customer_type", "enquiry_way",
+]);
 
 export async function convert(t: string, id: string, user: string, data: any) {
   const lead = await get(t, id);
@@ -1166,6 +1213,13 @@ export async function convert(t: string, id: string, user: string, data: any) {
         : null;
 
       if (!contact) {
+        const lcf = (lead.customFields && typeof lead.customFields === "object" && !Array.isArray(lead.customFields) ? lead.customFields : {}) as Record<string, unknown>;
+        const leadAddr = {
+          area: String(lcf.area ?? "").trim(),
+          street: String(lcf.street ?? "").trim(),
+          doorNo: String(lcf.doorNo ?? lcf.door_no ?? "").trim(),
+          pincode: String(lcf.pincode ?? "").trim(),
+        };
         const identity = await allocateCustomerIdentity(t, tx);
         contact = await tx.contact.create({
           data: {
@@ -1178,10 +1232,22 @@ export async function convert(t: string, id: string, user: string, data: any) {
             email: lead.email,
             phone: lead.phone,
             phoneNormalized: phoneNorm,
+            // Carry the enquiry address over — the customer page and engineer routing use area
+            area: lead.area ?? (leadAddr.area || null),
+            street: leadAddr.street || null,
+            doorNo: leadAddr.doorNo || null,
+            pincode: leadAddr.pincode || null,
             city: lead.city,
             state: lead.state,
             ownerUserId: lead.assignedToId,
-            customFields: lead.customFields ?? undefined,
+            // Only customer details travel to the customer — not the whole enquiry (products, timeline, payments…)
+            customFields: {
+              ...Object.fromEntries(
+                Object.entries(lcf).filter(([k, v]) => CUSTOMER_CF_KEYS.has(k) && v != null && v !== ""),
+              ),
+              convertedFromLeadId: lead.id,
+              ...(lead.leadNo != null ? { convertedFromLeadNo: lead.leadNo } : {}),
+            },
           },
         });
       } else if (accountId && !contact.accountId) {
@@ -1253,39 +1319,10 @@ export async function convert(t: string, id: string, user: string, data: any) {
   // Stock stays on DEMO / IN_STOCK until admin requisition → warehouse fulfill marks SOLD
   // (do not call markDemoSold here)
 
-  let requisitionCreated = false;
-  let requisitionError: string | null = null;
-  try {
-    const { submit: submitRequisition } = await import("../requisitions/requisitions.service.js");
-    try {
-      await submitRequisition(
-        t,
-        user,
-        {
-          leadId: id,
-          advanceAmount: data.advanceAmount != null ? Number(data.advanceAmount) : undefined,
-          paymentNotes: data.paymentNotes ? String(data.paymentNotes) : undefined,
-          notes: "Auto-submitted after convert — awaiting admin sign-off",
-        },
-      );
-      requisitionCreated = true;
-    } catch (err) {
-      // Already open (409) is OK — surface other failures so UI can prompt sales
-      if (err instanceof AppError && err.statusCode === 409) {
-        requisitionCreated = true; // already pending / open
-        requisitionError = null;
-      } else if (err instanceof AppError) {
-        requisitionError = err.message;
-        console.error("auto requisition after convert failed", err.message);
-      } else {
-        requisitionError = "Could not auto-create sales requisition — submit from lead detail";
-        console.error("auto requisition after convert failed", err);
-      }
-    }
-  } catch (err) {
-    requisitionError = "Requisitions module unavailable";
-    console.error("auto requisition module load failed", err);
-  }
+  // Linear flow: Convert = Ready to buy only. Sales then sends the requisition as its own,
+  // confirmed step from the lead page (no auto-submit here).
+  const requisitionCreated = false;
+  const requisitionError: string | null = null;
 
   try {
     const { notifyAdmins } = await import("../notifications/notify.service.js");
@@ -1299,8 +1336,8 @@ export async function convert(t: string, id: string, user: string, data: any) {
         ? String((lead.customFields as Record<string, unknown>).demoSerialNo ?? "")
         : "";
     await notifyAdmins(t, {
-      title: "Sale converted — requisition needed",
-      message: `${lead.name}${lead.company ? ` · ${lead.company}` : ""} converted${product ? ` — ${product}` : ""}${serial ? ` · S/No ${serial}` : ""}. Approve the sales requisition before inventory releases stock.`,
+      title: "Customer ready to buy",
+      message: `${lead.name}${lead.company ? ` · ${lead.company}` : ""} converted${product ? ` — ${product}` : ""}${serial ? ` · S/No ${serial}` : ""}. Sales will send the requisition next for your sign-off.`,
       type: "LEAD_CONVERT_REQUISITION",
       entityType: "lead",
       entityId: id,

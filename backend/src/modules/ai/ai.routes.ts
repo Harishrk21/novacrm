@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { askData, dataQuerySchema } from "./dataQuery.js";
 import type { Request, Response, NextFunction } from "express";
 import { Router } from "express";
 import { authenticate } from "../../middleware/auth.middleware.js";
@@ -33,7 +34,99 @@ const DASH_LINKS = [
   "/amc",
   "/stamping",
   "/help",
+  "/reports",
+  "/reports?report=sales",
+  "/reports?report=engineer-performance",
+  "/reports?report=unpaid-jobs",
+  "/reports?report=machines-due",
+  "/reports?report=stock-summary",
+  "/reports?report=service-collections",
+  "/reports?report=history",
+  "/tickets?queue=closed",
+  "/erp/releases",
 ] as const;
+
+/**
+ * Business facts for Ask HMS — the same numbers as Reports, so an answer always matches what the
+ * admin sees there: sales by salesperson, engineer performance, money owed, machines due, low stock.
+ */
+async function buildHmsFacts(t: string, range: string) {
+  const { runReport } = await import("../reports/reports.service.js");
+  const now = new Date();
+  const from =
+    range === "week"
+      ? new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7)
+      : range === "quarter"
+        ? new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1)
+        : range === "year"
+          ? new Date(now.getFullYear(), 0, 1)
+          : new Date(now.getFullYear(), now.getMonth(), 1);
+  const to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  const in30 = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 30, 23, 59, 59, 999);
+  const run = (key: string, p: { from: Date; to: Date }) =>
+    runReport(t, "ADMIN", key, p).catch(() => ({ rows: [] as Array<Record<string, unknown>>, totals: {} as Record<string, number> }));
+  // Tracked products with no unit in the warehouse (the stock report only lists products that have units)
+  const outOfStock = await (async () => {
+    const [products, inStock] = await Promise.all([
+      prisma.product.findMany({
+        where: { tenantId: t, deletedAt: null, isActive: true, trackInventory: true },
+        select: { id: true, name: true },
+      }),
+      prisma.stockUnit.groupBy({
+        by: ["productId"],
+        where: { tenantId: t, deletedAt: null, status: "IN_STOCK" },
+        _count: { _all: true },
+      }),
+    ]);
+    const have = new Set(inStock.map((g) => g.productId));
+    return products.filter((p) => !have.has(p.id)).map((p) => p.name);
+  })().catch(() => [] as string[]);
+  const [sales, engineers, unpaid, due, stock, collections] = await Promise.all([
+    run("sales", { from, to }),
+    run("engineer-performance", { from, to }),
+    run("unpaid-jobs", { from, to }),
+    run("machines-due", { from: now, to: in30 }),
+    run("stock-summary", { from, to }),
+    run("service-collections", { from, to }),
+  ]);
+  const bySales = new Map<string, { sales: number; amount: number }>();
+  for (const r of sales.rows) {
+    const k = String(r.salesperson || "Unassigned");
+    const v = bySales.get(k) ?? { sales: 0, amount: 0 };
+    v.sales += 1;
+    v.amount += Number(r.amount ?? 0) || 0;
+    bySales.set(k, v);
+  }
+  return {
+    period: { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) },
+    salesBySalesperson: [...bySales.entries()]
+      .map(([salesperson, v]) => ({ salesperson, salesClosed: v.sales, amount: Math.round(v.amount) }))
+      .sort((a, b) => b.amount - a.amount),
+    salesTotal: { count: sales.rows.length, amount: Number(sales.totals?.amount ?? 0) },
+    engineerPerformance: engineers.rows.slice(0, 12),
+    serviceCollected: { receipts: collections.rows.length, amount: Number(collections.totals?.amount ?? 0) },
+    unpaidJobs: {
+      count: unpaid.rows.length,
+      balanceDue: Number(unpaid.totals?.balance ?? 0),
+      oldest: unpaid.rows.slice(0, 8).map((r) => ({ job: r.jobNo, customer: r.customer, daysOld: r.days, balance: r.balance })),
+    },
+    machinesDueNext30Days: {
+      count: due.rows.length,
+      soonest: due.rows.slice(0, 10).map((r) => ({
+        customer: r.customer,
+        machine: r.machine,
+        serviceDue: r.serviceDue,
+        stampingDue: r.stampingDue,
+        amcEnds: r.amcEnds,
+      })),
+    },
+    outOfStock: { count: outOfStock.length, products: outOfStock.slice(0, 15) },
+    lowStock: stock.rows
+      .filter((r) => Number(r.inStock ?? 0) <= 1)
+      .slice(0, 12)
+      .map((r) => ({ product: r.product, inStock: r.inStock })),
+  };
+}
 
 function filterLinks(links: unknown) {
   const allowed = new Set<string>(DASH_LINKS);
@@ -461,18 +554,21 @@ async function askDashboard(req: Request, res: Response) {
   }
 
   let userQ = question;
+  const facts = await buildHmsFacts(t, range);
   const slim = {
     range: snapshot.range,
     generatedAt: snapshot.generatedAt,
     kpis: snapshot.kpis,
     spikes: snapshot.spikes,
-    ticketMonthly: snapshot.ticketMonthly,
     openTicketSample: snapshot.openTicketSample,
+    ...facts,
   };
 
-  const prompt = `You are HMS Enterprises CRM assistant for company admins.
-Answer ONLY using the JSON snapshot.
-Be concise. Prefer bullets. Always deep-link when useful.
+  const prompt = `You are the assistant for HMS Enterprises (weighing scales, billing machines — sales, service, stamping, AMC) talking to the company owner.
+Answer ONLY from the JSON snapshot; if something is not in it, say so. Amounts are Indian rupees — write them like ₹1,25,000.
+Name people (salespeople, engineers) and customers when the question is about who / which.
+Be concise: one-line answer, then up to 6 bullets. Add 1–3 links to the screen or report that shows the detail.
+"Deals / pipeline" is not used by HMS — sales means enquiries converted and sales marked complete.
 Allowed link paths: ${DASH_LINKS.join(", ")}
 Never invent GST invoice numbers, serials, or payments.
 Final GST billing is in Tally; CRM has proformas only.
@@ -1303,6 +1399,8 @@ export const aiRouter = Router();
 aiRouter.use(authenticate, requireTenant);
 
 aiRouter.post("/dashboard-ask", requireTenantAdmin, validate(askSchema), askDashboard);
+// Ask your data: AI picks a report + plan, server computes the table (no AI-written SQL)
+aiRouter.post("/data-query", requireTenantAdmin, validate(dataQuerySchema), askData);
 
 aiRouter.post(
   "/ticket-assist",

@@ -177,7 +177,7 @@ export function LoginPreview(props: LoginPreviewProps) {
             <div className="text-sm font-semibold">Sign in{slug ? ` · ${companyName}` : ''}</div>
             <div className="mt-1 text-xs text-white/50">Preview only — not a live form</div>
             <div className="mt-4 space-y-2.5">
-              <div className="h-9 rounded-lg border border-white/15 bg-black/40 px-3 text-xs leading-9 text-white/35">
+              <div className="h-9 truncate rounded-lg border border-white/15 bg-black/40 px-3 text-xs leading-9 text-white/35">
                 staff@{slug || 'company'}.com
               </div>
               <div className="h-9 rounded-lg border border-white/15 bg-black/40 px-3 text-xs leading-9 text-white/35">

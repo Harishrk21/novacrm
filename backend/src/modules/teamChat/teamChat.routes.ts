@@ -17,7 +17,15 @@ const DEFAULT_CHANNELS = [
   { name: "Announcements", slug: "announcements", description: "Official notices" },
 ] as const;
 
+/** tenant:user pairs already set up in this process — the channel list is fetched on every page. */
+const ensuredDefaults = new Map<string, number>();
+const ENSURE_TTL_MS = 10 * 60_000;
+
 async function ensureDefaultChannels(tenantId: string, userId: string) {
+  const key = `${tenantId}:${userId}`;
+  const at = ensuredDefaults.get(key);
+  if (at && Date.now() - at < ENSURE_TTL_MS) return;
+
   const existing = await prisma.teamChannel.findMany({
     where: {
       tenantId,
@@ -26,6 +34,7 @@ async function ensureDefaultChannels(tenantId: string, userId: string) {
   });
   const bySlug = Object.fromEntries(existing.map((c) => [c.slug, c]));
 
+  const channelIds: string[] = [];
   for (const ch of DEFAULT_CHANNELS) {
     let channel: (typeof existing)[number] | undefined = bySlug[ch.slug];
     if (!channel) {
@@ -51,12 +60,23 @@ async function ensureDefaultChannels(tenantId: string, userId: string) {
       }
       if (!channel) continue;
     }
-    await prisma.teamChannelMember.upsert({
-      where: { channelId_userId: { channelId: channel.id, userId } },
-      create: { id: newId(), tenantId, channelId: channel.id, userId },
-      update: {},
+    channelIds.push(channel.id);
+  }
+
+  // One read + one bulk insert for whatever memberships are missing (was 4 upserts every call).
+  const have = await prisma.teamChannelMember.findMany({
+    where: { userId, channelId: { in: channelIds } },
+    select: { channelId: true },
+  });
+  const haveSet = new Set(have.map((m) => m.channelId));
+  const missing = channelIds.filter((id) => !haveSet.has(id));
+  if (missing.length) {
+    await prisma.teamChannelMember.createMany({
+      data: missing.map((channelId) => ({ id: newId(), tenantId, channelId, userId })),
+      skipDuplicates: true,
     });
   }
+  ensuredDefaults.set(key, Date.now());
 }
 
 /** Add the user to a channel (DM open / channel create only). */
@@ -111,25 +131,32 @@ teamChatRouter.get("/channels", async (q: Request, r: Response) => {
   const channelIds = memberships.map((m) => m.channelId);
   if (!channelIds.length) return success(r, { items: [], unreadTotal: 0 });
 
-  const channels = await prisma.teamChannel.findMany({
-    where: { tenantId: t, id: { in: channelIds } },
-    orderBy: [{ type: "asc" }, { lastMessageAt: "desc" }, { name: "asc" }],
-  });
+  const [channels, unreadMsgs, lastMessages] = await Promise.all([
+    prisma.teamChannel.findMany({
+      where: { tenantId: t, id: { in: channelIds } },
+      orderBy: [{ type: "asc" }, { lastMessageAt: "desc" }, { name: "asc" }],
+    }),
+    prisma.teamMessage.findMany({
+      where: {
+        tenantId: t,
+        channelId: { in: channelIds },
+        deletedAt: null,
+        senderId: { not: uid },
+      },
+      select: { channelId: true, createdAt: true },
+    }),
+    prisma.teamMessage.findMany({
+      where: { tenantId: t, channelId: { in: channelIds }, deletedAt: null, parentId: null },
+      orderBy: { createdAt: "desc" },
+      take: channelIds.length * 3,
+    }),
+  ]);
 
   const memMap = Object.fromEntries(memberships.map((m) => [m.channelId, m]));
 
   // Unread counts — one query instead of N
   const unreadByChannel: Record<string, number> = {};
   let unreadTotal = 0;
-  const unreadMsgs = await prisma.teamMessage.findMany({
-    where: {
-      tenantId: t,
-      channelId: { in: channelIds },
-      deletedAt: null,
-      senderId: { not: uid },
-    },
-    select: { channelId: true, createdAt: true },
-  });
   for (const m of unreadMsgs) {
     const since = memMap[m.channelId]?.lastReadAt ?? new Date(0);
     if (m.createdAt > since) {
@@ -151,11 +178,6 @@ teamChatRouter.get("/channels", async (q: Request, r: Response) => {
     : [];
   const peerMap = Object.fromEntries(peers.map((p) => [p.id, p]));
 
-  const lastMessages = await prisma.teamMessage.findMany({
-    where: { tenantId: t, channelId: { in: channelIds }, deletedAt: null, parentId: null },
-    orderBy: { createdAt: "desc" },
-    take: channelIds.length * 3,
-  });
   const lastByChannel: Record<string, (typeof lastMessages)[0]> = {};
   for (const m of lastMessages) {
     if (!lastByChannel[m.channelId]) lastByChannel[m.channelId] = m;

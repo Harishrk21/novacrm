@@ -35,6 +35,9 @@ export type Permission =
   | "tickets:approve"
   | "tickets:delete"
   | "assets:view"
+  | "renewals:view"
+  | "renewals:write"
+  | "field:track"
   | "assets:write"
   | "assets:delete"
   | "products:view"
@@ -58,6 +61,9 @@ export type Permission =
 const ROLE_PERMISSIONS: Record<string, Permission[]> = {
   ADMIN: ["*"],
   MANAGER: [
+    "field:track",
+    "renewals:view",
+    "renewals:write",
     "dashboard:view",
     "reports:view",
     "reports:export",
@@ -101,6 +107,8 @@ const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     "ai:use",
   ],
   SERVICE_DESK: [
+    "renewals:view",
+    "renewals:write",
     "dashboard:view",
     "leads:view",
     "contacts:view",
@@ -148,6 +156,8 @@ const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     "settings:view",
   ],
   SALES_EXECUTIVE: [
+    "renewals:view",
+    "renewals:write",
     "dashboard:view",
     "leads:view",
     "leads:write",

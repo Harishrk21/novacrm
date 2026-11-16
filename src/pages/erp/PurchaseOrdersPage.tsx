@@ -1,4 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { fetchAllAsPage } from '@/lib/fetchAllPages'
+import {
+  LETTERHEAD_CSS,
+  amountInWordsInr,
+  fmtDate,
+  letterFooterHtml,
+  letterheadHtml,
+  printCompany,
+} from '@/lib/printLetterhead'
 import { Link, useNavigate } from 'react-router-dom'
 import { Download, Eye, Package, Plus, Truck, Warehouse } from 'lucide-react'
 import { FeatureTip, DEFAULT_TIPS } from '@/components/tips/FeatureTip'
@@ -78,6 +87,7 @@ function printPurchaseOrder(po: Record<string, unknown>, companyName = 'HMS Ente
     ? [addr.line1, addr.city, addr.state, addr.pincode].filter(Boolean).join(', ')
     : ''
   const cf = (po.customFields as Record<string, string> | null) ?? {}
+  const company = printCompany({ name: companyName })
 
   const rows = lines
     .map(
@@ -94,7 +104,9 @@ function printPurchaseOrder(po: Record<string, unknown>, companyName = 'HMS Ente
 
   const html = `<!doctype html><html><head><title>${escapeHtml(String(po.poNumber ?? 'PO'))}</title>
 <style>
-  body{font-family:Georgia,serif;color:#0f172a;margin:28px;font-size:13px}
+  body{font-family:"Segoe UI",Arial,sans-serif;color:#18181b;margin:0;font-size:13px}
+  .sheet{max-width:880px;margin:20px auto;background:#fff}
+  .pad{padding:18px 32px 0}
   .brand{font-size:22px;font-weight:700;letter-spacing:.02em}
   .muted{color:#64748b}
   .box{border:1px solid #cbd5e1;padding:14px;border-radius:4px}
@@ -106,21 +118,22 @@ function printPurchaseOrder(po: Record<string, unknown>, companyName = 'HMS Ente
   .totals div{display:flex;justify-content:space-between;padding:4px 0}
   .grand{font-weight:700;font-size:15px;border-top:2px solid #0f172a;margin-top:6px;padding-top:8px}
   .stamp{display:inline-block;border:2px solid #0f172a;padding:4px 10px;font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:.08em}
-  @media print{button{display:none} body{margin:12px}}
+  @media print{button{display:none} .sheet{margin:0}}
+${LETTERHEAD_CSS}
 </style></head><body>
-  <button onclick="window.print()" style="margin-bottom:14px;padding:8px 12px;font-family:sans-serif">Print / Save PDF</button>
-  <div style="display:flex;justify-content:space-between;align-items:flex-start">
-    <div>
-      <div class="brand">${escapeHtml(companyName)}</div>
-      <div class="muted">Purchase Order</div>
-    </div>
-    <div style="text-align:right">
-      <div class="stamp">${escapeHtml(String(po.status ?? ''))}</div>
-      <div style="margin-top:8px;font-size:18px;font-weight:700">${escapeHtml(String(po.poNumber ?? ''))}</div>
-      <div class="muted">Date: ${po.orderDate ? escapeHtml(formatDate(String(po.orderDate))) : '—'}</div>
-      ${po.expectedDate ? `<div class="muted">Expected: ${escapeHtml(formatDate(String(po.expectedDate)))}</div>` : ''}
-    </div>
-  </div>
+  <div style="max-width:880px;margin:16px auto 0"><button class="btn-print" onclick="window.print()" style="padding:9px 14px;border:0;border-radius:6px;font-weight:700;cursor:pointer">Print / Save PDF</button></div>
+  <div class="sheet">
+  ${letterheadHtml({
+    company,
+    title: 'Purchase Order',
+    number: String(po.poNumber ?? ''),
+    meta: [
+      ['Date', po.orderDate ? fmtDate(String(po.orderDate)) : null],
+      ['Expected', po.expectedDate ? fmtDate(String(po.expectedDate)) : null],
+    ],
+    badge: po.status ? { text: String(po.status).replaceAll('_', ' ') } : null,
+  })}
+  <div class="pad">
   <div class="grid">
     <div class="box">
       <div class="muted" style="margin-bottom:6px">Vendor / Supplier</div>
@@ -133,7 +146,7 @@ function printPurchaseOrder(po: Record<string, unknown>, companyName = 'HMS Ente
     </div>
     <div class="box">
       <div class="muted" style="margin-bottom:6px">Ship / Bill details</div>
-      ${cf.ship_to ? `<div><strong>Ship to</strong><br/>${escapeHtml(cf.ship_to)}</div>` : '<div class="muted">Default warehouse</div>'}
+      ${cf.ship_to ? `<div><strong>Ship to</strong><br/>${escapeHtml(cf.ship_to)}</div>` : `<div>${company.addressLines.map(escapeHtml).join('<br/>') || 'Default warehouse'}</div>`}
       ${cf.buyer_ref ? `<div style="margin-top:8px">Buyer ref: ${escapeHtml(cf.buyer_ref)}</div>` : ''}
       ${cf.delivery_terms ? `<div>Delivery: ${escapeHtml(cf.delivery_terms)}</div>` : ''}
       ${cf.payment_terms ? `<div>Payment: ${escapeHtml(cf.payment_terms)}</div>` : ''}
@@ -148,10 +161,14 @@ function printPurchaseOrder(po: Record<string, unknown>, companyName = 'HMS Ente
     <div><span class="muted">Tax</span><span>${formatCurrency(num(po.taxTotal))}</span></div>
     <div class="grand"><span>Grand total</span><span>${formatCurrency(num(po.grandTotal))}</span></div>
   </div>
+  <div class="words" style="text-align:right">Amount in words: <b>${escapeHtml(amountInWordsInr(num(po.grandTotal)))}</b></div>
   ${po.notes ? `<p style="margin-top:24px"><strong>Notes / instructions</strong><br/>${escapeHtml(String(po.notes))}</p>` : ''}
   <div style="margin-top:48px;display:grid;grid-template-columns:1fr 1fr;gap:40px">
     <div style="border-top:1px solid #94a3b8;padding-top:8px" class="muted">Prepared by</div>
-    <div style="border-top:1px solid #94a3b8;padding-top:8px;text-align:right" class="muted">Authorized signatory</div>
+    <div style="border-top:1px solid #94a3b8;padding-top:8px;text-align:right" class="muted">For ${escapeHtml(company.name)} — authorised signatory</div>
+  </div>
+  </div>
+  ${letterFooterHtml(company)}
   </div>
 </body></html>`
 
@@ -202,7 +219,7 @@ export function PurchaseOrdersPage() {
   const load = useCallback(async (_opts?: { silent?: boolean }) => {
     try {
       const [pos, vendorRows, lookups] = await Promise.all([
-        api.purchaseOrders({ limit: 100 }),
+        fetchAllAsPage((p) => api.purchaseOrders(p)),
         api.vendors(),
         api.lookups(),
       ])

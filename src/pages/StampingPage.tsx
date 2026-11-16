@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { PaginationBar } from '@/components/ui/PaginationBar'
+import { usePagedRows } from '@/hooks/usePagedRows'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   Building2,
@@ -76,13 +78,14 @@ type AssetRow = Record<string, unknown> & {
   } | null
 }
 
-type FilterTab = 'ALL' | 'PENDING' | 'STAMPED' | 'DUE_RENEWAL'
-type WorkflowTab = 'ALL' | 'STAMPING_DUE' | 'IN_PROGRESS'
+/** One status per machine — the only filter that matters on this page. */
+type StampStatus = 'NOT_STAMPED' | 'OVERDUE' | 'DUE_SOON' | 'VALID'
+type StatusFilter = 'ALL' | StampStatus | 'JOB_OPEN'
 type OriginFilter = 'ALL' | 'SOLD_BY_US' | 'THIRD_PARTY'
+type OpenJob = { id: string; ticketNo: number; status: string }
 
 const RENEWAL_WINDOW_DAYS = 30
 const STAMP_VALIDITY_DAYS = 365
-const IN_PROGRESS_DAYS = 14
 
 type StampRow = {
   stampingDate?: string | null
@@ -95,31 +98,41 @@ function renewalFor(row: StampRow) {
   return renewalDueFromStamp(row.stampingDate)
 }
 
-/** Never stamped, or renewal / re-stamp window (≤30 days) */
-function isStampingDue(row: StampRow) {
-  const stamp = row.stampingDate ? String(row.stampingDate).slice(0, 10) : null
-  if (!stamp) return true
+function stampStatusOf(row: StampRow): { key: StampStatus; label: string; color: 'amber' | 'red' | 'orange' | 'green' } {
+  // Valid-till decides when known (imported machines often have only that date)
   const renewal = renewalFor(row)
+  if (!renewal) return { key: 'NOT_STAMPED', label: 'Not stamped', color: 'amber' }
   const days = daysUntil(renewal)
-  return days != null && days <= RENEWAL_WINDOW_DAYS
+  if (days != null && days < 0) return { key: 'OVERDUE', label: `Overdue ${-days}d`, color: 'red' }
+  if (days != null && days <= RENEWAL_WINDOW_DAYS)
+    return { key: 'DUE_SOON', label: days === 0 ? 'Due today' : `Due in ${days}d`, color: 'orange' }
+  return { key: 'VALID', label: 'Valid', color: 'green' }
 }
 
-/** Stamped recently (govt visit in progress) or valid stamp not yet due for renewal */
-function isStampingInProgress(row: StampRow) {
-  const stamp = row.stampingDate ? String(row.stampingDate).slice(0, 10) : null
-  if (!stamp) return false
-  const stampDays = daysUntil(stamp)
-  const recentlyStamped = stampDays != null && stampDays >= -IN_PROGRESS_DAYS
-  const renewal = renewalFor(row)
-  const renewalDays = daysUntil(renewal)
-  const validNotDue = renewalDays != null && renewalDays > RENEWAL_WINDOW_DAYS
-  return recentlyStamped || validNotDue
+/** Needs a stamping visit (never stamped, overdue or due within 30 days) */
+function needsStamping(row: StampRow) {
+  return stampStatusOf(row).key !== 'VALID'
 }
 
-function workflowFilter(row: StampRow, tab: WorkflowTab) {
-  if (tab === 'STAMPING_DUE') return isStampingDue(row)
-  if (tab === 'IN_PROGRESS') return isStampingInProgress(row) && !isStampingDue(row)
-  return true
+const STATUS_CHIPS: Array<{ id: StatusFilter; label: string }> = [
+  { id: 'ALL', label: 'All' },
+  { id: 'OVERDUE', label: 'Overdue' },
+  { id: 'DUE_SOON', label: 'Due ≤30 days' },
+  { id: 'NOT_STAMPED', label: 'Not stamped' },
+  { id: 'VALID', label: 'Valid' },
+  { id: 'JOB_OPEN', label: 'Job open' },
+]
+
+/** Pages through a list endpoint (the API caps a page at 200 rows). */
+async function fetchAllAssets(): Promise<AssetRow[]> {
+  const out: AssetRow[] = []
+  for (let page = 1; page <= 50; page++) {
+    const res = await api.assets({ limit: 200, page })
+    out.push(...((res.items ?? []) as AssetRow[]))
+    const pages = Number(res.meta && 'pages' in res.meta ? (res.meta as { pages?: number }).pages : 1) || 1
+    if (page >= pages || (res.items ?? []).length < 200) break
+  }
+  return out
 }
 
 function daysUntil(dateStr?: string | null) {
@@ -140,18 +153,6 @@ function renewalDueFromStamp(stampingDate?: string | null) {
   return d.toISOString().slice(0, 10)
 }
 
-function stampFilter(row: StampRow, filter: FilterTab) {
-  const stamp = row.stampingDate ? String(row.stampingDate).slice(0, 10) : null
-  if (filter === 'PENDING') return !stamp
-  if (filter === 'STAMPED') return Boolean(stamp)
-  if (filter === 'DUE_RENEWAL') {
-    const renewal = renewalFor(row)
-    const days = daysUntil(renewal)
-    return days != null && days <= RENEWAL_WINDOW_DAYS
-  }
-  return true
-}
-
 function addOneYear(dateStr: string) {
   const d = new Date(dateStr.slice(0, 10) + 'T00:00:00')
   d.setFullYear(d.getFullYear() + 1)
@@ -168,9 +169,10 @@ function attrLine(attrs?: Record<string, unknown> | null) {
 export function StampingPage() {
   const addToast = useUIStore((s) => s.addToast)
   const [searchParams, setSearchParams] = useSearchParams()
-  const [mainTab, setMainTab] = useState<'warehouse' | 'customer'>('warehouse')
-  const [workflowTab, setWorkflowTab] = useState<WorkflowTab>('ALL')
-  const [filter, setFilter] = useState<FilterTab>('ALL')
+  const [mainTab, setMainTab] = useState<'warehouse' | 'customer'>('customer')
+  const [filter, setFilter] = useState<StatusFilter>('ALL')
+  /** Open stamping jobs by machine id — avoids a second job for the same machine */
+  const [openJobs, setOpenJobs] = useState<Record<string, OpenJob>>({})
   const [originFilter, setOriginFilter] = useState<OriginFilter>('ALL')
   const [quarterFilter, setQuarterFilter] = useState<StampQuarter | ''>('')
   const [search, setSearch] = useState('')
@@ -208,14 +210,32 @@ export function StampingPage() {
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = Boolean(opts?.silent)
     if (!silent) setLoading(true)
+    // Open stamping jobs load on their own (slowest call) — the register shows without waiting
+    void api
+      .tickets({ status: 'OPEN,IN_PROGRESS,PENDING,RESOLVED', limit: 200 })
+      .then((ticketPage) => {
+        const jobs: Record<string, OpenJob> = {}
+        for (const t of ticketPage.items ?? []) {
+          const cf = (t.customFields ?? {}) as Record<string, unknown>
+          const stamping =
+            cf.category === 'Stamping' || cf.workType === 'Stamping' || cf.visitPurpose === 'STAMPING'
+          if (stamping && t.assetId) {
+            jobs[String(t.assetId)] = { id: String(t.id), ticketNo: Number(t.ticketNo), status: String(t.status) }
+          }
+        }
+        setOpenJobs(jobs)
+      })
+      .catch(() => undefined)
     try {
-      const [unitRes, assetRes, productPage] = await Promise.all([
-        api.stockUnits({ limit: 200 }),
-        api.assets({ limit: 200 }),
+      const [unitRes, assetRows, productPage] = await Promise.all([
+        api.stockUnitsAll({ lite: 1 }),
+        fetchAllAssets(),
         api.products({ limit: 200 }),
       ])
-      setUnits((unitRes as StockRow[]) ?? [])
-      setAssets((assetRes.items ?? []) as AssetRow[])
+      // Sold units live on as customer machines — only our own stock here
+      setUnits(((unitRes as StockRow[]) ?? []).filter((u) => u.status !== 'SOLD'))
+      // Machines whose customer was removed are not on the register
+      setAssets(assetRows.filter((a) => a.contact))
       setProducts(
         (productPage.items ?? []).map((p) => ({
           id: String(p.id),
@@ -281,40 +301,39 @@ export function StampingPage() {
       }))
   }, [stampingUnits, createProductId])
 
-  const workflowCounts = useMemo(() => {
-    const rows = [...stampingUnits, ...stampingAssets]
-    return {
-      due: rows.filter((r) => isStampingDue(r)).length,
-      inProgress: rows.filter((r) => isStampingInProgress(r) && !isStampingDue(r)).length,
+  const segmentRows = mainTab === 'warehouse' ? stampingUnits : stampingAssets
+  const statusCounts = useMemo(() => {
+    const c: Record<StatusFilter, number> = { ALL: 0, NOT_STAMPED: 0, OVERDUE: 0, DUE_SOON: 0, VALID: 0, JOB_OPEN: 0 }
+    for (const r of segmentRows) {
+      c.ALL++
+      c[stampStatusOf(r).key]++
+      if (mainTab === 'customer' && openJobs[String((r as AssetRow).id)]) c.JOB_OPEN++
     }
-  }, [stampingAssets, stampingUnits])
+    return c
+  }, [segmentRows, mainTab, openJobs])
 
-  const counts = useMemo(() => {
-    const rows = mainTab === 'warehouse' ? stampingUnits : stampingAssets
-    return {
-      pending: rows.filter((r) => stampFilter(r, 'PENDING')).length,
-      stamped: rows.filter((r) => stampFilter(r, 'STAMPED')).length,
-      due: rows.filter((r) => stampFilter(r, 'DUE_RENEWAL')).length,
-    }
-  }, [stampingAssets, mainTab, stampingUnits])
+  function statusMatch(r: StampRow & { id?: string }) {
+    if (filter === 'ALL') return true
+    if (filter === 'JOB_OPEN') return Boolean(r.id && openJobs[String(r.id)])
+    return stampStatusOf(r).key === filter
+  }
 
   const filteredUnits = useMemo(() => {
     const q = search.trim().toLowerCase()
     return stampingUnits.filter((u) => {
-      if (!workflowFilter(u, workflowTab)) return false
-      if (!stampFilter(u, filter)) return false
+      if (!statusMatch(u)) return false
       if (quarterFilter && stampQuarterOf(u).code !== quarterFilter) return false
       if (!q) return true
       const hay = `${u.serialNo} ${u.product?.name ?? ''} ${u.product?.sku ?? ''}`.toLowerCase()
       return hay.includes(q)
     })
-  }, [stampingUnits, filter, search, workflowTab, quarterFilter])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- statusMatch reads filter + openJobs
+  }, [stampingUnits, filter, search, quarterFilter, openJobs])
 
   const filteredAssets = useMemo(() => {
     const q = search.trim().toLowerCase()
     return stampingAssets.filter((a) => {
-      if (!workflowFilter(a, workflowTab)) return false
-      if (!stampFilter(a, filter)) return false
+      if (!statusMatch(a)) return false
       if (originFilter === 'SOLD_BY_US' && a.origin !== 'SOLD_BY_US') return false
       if (originFilter === 'THIRD_PARTY' && a.origin !== 'THIRD_PARTY') return false
       if (quarterFilter && stampQuarterOf(a).code !== quarterFilter) return false
@@ -323,7 +342,8 @@ export function StampingPage() {
       const hay = `${a.name} ${a.serialNo ?? ''} ${c?.name ?? ''}`.toLowerCase()
       return hay.includes(q)
     })
-  }, [stampingAssets, filter, originFilter, search, workflowTab, quarterFilter])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- statusMatch reads filter + openJobs
+  }, [stampingAssets, filter, originFilter, search, quarterFilter, openJobs])
 
   function openCreate(kind: 'warehouse' | 'customer') {
     setCreateKind(kind)
@@ -359,9 +379,21 @@ export function StampingPage() {
     }
   }
 
+  /** Same rules as the server: not in the future, valid till after the stamp date */
+  function stampDatesError(stamp: string, due: string) {
+    if (stamp > new Date(Date.now() + 36 * 3600_000).toISOString().slice(0, 10)) return "Stamping date can't be in the future"
+    if (due && due <= stamp) return 'Next due must be after the stamping date'
+    return null
+  }
+
   async function saveNewStamping() {
     if (!stampDate) {
       addToast({ type: 'error', message: 'Stamping date is required' })
+      return
+    }
+    const dateErr = stampDatesError(stampDate, nextDue)
+    if (dateErr) {
+      addToast({ type: 'error', message: dateErr })
       return
     }
     setSaving(true)
@@ -407,10 +439,14 @@ export function StampingPage() {
           })
           assetId = String(created.id)
         } else {
+          // Merge — never wipe the machine's other details (catalog, tags, VC no.…)
+          const prevCf =
+            (customerAssets.find((x) => String(x.id) === assetId)?.customFields as Record<string, unknown> | undefined) ?? {}
           await api.updateAsset(assetId, {
             stampingDate: stampDate,
             nextDueDate: nextDue || addOneYear(stampDate),
             customFields: {
+              ...prevCf,
               stampingConditionOk: machineForm.conditionOk,
               stampingConditionNotes: machineForm.conditionNotes.trim() || null,
             },
@@ -432,6 +468,11 @@ export function StampingPage() {
 
   async function saveDetailStamp() {
     if (!stampDate) return
+    const dateErr = stampDatesError(stampDate, detailAsset ? nextDue : '')
+    if (dateErr) {
+      addToast({ type: 'error', message: dateErr })
+      return
+    }
     setSaving(true)
     try {
       if (detailUnit) {
@@ -481,6 +522,10 @@ export function StampingPage() {
 
   const detailOpen = Boolean(detailUnit || detailAsset)
 
+  // filteredAssets can grow large — 25 rows a page
+  const pagedAssets = usePagedRows(filteredAssets, filteredAssets.length)
+  // filteredUnits can grow large — 25 rows a page
+  const pagedUnits = usePagedRows(filteredUnits, filteredUnits.length)
   return (
     <div>
       <PageHeader
@@ -499,6 +544,10 @@ export function StampingPage() {
             >
               Record dates only
             </Button>
+            {/* Finished stamping jobs live in the service list — opened pre-filtered */}
+            <Link to="/tickets?queue=closed&type=Stamping">
+              <Button variant="outline">Completed jobs</Button>
+            </Link>
             <Link to="/erp/inventory">
               <Button variant="outline">
                 <Package size={16} /> Inventory
@@ -508,108 +557,87 @@ export function StampingPage() {
         }
       />
 
-      <Card className="mb-4 border-violet-200/80 bg-violet-50/50 p-4 dark:border-violet-900/40 dark:bg-violet-950/20">
-        <p className="text-sm font-semibold text-text-primary">
-          Now: {stampQuarterLabel(currentQuarter, currentQuarterYear)}
-        </p>
-        <p className="mt-1 text-sm text-text-secondary">
-          HMS stamps by quarter — A Jan–Mar · B Apr–Jun · C Jul–Sep · D Oct–Dec. Machines sold in
-          this window are tagged {currentQuarter}. Reminders go out at the start of that quarter
-          (and ~1 week before each due date).
-        </p>
-      </Card>
-
-      <Card className="mb-4 border-violet-200/70 bg-violet-50/40 p-4 dark:border-violet-900/40 dark:bg-violet-950/20">
-        <p className="text-sm font-semibold text-text-primary">
-          Service-team stamping follow-up (walk-in)
-        </p>
-        <ol className="mt-2 list-decimal space-y-1.5 pl-5 text-sm text-text-secondary">
+      <details className="group mb-4 rounded-xl border border-violet-200/80 bg-violet-50/50 px-4 py-3 dark:border-violet-900/40 dark:bg-violet-950/20">
+        <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+          <span className="font-semibold text-text-primary">
+            Now: {stampQuarterLabel(currentQuarter, currentQuarterYear)}
+          </span>
+          <span className="text-text-secondary">· How stamping works</span>
+          <ChevronRight size={14} className="text-text-secondary transition group-open:rotate-90" />
+        </summary>
+        <ol className="mt-3 list-decimal space-y-1.5 pl-5 text-sm text-text-secondary">
           <li>
-            Click <strong>New stamping job</strong> (or <strong>Start follow-up</strong> on a due row).
+            Machine due? Click <strong>Start stamping job</strong> on its row (or <strong>New stamping job</strong>{' '}
+            for a walk-in). Customer + machine are picked; no dates yet.
           </li>
           <li>
-            Search the <strong>old customer</strong>. If not found, add customer first, then return.
+            Desk <strong>Takes &amp; starts</strong> the job, or an engineer Accepts it.
           </li>
           <li>
-            Choose path:{' '}
-            <strong>Existing machine came</strong> → pick machine · or{' '}
-            <strong>New machine for stamping</strong> → add under customer (Outside + Stamping), then
-            continue.
+            After verification: on the job, enter <strong>stamp date</strong> + <strong>valid till</strong> (+1 year by
+            default), VC number, plate → <strong>Save stamp result</strong>. The machine register updates here.
           </li>
-          <li>
-            Create the job (no stamp date yet). Desk can <strong>Take &amp; start</strong> or an
-            engineer Accepts.
-          </li>
-          <li>
-            After verification: enter <strong>stamping date</strong> + <strong>next due / valid till</strong>{' '}
-            (defaults +1 year) → Mark complete → pay &amp; close. Machine register updates
-            automatically.
-          </li>
+          <li>Collect payment → Mark complete → Approve &amp; close.</li>
         </ol>
         <p className="mt-2 text-xs text-text-secondary">
-          Use <strong>Record dates only</strong> only to correct the register without a visit ticket.
+          Quarters: A Jan–Mar · B Apr–Jun · C Jul–Sep · D Oct–Dec. Reminders go out at the start of the quarter and
+          ~1 week before each due date. Use <strong>Record dates only</strong> just to correct the register (no visit).
         </p>
-      </Card>
-
-      <div className="mb-3 flex flex-wrap gap-2">
-        {[
-          { label: 'Stamping due', value: workflowCounts.due, hint: 'Needs stamp or renewal' },
-          { label: 'In progress', value: workflowCounts.inProgress, hint: 'Recently stamped / valid' },
-          { label: 'Pending (segment)', value: counts.pending },
-        ].map((c) => (
-          <div
-            key={c.label}
-            className="flex min-w-[110px] flex-1 items-baseline gap-2 rounded-lg border border-border bg-card px-3 py-2"
-          >
-            <span className="text-[11px] font-medium uppercase text-text-secondary">{c.label}</span>
-            <span className="ml-auto text-sm font-semibold tabular-nums">{c.value}</span>
-          </div>
-        ))}
-      </div>
-
-      <PageTabs
-        accent="amber"
-        active={workflowTab}
-        onChange={(id) => setWorkflowTab(id as WorkflowTab)}
-        tabs={[
-          { id: 'ALL', label: 'All register', count: units.length + assets.length },
-          { id: 'STAMPING_DUE', label: 'Stamping due', count: workflowCounts.due },
-          { id: 'IN_PROGRESS', label: 'Stamping in progress', count: workflowCounts.inProgress },
-        ]}
-      />
+      </details>
 
       <PageTabs
         accent="violet"
         active={mainTab}
-        onChange={(id) => setMainTab(id as 'warehouse' | 'customer')}
-        className="mt-3"
+        onChange={(id) => {
+          setMainTab(id as 'warehouse' | 'customer')
+          setFilter('ALL')
+        }}
         tabs={[
-          { id: 'warehouse', label: 'Warehouse serials', count: units.length },
-          { id: 'customer', label: 'Customer machines', count: assets.length },
+          { id: 'customer', label: 'Customer machines', count: stampingAssets.length },
+          { id: 'warehouse', label: 'Our stock (warehouse)', count: stampingUnits.length },
         ]}
       />
+
+      <div className="mb-3 flex flex-wrap gap-2" role="tablist" aria-label="Stamping status">
+        {STATUS_CHIPS.filter((c) => c.id !== 'JOB_OPEN' || mainTab === 'customer').map((c) => {
+          const active = filter === c.id
+          const n = statusCounts[c.id]
+          const tone =
+            c.id === 'OVERDUE' && n > 0
+              ? 'text-red-700 dark:text-red-300'
+              : c.id === 'DUE_SOON' && n > 0
+                ? 'text-orange-700 dark:text-orange-300'
+                : 'text-text-secondary'
+          return (
+            <button
+              key={c.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setFilter(c.id)}
+              className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition ${
+                active
+                  ? 'border-violet-500 bg-violet-600 text-white'
+                  : 'border-border bg-card text-text-primary hover:bg-muted/60'
+              }`}
+            >
+              {c.label}
+              <span className={`tabular-nums text-xs font-semibold ${active ? 'text-white/90' : tone}`}>{n}</span>
+            </button>
+          )
+        })}
+      </div>
 
       <div className="mb-4 flex flex-wrap gap-3">
         <Input
           className="min-w-[200px] flex-1"
-          placeholder="Search product, serial, customer…"
+          placeholder={mainTab === 'customer' ? 'Search machine, serial, customer…' : 'Search product, serial…'}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <Select
-          className="w-44"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value as FilterTab)}
-          options={[
-            { value: 'ALL', label: 'All' },
-            { value: 'PENDING', label: 'Pending stamp' },
-            { value: 'STAMPED', label: 'Stamped' },
-            { value: 'DUE_RENEWAL', label: 'Renewal due' },
-          ]}
-        />
         {mainTab === 'customer' ? (
           <Select
-            className="w-44"
+            className="w-full sm:w-44"
             value={originFilter}
             onChange={(e) => setOriginFilter(e.target.value as OriginFilter)}
             options={[
@@ -620,7 +648,7 @@ export function StampingPage() {
           />
         ) : null}
         <Select
-          className="w-48"
+          className="w-full sm:w-48"
           value={quarterFilter}
           onChange={(e) => setQuarterFilter(e.target.value as StampQuarter | '')}
           options={[
@@ -647,17 +675,17 @@ export function StampingPage() {
             />
           ) : (
             <div className="divide-y divide-border">
-              {filteredUnits.map((u) => {
+              {pagedUnits.rows.map((u) => {
                 const renewal = renewalDueFromStamp(u.stampingDate)
                 const renewalDays = daysUntil(renewal)
                 return (
                   <button
                     key={u.id}
                     type="button"
-                    className="flex w-full items-center gap-4 px-4 py-4 text-left transition hover:bg-muted/40"
+                    className="flex w-full items-start gap-3 px-4 py-3 text-left transition hover:bg-muted/40 sm:items-center sm:gap-4 sm:py-4"
                     onClick={() => openDetailUnit(u)}
                   >
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-700">
+                    <div className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-violet-100 text-violet-700 sm:flex">
                       <Warehouse size={18} />
                     </div>
                     <div className="min-w-0 flex-1">
@@ -673,10 +701,8 @@ export function StampingPage() {
                     </div>
                     <div className="hidden shrink-0 text-right sm:block">
                       {u.stampingDate ? (
-                        <div className="text-sm font-medium">{formatDate(String(u.stampingDate))}</div>
-                      ) : (
-                        <Badge color="amber">Pending stamp</Badge>
-                      )}
+                        <div className="text-sm font-medium">Stamped {formatDate(String(u.stampingDate))}</div>
+                      ) : null}
                       {renewal ? (
                         <div className="mt-0.5 text-xs text-text-secondary">
                           Renewal {formatDate(renewal)}
@@ -684,18 +710,17 @@ export function StampingPage() {
                         </div>
                       ) : null}
                     </div>
-                    <Badge color={u.status === 'IN_STOCK' ? 'green' : u.status === 'DEMO' ? 'amber' : 'blue'}>
-                      {u.status.replace('_', ' ')}
-                    </Badge>
-                    {isStampingDue(u) ? (
-                      <Badge color="red">Due</Badge>
-                    ) : isStampingInProgress(u) ? (
-                      <Badge color="blue">In progress</Badge>
-                    ) : null}
-                    <ChevronRight size={16} className="shrink-0 text-text-secondary" />
+                    <div className="flex shrink-0 flex-col items-end gap-1 sm:flex-row sm:items-center sm:gap-2">
+                      <Badge color={stampStatusOf(u).color}>{stampStatusOf(u).label}</Badge>
+                      <Badge color={u.status === 'IN_STOCK' ? 'green' : u.status === 'DEMO' ? 'amber' : 'blue'}>
+                        {u.status.replace('_', ' ')}
+                      </Badge>
+                    </div>
+                    <ChevronRight size={16} className="hidden shrink-0 text-text-secondary sm:block" />
                   </button>
                 )
               })}
+          <PaginationBar page={pagedUnits.page} total={pagedUnits.total} onPageChange={pagedUnits.setPage} hideWhenSinglePage />
             </div>
           )
         ) : filteredAssets.length === 0 ? (
@@ -708,7 +733,7 @@ export function StampingPage() {
           />
         ) : (
           <div className="divide-y divide-border">
-            {filteredAssets.map((a) => {
+            {pagedAssets.rows.map((a) => {
               const c = a.contact as AssetRow['contact']
               const contactId = c?.id || a.contactId
               const renewal = a.nextDueDate
@@ -721,14 +746,14 @@ export function StampingPage() {
               return (
                 <div
                   key={String(a.id)}
-                  className="flex w-full items-center gap-3 px-4 py-4 transition hover:bg-muted/40"
+                  className="flex w-full flex-col gap-2 px-4 py-3 transition hover:bg-muted/40 sm:flex-row sm:items-center sm:gap-3 sm:py-4"
                 >
                   <button
                     type="button"
-                    className="flex min-w-0 flex-1 items-center gap-4 text-left"
+                    className="flex min-w-0 flex-1 items-start gap-3 text-left sm:items-center sm:gap-4"
                     onClick={() => openDetailAsset(a)}
                   >
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-sky-100 text-sky-700">
+                    <div className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-sky-100 text-sky-700 sm:flex">
                       <Building2 size={18} />
                     </div>
                     <div className="min-w-0 flex-1">
@@ -739,38 +764,44 @@ export function StampingPage() {
                         {' · '}
                         {stampQuarterOf(a).label}
                       </div>
+                      {renewal ? (
+                        <div className="mt-0.5 text-xs text-text-secondary sm:hidden">Valid till {formatDate(renewal)}</div>
+                      ) : null}
                     </div>
                     <div className="hidden shrink-0 text-right sm:block">
                       {a.stampingDate ? (
-                        <div className="text-sm font-medium">{formatDate(String(a.stampingDate))}</div>
-                      ) : (
-                        <Badge color="amber">Pending</Badge>
-                      )}
+                        <div className="text-sm font-medium">Stamped {formatDate(String(a.stampingDate))}</div>
+                      ) : null}
                       {renewal ? (
-                        <div className="mt-0.5 text-xs text-text-secondary">Due {formatDate(renewal)}</div>
+                        <div className="mt-0.5 text-xs text-text-secondary">Valid till {formatDate(renewal)}</div>
                       ) : null}
                     </div>
-                    <Badge color={a.origin === 'THIRD_PARTY' ? 'amber' : 'blue'}>
-                      {assetOriginShort(a.origin ? String(a.origin) : null)}
-                    </Badge>
-                    {isStampingDue(a) ? (
-                      <Badge color="red">Due</Badge>
-                    ) : isStampingInProgress(a) ? (
-                      <Badge color="blue">In progress</Badge>
-                    ) : null}
+                    <div className="flex shrink-0 flex-col items-end gap-1 sm:flex-row sm:items-center sm:gap-2">
+                      <Badge color={stampStatusOf(a).color}>{stampStatusOf(a).label}</Badge>
+                      <Badge color={a.origin === 'THIRD_PARTY' ? 'amber' : 'blue'}>
+                        {assetOriginShort(a.origin ? String(a.origin) : null)}
+                      </Badge>
+                    </div>
                   </button>
-                  {isStampingDue(a) && contactId ? (
+                  {openJobs[String(a.id)] ? (
+                    <Link to={`/tickets/${openJobs[String(a.id)]!.id}`} onClick={(e) => e.stopPropagation()}>
+                      <Button size="sm" variant="outline" className="w-full sm:w-auto">
+                        Job open · SVC-{String(openJobs[String(a.id)]!.ticketNo).padStart(5, '0')}
+                      </Button>
+                    </Link>
+                  ) : needsStamping(a) && contactId ? (
                     <Link to={followUpTo} onClick={(e) => e.stopPropagation()}>
-                      <Button size="sm" variant="outline">
-                        Start follow-up
+                      <Button size="sm" className="w-full sm:w-auto">
+                        Start stamping job
                       </Button>
                     </Link>
                   ) : (
-                    <ChevronRight size={16} className="shrink-0 text-text-secondary" />
+                    <ChevronRight size={16} className="hidden shrink-0 text-text-secondary sm:block" />
                   )}
                 </div>
               )
             })}
+            <PaginationBar page={pagedAssets.page} total={pagedAssets.total} onPageChange={pagedAssets.setPage} hideWhenSinglePage />
           </div>
         )}
       </Card>

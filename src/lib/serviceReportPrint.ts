@@ -1,5 +1,6 @@
 /** Printable service report (browser Print → Save as PDF). */
 import { openPrintHtml } from '@/lib/openPrintHtml'
+import { LETTERHEAD_CSS, fmtDate, letterFooterHtml, letterheadHtml, printCompany } from '@/lib/printLetterhead'
 
 function escapeHtml(value: string) {
   return value
@@ -119,6 +120,26 @@ export function openPrintableServiceReport(opts: ServiceReportPrintOpts): boolea
           ? '<span class="pill free">Free job</span>'
           : '<span class="pill unpaid">Unpaid</span>'
 
+  const company = printCompany({ name: opts.companyName, phone: opts.companyPhone, email: opts.companyEmail })
+  const facts = (
+    [
+      ['Category', [opts.category, opts.workType].filter(Boolean).join(' · ')],
+      ['Priority / channel', [opts.priority ? labelize(String(opts.priority)) : '', opts.channel].filter(Boolean).join(' · ')],
+      ['Stamped', opts.stampingDate ? fmtDate(opts.stampingDate) : ''],
+      ['Stamp valid till', opts.nextDueDate ? fmtDate(opts.nextDueDate) : ''],
+      ['Engineer', opts.engineerName],
+      ['Paid on', opts.paidAt ? fmtDate(opts.paidAt) : ''],
+    ] as Array<[string, string | null | undefined]>
+  ).filter(([, v]) => v && String(v).trim())
+  const team = (
+    [
+      ['Engineer', opts.engineerName],
+      ['Received by', opts.receivedBy],
+      ['Delivered by', opts.deliveredBy],
+      ['Report prepared by', opts.savedBy],
+    ] as Array<[string, string | null | undefined]>
+  ).filter(([, v]) => v)
+
   const html = `<!doctype html>
 <html><head><meta charset="utf-8"/><title>Service report ${escapeHtml(ticketLabel)}</title>
 <style>
@@ -173,32 +194,24 @@ export function openPrintableServiceReport(opts: ServiceReportPrintOpts): boolea
   .foot{margin-top:16px;font-size:10px;color:var(--muted)}
   @media (max-width:720px){.grid2,.facts,.pay-grid,.footer{grid-template-columns:1fr}.hero,.body,.toolbar{padding:14px}.meta{text-align:left}}
   @media print{body{background:#fff}.sheet{margin:0;box-shadow:none;border-radius:0}.toolbar{display:none!important}}
+${LETTERHEAD_CSS}
 </style></head><body>
 <div class="sheet">
   <div class="toolbar">
     <button class="btn-print" onclick="window.print()">Print / Save as PDF</button>
     <button class="btn-close" onclick="window.close()">Close</button>
   </div>
-  <div class="hero">
-    <div class="hero-top">
-      <div>
-        <div class="brand">${escapeHtml(opts.companyName || 'HMS Enterprises')}</div>
-        <div class="tag">Official service report</div>
-        ${
-          opts.companyPhone || opts.companyEmail
-            ? `<div style="margin-top:8px;font-size:11px;opacity:.92">${escapeHtml(
-                [opts.companyPhone, opts.companyEmail].filter(Boolean).join(' · '),
-              )}</div>`
-            : ''
-        }
-      </div>
-      <div class="meta">
-        <div class="job-no">${escapeHtml(ticketLabel)}</div>
-        <div style="opacity:.95;margin-top:6px">${escapeHtml(opts.status ? labelize(String(opts.status)) : 'Closed')} · ${paidBadge}</div>
-        ${opts.subject ? `<div style="opacity:.9;margin-top:4px;max-width:280px">${escapeHtml(String(opts.subject))}</div>` : ''}
-      </div>
-    </div>
-  </div>
+  ${letterheadHtml({
+    company,
+    title: 'Service Report',
+    subtitle: opts.subject ? String(opts.subject) : undefined,
+    number: ticketLabel,
+    meta: [
+      ['Opened', fmtDate(opts.createdAt)],
+      ['Completed', opts.resolvedAt || opts.closedAt ? fmtDate(opts.resolvedAt || opts.closedAt) : null],
+      ['Status', opts.status ? labelize(String(opts.status)) : null],
+    ],
+  })}
   <div class="body">
     <div class="grid2">
       <div class="box customer">
@@ -221,31 +234,7 @@ export function openPrintableServiceReport(opts: ServiceReportPrintOpts): boolea
       </div>
     </div>
 
-    <div class="facts">
-      <div class="fact"><span>Opened</span><strong>${escapeHtml(opts.createdAt || '—')}</strong></div>
-      <div class="fact"><span>Completed</span><strong>${escapeHtml(opts.resolvedAt || opts.closedAt || '—')}</strong></div>
-      <div class="fact"><span>Category</span><strong>${escapeHtml(
-        [opts.category, opts.workType].filter(Boolean).join(' · ') || '—',
-      )}</strong></div>
-      <div class="fact"><span>Priority / channel</span><strong>${escapeHtml(
-        [opts.priority ? labelize(String(opts.priority)) : '', opts.channel]
-          .filter(Boolean)
-          .join(' · ') || '—',
-      )}</strong></div>
-      ${
-        opts.stampingDate || opts.nextDueDate
-          ? `<div class="fact"><span>Stamping date</span><strong>${escapeHtml(opts.stampingDate || '—')}</strong></div>
-             <div class="fact"><span>Valid till / next due</span><strong>${escapeHtml(opts.nextDueDate || '—')}</strong></div>
-             <div class="fact"><span>Paid at</span><strong>${escapeHtml(opts.paidAt || '—')}</strong></div>
-             <div class="fact"><span>Report by</span><strong>${escapeHtml(opts.savedBy || '—')}</strong></div>`
-          : `<div class="fact"><span>Paid at</span><strong>${escapeHtml(opts.paidAt || '—')}</strong></div>
-             <div class="fact"><span>Report saved</span><strong>${escapeHtml(
-               opts.savedAt ? String(opts.savedAt).slice(0, 16).replace('T', ' ') : '—',
-             )}</strong></div>
-             <div class="fact"><span>Prepared by</span><strong>${escapeHtml(opts.savedBy || '—')}</strong></div>
-             <div class="fact"><span>Engineer</span><strong>${escapeHtml(opts.engineerName || '—')}</strong></div>`
-      }
-    </div>
+    ${facts.length ? `<div class="facts">${facts.map(([k, v]) => `<div class="fact"><span>${escapeHtml(k)}</span><strong>${escapeHtml(v ?? "")}</strong></div>`).join('')}</div>` : ''}
 
     ${
       opts.description
@@ -262,7 +251,7 @@ export function openPrintableServiceReport(opts: ServiceReportPrintOpts): boolea
     </div>
     ${
       opts.dayNotesSummary
-        ? `<div class="section"><h3>Daily tracking notes</h3><div class="text">${escapeHtml(opts.dayNotesSummary)}</div></div>`
+        ? `<div class="section"><h3>Engineer work report</h3><div class="text">${escapeHtml(opts.dayNotesSummary)}</div></div>`
         : ''
     }
 
@@ -290,16 +279,11 @@ export function openPrintableServiceReport(opts: ServiceReportPrintOpts): boolea
     <div class="pay-grid">
       <div class="section" style="margin:0">
         <h3>Service team</h3>
-        <div class="line">Engineer: <strong style="color:var(--ink)">${escapeHtml(opts.engineerName || '—')}</strong></div>
-        <div class="line" style="margin-top:4px">Received by: <strong style="color:var(--ink)">${escapeHtml(opts.receivedBy || '—')}</strong></div>
-        <div class="line" style="margin-top:4px">Delivered by: <strong style="color:var(--ink)">${escapeHtml(opts.deliveredBy || '—')}</strong></div>
-        <div class="line" style="margin-top:4px">Report prepared by: <strong style="color:var(--ink)">${escapeHtml(opts.savedBy || '—')}</strong></div>
+        ${team.map(([k, v], i) => `<div class="line"${i ? ' style="margin-top:4px"' : ''}>${escapeHtml(k)}: <strong style="color:var(--ink)">${escapeHtml(v ?? "")}</strong></div>`).join('') || '<div class="line">—</div>'}
       </div>
       <div class="totals">
         <div><span>Payment status</span><span>${paidBadge}</span></div>
-        <div><span>Method</span><span>${escapeHtml(
-          opts.paymentMethod ? labelize(String(opts.paymentMethod)) : '—',
-        )}</span></div>
+        ${opts.paymentMethod ? `<div><span>Method</span><span>${escapeHtml(labelize(String(opts.paymentMethod)))}</span></div>` : ''}
         <div><span>Advance</span><span>${money(Number(opts.advanceAmount || 0))}</span></div>
         <div><span>Balance</span><span>${money(Number(opts.balanceDue || 0))}</span></div>
         <div class="grand"><span>Job total</span><span>${money(Number(opts.paymentTotal || 0))}</span></div>
@@ -308,14 +292,12 @@ export function openPrintableServiceReport(opts: ServiceReportPrintOpts): boolea
 
     <div class="footer">
       <div class="sign">Engineer signature<br/><strong style="color:var(--ink)">${escapeHtml(opts.engineerName || '')}</strong></div>
-      <div class="sign">Authorised by<br/><strong style="color:var(--ink)">${escapeHtml(opts.savedBy || '')}</strong></div>
+      <div class="sign">For ${escapeHtml(company.name)}<br/><strong style="color:var(--ink)">Authorised signatory</strong></div>
       <div class="sign">Customer acknowledgement<br/><strong style="color:var(--ink)">${escapeHtml(opts.customerName || '')}</strong></div>
     </div>
-    <p class="foot">
-      Generated from ${escapeHtml(opts.companyName || 'HMS Enterprises')} · ${escapeHtml(ticketLabel)}
-      · Print / Save as PDF from the browser
-    </p>
+
   </div>
+  ${letterFooterHtml(company)}
 </div>
 <script>
   function triggerPrint(){ setTimeout(function(){ window.print(); }, 350); }
@@ -468,7 +450,8 @@ export function serviceReportOptsFromTicket(
     issues: report.issues ? String(report.issues) : null,
     workDone: report.workDone ? String(report.workDone) : null,
     description: ticket.description ? String(ticket.description) : null,
-    dayNotesSummary: formatDayNotes(cf),
+    // Drafted from the work report already — don't print the same notes twice
+    dayNotesSummary: report.fromWorkReport ? null : formatDayNotes(cf),
     spareParts: spareFromReport,
     sparePartsCount: Number(report.sparePartsCount || spareFromReport.length || 0),
     savedAt: report.savedAt ? String(report.savedAt) : null,

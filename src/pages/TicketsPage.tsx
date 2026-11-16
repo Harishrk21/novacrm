@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { fetchAllAsPage } from '@/lib/fetchAllPages'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { CatalogMachinePick } from '@/components/contacts/CatalogMachinePick'
@@ -24,7 +25,6 @@ import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Input } from '@/components/ui/Input'
 import { ConfirmModal, Modal } from '@/components/ui/Modal'
-import { PageTabs } from '@/components/ui/PageTabs'
 import { Select } from '@/components/ui/Select'
 import { VerticalFormShell } from '@/components/ui/VerticalFormTabs'
 import { useConfirmLeave, useDiscardGuard } from '@/hooks/useDiscardGuard'
@@ -49,17 +49,20 @@ import {
   hmsSoldCoverage,
   isWeighingMachine,
   stampQuarterFromDate,
-  STAMP_QUARTERS,
 } from '@/lib/hmsCoverage'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
 import { isCompanyAdmin, isScopedEmployee, isServiceDesk, isServiceEngineer, canAssignTickets, canCreateTickets, filterServiceEngineers, type LookupUser } from '@/lib/roles'
 import { WhatsAppIcon, WA_GREEN } from '@/components/whatsapp/WhatsAppIcon'
 import { formatServiceId } from '@/lib/serviceId'
 import { FlowStepBar } from '@/components/ui/FlowStepBar'
+import { SERVICE_CATEGORIES } from '@/lib/serviceFlow'
+import { Plus } from 'lucide-react'
 import { MissingBanner, focusFirstMissing, sectionErrorClass } from '@/components/ui/MissingField'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
 import { useFieldShell } from '@/hooks/useFieldShell'
+import { pageCacheGet, pageCacheSet } from '@/lib/pageCache'
+import { TableSkeleton } from '@/components/ui/Skeleton'
 
 const labelize = (value: string) =>
   value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
@@ -168,14 +171,6 @@ const emptyJob = {
   slaHours: '24',
 }
 
-function addOneYearIso(dateStr: string) {
-  if (!dateStr) return ''
-  const d = new Date(`${dateStr.slice(0, 10)}T12:00:00`)
-  if (Number.isNaN(d.getTime())) return ''
-  d.setFullYear(d.getFullYear() + 1)
-  return d.toISOString().slice(0, 10)
-}
-
 function jobKindFromParams(params: URLSearchParams): CreateJobKind {
   const category = params.get('category')
   const job = params.get('job')
@@ -185,6 +180,15 @@ function jobKindFromParams(params: URLSearchParams): CreateJobKind {
 }
 
 type TicketQueueId = 'all' | 'mine' | 'awaiting' | 'progress' | 'approval' | 'closed'
+
+/** Admin / desk use queue chips, not a status filter — map old ?status= links onto the matching chip. */
+function queueFromStatusParam(raw: string | null): TicketQueueId | null {
+  if (raw === 'OPEN') return 'awaiting'
+  if (raw === 'IN_PROGRESS' || raw === 'PENDING') return 'progress'
+  if (raw === 'RESOLVED') return 'approval'
+  if (raw === 'CLOSED') return 'closed'
+  return null
+}
 
 function parseTicketQueue(raw: string | null): TicketQueueId {
   if (
@@ -217,16 +221,26 @@ export function TicketsPage() {
   const canCreate = canCreateTickets(authUser?.role)
 
   const [tickets, setTickets] = useState<Record<string, unknown>[]>([])
+  /** Closed (desk/admin) or completed (engineer) jobs — fetched page by page from the server */
+  const [closedRows, setClosedRows] = useState<Record<string, unknown>[]>([])
+  const [closedTotal, setClosedTotal] = useState(0)
+  const [closedLimit, setClosedLimit] = useState(50)
+  /** Job type filter (customFields.category) — Breakdown / Installation / AMC visit / Stamping / Other */
+  const [typeFilter, setTypeFilter] = useState(searchParams.get('type') ?? '')
+  /** False until the first list response (or a cached list) — avoids a false "No service jobs" flash */
+  const [ticketsLoaded, setTicketsLoaded] = useState(false)
   const [assets, setAssets] = useState<Record<string, unknown>[]>([])
   const [users, setUsers] = useState<LookupUser[]>([])
-  const [status, setStatus] = useState(searchParams.get('status') ?? '')
+  const chipRole = isAdmin || isDesk
+  const [status, setStatus] = useState(chipRole ? '' : (searchParams.get('status') ?? ''))
   const [areaFilter, setAreaFilter] = useState(searchParams.get('area') ?? '')
   const [queue, setQueue] = useState<TicketQueueId>(() => {
     const q = parseTicketQueue(searchParams.get('queue'))
     // Engineers: only My jobs vs Ready to accept
     if (isServiceEngineer(useAuthStore.getState().user?.role)) {
-      return q === 'awaiting' ? 'awaiting' : 'mine'
+      return q === 'awaiting' || q === 'closed' ? q : 'mine'
     }
+    if (chipRole && q === 'all') return queueFromStatusParam(searchParams.get('status')) ?? 'all'
     return q
   })
   const [tab, setTab] = useState<'list' | 'create'>('list')
@@ -317,19 +331,47 @@ export function TicketsPage() {
   const load = useCallback(async (_opts?: { silent?: boolean }) => {
     try {
       const needLookups = !ticketLookupsReadyRef.current
-      const [res, lookups] = await Promise.all([
-        api.tickets({
-          limit: 100,
-          sort: 'newest',
-          status: status || undefined,
-          area: areaFilter.trim() || undefined,
-          contactId: searchParams.get('contactId') || undefined,
-          slaBreached: searchParams.get('slaBreached') || undefined,
-          ...(isAgent ? { mine: 1, ...(isServiceEngineer(authUser?.role) ? { claimable: 1 } : {}) } : {}),
-        }),
+      const scope = isAgent ? { mine: 1, ...(isServiceEngineer(authUser?.role) ? { claimable: 1 } : {}) } : {}
+      const query = {
+        // Active work only — finished jobs come from the Closed / Completed query below, so the
+        // active list can never push closed jobs out (the old 100-newest cap hid older ones)
+        limit: 500,
+        sort: 'newest',
+        status: status || 'OPEN,IN_PROGRESS,PENDING,RESOLVED',
+        category: typeFilter || undefined,
+        area: areaFilter.trim() || undefined,
+        contactId: searchParams.get('contactId') || undefined,
+        slaBreached: searchParams.get('slaBreached') || undefined,
+        ...scope,
+      }
+      const cacheKey = `tickets:${JSON.stringify(query)}`
+      const cached = pageCacheGet<Record<string, unknown>[]>(cacheKey)
+      if (cached) {
+        setTickets(cached)
+        setTicketsLoaded(true)
+      }
+      const closedQuery = {
+        // Engineers: their completed work (awaiting desk close + closed); desk/admin: closed jobs
+        status: isEngineer ? 'RESOLVED,CLOSED' : 'CLOSED',
+        sort: 'newest',
+        category: typeFilter || undefined,
+        area: areaFilter.trim() || undefined,
+        // Only the total is needed until the Closed chip is opened
+        limit: queue === 'closed' ? closedLimit : 1,
+        ...(isEngineer ? { mine: 1 } : scope),
+      }
+      const [res, lookups, closedRes] = await Promise.all([
+        // All active jobs (the API caps one page at 200)
+        fetchAllAsPage((p) => api.tickets({ ...query, ...p })),
         needLookups ? api.lookups({ scope: 'core' }) : Promise.resolve(null),
+        status ? Promise.resolve(null) : api.tickets(closedQuery).catch(() => null),
       ])
+      if (closedRes) {
+        setClosedTotal(Number(closedRes.meta?.total ?? closedRes.items?.length ?? 0))
+        if (queue === 'closed') setClosedRows(closedRes.items ?? [])
+      }
       setTickets(res.items ?? [])
+      pageCacheSet(cacheKey, res.items ?? [])
       if (lookups) {
         setUsers(lookups.users)
         ticketLookupsReadyRef.current = true
@@ -340,8 +382,10 @@ export function TicketsPage() {
       }))
     } catch (err) {
       addToast({ type: 'error', message: err instanceof ApiClientError ? err.message : 'Failed to load jobs' })
+    } finally {
+      setTicketsLoaded(true)
     }
-  }, [addToast, authUser?.id, authUser?.role, areaFilter, isAdmin, isAgent, searchParams, status])
+  }, [addToast, authUser?.id, authUser?.role, areaFilter, isAdmin, isAgent, isEngineer, searchParams, status, typeFilter, queue, closedLimit])
 
   const loadAssets = useCallback(
     async (contactId: string) => {
@@ -386,11 +430,12 @@ export function TicketsPage() {
   useEffect(() => {
     const q = parseTicketQueue(searchParams.get('queue'))
     if (isEngineer) {
-      setQueue(q === 'awaiting' ? 'awaiting' : 'mine')
+      setQueue(q === 'awaiting' || q === 'closed' ? q : 'mine')
       return
     }
-    setQueue(q === 'mine' ? 'all' : q)
-  }, [searchParams, isEngineer])
+    const fromStatus = q === 'all' && chipRole ? queueFromStatusParam(searchParams.get('status')) : null
+    setQueue(fromStatus ?? (q === 'mine' ? 'all' : q))
+  }, [searchParams, isEngineer, chipRole])
 
   function selectQueue(id: TicketQueueId) {
     setQueue(id)
@@ -417,22 +462,25 @@ export function TicketsPage() {
 
   const queueCounts = useMemo(() => {
     const awaiting = tickets.filter((t) => isClaimablePoolTicket(t)).length
-    const mine = tickets.filter((t) => Boolean(t.assignedToId)).length
+    const mine = tickets.filter(
+      (t) => Boolean(t.assignedToId) && !['RESOLVED', 'CLOSED'].includes(String(t.status)),
+    ).length
     const progress = tickets.filter((t) =>
       ['IN_PROGRESS', 'PENDING'].includes(String(t.status)),
     ).length
     const approval = tickets.filter((t) => String(t.status) === 'RESOLVED').length
-    const closed = tickets.filter((t) => String(t.status) === 'CLOSED').length
-    return { awaiting, mine, progress, approval, closed, all: tickets.length }
-  }, [tickets])
+    return { awaiting, mine, progress, approval, closed: closedTotal, all: tickets.length }
+  }, [tickets, closedTotal])
 
   const displayedTickets = useMemo(() => {
     let rows: Record<string, unknown>[]
-    if (isEngineer) {
+    if (queue === 'closed' && !status) {
+      rows = [...closedRows]
+    } else if (isEngineer) {
       rows =
         queue === 'awaiting'
           ? tickets.filter((t) => isClaimablePoolTicket(t))
-          : tickets.filter((t) => Boolean(t.assignedToId))
+          : tickets.filter((t) => Boolean(t.assignedToId) && !['RESOLVED', 'CLOSED'].includes(String(t.status)))
     } else if (isAdmin || isDesk) {
       rows =
         queue === 'all'
@@ -455,7 +503,7 @@ export function TicketsPage() {
       if (tb !== ta) return tb - ta
       return num(b.ticketNo) - num(a.ticketNo)
     })
-  }, [tickets, queue, isAdmin, isDesk, isEngineer])
+  }, [tickets, closedRows, status, queue, isAdmin, isDesk, isEngineer])
 
   const paged = usePagedRows(
     displayedTickets,
@@ -1340,10 +1388,10 @@ export function TicketsPage() {
               ? form.amcEndDate || null
               : null,
           remindersEnabled: form.remindersEnabled,
-          stampingDate: isStampingJob ? form.stampingDate || null : null,
+          // Stamping job: dates come from Save stamp result after verification
+          stampingDate: null,
           nextDueDate: isStampingJob
-            ? form.nextDueDate ||
-              (form.stampingDate ? addOneYearIso(form.stampingDate) : null)
+            ? null
             : formRequiresStamping
               ? form.nextDueDate || null
               : null,
@@ -1385,28 +1433,18 @@ export function TicketsPage() {
         return
       }
 
-      // Enrich existing machine — stamping jobs may update stamp date / next due / quarter now
+      // Enrich existing machine with legal-metrology details already known (never stamp dates here)
       if (
         assetId &&
         !form.newMachine &&
         (form.vcNumber ||
           form.stampingQuarter ||
           form.plateNo ||
-          form.verificationClass ||
-          (isStampingJob && (form.stampingDate || form.nextDueDate)))
+          form.verificationClass)
       ) {
         const existing = assets.find((a) => String(a.id) === assetId)
         const prevCf = (existing?.customFields as Record<string, unknown> | undefined) ?? {}
-        const nextDue =
-          form.nextDueDate ||
-          (form.stampingDate ? addOneYearIso(form.stampingDate) : null)
         await api.updateAsset(assetId, {
-          ...(isStampingJob
-            ? {
-                stampingDate: form.stampingDate || null,
-                nextDueDate: nextDue,
-              }
-            : {}),
           customFields: {
             ...prevCf,
             vcNumber: form.vcNumber || prevCf.vcNumber || null,
@@ -1440,12 +1478,9 @@ export function TicketsPage() {
         status: 'OPEN',
         contactId: form.contactId,
         assetId,
-        // Stamping: optional stamp date / next due at create (editable again on ticket)
-        stampingDate: isStampingJob ? form.stampingDate || null : null,
-        nextDueDate: isStampingJob
-          ? form.nextDueDate ||
-            (form.stampingDate ? addOneYearIso(form.stampingDate) : null)
-          : null,
+        // Stamping: dates are recorded after verification (Save stamp result on the job)
+        stampingDate: null,
+        nextDueDate: null,
         odAmount: 0,
         paymentTotal: isDesk ? 0 : Number(form.paymentTotal) || 0,
         advanceAmount: isDesk ? 0 : Number(form.advanceAmount) || 0,
@@ -1560,14 +1595,18 @@ export function TicketsPage() {
                 : 'My tickets'
         }
         count={tab === 'list' ? tickets.length : undefined}
-        breadcrumbs={[
-          { label: 'Home', to: '/' },
-          {
-            label: isAdmin ? 'Service tickets' : isDesk ? 'Tickets' : 'My tickets',
-            to: '/tickets',
-          },
-          ...(tab === 'create' ? [{ label: 'New ticket' }] : []),
-        ]}
+        breadcrumbs={
+          fieldShell
+            ? undefined
+            : [
+                { label: 'Home', to: '/' },
+                {
+                  label: isAdmin ? 'Service tickets' : isDesk ? 'Tickets' : 'My tickets',
+                  to: '/tickets',
+                },
+                ...(tab === 'create' ? [{ label: 'New ticket' }] : []),
+              ]
+        }
         actions={
           tab === 'create' ? (
             <div className="flex flex-wrap gap-2">
@@ -1594,32 +1633,19 @@ export function TicketsPage() {
                 </Button>
               ) : null}
             </div>
+          ) : canCreate ? (
+            <Button
+              size="sm"
+              onClick={() => {
+                setTab('create')
+                resetCreate()
+              }}
+            >
+              <Plus size={14} /> New ticket
+            </Button>
           ) : undefined
         }
       />
-      {tab === 'list' ? (
-      <PageTabs
-        accent="theme"
-        active={tab}
-        onChange={(id) => {
-          if (id === 'create' && !canCreate) return
-          setTab(id as 'list' | 'create')
-          if (id === 'create') resetCreate()
-        }}
-        tabs={[
-          {
-            id: 'list',
-            label: isAdmin || isDesk
-              ? 'All tickets'
-              : isEngineer
-                ? 'My tickets'
-                : 'Assigned to me',
-            count: isEngineer ? queueCounts.mine + queueCounts.awaiting : tickets.length,
-          },
-          ...(canCreate ? [{ id: 'create', label: 'New ticket' }] : []),
-        ]}
-      />
-      ) : null}
 
       {tab === 'list' ? (
         <>
@@ -1627,7 +1653,7 @@ export function TicketsPage() {
             <div className="mb-4 flex flex-wrap gap-2">
               {(
                 [
-                  { id: 'all', label: 'All', count: queueCounts.all },
+                  { id: 'all', label: 'All active', count: queueCounts.all },
                   { id: 'awaiting', label: 'Awaiting Accept', count: queueCounts.awaiting },
                   { id: 'progress', label: 'In progress', count: queueCounts.progress },
                   { id: 'approval', label: 'Pending approval', count: queueCounts.approval },
@@ -1682,19 +1708,56 @@ export function TicketsPage() {
                   {queueCounts.awaiting}
                 </span>
               </Button>
+              <Button
+                size="sm"
+                variant={queue === 'closed' ? 'primary' : 'outline'}
+                onClick={() => selectQueue('closed')}
+              >
+                Completed
+                <span className="ml-1.5 rounded-full bg-black/10 px-1.5 text-[11px] tabular-nums dark:bg-white/15">
+                  {queueCounts.closed}
+                </span>
+              </Button>
             </div>
           ) : null}
           <div className="mb-4 flex flex-wrap gap-3">
+            {/* Admin / desk filter by the queue chips above — a second status filter could contradict them */}
+            {isAdmin || isDesk || isEngineer ? null : (
+              <Select
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+                className="w-44"
+                options={[
+                  { value: '', label: 'All statuses' },
+                  ...['OPEN', 'IN_PROGRESS', 'PENDING', 'RESOLVED', 'CLOSED'].map((v) => ({
+                    value: v,
+                    label: labelize(v),
+                  })),
+                ]}
+              />
+            )}
             <Select
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              className="w-44"
+              value={typeFilter}
+              onChange={(e) => {
+                const v = e.target.value
+                setTypeFilter(v)
+                setClosedLimit(50)
+                setSearchParams(
+                  (prev) => {
+                    const next = new URLSearchParams(prev)
+                    if (v) next.set('type', v)
+                    else next.delete('type')
+                    return next
+                  },
+                  { replace: true },
+                )
+              }}
+              className="w-48"
+              aria-label="Job type"
               options={[
-                { value: '', label: 'All statuses' },
-                ...['OPEN', 'IN_PROGRESS', 'PENDING', 'RESOLVED', 'CLOSED'].map((v) => ({
-                  value: v,
-                  label: labelize(v),
-                })),
+                { value: '', label: 'All job types' },
+                ...SERVICE_CATEGORIES.map((c) => ({ value: c.value, label: c.label })),
+                { value: 'Stamping', label: 'Stamping' },
               ]}
             />
             {isAdmin || isDesk ? (
@@ -1708,10 +1771,24 @@ export function TicketsPage() {
           </div>
 
           <Card padding={false}>
-            {displayedTickets.length === 0 ? (
+            {!ticketsLoaded ? (
+              <div className="p-4">
+                <TableSkeleton />
+              </div>
+            ) : displayedTickets.length === 0 ? (
               <EmptyState
                 title={
-                  isAdmin || isDesk
+                  queue === 'closed'
+                    ? `No ${isEngineer ? 'completed' : 'closed'} ${
+                        typeFilter === 'Stamping'
+                          ? 'stamping jobs'
+                          : typeFilter === 'AMC visit'
+                            ? 'AMC visits'
+                            : typeFilter === 'Installation'
+                              ? 'installations'
+                              : 'service jobs'
+                      }${areaFilter.trim() ? ' in this area' : ''} yet`
+                    : isAdmin || isDesk
                     ? queue === 'awaiting'
                       ? 'No tickets awaiting Accept'
                       : queue === 'approval'
@@ -1724,7 +1801,11 @@ export function TicketsPage() {
                       : 'No jobs assigned to you'
                 }
                 subtitle={
-                  isAdmin || isDesk
+                  queue === 'closed'
+                    ? isEngineer
+                      ? 'Jobs you finished appear here once you mark them complete.'
+                      : 'Jobs move here after the desk collects payment and closes them.'
+                    : isAdmin || isDesk
                     ? 'Create an OPEN ticket — engineers Accept from the pool. Desk marks complete, collects payment, and closes.'
                     : isEngineer
                       ? queue === 'awaiting'
@@ -1879,7 +1960,6 @@ export function TicketsPage() {
                               'Machine',
                               'AMC',
                               'Stamping',
-                              'Status',
                               'Actions',
                             ]
                           : [
@@ -1892,12 +1972,8 @@ export function TicketsPage() {
                               'Engineer',
                               'AMC',
                               'Stamping',
-                              'Total payment',
-                              'Advance',
-                              'Balance',
-                              'Pay status',
+                              'Payment',
                               'Next due',
-                              'Status',
                               'Actions',
                             ]
                         ).map((h) => (
@@ -1950,7 +2026,7 @@ export function TicketsPage() {
                                 aria-label={`Select ${serviceId}`}
                               />
                             </td>
-                            <td className="px-3 py-3 font-semibold">
+                            <td className="whitespace-nowrap px-3 py-3 font-semibold">
                               <Link
                                 className="font-mono text-accent-blue hover:underline"
                                 to={`/tickets/${id}`}
@@ -1958,11 +2034,24 @@ export function TicketsPage() {
                               >
                                 {serviceId}
                               </Link>
-                              {st === 'RESOLVED' ? (
-                                <div className="mt-0.5 text-[11px] font-medium text-amber-600">
-                                  Pending approval
-                                </div>
-                              ) : null}
+                              <div className="mt-1">
+                                <Badge
+                                  color={
+                                    isEngineer && claimable
+                                      ? 'red'
+                                      : st === 'RESOLVED'
+                                        ? 'amber'
+                                        : (ticketStatusColor[st] ?? 'gray')
+                                  }
+                                  solid
+                                >
+                                  {isEngineer && claimable
+                                    ? 'Ready to accept'
+                                    : st === 'RESOLVED'
+                                      ? 'Pending approval'
+                                      : labelize(st)}
+                                </Badge>
+                              </div>
                             </td>
                             <td className="whitespace-nowrap px-3 py-3 text-xs text-text-secondary">
                               {ticket.createdAt ? formatDate(String(ticket.createdAt)) : '—'}
@@ -2010,41 +2099,32 @@ export function TicketsPage() {
                             </td>
                             {!isEngineer ? (
                               <>
-                                <td className="px-3 py-3 font-medium">
-                                  {formatCurrency(num(ticket.paymentTotal))}
-                                </td>
-                                <td className="px-3 py-3">
-                                  {formatCurrency(num(ticket.advanceAmount))}
-                                </td>
-                                <td className="px-3 py-3 font-semibold text-accent-amber">
-                                  {formatCurrency(num(ticket.balanceDue))}
-                                </td>
-                                <td className="px-3 py-3">
-                                  <Badge
-                                    color={
-                                      paySt === 'PAID' ? 'green' : paySt === 'PARTIAL' ? 'amber' : 'gray'
-                                    }
-                                  >
-                                    {labelize(paySt)}
-                                  </Badge>
+                                <td className="whitespace-nowrap px-3 py-3">
+                                  {num(ticket.paymentTotal) <= 0 && paySt !== 'PAID' ? (
+                                    <span className="text-text-secondary">—</span>
+                                  ) : (
+                                    <div className="space-y-0.5">
+                                      <div className="font-medium">
+                                        {formatCurrency(num(ticket.paymentTotal))}{' '}
+                                        <Badge
+                                          color={paySt === 'PAID' ? 'green' : paySt === 'PARTIAL' ? 'amber' : 'gray'}
+                                        >
+                                          {labelize(paySt)}
+                                        </Badge>
+                                      </div>
+                                      {num(ticket.balanceDue) > 0 ? (
+                                        <div className="text-[11px] font-semibold text-accent-amber">
+                                          {formatCurrency(num(ticket.balanceDue))} due
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  )}
                                 </td>
                                 <td className="px-3 py-3">
                                   {ticket.nextDueDate ? formatDate(String(ticket.nextDueDate)) : '—'}
                                 </td>
                               </>
                             ) : null}
-                            <td className="px-3 py-3">
-                              <Badge
-                                color={
-                                  isEngineer && claimable
-                                    ? 'red'
-                                    : (ticketStatusColor[st] ?? 'gray')
-                                }
-                                solid
-                              >
-                                {isEngineer && claimable ? 'Ready to accept' : labelize(st)}
-                              </Badge>
-                            </td>
                             <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center gap-0.5">
                                 <ViewIconButton onClick={() => navigate(`/tickets/${id}`)} />
@@ -2138,6 +2218,13 @@ export function TicketsPage() {
               </div>
             )}
           </Card>
+          {queue === 'closed' && !status && closedRows.length < closedTotal ? (
+            <div className="mt-3 flex justify-center">
+              <Button variant="outline" size="sm" onClick={() => setClosedLimit((n) => n + 50)}>
+                Load more — showing {closedRows.length} of {closedTotal}
+              </Button>
+            </div>
+          ) : null}
         </>
       ) : (
         <div className="space-y-4">
@@ -2266,18 +2353,13 @@ export function TicketsPage() {
                   label="Service type *"
                   value={form.category}
                   onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))}
-                  options={[
-                    { value: 'Breakdown', label: 'Breakdown / repair' },
-                    { value: 'Installation', label: 'Installation' },
-                    { value: 'AMC visit', label: 'AMC visit' },
-                    { value: 'Other', label: 'Other' },
-                  ]}
+                  options={SERVICE_CATEGORIES.map((c) => ({ value: c.value, label: c.label }))}
                 />
               ) : (
                 <div className="rounded-[8px] border border-violet-200/80 bg-violet-50/80 px-3 py-2 text-xs text-violet-950 dark:border-violet-900/40 dark:bg-violet-950/20 dark:text-violet-100 sm:col-span-2 lg:col-span-3">
-                  Stamping job — same flow as service (customer → machine → payment → issue). On the
-                  next step you can edit <strong>stamp date</strong>, <strong>next due</strong>, and{' '}
-                  <strong>quarter</strong>, and mark if spare parts are also needed.
+                  Stamping job — log the customer and machine now. The <strong>stamp date</strong>,{' '}
+                  <strong>valid till</strong>, VC number and plate are entered on the job{' '}
+                  <strong>after verification</strong> (Save stamp result).
                 </div>
               )}
               <Select
@@ -2744,13 +2826,11 @@ export function TicketsPage() {
                 Boolean(form.machineName.trim()))) ? (
               <section className="mt-4 grid gap-3 rounded-xl border border-violet-200/70 bg-violet-50/40 p-3 dark:border-violet-900/40 dark:bg-violet-950/20 sm:grid-cols-2 sm:p-3.5 lg:grid-cols-3">
                 <div className="sm:col-span-2 lg:col-span-3 space-y-1">
-                  <h3 className="text-sm font-semibold text-text-primary">
-                    Stamping date · next due · quarter
-                  </h3>
+                  <h3 className="text-sm font-semibold text-text-primary">Stamping visit</h3>
                   <p className="text-xs text-text-secondary">
                     {form.newMachine
-                      ? `For the new machine “${form.machineName.trim()}”. Optional now — can fill after verification on the ticket.`
-                      : 'For the existing machine selected above. Leave blank to fill after verification on the ticket.'}
+                      ? `New machine “${form.machineName.trim()}”.`
+                      : 'Existing machine selected above.'}
                   </p>
                 </div>
                 {form.newMachine && form.origin === 'THIRD_PARTY' ? (
@@ -2778,53 +2858,11 @@ export function TicketsPage() {
                       : ''}
                   </div>
                 ) : null}
-                <Input
-                  label="Stamping date (this visit)"
-                  type="date"
-                  value={form.stampingDate}
-                  onChange={(e) => {
-                    const stampingDate = e.target.value
-                    setForm((f) => ({
-                      ...f,
-                      stampingDate,
-                      nextDueDate: stampingDate
-                        ? f.nextDueDate || addOneYearIso(stampingDate)
-                        : f.nextDueDate,
-                      stampingQuarter: stampingDate
-                        ? f.stampingQuarter || stampQuarterFromDate(stampingDate)
-                        : f.stampingQuarter,
-                    }))
-                  }}
-                />
-                <Input
-                  label="Next due / valid till"
-                  type="date"
-                  value={form.nextDueDate}
-                  onChange={(e) => setForm((f) => ({ ...f, nextDueDate: e.target.value }))}
-                />
-                <Select
-                  label="Quarter stamped now"
-                  value={form.stampingQuarter}
-                  onChange={(e) => setForm((f) => ({ ...f, stampingQuarter: e.target.value }))}
-                  options={[
-                    { value: '', label: 'Select quarter…' },
-                    ...STAMP_QUARTERS.map((q) => ({
-                      value: q.code,
-                      label: `Quarter ${q.code} · ${q.months}`,
-                    })),
-                  ]}
-                />
-                <Input
-                  label="VC number"
-                  value={form.vcNumber}
-                  onChange={(e) => setForm((f) => ({ ...f, vcNumber: e.target.value }))}
-                  placeholder="Verification certificate"
-                />
-                <Input
-                  label="Plate no."
-                  value={form.plateNo}
-                  onChange={(e) => setForm((f) => ({ ...f, plateNo: e.target.value }))}
-                />
+                <div className="sm:col-span-2 lg:col-span-3 rounded-[8px] border border-border bg-card px-3 py-2 text-xs text-text-secondary">
+                  Stamp date, valid till, quarter, VC number and plate are recorded on the job{' '}
+                  <strong>after verification</strong> — not now. The machine register updates when the stamp
+                  result is saved.
+                </div>
                 <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-border bg-card px-3 py-2.5 sm:col-span-2 lg:col-span-3">
                   <input
                     type="checkbox"
@@ -3617,7 +3655,7 @@ export function TicketsPage() {
         accent="theme"
         size="sm"
         title={assignModal?.ticketNo ? `Assign ${assignModal.ticketNo}` : 'Assign engineer'}
-        subtitle="Select a service engineer. Job moves to In progress. WhatsApp notify is off for now."
+        subtitle="Select a service engineer. Job moves to In progress."
         footer={
           <>
             <Button

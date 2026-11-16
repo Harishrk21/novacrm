@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { PaginationBar } from '@/components/ui/PaginationBar'
+import { usePagedRows } from '@/hooks/usePagedRows'
 import { Link } from 'react-router-dom'
 import { Plus, Printer, RefreshCw } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -183,6 +185,8 @@ export function DeliveryChallansPage() {
     }
   })
 
+  // filtered can grow large — 25 rows a page
+  const pagedDcs = usePagedRows(filtered, filtered.length)
   return (
     <div className="space-y-4">
       <PageHeader
@@ -255,7 +259,7 @@ export function DeliveryChallansPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((r) => (
+                {pagedDcs.rows.map((r) => (
                   <tr key={`${r.purpose}-${r.number}`} className="border-b border-border/70">
                     <td className="px-2 py-2.5 font-mono text-xs font-bold">{r.number}</td>
                     <td className="px-2 py-2.5">
@@ -297,6 +301,7 @@ export function DeliveryChallansPage() {
                 ))}
               </tbody>
             </table>
+            <PaginationBar page={pagedDcs.page} total={pagedDcs.total} onPageChange={pagedDcs.setPage} hideWhenSinglePage />
           </div>
         )}
       </Card>

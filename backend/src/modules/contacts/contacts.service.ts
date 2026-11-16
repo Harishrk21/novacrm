@@ -26,7 +26,8 @@ function withTicketBalance<T extends { odAmount?: unknown; paymentTotal?: unknow
     odAmount,
     paymentTotal,
     advanceAmount,
-    balanceDue: Math.max(0, paymentTotal - advanceAmount),
+    // A job marked paid owes nothing, whatever the advance field says
+    balanceDue: (ticket as { paymentStatus?: unknown }).paymentStatus === "PAID" ? 0 : Math.max(0, paymentTotal - advanceAmount),
   };
 }
 
@@ -344,15 +345,88 @@ export async function get(t: string, id: string) {
     }),
   };
 
+  // Customer overview: their sales (enquiries converted for / matched to this customer) and the
+  // serial units that are theirs (sold, on demo or rented)
+  const [sales, units] = await Promise.all([
+    prisma.lead.findMany({
+      where: {
+        tenantId: t,
+        deletedAt: null,
+        OR: [
+          { convertedContactId: id },
+          ...(x.phoneNormalized ? [{ phoneNormalized: x.phoneNormalized }] : []),
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      select: {
+        id: true,
+        leadNo: true,
+        name: true,
+        status: true,
+        assignedToId: true,
+        customFields: true,
+        createdAt: true,
+        convertedAt: true,
+      },
+    }),
+    prisma.stockUnit.findMany({
+      where: { tenantId: t, contactId: id, deletedAt: null, status: { in: ["SOLD", "DEMO", "RENTED"] } },
+      orderBy: { updatedAt: "desc" },
+      take: 100,
+      select: { id: true, serialNo: true, hmsUniqId: true, status: true, productId: true, updatedAt: true },
+    }),
+  ]);
+  const unitProducts = units.length
+    ? await prisma.product.findMany({
+        where: { tenantId: t, id: { in: [...new Set(units.map((u) => u.productId))] } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const pName = new Map(unitProducts.map((p) => [p.id, p.name]));
+  // Names for salespeople and the engineers on this customer's jobs (history shows who did what)
+  const staffIds = [
+    ...sales.map((l) => l.assignedToId),
+    ...tickets.map((tk) => tk.assignedToId),
+  ].filter(Boolean) as string[];
+  const owners = staffIds.length
+    ? await prisma.user.findMany({
+        where: { tenantId: t, id: { in: [...new Set(staffIds)] } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const oName = new Map(owners.map((u) => [u.id, u.name]));
+
   return {
     ...x,
     account,
     deals,
-    tickets: tickets.map(withTicketBalance),
+    tickets: tickets.map((tk) => ({
+      ...withTicketBalance(tk),
+      engineerName: tk.assignedToId ? oName.get(tk.assignedToId) ?? null : null,
+    })),
     notes,
     invoices: invoicesDetailed,
     assets: assets.map(serializeAsset),
     purchaseSummary,
+    sales: sales.map((l) => {
+      const cf = (l.customFields && typeof l.customFields === "object" ? l.customFields : {}) as Record<string, unknown>;
+      return {
+        id: l.id,
+        leadNo: l.leadNo,
+        status: l.status,
+        saleCompleted: Boolean(cf.saleCompletedAt),
+        saleCompletedAt: cf.saleCompletedAt ?? null,
+        product: String(cf.demoProductName ?? cf.interested_product_name ?? cf.product_interest ?? "") || null,
+        products: Array.isArray(cf.interested_products)
+          ? (cf.interested_products as Array<Record<string, unknown>>).map((p) => String(p.name ?? "")).filter(Boolean)
+          : [],
+        amount: Number(cf.salePaymentTotal ?? 0) || 0,
+        salesperson: l.assignedToId ? oName.get(l.assignedToId) ?? null : null,
+        createdAt: l.createdAt,
+      };
+    }),
+    units: units.map((u) => ({ ...u, productName: pName.get(u.productId) ?? null })),
   };
 }
 
@@ -471,10 +545,19 @@ export async function remove(t: string, id: string) {
     );
   }
 
-  const r = await prisma.contact.updateMany({
-    where: { id, tenantId: t, deletedAt: null },
-    data: { deletedAt: new Date() },
-  });
+  // The customer's machines go with them — left behind they kept appearing on AMC / Stamping /
+  // reminders under a blank "Customer" name.
+  const now = new Date();
+  const [r] = await prisma.$transaction([
+    prisma.contact.updateMany({
+      where: { id, tenantId: t, deletedAt: null },
+      data: { deletedAt: now },
+    }),
+    prisma.customerAsset.updateMany({
+      where: { tenantId: t, contactId: id, deletedAt: null },
+      data: { deletedAt: now },
+    }),
+  ]);
   if (!r.count) throw notFound("Contact");
 }
 

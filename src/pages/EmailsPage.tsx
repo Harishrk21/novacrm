@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Inbox, Link2, Mail, Send, ShieldCheck } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { PageTip } from '@/components/tips/PageTip'
@@ -11,6 +11,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
  * and routes admins to Settings → Integrations (honest empty state — no fake Connect).
  */
 export function EmailsPage() {
+  const navigate = useNavigate()
   return (
     <div className="space-y-5">
       <PageHeader
@@ -41,10 +42,10 @@ export function EmailsPage() {
         <EmptyState
           icon={<Mail size={26} />}
           title="No mailbox connected"
-          subtitle="When OAuth ships, each user will connect Gmail or Outlook once; threads will match contacts and log as EMAIL activities."
+          subtitle="Email sync is not available yet. Log customer emails as activities from the contact page."
           actionLabel="Go to Integrations"
           onAction={() => {
-            window.location.assign('/settings?tab=Integrations')
+            navigate('/settings?tab=Integrations')
           }}
         />
       </Card>

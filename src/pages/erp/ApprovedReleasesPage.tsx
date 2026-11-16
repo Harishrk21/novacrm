@@ -1,5 +1,6 @@
 import { Link, Navigate } from 'react-router-dom'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { Button } from '@/components/ui/Button'
 import { FeatureTip } from '@/components/tips/FeatureTip'
 import { RequisitionsPanel } from '@/components/sales/RequisitionsPanel'
 import { can } from '@/lib/permissions'
@@ -23,7 +24,16 @@ export function ApprovedReleasesPage() {
     <div className="space-y-4">
       <PageHeader
         title="Approved releases"
-        breadcrumbs={[{ label: 'ERP' }, { label: 'Approved releases' }]}
+        breadcrumbs={[{ label: 'Inventory' }, { label: 'Approved releases' }]}
+        actions={
+          inventoryWorker ? (
+            <Link to="/erp/stock?view=history">
+              <Button variant="outline" size="sm">
+                Stock history
+              </Button>
+            </Link>
+          ) : undefined
+        }
       />
       <FeatureTip
         title={inventoryWorker ? 'How release works' : 'Release status'}
@@ -34,20 +44,12 @@ export function ApprovedReleasesPage() {
         }
         tipType="TIP"
       />
-      {inventoryWorker ? (
-        <p className="text-xs text-text-secondary">
-          Audit trail:{' '}
-          <Link to="/erp/stock?view=history" className="font-medium text-accent-blue hover:underline">
-            Stock → History
-          </Link>
-        </p>
-      ) : null}
+      {/* Card title follows the chosen queue (Release queue / Shipped) */}
       <RequisitionsPanel
         defaultQueue="fulfill"
-        title={inventoryWorker ? 'New sales for inventory' : 'Approved & in progress'}
         subtitle={
           inventoryWorker
-            ? 'Open a sale → finish one product at a time (stamp → pick unit → reduce) → DC → Ready to ship.'
+            ? undefined
             : 'Read-only for sales desk — see what inventory is releasing and what has already shipped.'
         }
       />

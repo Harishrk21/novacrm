@@ -1,5 +1,6 @@
 /** Printable service job sheet (browser Print → Save as PDF). */
 import { openPrintHtml } from '@/lib/openPrintHtml'
+import { LETTERHEAD_CSS, fmtDate, letterFooterHtml, letterheadHtml, printCompany } from '@/lib/printLetterhead'
 
 function escapeHtml(value: string) {
   return value
@@ -56,13 +57,17 @@ export type JobSheetPrintOpts = {
 
 export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
   const ticketLabel = `SVC-${String(opts.ticketNo).padStart(5, '0')}`
-  const paidBadge =
-    opts.paymentStatus === 'PAID'
-      ? '<span class="pill paid">Paid in full</span>'
-      : opts.paymentStatus === 'PARTIAL'
-        ? '<span class="pill partial">Partial</span>'
-        : '<span class="pill unpaid">Unpaid</span>'
-
+  const company = printCompany({ name: opts.companyName, phone: opts.companyPhone, email: opts.companyEmail })
+  const docTitle =
+    opts.status === 'CLOSED' ? 'Bill Summary' : opts.paymentStatus === 'PAID' ? 'Payment Receipt' : 'Service Job Sheet'
+  const facts = (
+    [
+      ['Stamped', opts.stampingDate],
+      ['Stamp valid till', opts.nextDueDate],
+      ['Category', [opts.category, opts.channel].filter(Boolean).join(' · ')],
+      ['Engineer', opts.assignee],
+    ] as Array<[string, string | null | undefined]>
+  ).filter(([, v]) => v)
   const machineTypeLabel = opts.machineType ? opts.machineType.replaceAll('_', ' ') : ''
   const servicePlanLabel = opts.servicePlan ? opts.servicePlan.replaceAll('_', ' ') : ''
   const originLabel =
@@ -73,7 +78,7 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
         : ''
   const amcPeriod =
     opts.amcStartDate || opts.amcEndDate
-      ? `${opts.amcStartDate || '—'} → ${opts.amcEndDate || '—'}`
+      ? `${fmtDate(opts.amcStartDate)} → ${fmtDate(opts.amcEndDate)}`
       : ''
 
   const html = `<!doctype html>
@@ -122,30 +127,27 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
   .btn-close{background:#fff;border:1px solid #cbd5e1!important;color:var(--ink)}
   @media (max-width:720px){.grid2,.facts,.footer{grid-template-columns:1fr}.hero,.body,.toolbar{padding:16px}.meta{text-align:left}}
   @media print{body{background:#fff}.sheet{margin:0;box-shadow:none;border-radius:0}.toolbar{display:none}}
+${LETTERHEAD_CSS}
 </style></head><body>
   <div class="sheet">
     <div class="toolbar">
       <button class="btn-print" onclick="window.print()">Print / Save as PDF</button>
       <button class="btn-close" onclick="window.close()">Close</button>
     </div>
-    <div class="hero">
-      <div class="hero-top">
-        <div>
-          <div class="brand">${escapeHtml(opts.companyName || 'HMS Enterprises')}</div>
-          <div class="tag">${
-            opts.status === 'CLOSED'
-              ? 'Bill summary'
-              : opts.paymentStatus === 'PAID'
-                ? 'Payment receipt'
-                : 'Service job sheet'
-          }</div>
-        </div>
-        <div class="meta">
-          <div class="job-no">${escapeHtml(ticketLabel)}</div>
-          <div style="opacity:.92;margin-top:6px">${escapeHtml(opts.status)} · ${paidBadge}</div>
-        </div>
-      </div>
-    </div>
+    ${letterheadHtml({
+      company,
+      title: docTitle,
+      number: ticketLabel,
+      meta: [
+        ['Opened', fmtDate(opts.createdAt)],
+        ['Completed', opts.completedAt ? fmtDate(opts.completedAt) : null],
+        ['Status', opts.status.replaceAll('_', ' ')],
+      ],
+      badge:
+        opts.paymentStatus === 'PAID'
+          ? { text: 'Paid in full', ok: true }
+          : { text: opts.paymentStatus === 'PARTIAL' ? 'Part paid' : 'Payment due' },
+    })}
     <div class="body">
       <div class="grid2">
         <div class="box customer">
@@ -166,12 +168,7 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
         </div>
       </div>
 
-      <div class="facts">
-        <div class="fact"><span>Created</span><strong>${escapeHtml(opts.createdAt || '—')}</strong></div>
-        <div class="fact"><span>Stamping</span><strong>${escapeHtml(opts.stampingDate || '—')}</strong></div>
-        <div class="fact"><span>Next due</span><strong>${escapeHtml(opts.nextDueDate || '—')}</strong></div>
-        <div class="fact"><span>Completed</span><strong>${escapeHtml(opts.completedAt || '—')}</strong></div>
-      </div>
+      ${facts.length ? `<div class="facts">${facts.map(([k, v]) => `<div class="fact"><span>${escapeHtml(k)}</span><strong>${escapeHtml(fmtDate(v))}</strong></div>`).join('')}</div>` : ''}
 
       <table>
         <thead><tr><th>Item</th><th class="money">Amount</th></tr></thead>
@@ -182,11 +179,7 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
         </tbody>
       </table>
 
-      <div class="totals">
-        <div><span>Payment status</span><span>${escapeHtml(opts.paymentStatus)}</span></div>
-        ${opts.paidAt ? `<div><span>Paid at</span><span>${escapeHtml(opts.paidAt)}</span></div>` : ''}
-        <div class="grand"><span>Total</span><span>${money(opts.paymentTotal)}</span></div>
-      </div>
+      ${opts.paidAt ? `<p style="text-align:right;margin-top:8px;color:var(--muted)">Paid on ${escapeHtml(fmtDate(opts.paidAt))}</p>` : ''}
 
       ${
         opts.workNotes
@@ -196,15 +189,15 @@ export function openPrintableJobSheet(opts: JobSheetPrintOpts): boolean {
 
       <div class="footer">
         <div>
-          <div>Received by: <strong style="color:var(--ink)">${escapeHtml(opts.receivedBy || '—')}</strong></div>
-          <div style="margin-top:6px">Delivered by: <strong style="color:var(--ink)">${escapeHtml(opts.deliveredBy || '—')}</strong></div>
-          <div style="margin-top:6px">Assignee: <strong style="color:var(--ink)">${escapeHtml(opts.assignee || '—')}</strong></div>
-          ${opts.category || opts.channel ? `<div style="margin-top:6px">${escapeHtml([opts.category, opts.channel].filter(Boolean).join(' · '))}</div>` : ''}
+          ${opts.receivedBy ? `<div>Received by: <strong style="color:var(--ink)">${escapeHtml(opts.receivedBy)}</strong></div>` : ''}
+          ${opts.deliveredBy ? `<div style="margin-top:6px">Delivered by: <strong style="color:var(--ink)">${escapeHtml(opts.deliveredBy)}</strong></div>` : ''}
+          <div class="sign">For ${escapeHtml(company.name)} — authorised signatory</div>
         </div>
         <div class="sign">Customer acknowledgement<br/><strong style="color:var(--ink)">${escapeHtml(opts.customerName || '')}</strong></div>
       </div>
-      <p style="margin-top:18px;color:var(--muted);font-size:11px">Generated from HMS Enterprises · ${escapeHtml(opts.companyName || '')}${opts.companyPhone ? ` · ${escapeHtml(opts.companyPhone)}` : ''}${opts.companyEmail ? ` · ${escapeHtml(opts.companyEmail)}` : ''}</p>
+
     </div>
+    ${letterFooterHtml(company)}
   </div>
 </body></html>`
 

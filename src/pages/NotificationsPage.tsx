@@ -79,7 +79,7 @@ export function NotificationsPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl">
+    <div className="w-full">
       <PageHeader
         title="Notifications"
         count={unreadCount}

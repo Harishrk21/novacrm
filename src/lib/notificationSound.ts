@@ -5,6 +5,8 @@
 
 const SOUND_SRC = '/sounds/notification-bell.wav'
 const STORAGE_KEY = 'hms.notifSound'
+const LAST_RING_KEY = 'hms.notifSound.lastRingAt'
+const RUNG_IDS_KEY = 'hms.notifSound.rungIds'
 
 let audio: HTMLAudioElement | null = null
 let unlocked = false
@@ -45,14 +47,39 @@ export function unlockNotificationSound() {
   }
 }
 
-/** Play the bell .wav when any notification arrives. */
-export function playNotificationBell() {
+/**
+ * Same alert seen by several open tabs (each polls on its own clock) ⇒ ring once.
+ * Returns true if this notification id was already rung in any tab.
+ */
+function alreadyRung(id: string): boolean {
+  try {
+    const raw = localStorage.getItem(RUNG_IDS_KEY)
+    const ids: string[] = raw ? (JSON.parse(raw) as string[]) : []
+    if (ids.includes(id)) return true
+    localStorage.setItem(RUNG_IDS_KEY, JSON.stringify([...ids.slice(-49), id]))
+  } catch {
+    /* storage blocked — ring */
+  }
+  return false
+}
+
+/** Play the bell .wav when a notification arrives. Pass its id so other tabs don't ring again. */
+export function playNotificationBell(notificationId?: string) {
   try {
     if (!isNotificationSoundEnabled()) return
+    if (notificationId && alreadyRung(notificationId)) return
     const now = Date.now()
     // Debounce rapid bursts (same ticket → multiple events)
     if (now - lastPlayAt < 600) return
     lastPlayAt = now
+    // Several HMS tabs open ⇒ ring once, not once per tab (first tab to claim the slot wins)
+    try {
+      const other = Number(localStorage.getItem(LAST_RING_KEY) ?? 0)
+      if (now - other < 1500) return
+      localStorage.setItem(LAST_RING_KEY, String(now))
+    } catch {
+      /* storage blocked — just ring */
+    }
 
     const el = getAudio()
     if (!el) return

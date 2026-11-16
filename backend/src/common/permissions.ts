@@ -38,6 +38,9 @@ export const PERMISSIONS = [
   "tickets:approve",
   "tickets:delete",
   "assets:view",
+  "renewals:view",
+  "renewals:write",
+  "field:track",
   "assets:write",
   "assets:delete",
   "products:view",
@@ -67,6 +70,9 @@ const ALL = PERMISSIONS as unknown as Permission[];
 export const ROLE_PERMISSIONS: Record<string, Permission[]> = {
   ADMIN: ["*"],
   MANAGER: [
+    "field:track",
+    "renewals:view",
+    "renewals:write",
     "dashboard:view",
     "reports:view",
     "reports:export",
@@ -110,6 +116,8 @@ export const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     "ai:use",
   ],
   SERVICE_DESK: [
+    "renewals:view",
+    "renewals:write",
     "dashboard:view",
     "leads:view",
     "leads:write",
@@ -158,6 +166,8 @@ export const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     "settings:view",
   ],
   SALES_EXECUTIVE: [
+    "renewals:view",
+    "renewals:write",
     "dashboard:view",
     "leads:view",
     "leads:write",

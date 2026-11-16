@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { env } from "../config/env.js";
 import { AppError } from "../common/errors.js";
+import { enterRequestContext } from "../common/history.js";
 
 type Claims = {
   userId?: string;
@@ -19,6 +20,8 @@ export function authenticate(req: Request, _res: Response, next: NextFunction) {
     const userId = claims.userId ?? claims.adminId;
     if (!userId || !claims.kind || !claims.role) throw new AppError("Invalid access token", 401);
     req.auth = { userId, tenantId: claims.tenantId, role: claims.role, kind: claims.kind };
+    // Work history (common/history.ts) attributes events to this user without passing it around
+    enterRequestContext({ userId, tenantId: claims.tenantId, ip: req.ip, userAgent: String(req.headers["user-agent"] ?? "") });
     next();
   } catch (e) {
     next(e instanceof AppError ? e : new AppError("Invalid or expired access token", 401));

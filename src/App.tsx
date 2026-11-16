@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { RequireTenantAuth } from '@/components/auth/RequireTenantAuth'
 import { RequirePlatformAuth } from '@/components/auth/RequirePlatformAuth'
+import { SessionGuard } from '@/components/auth/SessionGuard'
 import {
   RequireCompanyAdmin,
   RequireErpAccess,
@@ -65,6 +66,12 @@ const TicketDetailPage = lazy(() =>
   import('@/pages/TicketDetailPage').then((m) => ({ default: m.TicketDetailPage })),
 )
 const AmcPage = lazy(() => import('@/pages/AmcPage').then((m) => ({ default: m.AmcPage })))
+const FieldTrackingPage = lazy(() =>
+  import('@/pages/FieldTrackingPage').then((m) => ({ default: m.FieldTrackingPage })),
+)
+const RenewalsPage = lazy(() =>
+  import('@/pages/RenewalsPage').then((m) => ({ default: m.RenewalsPage })),
+)
 const StampingPage = lazy(() =>
   import('@/pages/StampingPage').then((m) => ({ default: m.StampingPage })),
 )
@@ -157,6 +164,7 @@ function RouteFallback() {
 export default function App() {
   return (
     <BrowserRouter>
+      <SessionGuard />
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
@@ -187,10 +195,38 @@ export default function App() {
             <Route path="leads" element={<LeadsRedirect />} />
             <Route path="contacts" element={<ContactsPage />} />
             <Route path="contacts/:id" element={<ContactDetailPage />} />
-            <Route path="accounts" element={<AccountsPage />} />
-            <Route path="accounts/:id" element={<AccountDetailPage />} />
-            <Route path="deals" element={<DealsPage />} />
-            <Route path="deals/:id" element={<DealDetailPage />} />
+            <Route
+              path="accounts"
+              element={
+                <RequirePermission permission="accounts:view" title="Accounts not available">
+                  <AccountsPage />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="accounts/:id"
+              element={
+                <RequirePermission permission="accounts:view" title="Accounts not available">
+                  <AccountDetailPage />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="deals"
+              element={
+                <RequirePermission permission="deals:view" title="Deals not available">
+                  <DealsPage />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="deals/:id"
+              element={
+                <RequirePermission permission="deals:view" title="Deals not available">
+                  <DealDetailPage />
+                </RequirePermission>
+              }
+            />
             <Route
               path="activities"
               element={
@@ -203,14 +239,79 @@ export default function App() {
                 </RequirePermission>
               }
             />
-            <Route path="tickets" element={<TicketsPage />} />
-            <Route path="tickets/:id" element={<TicketDetailPage />} />
+            <Route
+              path="tickets"
+              element={
+                <RequirePermission permission="tickets:view" title="Service jobs not available">
+                  <TicketsPage />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="tickets/:id"
+              element={
+                <RequirePermission permission="tickets:view" title="Service jobs not available">
+                  <TicketDetailPage />
+                </RequirePermission>
+              }
+            />
             <Route path="notifications" element={<NotificationsPage />} />
-            <Route path="amc" element={<AmcPage />} />
-            <Route path="stamping" element={<StampingPage />} />
-            <Route path="rentals" element={<RentalsPage />} />
-            <Route path="spare-parts" element={<SparePartsPage />} />
-            <Route path="service-reports" element={<ServiceReportsPage />} />
+            <Route
+              path="amc"
+              element={
+                <RequirePermission permission="assets:view" title="AMC not available">
+                  <AmcPage />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="field-tracking"
+              element={
+                <RequirePermission permission="field:track" title="Field tracking not available">
+                  <FieldTrackingPage />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="renewals"
+              element={
+                <RequirePermission permission="renewals:view" title="Renewals not available">
+                  <RenewalsPage />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="stamping"
+              element={
+                <RequirePermission permission="assets:view" title="Stamping not available">
+                  <StampingPage />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="rentals"
+              element={
+                <RequirePermission permission="inventory:view" title="Rentals not available">
+                  <RentalsPage />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="spare-parts"
+              element={
+                <RequirePermission permission="tickets:view" title="Spare parts not available">
+                  <SparePartsPage />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="service-reports"
+              element={
+                <RequirePermission permission="tickets:view" title="Service reports not available">
+                  <ServiceReportsPage />
+                </RequirePermission>
+              }
+            />
             <Route
               path="erp/hub"
               element={
@@ -302,9 +403,10 @@ export default function App() {
             <Route
               path="erp/purchase-orders"
               element={
-                <RequireCompanyAdmin>
+                // Sales desk + warehouse raise POs for spare refills (backend: purchase_orders:*)
+                <RequirePermission permission="purchase_orders:view">
                   <PurchaseOrdersPage />
-                </RequireCompanyAdmin>
+                </RequirePermission>
               }
             />
             <Route

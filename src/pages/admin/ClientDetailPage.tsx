@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { strongPassword } from '@/lib/strongPassword'
 import { Link, Navigate, useNavigate, useOutletContext, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -153,11 +154,17 @@ export function ClientDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client?.id])
 
+  /** Inventory ticks as last saved — "Save inventory access" only lights up when they change */
+  const savedAreas = useRef<Record<string, InventoryAreas>>({})
+
   async function loadTeam(tenantId: string) {
     setTeamLoading(true)
     try {
       const res = await api.listTenantUsers(tenantId)
       setTeamUsers(res.users ?? [])
+      savedAreas.current = Object.fromEntries(
+        (res.users ?? []).map((x) => [x.id, x.inventoryAreas ?? { machines: true, sparesBilling: true, sparesWeighing: true }]),
+      )
     } catch {
       setTeamUsers([])
     } finally {
@@ -203,6 +210,14 @@ export function ClientDetailPage() {
 
   async function toggleSuspend(c: ClientRow) {
     if (!liveMode) return
+    if (
+      (c.status === 'ACTIVE' || c.status === 'TRIAL') &&
+      !window.confirm(
+        `Suspend ${c.name}? Every user of this company is signed out and can't log in until you reactivate it.`,
+      )
+    ) {
+      return
+    }
     try {
       if (c.status === 'ACTIVE' || c.status === 'TRIAL') {
         await api.suspendTenant(c.id)
@@ -337,7 +352,7 @@ export function ClientDetailPage() {
 
   async function setUserPassword(userId: string, email: string) {
     if (!client) return
-    const next = window.prompt(`New password for ${email}`, 'Demo@12345')
+    const next = window.prompt(`New password for ${email}`, strongPassword())
     if (!next || next.length < 8) return
     setPwdBusyId(userId)
     try {
@@ -377,6 +392,7 @@ export function ClientDetailPage() {
     setAreasBusyId(u.id)
     try {
       const row = await api.setTenantUserInventoryAreas(client.id, u.id, inventoryAreas)
+      savedAreas.current = { ...savedAreas.current, [u.id]: row.inventoryAreas ?? inventoryAreas }
       setTeamUsers((list) =>
         list.map((x) =>
           x.id === u.id ? { ...x, inventoryAreas: row.inventoryAreas } : x,
@@ -684,7 +700,7 @@ export function ClientDetailPage() {
                         if (f) void uploadLogo(f)
                         e.currentTarget.value = ''
                       }}
-                      className="text-sm"
+                      className="block w-full text-sm text-text-secondary file:mr-3 file:cursor-pointer file:rounded-md file:border file:border-border file:bg-card file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-text-primary hover:file:bg-muted"
                     />
                   </div>
                   <div className="sm:col-span-2">
@@ -744,8 +760,8 @@ export function ClientDetailPage() {
               ))}
             </div>
             <FieldHint>
-              Active pack hint: <span className="font-mono">{editPack || 'custom'}</span>. Save to
-              persist toggles{editPack ? ' + pack' : ''}.
+              Current pack: <b>{editPack ? editPack.replaceAll('_', ' ').toLowerCase() : 'custom selection'}</b>. Ticks change
+              this company's menus when you press <b>Save all changes</b>. Attendance and other add-ons stay as set here.
             </FieldHint>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {MODULE_TOGGLE_OPTIONS.map((m) => (
@@ -815,9 +831,12 @@ export function ClientDetailPage() {
                         <div>
                           <div className="font-medium text-text-primary">{u.name}</div>
                           <div className="font-mono text-xs text-text-secondary">{u.email}</div>
-                          <div className="mt-1 flex flex-wrap gap-2">
-                            <Badge color="blue">{u.roleCode}</Badge>
-                            <span className="text-xs text-text-secondary">{u.status}</span>
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <Badge color="blue">{u.roleCode.replaceAll('_', ' ').toLowerCase()}</Badge>
+                            <span className="text-xs text-text-secondary">{u.status.toLowerCase()}</span>
+                            <span className="text-xs text-text-secondary">
+                              · {u.lastLoginAt ? `last sign-in ${formatDate(u.lastLoginAt)}` : 'never signed in'}
+                            </span>
                           </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -831,7 +850,11 @@ export function ClientDetailPage() {
                           </Button>
                           <Button
                             size="sm"
-                            disabled={!liveMode || areasBusyId === u.id}
+                            disabled={
+                              !liveMode ||
+                              areasBusyId === u.id ||
+                              JSON.stringify(areas) === JSON.stringify(savedAreas.current[u.id] ?? areas)
+                            }
                             onClick={() => void saveUserInventoryAreas(u)}
                           >
                             {areasBusyId === u.id ? 'Saving…' : 'Save inventory access'}
@@ -897,12 +920,22 @@ export function ClientDetailPage() {
                   { value: 'ENTERPRISE', label: 'Enterprise' },
                 ]}
               />
-              <Input
-                label="Max employees (incl. admin)"
-                type="number"
-                value={editMaxUsers}
-                onChange={(e) => setEditMaxUsers(e.target.value)}
-              />
+              <div>
+                <Input
+                  label="Max employees (incl. admin)"
+                  type="number"
+                  min={Math.max(1, live.users)}
+                  value={editMaxUsers}
+                  onChange={(e) => setEditMaxUsers(e.target.value)}
+                />
+                <FieldHint>
+                  {Number(editMaxUsers) < live.users
+                    ? `Below the ${live.users} logins already in use — remove logins first or set at least ${live.users}.`
+                    : `${editPlan.charAt(0) + editPlan.slice(1).toLowerCase()} plan suggests up to ${
+                        ({ STARTER: 5, GROWTH: 15, BUSINESS: 50, ENTERPRISE: 500 } as Record<string, number>)[editPlan] ?? '—'
+                      } users; this company's own cap is what applies.`}
+                </FieldHint>
+              </div>
             </div>
             <div className="grid gap-3 rounded-xl border border-border p-4 sm:grid-cols-3">
               <div>

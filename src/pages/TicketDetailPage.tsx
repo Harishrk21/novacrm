@@ -1744,7 +1744,38 @@ export function TicketDetailPage() {
   const guideStepKey = flowSteps[guide.next]?.key
   const markedFreeJob = Boolean(cf.freeJob)
   const freeJobLocked = isPaid || status === 'RESOLVED' || status === 'CLOSED' || !showPaymentAdminTools
+  // Machine's cover today — Guarantee: service + parts free; AMC: service free, parts charged
+  const coverPlan = String(asset?.servicePlan ?? '')
+  const coverEnd = coverPlan === 'GC' ? asset?.warrantyEndDate : coverPlan === 'AMC' ? asset?.amcEndDate : null
+  const coverActive =
+    (coverPlan === 'GC' || coverPlan === 'AMC') &&
+    Boolean(coverEnd) &&
+    new Date(String(coverEnd).slice(0, 10) + 'T23:59:59').getTime() >= Date.now()
+  const partsCharged = num(cf.sparePartsTotal) > 0
+  const coverSuggestion =
+    coverActive && !markedFreeJob && !freeJobLocked ? (
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-400/60 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-900 dark:text-emerald-100">
+        <span>
+          {coverPlan === 'GC'
+            ? `Under Guarantee till ${formatDate(String(coverEnd))} — service and parts are free.`
+            : `On AMC till ${formatDate(String(coverEnd))} — service is free${partsCharged ? '; the spare parts charged above still apply.' : '. Charge only spare parts, if any.'}`}
+        </span>
+        {coverPlan === 'GC' || !partsCharged ? (
+          <Button
+            size="sm"
+            disabled={busy || num(ticket.paymentTotal) > 0 || num(ticket.advanceAmount) > 0}
+            onClick={() =>
+              void patchTicket({ customFields: { ...cf, freeJob: true } }, 'Marked as free job (under cover)')
+            }
+          >
+            Mark as free job
+          </Button>
+        ) : null}
+      </div>
+    ) : null
   const freeJobToggle = (
+    <>
+    {coverSuggestion}
     <label
       className={cn(
         'flex items-start gap-2.5 rounded-lg border px-3 py-2.5',
@@ -1771,6 +1802,7 @@ export function TicketDetailPage() {
         </span>
       </span>
     </label>
+    </>
   )
   const canCompleteNow =
     (isEngineer || isDesk || isAdmin) &&

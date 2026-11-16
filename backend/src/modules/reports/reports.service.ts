@@ -760,17 +760,30 @@ const DEFS: Def[] = [
         const d = raw ? new Date(String(raw)) : u.updatedAt;
         return Number.isNaN(d.getTime()) ? u.updatedAt : d;
       };
+      // One pass over the units: in / out times as numbers, grouped by product (was N products × M units × 4)
+      const byProduct = new Map<string, Array<{ inAt: number; outAt: number }>>();
+      for (const u of units) {
+        const o = outAt(u);
+        const row = { inAt: u.createdAt.getTime(), outAt: o ? o.getTime() : Number.POSITIVE_INFINITY };
+        const list = byProduct.get(u.productId);
+        if (list) list.push(row);
+        else byProduct.set(u.productId, [row]);
+      }
+      const s0 = start.getTime();
+      const e0 = end.getTime();
       const machineRows = products
         .map((pr) => {
-          const mine = units.filter((u) => u.productId === pr.id);
-          const inBy = (d: Date) => mine.filter((u) => u.createdAt < d && !((outAt(u) ?? new Date(8.64e15)) < d)).length;
-          const opening = inBy(start);
-          const received = mine.filter((u) => u.createdAt >= start && u.createdAt <= end).length;
-          const out = mine.filter((u) => {
-            const o = outAt(u);
-            return o != null && o >= start && o <= end;
-          }).length;
-          const closing = inBy(new Date(end.getTime() + 1));
+          const mine = byProduct.get(pr.id) ?? [];
+          let opening = 0;
+          let received = 0;
+          let out = 0;
+          let closing = 0;
+          for (const u of mine) {
+            if (u.inAt < s0 && u.outAt >= s0) opening++;
+            if (u.inAt >= s0 && u.inAt <= e0) received++;
+            if (u.outAt >= s0 && u.outAt <= e0) out++;
+            if (u.inAt <= e0 && u.outAt > e0) closing++;
+          }
           const kind = String(cf(pr.attributes).catalogFamily ?? cf(pr.attributes).familyCode ?? "");
           return {
             kind: "Machine",

@@ -55,6 +55,11 @@ rm -rf "$REL"
 mkdir -p "$REL"
 cp -a "$INCOMING/web" "$REL/web"
 cp -a "$INCOMING/backend" "$REL/backend"
+# The upload is unpacked privately (it carries the secrets file) — the web app must be readable by
+# nginx, and the folders on the way to it must be open for reading. The secrets stay 600.
+chmod 755 "$BASE" "$BASE/releases" "$REL"
+chmod -R a+rX "$REL/web"
+chmod -R go-rwx "$REL/backend"
 
 # Secrets: the backend .env comes from the BACKEND_ENV GitHub secret and is kept in shared/
 if [ -f "$INCOMING/backend.env" ]; then

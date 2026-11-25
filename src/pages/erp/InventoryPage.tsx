@@ -420,7 +420,7 @@ export function InventoryPage() {
       // Load catalog + warehouses first so Add stock works even if serial API fails
       const [lookups, productPage] = await Promise.all([
         api.lookups(),
-        api.products({ limit: 200 }),
+        api.products({ limit: 500, includeInactive: 1 }),
       ])
       // Prefer lookups (active catalog + attributes); merge products API for any extras
       const byId = new Map<string, CatalogProduct>()

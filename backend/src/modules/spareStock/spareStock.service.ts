@@ -108,6 +108,16 @@ export async function seedDefaultItems(t: string, family?: Family) {
   const cacheKey = family ? `${t}:${family}` : t;
   if (seededTenants.has(cacheKey) || seededTenants.has(t)) return;
 
+  // A workspace with its own spare register (HMS: Spare IDs SP-001…) never gets the generic defaults back
+  const ownList = await prisma.sparePartItem.findFirst({
+    where: { tenantId: t, deletedAt: null, partCode: { startsWith: "SP-" } },
+    select: { id: true },
+  });
+  if (ownList) {
+    seededTenants.add(t);
+    return;
+  }
+
   const families: Family[] = family ? [family] : ["WEIGHING", "BILLING"];
   const wanted = families.flatMap((fam) =>
     DEFAULT_SPARES[fam].map((name) => ({ fam, name })),

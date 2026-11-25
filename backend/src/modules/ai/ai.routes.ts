@@ -1468,6 +1468,7 @@ const MACHINE_STOCK_FIELDS = [
 ] as const;
 
 const SPARE_STOCK_FIELDS = [
+  "spareId",
   "spareName",
   "opening",
   "newStock",
@@ -1507,6 +1508,7 @@ function heuristicStockHeader(
     if (/per unit|unit amount|unit price|rate|amount/.test(h)) return "unitAmount";
     return null;
   }
+  if (/spare\s*id|spare\s*code|^sp\s*id$|part\s*code/.test(h)) return "spareId";
   if (/spare|part name|item name|^name$|particular/.test(h)) return "spareName";
   if (/opening|open stock|prev.*clos|before month|last month/.test(h)) return "opening";
   if (/new stock|received|arrival|qty in|quantity in/.test(h)) return "newStock";
@@ -1558,7 +1560,8 @@ ${
 - model = product/model name (must exist in catalog)
 - serialNo = SNO under invoice / factory serial
 - supplierName, invoiceDate, invoiceNo, receivedDate, unitAmount, spec`
-    : `- spareName = spare part name (Battery, Paper roll, Labels…)
+    : `- spareId = Spare ID like SP-001 (exact spare)
+- spareName = spare part name (Battery, Paper roll, Labels…)
 - opening = previous month closing / opening stock
 - newStock = quantity newly received
 - given = quantity issued/given out

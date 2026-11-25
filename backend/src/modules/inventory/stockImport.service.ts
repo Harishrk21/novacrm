@@ -25,6 +25,7 @@ export const MACHINE_IMPORT_FIELDS = [
 ] as const;
 
 export const SPARE_IMPORT_FIELDS = [
+  "spareId",
   "spareName",
   "opening",
   "newStock",
@@ -161,7 +162,9 @@ export async function importMachineStock(
     try {
       const model = cell(row, "model");
       const hmsUniqId = cell(row, "hmsUniqId").toUpperCase();
-      const serialNo = cell(row, "serialNo").toUpperCase() || hmsUniqId;
+      // HMS register writes "NILL" when the machine has no factory serial (most weighing machines)
+      const rawSerial = cell(row, "serialNo").toUpperCase();
+      const serialNo = (rawSerial === "NILL" || rawSerial === "NIL" || rawSerial === "-" ? "" : rawSerial) || hmsUniqId;
       if (!model) throw new AppError("MODEL is required", 400);
       if (!hmsUniqId && !serialNo) throw new AppError("HMS UNIQ ID or SNO required", 400);
 
@@ -223,10 +226,24 @@ export async function importSpareStock(
   userId: string,
   kind: "sparesBilling" | "sparesWeighing",
   rows: Array<Record<string, unknown>>,
+  opts: { asOn?: string | null } = {},
 ) {
   const areas = await loadUserInventoryAreas(t, userId);
   const family = kind === "sparesBilling" ? ("BILLING" as const) : ("WEIGHING" as const);
   assertSpareFamilyAllowed(areas, family);
+  // Opening stock "as on" a date — the count on that day, booked at the very start of it
+  const asOn = opts.asOn && /^\d{4}-\d{2}-\d{2}$/.test(opts.asOn) ? opts.asOn : null;
+  // booked one second before the day starts, so it shows as that month's OPENING, not as "received"
+  const asOnStart = asOn ? new Date(new Date(`${asOn}T00:00:00+05:30`).getTime() - 1000) : null;
+  // Spare IDs (SP-001) → the exact spare, in its own machine family
+  const byCode = new Map(
+    (
+      await prisma.sparePartItem.findMany({
+        where: { tenantId: t, deletedAt: null, partCode: { not: null } },
+        select: { id: true, name: true, partCode: true, machineFamily: true },
+      })
+    ).map((p) => [String(p.partCode).toUpperCase(), p]),
+  );
 
   const results = {
     created: 0,
@@ -238,8 +255,13 @@ export async function importSpareStock(
     const row = rows[i]!;
     const rowNo = i + 2;
     try {
-      const spareName = cell(row, "spareName");
-      if (!spareName) throw new AppError("Spare name is required", 400);
+      const code = cell(row, "spareId").toUpperCase().replace(/\s+/g, "");
+      const coded = code ? byCode.get(code) : undefined;
+      if (code && !coded) throw new AppError(`Spare ID ${code} is not in the spare list`, 404);
+      const fam = coded?.machineFamily ?? family;
+      if (coded && fam !== family) assertSpareFamilyAllowed(areas, fam);
+      const spareName = coded?.name ?? cell(row, "spareName");
+      if (!spareName) throw new AppError("Spare ID or spare name is required", 400);
 
       const opening = numCell(row, "opening");
       const newStock = numCell(row, "newStock");
@@ -248,7 +270,7 @@ export async function importSpareStock(
       const gc = cell(row, "gc");
       const ngc = cell(row, "ngc");
       const supplierName = cell(row, "supplierName") || "Import";
-      const invoiceDate = parseDateLoose(cell(row, "invoiceDate")) ?? new Date();
+      const invoiceDate = parseDateLoose(cell(row, "invoiceDate")) ?? asOnStart ?? new Date();
       const invoiceNo = cell(row, "invoiceNo") || null;
       const notesExtra = [gc ? `GC:${gc}` : "", ngc ? `NGC:${ngc}` : ""]
         .filter(Boolean)
@@ -256,13 +278,37 @@ export async function importSpareStock(
 
       let movements = 0;
 
-      if (opening > 0) {
-        const items = await spareStock.listItems(t, { machineFamily: family, search: spareName });
+      if (asOnStart && cell(row, "opening") !== "") {
+        // Opening "as on" a date sets the stock to exactly that number on that day (up or down)
+        let existing = coded ? { id: coded.id } : (await spareStock.listItems(t, { machineFamily: fam, search: spareName })).find((p) => p.name.toLowerCase() === spareName.toLowerCase());
+        if (!existing) existing = await spareStock.createItem(t, { machineFamily: fam, name: spareName, unit: cell(row, "unit") || "NOS" });
+        const before = await spareStock.balanceOf(t, existing.id, asOnStart);
+        const diff = Math.round((opening - before) * 1000) / 1000;
+        if (diff !== 0) {
+          await prisma.spareStockTxn.create({
+            data: {
+              id: newId(),
+              tenantId: t,
+              sparePartId: existing.id,
+              txnType: diff > 0 ? "IN" : "OUT",
+              quantity: Math.abs(diff),
+              txnDate: asOnStart,
+              supplierName: diff > 0 ? "Opening balance" : null,
+              invoiceDate: asOnStart,
+              notes: `Opening stock as on ${asOn}: ${opening}${notesExtra ? ` · ${notesExtra}` : ""}`,
+              createdById: userId,
+              customFields: { openingStock: true, asOn, before, opening },
+            },
+          });
+          movements += 1;
+        }
+      } else if (opening > 0) {
+        const items = await spareStock.listItems(t, { machineFamily: fam, search: spareName });
         const existing = items.find((p) => p.name.toLowerCase() === spareName.toLowerCase());
         const onHand = Number(existing?.quantityOnHand ?? 0);
         if (onHand < opening) {
           await spareStock.receive(t, userId, {
-            machineFamily: family,
+            machineFamily: fam,
             sparePartId: existing?.id,
             spareName,
             quantity: opening - onHand,
@@ -277,7 +323,7 @@ export async function importSpareStock(
 
       if (newStock > 0) {
         await spareStock.receive(t, userId, {
-          machineFamily: family,
+          machineFamily: fam,
           spareName,
           quantity: newStock,
           supplierName,
@@ -289,7 +335,7 @@ export async function importSpareStock(
       }
 
       if (given > 0) {
-        const items = await spareStock.listItems(t, { machineFamily: family, search: spareName });
+        const items = await spareStock.listItems(t, { machineFamily: fam, search: spareName });
         const part = items.find((p) => p.name.toLowerCase() === spareName.toLowerCase());
         if (!part) throw new AppError(`Spare not found for issue: ${spareName}`, 404);
         const available = await spareStock.balanceOf(t, part.id);
@@ -318,7 +364,7 @@ export async function importSpareStock(
       if (movements === 0) {
         await spareStock
           .createItem(t, {
-            machineFamily: family,
+            machineFamily: fam,
             name: spareName,
             unit: cell(row, "unit") || "NOS",
           })
@@ -328,7 +374,7 @@ export async function importSpareStock(
         results.created += movements;
       }
 
-      const items = await spareStock.listItems(t, { machineFamily: family, search: spareName });
+      const items = await spareStock.listItems(t, { machineFamily: fam, search: spareName });
       const part = items.find((p) => p.name.toLowerCase() === spareName.toLowerCase());
       if (part && (gc || ngc)) {
         const prev =

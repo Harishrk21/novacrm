@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
+  ClipboardCheck,
+  FileSpreadsheet,
   BarChart3,
   UserPlus,
   Users,
@@ -572,6 +574,9 @@ export function Sidebar() {
                 label: 'Contacts',
                 quickActions: contactsActions,
               } as NavItem,
+              ...(can(role, 'contacts:import')
+                ? [{ to: '/import-registers', icon: FileSpreadsheet, label: 'Import registers' } as NavItem]
+                : []),
             ]
           : []),
         ...(moduleOn('crm.accounts')
@@ -679,11 +684,14 @@ export function Sidebar() {
                 label: 'Stock',
                 quickActions: [
                   { label: 'Add stock', to: '/erp/stock/move', icon: Plus },
+                  { label: 'Stock count', to: '/erp/stock/count', icon: ClipboardCheck },
+            { label: 'Stock count', to: '/erp/stock/count', icon: ClipboardCheck },
                   { label: 'Reduce stock', to: '/erp/stock/move?mode=reduce', icon: Filter },
                   { label: 'History', to: '/erp/stock?view=history', icon: Filter },
                   { label: 'Monthly report', to: '/erp/stock/report', icon: Filter },
                 ],
               } as NavItem,
+              { to: '/erp/stock/count', icon: ClipboardCheck, label: 'Stock count' } as NavItem,
             ]
           : []),
         ...(moduleOn('erp.inventory')
@@ -802,6 +810,9 @@ export function Sidebar() {
           label: 'Contacts',
           quickActions: contactsActions,
         },
+        ...(can(role, 'contacts:import')
+          ? [{ to: '/import-registers', icon: FileSpreadsheet, label: 'Import registers' } as NavItem]
+          : []),
       ],
     },
     {
@@ -811,6 +822,7 @@ export function Sidebar() {
       items: [
         { to: '/erp/products', icon: Package, label: 'Products' },
         { to: '/erp/stock', icon: Warehouse, label: 'Stock' },
+        { to: '/erp/stock/count', icon: ClipboardCheck, label: 'Stock count' },
         { to: '/erp/suppliers', icon: Truck, label: 'Suppliers' },
       ],
     },
@@ -866,6 +878,9 @@ export function Sidebar() {
           label: 'Contacts',
           quickActions: [{ label: 'Lookup contacts', to: '/contacts', icon: Users }],
         },
+        ...(can(role, 'contacts:import')
+          ? [{ to: '/import-registers', icon: FileSpreadsheet, label: 'Import registers' } as NavItem]
+          : []),
       ],
     },
     {
@@ -875,6 +890,7 @@ export function Sidebar() {
       items: [
         { to: '/erp/products', icon: Package, label: 'Products' },
         { to: '/erp/stock', icon: Warehouse, label: 'Stock' },
+        { to: '/erp/stock/count', icon: ClipboardCheck, label: 'Stock count' },
         { to: '/erp/suppliers', icon: Truck, label: 'Suppliers' },
       ],
     },
@@ -916,6 +932,9 @@ export function Sidebar() {
           label: 'Contacts',
           quickActions: contactsActions,
         },
+        ...(can(role, 'contacts:import')
+          ? [{ to: '/import-registers', icon: FileSpreadsheet, label: 'Import registers' } as NavItem]
+          : []),
         ...(can(role, 'renewals:view') ? [{ to: '/renewals', icon: CalendarClock, label: 'Renewals' } as NavItem] : []),
         ...(moduleOn('crm.deals')
           ? [{ to: '/deals', icon: ClipboardList, label: 'Deals' } as NavItem]
@@ -955,11 +974,13 @@ export function Sidebar() {
           label: 'Stock',
           quickActions: [
             { label: 'Add stock', to: '/erp/stock/move', icon: Plus },
+            { label: 'Stock count', to: '/erp/stock/count', icon: ClipboardCheck },
             { label: 'Reduce stock', to: '/erp/stock/move?mode=reduce', icon: Filter },
             { label: 'History', to: '/erp/stock?view=history', icon: Filter },
             { label: 'Monthly report', to: '/erp/stock/report', icon: Filter },
           ],
         },
+        { to: '/erp/stock/count', icon: ClipboardCheck, label: 'Stock count' },
         { to: '/erp/releases', icon: PackageCheck, label: 'Approved releases' },
         { to: '/erp/delivery-challans', icon: ClipboardList, label: 'Delivery challans' },
         { to: '/erp/suppliers', icon: Truck, label: 'Suppliers' },
@@ -999,11 +1020,13 @@ export function Sidebar() {
           label: 'Stock',
           quickActions: [
             { label: 'Add stock', to: '/erp/stock/move', icon: Plus },
+            { label: 'Stock count', to: '/erp/stock/count', icon: ClipboardCheck },
             { label: 'Reduce stock', to: '/erp/stock/move?mode=reduce', icon: Filter },
             { label: 'History', to: '/erp/stock?view=history', icon: Filter },
             { label: 'Monthly report', to: '/erp/stock/report', icon: Filter },
           ],
         },
+        { to: '/erp/stock/count', icon: ClipboardCheck, label: 'Stock count' },
         { to: '/erp/suppliers', icon: Truck, label: 'Suppliers' },
         { to: '/erp/releases', icon: PackageCheck, label: 'Approved releases' },
         { to: '/erp/delivery-challans', icon: ClipboardList, label: 'Delivery challans' },
@@ -1023,6 +1046,9 @@ export function Sidebar() {
           label: 'Contacts',
           quickActions: contactsActions,
         },
+        ...(can(role, 'contacts:import')
+          ? [{ to: '/import-registers', icon: FileSpreadsheet, label: 'Import registers' } as NavItem]
+          : []),
       ],
     },
     {
@@ -1065,6 +1091,9 @@ export function Sidebar() {
           label: 'Contacts',
           quickActions: contactsActions,
         },
+        ...(can(role, 'contacts:import')
+          ? [{ to: '/import-registers', icon: FileSpreadsheet, label: 'Import registers' } as NavItem]
+          : []),
       ],
     },
     {

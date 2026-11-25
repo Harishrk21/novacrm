@@ -1,0 +1,104 @@
+name: Deploy to EC2
+
+# Every push to main builds the web app + API here on GitHub, copies them to the EC2 server and
+# runs deploy/ec2-deploy.sh there (nginx site, SSL certificate, pm2 restart, health check, rollback).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
+
+env:
+  APP: novacrm
+  DOMAIN: crm.askmeister.com
+  APP_PORT: "5010"
+
+jobs:
+  # Skip quietly until the EC2 secrets are added in GitHub (Settings → Secrets → Actions)
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.s.outputs.ready }}
+    steps:
+      - id: s
+        env:
+          H: ${{ secrets.EC2_HOST }}
+          K: ${{ secrets.EC2_SSH_KEY }}
+          E: ${{ secrets.BACKEND_ENV }}
+        run: |
+          if [ -n "$H" ] && [ -n "$K" ] && [ -n "$E" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::EC2 deploy skipped — add EC2_HOST, EC2_USER, EC2_SSH_KEY and BACKEND_ENV secrets to enable it"
+          fi
+
+  deploy:
+    needs: check
+    if: needs.check.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+
+      - name: Build web app
+        env:
+          VITE_API_URL: https://${{ env.DOMAIN }}/api
+          VITE_DEMO_PASSWORD: ${{ secrets.VITE_DEMO_PASSWORD }}
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Build API
+        working-directory: backend
+        run: |
+          npm ci --no-audit --no-fund
+          npx prisma generate
+          npm run build
+
+      - name: Package release
+        env:
+          BACKEND_ENV: ${{ secrets.BACKEND_ENV }}
+        run: |
+          umask 077
+          mkdir -p bundle/backend bundle/deploy
+          cp -r dist bundle/web
+          cp -r backend/dist backend/prisma backend/package.json backend/package-lock.json bundle/backend/
+          cp deploy/ec2-deploy.sh bundle/deploy/
+          if [ -n "$BACKEND_ENV" ]; then printf '%s\n' "$BACKEND_ENV" > bundle/backend.env; fi
+          tar czf bundle.tgz -C bundle .
+          echo "RELEASE=$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Connect to EC2
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2.pem
+          chmod 600 ~/.ssh/ec2.pem
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Upload and deploy
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          CERTBOT_EMAIL: ${{ secrets.CERTBOT_EMAIL }}
+        run: |
+          SSH="ssh -i $HOME/.ssh/ec2.pem -o ServerAliveInterval=30 $EC2_USER@$EC2_HOST"
+          INC="/tmp/deploy-$APP-$RELEASE"
+          $SSH "umask 077 && rm -rf $INC && mkdir -p $INC && tar xzf - -C $INC" < bundle.tgz
+          $SSH "APP='$APP' DOMAIN='$DOMAIN' APP_PORT='$APP_PORT' RELEASE='$RELEASE' CERTBOT_EMAIL='$CERTBOT_EMAIL' bash $INC/deploy/ec2-deploy.sh $INC"
+
+      - name: Clean up
+        if: always()
+        run: rm -rf ~/.ssh/ec2.pem bundle bundle.tgz

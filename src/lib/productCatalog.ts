@@ -18,6 +18,13 @@ export function productAttrs(source: { attributes?: unknown } | Record<string, u
   return (raw as Record<string, unknown>) ?? {}
 }
 
+/** Supplier names saved on a product (attributes.suppliers) — the first is the usual one. */
+export function productSuppliers(source: { attributes?: unknown } | Record<string, unknown> | null | undefined) {
+  const raw = productAttrs(source).suppliers
+  if (!Array.isArray(raw)) return [] as string[]
+  return raw.map((x) => String(x ?? '').trim()).filter(Boolean)
+}
+
 export function defaultRequiresStamping(catalogKind: string) {
   return catalogKind === 'WEIGHING'
 }

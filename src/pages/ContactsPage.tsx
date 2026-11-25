@@ -43,6 +43,7 @@ import { usePagedRows } from '@/hooks/usePagedRows'
 import { useConfirmLeave, useDiscardGuard } from '@/hooks/useDiscardGuard'
 import { useUnsavedStore } from '@/store/unsavedStore'
 import { api, ApiClientError } from '@/lib/api'
+import { INDUSTRY_OPTIONS } from '@/lib/industries'
 import { ASSET_ORIGIN_OPTIONS } from '@/lib/assetOrigin'
 import {
   machineTypeRequiresStamping,
@@ -93,6 +94,7 @@ const emptyForm = {
   doorNo: '',
   street: '',
   buildingName: '',
+  industry: '',
   area: '',
   city: '',
   state: '',
@@ -399,7 +401,7 @@ export function ContactsPage() {
       if (needCatalog) {
         try {
           const [productPage, brandRows] = await Promise.all([
-            api.products({ limit: 150 }),
+            api.products({ limit: 500 }),
             api.inventoryBrands(),
           ])
           if (productPage.items?.length) {
@@ -525,6 +527,7 @@ export function ContactsPage() {
         toStoredIndianMobile(form.whatsapp) || mobileStored
       const customFields = {
         building_name: form.buildingName.trim() || null,
+        industry: form.industry.trim() || null,
         landline: form.landline.trim() || null,
         mobile_2: toStoredIndianMobile(form.mobile2),
         mobile_3: toStoredIndianMobile(form.mobile3),
@@ -1100,6 +1103,20 @@ export function ContactsPage() {
                   value={form.buildingName}
                   onChange={(e) => setForm({ ...form, buildingName: e.target.value })}
                 />
+                <div>
+                  <Input
+                    label="Industry"
+                    value={form.industry}
+                    onChange={(e) => setForm({ ...form, industry: e.target.value })}
+                    list="customer-industries"
+                    placeholder="e.g. Retail, Industrial, Hospital"
+                  />
+                  <datalist id="customer-industries">
+                    {INDUSTRY_OPTIONS.map((x) => (
+                      <option key={x} value={x} />
+                    ))}
+                  </datalist>
+                </div>
                 <Input
                   label="Area"
                   value={form.area}

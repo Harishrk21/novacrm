@@ -62,12 +62,31 @@ async function userNames(t: string) {
 }
 async function contactMap(t: string, ids: Array<string | null | undefined>) {
   const list = [...new Set(ids.filter(Boolean) as string[])];
-  if (!list.length) return new Map<string, { name: string; phone: string | null; code: string | null; city: string | null }>();
+  if (!list.length)
+    return new Map<string, { name: string; phone: string | null; code: string | null; city: string | null; area: string | null; industry: string; company: string }>();
   const rows = await prisma.contact.findMany({
     where: { tenantId: t, id: { in: list } },
-    select: { id: true, name: true, phone: true, mobile: true, customerCode: true, city: true },
+    select: { id: true, name: true, phone: true, mobile: true, customerCode: true, city: true, area: true, customFields: true, accountId: true },
   });
-  return new Map(rows.map((c) => [c.id, { name: c.name, phone: c.mobile || c.phone, code: c.customerCode, city: c.city }]));
+  const accIds = [...new Set(rows.map((c) => c.accountId).filter(Boolean) as string[])];
+  const accounts = accIds.length
+    ? await prisma.account.findMany({ where: { tenantId: t, id: { in: accIds } }, select: { id: true, name: true } })
+    : [];
+  const accName = new Map(accounts.map((a) => [a.id, a.name]));
+  return new Map(
+    rows.map((c) => [
+      c.id,
+      {
+        name: c.name,
+        phone: c.mobile || c.phone,
+        code: c.customerCode,
+        city: c.city,
+        area: c.area,
+        industry: String(cf(c.customFields).industry ?? ""),
+        company: (c.accountId ? accName.get(c.accountId) : null) ?? String(cf(c.customFields).companyName ?? cf(c.customFields).company_name ?? ""),
+      },
+    ]),
+  );
 }
 async function assetMap(t: string, ids: Array<string | null | undefined>) {
   const list = [...new Set(ids.filter(Boolean) as string[])];
@@ -130,8 +149,16 @@ const DEFS: Def[] = [
           customer: c?.name ?? "",
           phone: c?.phone ?? "",
           machine: [a?.name, a?.serialNo ? `S/No ${a.serialNo}` : ""].filter(Boolean).join(" · ") || x.subject,
+          work: x.subject,
           category: String(cf(x.customFields).category ?? ""),
-          engineer: x.assignedToId ? names.get(x.assignedToId) ?? "" : "Unassigned",
+          cover: String(cf(x.customFields).coverage ?? ""),
+          industry: c?.industry ?? "",
+          area: c?.area ?? String(cf(x.customFields).area ?? ""),
+          hmsServiceNo: String(cf(x.customFields).hmsServiceNo ?? ""),
+          productId: String(cf(x.customFields).productCode ?? ""),
+          engineer: x.assignedToId
+            ? names.get(x.assignedToId) ?? ""
+            : String(cf(x.customFields).engineerName ?? "") || "Unassigned",
           status: label(x.status),
           payment: label(x.paymentStatus),
           total: num(x.paymentTotal),
@@ -148,8 +175,14 @@ const DEFS: Def[] = [
           { key: "customer", label: "Customer" },
           { key: "phone", label: "Phone" },
           { key: "machine", label: "Machine" },
+          { key: "work", label: "Work done" },
           { key: "category", label: "Type" },
+          { key: "cover", label: "Cover" },
           { key: "engineer", label: "Engineer" },
+          { key: "area", label: "Area" },
+          { key: "industry", label: "Industry" },
+          { key: "hmsServiceNo", label: "HMS service no" },
+          { key: "productId", label: "Product ID" },
           { key: "status", label: "Status" },
           { key: "payment", label: "Payment" },
           { key: "total", label: "Total", type: "money" },
@@ -391,6 +424,75 @@ const DEFS: Def[] = [
           { key: "amcEnds", label: "AMC ends", type: "date" },
         ],
         rows,
+      };
+    },
+  },
+
+  {
+    key: "machines-sold",
+    group: "Sales",
+    title: "Machines sold — customer register",
+    description:
+      "Every machine HMS sold to a customer in the period (by sale date, includes imported registers from earlier years) — brand, model, HMS ID, serial, customer, phone, industry, sales executive and amount.",
+    permission: "assets:view",
+    dateFilter: true,
+    async run(t, p) {
+      const assets = await prisma.customerAsset.findMany({
+        where: { tenantId: t, deletedAt: null, origin: "SOLD_BY_US" },
+        take: 20000,
+        orderBy: { createdAt: "asc" },
+      });
+      // Sale date = the register's date for imported machines, otherwise when the machine was added
+      const inRange = assets.filter((a) => {
+        const d = cf(a.customFields).saleDate ? new Date(`${String(cf(a.customFields).saleDate)}T12:00:00+05:30`) : a.createdAt;
+        return d >= p.from && d <= p.to;
+      });
+      const contacts = await contactMap(t, inRange.map((a) => a.contactId));
+      const rows = inRange.map((a) => {
+        const x = cf(a.customFields);
+        const c = contacts.get(a.contactId);
+        return {
+          date: x.saleDate ? String(x.saleDate) : ymd(a.createdAt) ?? "",
+          hmsId: String(x.hmsUniqId ?? ""),
+          productId: String(x.productCode ?? ""),
+          brand: String(x.brand ?? ""),
+          machine: a.name,
+          type: label(a.machineType),
+          serialNo: a.serialNo ?? "",
+          customer: c?.name ?? "",
+          company: c?.company ?? "",
+          phone: c?.phone ?? "",
+          area: c?.area ?? "",
+          industry: c?.industry || String(x.industry ?? ""),
+          executive: String(x.salesExecutive ?? ""),
+          amount: num(x.saleAmount),
+          cover: a.servicePlan.replace("_", "-"),
+          source: x.importRegister ? "Imported register" : "NovaCRM",
+        };
+      });
+      rows.sort((a, b) => a.date.localeCompare(b.date));
+      return {
+        subtitle: `${rows.length} machines`,
+        columns: [
+          { key: "date", label: "Sale date", type: "date" },
+          { key: "hmsId", label: "HMS ID" },
+          { key: "productId", label: "Product ID" },
+          { key: "brand", label: "Brand" },
+          { key: "machine", label: "Machine" },
+          { key: "type", label: "Type" },
+          { key: "serialNo", label: "Serial no" },
+          { key: "customer", label: "Customer" },
+          { key: "company", label: "Company" },
+          { key: "phone", label: "Phone" },
+          { key: "area", label: "Area" },
+          { key: "industry", label: "Industry" },
+          { key: "executive", label: "Sales executive" },
+          { key: "amount", label: "Amount", type: "money" },
+          { key: "cover", label: "Cover" },
+          { key: "source", label: "Source" },
+        ],
+        rows,
+        totals: { amount: sum(rows, "amount") },
       };
     },
   },
@@ -810,12 +912,16 @@ const DEFS: Def[] = [
         ids.length
           ? prisma.spareStockTxn.findMany({
               where: { tenantId: t, deletedAt: null, sparePartId: { in: ids }, txnDate: { gte: start, lte: end } },
-              select: { sparePartId: true, txnType: true, quantity: true },
+              select: { sparePartId: true, txnType: true, quantity: true, customFields: true },
             })
           : Promise.resolve([]),
       ]);
       const spareRows = spares.map((s) => {
-        const mine = txns.filter((x) => x.sparePartId === s.id);
+        const all = txns.filter((x) => x.sparePartId === s.id);
+        // stock-count corrections are shown on their own, not as purchases / issues
+        const isCount = (x: (typeof all)[number]) => !!cf(x.customFields).stockCount;
+        const mine = all.filter((x) => !isCount(x));
+        const counted = all.filter(isCount).reduce((n, x) => n + (x.txnType === "IN" ? 1 : -1) * Number(x.quantity), 0);
         return {
           kind: "Spare",
           item: s.name,
@@ -823,6 +929,7 @@ const DEFS: Def[] = [
           opening: num((openMap as Record<string, number>)[s.id] ?? 0),
           received: num(mine.filter((x) => x.txnType === "IN").reduce((n, x) => n + Number(x.quantity), 0)),
           out: num(mine.filter((x) => x.txnType === "OUT").reduce((n, x) => n + Number(x.quantity), 0)),
+          countDiff: num(counted),
           closing: num((closeMap as Record<string, number>)[s.id] ?? 0),
         };
       });
@@ -836,10 +943,17 @@ const DEFS: Def[] = [
           { key: "opening", label: "Opening", type: "number" },
           { key: "received", label: "Received", type: "number" },
           { key: "out", label: "Out (sold / issued)", type: "number" },
+          { key: "countDiff", label: "Stock count +/−", type: "number" },
           { key: "closing", label: "Closing", type: "number" },
         ],
         rows,
-        totals: { opening: sum(rows, "opening"), received: sum(rows, "received"), out: sum(rows, "out"), closing: sum(rows, "closing") },
+        totals: {
+          opening: sum(rows, "opening"),
+          received: sum(rows, "received"),
+          out: sum(rows, "out"),
+          countDiff: sum(rows, "countDiff"),
+          closing: sum(rows, "closing"),
+        },
       };
     },
   },
@@ -1053,7 +1167,7 @@ const DEFS: Def[] = [
           where: { tenantId: t, deletedAt: null },
           orderBy: { name: "asc" },
           take: MAX_ROWS,
-          select: { id: true, customerCode: true, name: true, phone: true, mobile: true, email: true, area: true, city: true, createdAt: true },
+          select: { id: true, customerCode: true, name: true, phone: true, mobile: true, email: true, area: true, city: true, createdAt: true, customFields: true },
         }),
         prisma.customerAsset.groupBy({ by: ["contactId"], where: { tenantId: t, deletedAt: null }, _count: { _all: true } }),
         prisma.ticket.groupBy({
@@ -1071,6 +1185,7 @@ const DEFS: Def[] = [
         email: c.email ?? "",
         area: c.area ?? "",
         city: c.city ?? "",
+        industry: String(cf(c.customFields).industry ?? ""),
         machines: ac.get(c.id) ?? 0,
         openJobs: oj.get(c.id) ?? 0,
         since: ymd(c.createdAt),
@@ -1084,6 +1199,7 @@ const DEFS: Def[] = [
           { key: "email", label: "Email" },
           { key: "area", label: "Area" },
           { key: "city", label: "City" },
+          { key: "industry", label: "Industry" },
           { key: "machines", label: "Machines", type: "number" },
           { key: "openJobs", label: "Open jobs", type: "number" },
           { key: "since", label: "Customer since", type: "date" },

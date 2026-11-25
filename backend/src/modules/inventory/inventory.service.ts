@@ -5,11 +5,13 @@ import { AppError, notFound } from "../../common/errors.js";
 import { getWarehouseByCode, sortWarehousesForDropdown } from "./warehouses.service.js";
 import {
   expandSerialRange,
-  familyCodeFromProduct,
   formatHmsUniqId,
+  hmsYear,
+  isValidHmsUniqId,
   isWeighingProduct,
   maxHmsUniqSeqInList,
-  sequenceKeyForFamily,
+  nextHmsSeq,
+  saveHmsSeq,
 } from "./hmsUniqId.js";
 import { normalizePhone } from "../../common/utils/phone.js";
 import {
@@ -609,18 +611,18 @@ export async function addStockUnit(
   d: {
     productId: string;
     warehouseId: string;
-    serialNo: string;
+    serialNo?: string | null;
     stampingDate?: string | null;
     notes?: string | null;
   },
 ) {
-  const serial = d.serialNo.trim().toUpperCase();
-  if (!serial) throw new AppError("Serial number is required", 400);
-
-  const dup = await prisma.stockUnit.findFirst({
-    where: { tenantId: t, serialNo: serial, deletedAt: null },
-  });
-  if (dup) throw new AppError(`Serial ${serial} already exists in inventory`, 409);
+  const factorySerial = String(d.serialNo ?? "").trim().toUpperCase();
+  if (factorySerial) {
+    const dup = await prisma.stockUnit.findFirst({
+      where: { tenantId: t, serialNo: factorySerial, deletedAt: null },
+    });
+    if (dup) throw new AppError(`Serial ${factorySerial} already exists in inventory`, 409);
+  }
 
   const [product, warehouse] = await Promise.all([
     prisma.product.findFirst({
@@ -633,30 +635,15 @@ export async function addStockUnit(
   if (!product) throw notFound("Product");
   if (!warehouse) throw notFound("Warehouse");
 
-  const familyShort = familyCodeFromProduct(product.attributes, product.sku);
-  const year = new Date().getUTCFullYear();
-  const seqKey = sequenceKeyForFamily(year, familyShort);
+  const now = new Date();
+  const year = hmsYear(now);
 
   const unit = await prisma.$transaction(async (tx) => {
-    let seq = await tx.numberSequence.findUnique({
-      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: seqKey } },
-    });
-    if (!seq) {
-      seq = await tx.numberSequence.create({
-        data: {
-          tenantId: t,
-          sequenceKey: seqKey,
-          prefix: `${year}-${familyShort}-`,
-          nextValue: 1,
-          padding: 4,
-        },
-      });
-    }
-    const hmsUniqId = formatHmsUniqId(year, familyShort, seq.nextValue);
-    await tx.numberSequence.update({
-      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: seqKey } },
-      data: { nextValue: seq.nextValue + 1 },
-    });
+    const { start } = await nextHmsSeq(tx, t, year);
+    const hmsUniqId = formatHmsUniqId(now, start);
+    await saveHmsSeq(tx, t, year, start + 1);
+    // No factory serial (weighing machines etc.) — the HMS ID is the unit's identity
+    const serial = factorySerial || hmsUniqId;
 
     const created = await tx.stockUnit.create({
       data: {
@@ -770,11 +757,12 @@ export async function receiveBatchStock(t: string, user: string, d: ReceiveBatch
 
   let unitRows: ReceiveBatchUnitInput[] = Array.isArray(d.units) ? [...d.units] : [];
   if (unitRows.length === 0) {
+    // Serial is optional for every machine — without one the HMS ID is the identity
     const start = String(d.startSerial ?? "").trim();
-    if (!weighing && !start) throw new AppError("Starting serial number is required", 422);
-    unitRows = weighing
-      ? Array.from({ length: qty }, () => ({ serialNo: "" }))
-      : expandSerialRange(start, qty).map((serialNo) => ({ serialNo }));
+    unitRows =
+      weighing || !start
+        ? Array.from({ length: qty }, () => ({ serialNo: "" }))
+        : expandSerialRange(start, qty).map((serialNo) => ({ serialNo }));
   }
   if (unitRows.length !== qty) {
     throw new AppError(`Expected ${qty} unit rows, got ${unitRows.length}`, 422);
@@ -793,10 +781,10 @@ export async function receiveBatchStock(t: string, user: string, d: ReceiveBatch
     if (!brand) throw notFound("Brand");
   }
 
-  const familyShort = familyCodeFromProduct(product.attributes, product.sku);
-  const year = new Date().getUTCFullYear();
-  const seqKey = sequenceKeyForFamily(year, familyShort);
   const receivedDate = parseDate(d.receivedDate) ?? new Date();
+  // Month letter + year of the HMS ID follow the received date (e.g. received in March 2026 → 26C….)
+  const tagDate = parseDate(d.receivedDate) ? new Date(receivedDate.getTime() + 12 * 3600 * 1000) : new Date();
+  const year = hmsYear(tagDate);
   const invoiceDate = parseDate(d.invoiceDate);
   const stampingDate = parseDate(d.stampingDate);
   const unitAmount = new Prisma.Decimal(Number(d.unitAmount) || 0);
@@ -805,47 +793,24 @@ export async function receiveBatchStock(t: string, user: string, d: ReceiveBatch
   try {
     createdIds = await prisma.$transaction(
       async (tx) => {
-        let seq = await tx.numberSequence.findUnique({
-          where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: seqKey } },
-        });
-        if (!seq) {
-          seq = await tx.numberSequence.create({
-            data: {
-              tenantId: t,
-              sequenceKey: seqKey,
-              prefix: `${year}-${familyShort}-`,
-              nextValue: 1,
-              padding: 4,
-            },
-          });
-        }
-
-        // Heal drift: form always sends preview IDs as "manual", which used to
-        // skip sequence bumps — so nextValue could lag behind IDs already in stock.
-        const familyPrefix = `${year}-${familyShort}-`;
-        const existingForFamily = await tx.stockUnit.findMany({
-          where: {
-            tenantId: t,
-            deletedAt: null,
-            hmsUniqId: { startsWith: familyPrefix },
-          },
-          select: { hmsUniqId: true },
-        });
-        const dbMax = maxHmsUniqSeqInList(
-          existingForFamily.map((x) => x.hmsUniqId),
-          year,
-          familyShort,
-        );
-        const startSeq = Math.max(seq.nextValue, dbMax + 1);
+        // One running number for the whole year (all brands / types). The form sends the previewed
+        // IDs back as typed values, so the counter is healed from the highest ID actually stored.
+        const { start: startSeq } = await nextHmsSeq(tx, t, year);
 
         const allocated: string[] = [];
         let autoCursor = startSeq;
         for (let i = 0; i < qty; i++) {
           const manual = unitRows[i]?.hmsUniqId?.trim().toUpperCase() || null;
           if (manual) {
+            if (!isValidHmsUniqId(manual)) {
+              throw new AppError(
+                `HMS ID "${manual}" is not valid — use year + month letter + 4 digits, e.g. 26C0874`,
+                422,
+              );
+            }
             allocated.push(manual);
           } else {
-            allocated.push(formatHmsUniqId(year, familyShort, autoCursor));
+            allocated.push(formatHmsUniqId(tagDate, autoCursor));
             autoCursor += 1;
           }
         }
@@ -855,7 +820,6 @@ export async function receiveBatchStock(t: string, user: string, d: ReceiveBatch
         const existingIds = await tx.stockUnit.findMany({
           where: {
             tenantId: t,
-            deletedAt: null,
             hmsUniqId: { in: allocated.filter(Boolean) },
           },
           select: { hmsUniqId: true },
@@ -867,19 +831,13 @@ export async function receiveBatchStock(t: string, user: string, d: ReceiveBatch
           );
         }
 
-        // Weighing: no factory serial — use HMS Unique ID as the stock identity key.
-        // Other products: supplier serial required.
+        // No factory serial (weighing machines, LADA counters…) — the HMS ID is the identity key.
         const serials = unitRows.map((u, i) => {
           const raw = String(u.serialNo ?? "")
             .trim()
             .toUpperCase();
-          if (raw) return raw;
-          if (weighing) return allocated[i]!;
-          return "";
+          return raw && raw !== "NILL" && raw !== "NIL" ? raw : allocated[i]!;
         });
-        if (serials.some((s) => !s)) {
-          throw new AppError("Every unit needs a serial number", 422);
-        }
         if (new Set(serials).size !== serials.length) {
           throw new AppError("Duplicate serials in this batch", 422);
         }
@@ -894,12 +852,8 @@ export async function receiveBatchStock(t: string, user: string, d: ReceiveBatch
           );
         }
 
-        const allocatedMax = maxHmsUniqSeqInList(allocated, year, familyShort);
-        const nextVal = Math.max(startSeq, allocatedMax + 1, dbMax + 1);
-        await tx.numberSequence.update({
-          where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: seqKey } },
-          data: { nextValue: nextVal },
-        });
+        const allocatedMax = maxHmsUniqSeqInList(allocated, year);
+        await saveHmsSeq(tx, t, year, Math.max(autoCursor, allocatedMax + 1));
 
         const receiptId = newId();
         await tx.stockReceipt.create({
@@ -1037,46 +991,26 @@ export async function receiveBatchStock(t: string, user: string, d: ReceiveBatch
 }
 
 /** Preview next HMS Unique IDs for a product + quantity (no persistence). */
-export async function previewHmsUniqIds(t: string, productId: string, quantity: number) {
+export async function previewHmsUniqIds(
+  t: string,
+  productId: string,
+  quantity: number,
+  receivedDate?: string | null,
+) {
   const qty = Math.floor(Number(quantity));
   if (!Number.isFinite(qty) || qty < 1 || qty > 200) {
     throw new AppError("Quantity must be between 1 and 200", 422);
   }
   const product = await prisma.product.findFirst({
     where: { id: productId, tenantId: t, deletedAt: null },
+    select: { id: true },
   });
   if (!product) throw notFound("Product");
-  const familyShort = familyCodeFromProduct(product.attributes, product.sku);
-  const year = new Date().getUTCFullYear();
-  const seqKey = sequenceKeyForFamily(year, familyShort);
-  const familyPrefix = `${year}-${familyShort}-`;
-  const [seq, existingForFamily] = await Promise.all([
-    prisma.numberSequence.findUnique({
-      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: seqKey } },
-    }),
-    prisma.stockUnit.findMany({
-      where: {
-        tenantId: t,
-        deletedAt: null,
-        hmsUniqId: { startsWith: familyPrefix },
-      },
-      select: { hmsUniqId: true },
-    }),
-  ]);
-  const dbMax = maxHmsUniqSeqInList(
-    existingForFamily.map((x) => x.hmsUniqId),
-    year,
-    familyShort,
-  );
-  const start = Math.max(seq?.nextValue ?? 1, dbMax + 1);
-  // Heal stuck sequence so later receives don't keep offering the same ID.
-  if (seq && start > seq.nextValue) {
-    await prisma.numberSequence.update({
-      where: { tenantId_sequenceKey: { tenantId: t, sequenceKey: seqKey } },
-      data: { nextValue: start },
-    });
-  }
-  return Array.from({ length: qty }, (_, i) => formatHmsUniqId(year, familyShort, start + i));
+  const received = parseDate(receivedDate);
+  const tagDate = received ? new Date(received.getTime() + 12 * 3600 * 1000) : new Date();
+  const year = hmsYear(tagDate);
+  const { start } = await nextHmsSeq(prisma as unknown as Prisma.TransactionClient, t, year);
+  return Array.from({ length: qty }, (_, i) => formatHmsUniqId(tagDate, start + i));
 }
 
 function addYears(date: Date, years: number) {

@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ArrowUpFromLine,
   MoreHorizontal,
+  Pencil,
   RotateCcw,
   Truck,
 } from 'lucide-react'
@@ -31,7 +32,7 @@ import {
 } from '@/lib/hmsCatalog'
 import { GC_MONTH_OPTIONS } from '@/lib/hmsCoverage'
 import { downloadXlsx } from '@/lib/reportExport'
-import { productAttrs, truncateProductName } from '@/lib/productCatalog'
+import { productAttrs, productSuppliers, truncateProductName } from '@/lib/productCatalog'
 import { preferMainWarehouseId, sortWarehousesForDropdown } from '@/lib/warehouseSort'
 import { expandSerialRange, bumpSerial } from '@/lib/stockSerial'
 import { filterServiceEngineers } from '@/lib/roles'
@@ -146,6 +147,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
   /** List filter on Products page (All / Machine / Spare) — separate from add-form category */
   const [listFilter, setListFilter] = useState<'ALL' | Category>('ALL')
   const [brandFilter, setBrandFilter] = useState('')
+  const [supplierFilter, setSupplierFilter] = useState('')
   const [editingProductId, setEditingProductId] = useState<string | null>(null)
   const [editingSpareId, setEditingSpareId] = useState<string | null>(null)
   const [productDrawerOpen, setProductDrawerOpen] = useState(
@@ -231,6 +233,16 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
   const [mIndustry, setMIndustry] = useState('')
   const [mCustom, setMCustom] = useState('')
   const [mBrand, setMBrand] = useState('')
+  /** Usual supplier(s) for this model — pre-filled when stock is received */
+  const [mSuppliers, setMSuppliers] = useState<string[]>([])
+  const [mSupplierPick, setMSupplierPick] = useState('')
+  /** Finer type shown in the list, e.g. "Platform / floor scale" — HMS staff can correct it */
+  const [mSubType, setMSubType] = useState('')
+  /** Shown in stock / sales pickers (hidden products stay on old stock and customer machines) */
+  const [mActive, setMActive] = useState(true)
+  const [showHidden, setShowHidden] = useState(false)
+  /** HMS ID month letter + year come from the date the machines were received / tagged */
+  const [receivedOn, setReceivedOn] = useState(() => todayIso())
   const [mGc, setMGc] = useState(false)
   const [mWarranty, setMWarranty] = useState('')
   const [mAmc, setMAmc] = useState(false)
@@ -746,7 +758,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     const n = Math.max(1, Math.min(200, Math.floor(Number(qty) || 1)))
     let cancelled = false
     void api
-      .previewHmsUniqIds({ productId, quantity: n })
+      .previewHmsUniqIds({ productId, quantity: n, receivedDate: receivedOn || null })
       .then((ids) => {
         if (cancelled) return
         const list = Array.isArray(ids) ? ids.map(String) : []
@@ -759,7 +771,25 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     return () => {
       cancelled = true
     }
-  }, [stockMoveOpen, stockMode, category, productId, qty])
+  }, [stockMoveOpen, stockMode, category, productId, qty, receivedOn])
+
+  // Picking a model fills its brand and usual supplier (still editable)
+  useEffect(() => {
+    if (!productId || stockMode !== 'add' || category !== 'MACHINE') return
+    const p = products.find((x) => String(x.id) === productId)
+    if (!p) return
+    const brandName = String(productAttrs(p).brand ?? '').trim()
+    if (brandName) {
+      const b = brands.find((x) => String(x.name).toLowerCase() === brandName.toLowerCase())
+      setBrandId(b ? String(b.id) : brandName)
+    }
+    const usual = productSuppliers(p)[0]
+    if (usual) {
+      const v = vendors.find((x) => String(x.name).toLowerCase() === usual.toLowerCase())
+      setVendorId(v ? String(v.id) : usual)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productId])
 
   function closeStockMove() {
     setStockMoveOpen(false)
@@ -860,6 +890,10 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
 
     setMCustom('')
     setMBrand('')
+    setMSuppliers([])
+    setMSupplierPick('')
+    setMSubType('')
+    setMActive(true)
     setMGc(false)
     setMWarranty('')
     setMAmc(false)
@@ -902,6 +936,10 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
 
     setMCustom(String(p.name ?? a.model ?? ''))
     setMBrand(a.brand ? String(a.brand) : '')
+    setMSuppliers(productSuppliers(p))
+    setMSupplierPick('')
+    setMSubType(String(a.machineType ?? ''))
+    setMActive(p.isActive !== false)
     setMGc(Boolean(a.gcApplicable) || Boolean(a.warrantyMonths))
     setMWarranty(a.warrantyMonths != null ? String(a.warrantyMonths) : '')
     setMAmc(Boolean(a.amcApplicable))
@@ -1090,17 +1128,21 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
   const catalogRows = useMemo(() => {
     const q = filterQ.trim().toLowerCase()
     const brandQ = brandFilter.trim().toLowerCase()
+    const supplierQ = supplierFilter.trim().toLowerCase()
     const machineRows =
       listFilter === 'SPARE'
         ? []
         : products
             .filter((p) => {
+              if (p.isActive === false && !showHidden) return false
               const a = productAttrs(p)
               const brand = String(a.brand ?? '')
               if (brandQ && brand.toLowerCase() !== brandQ) return false
+              const sups = productSuppliers(p)
+              if (supplierQ && !sups.some((x) => x.toLowerCase() === supplierQ)) return false
               if (!q) return true
               const hay =
-                `${p.name} ${p.sku} ${brand} ${a.catalogFamilyName ?? ''} ${a.catalogIndustryName ?? ''} ${p.hsnSac ?? ''}`.toLowerCase()
+                `${p.name} ${p.sku} ${brand} ${sups.join(' ')} ${a.catalogFamilyName ?? ''} ${a.catalogIndustryName ?? ''} ${p.hsnSac ?? ''}`.toLowerCase()
               return hay.includes(q)
             })
             .map((p) => {
@@ -1110,9 +1152,11 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                 key: `m-${p.id}`,
                 id: String(p.id),
                 kind: 'MACHINE' as const,
+                hidden: p.isActive === false,
                 name: String(p.name ?? ''),
                 brand: String(a.brand ?? '—'),
-                typeLabel: meta.familyName || meta.catalogKind || '—',
+                suppliers: productSuppliers(p).join(', ') || '—',
+                typeLabel: String(a.machineType ?? '') || meta.familyName || meta.catalogKind || '—',
                 industry: meta.industryName || '—',
                 sku: String(p.sku ?? '—'),
                 hsn: p.hsnSac != null ? String(p.hsnSac) : '—',
@@ -1133,8 +1177,8 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
         ? []
         : spares
             .filter((s) => {
-              // Spares aren't brand-tagged; hide when a brand filter is active
-              if (brandQ) return false
+              // Spares aren't brand-tagged; hide when a brand / supplier filter is active
+              if (brandQ || supplierQ) return false
               if (!q) return true
               const hay = `${s.name} ${s.partCode ?? ''} ${s.machineFamily ?? ''}`.toLowerCase()
               return hay.includes(q)
@@ -1143,8 +1187,10 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
               key: `s-${s.id}`,
               id: String(s.id),
               kind: 'SPARE' as const,
+              hidden: false,
               name: String(s.name ?? ''),
               brand: '—',
+              suppliers: '—',
               typeLabel: s.machineFamily === 'BILLING' ? 'Billing / Touch POS' : 'Weighing',
               industry: '—',
               sku: s.partCode != null ? String(s.partCode) : '—',
@@ -1153,30 +1199,90 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
               onHand: String(s.quantityOnHand ?? 0),
               raw: s,
             }))
-    return [...machineRows, ...spareRows].sort((a, b) => a.name.localeCompare(b.name))
-  }, [products, spares, filterQ, listFilter, brandFilter])
+    // Brand-wise: HMS first, then other brands A–Z; inside a brand by type, then model
+    const brandRank = (b: string) => (b.toUpperCase() === 'HMS' ? '0' : b === '—' ? '2' : `1${b.toUpperCase()}`)
+    machineRows.sort(
+      (a, b) =>
+        brandRank(a.brand).localeCompare(brandRank(b.brand)) ||
+        // inside a brand: by Product ID (HMS-001, HMS-002…), which already runs type → model
+        a.sku.localeCompare(b.sku, undefined, { numeric: true, sensitivity: 'base' }) ||
+        a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }),
+    )
+    spareRows.sort((a, b) => a.name.localeCompare(b.name))
+    return [...machineRows, ...spareRows]
+  }, [products, spares, filterQ, listFilter, brandFilter, supplierFilter, showHidden])
+
+  const subTypeOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const p of products) {
+      const t = String(productAttrs(p).machineType ?? '').trim()
+      if (t) set.add(t)
+    }
+    return [...set].sort((a, b) => a.localeCompare(b))
+  }, [products])
+
+  /** Machines per brand — quick brand chips above the product list */
+  const brandCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const p of products) {
+      if (p.isActive === false) continue
+      const b = String(productAttrs(p).brand ?? '').trim()
+      if (b) m.set(b, (m.get(b) ?? 0) + 1)
+    }
+    return [...m.entries()].sort((a, b) =>
+      a[0].toUpperCase() === 'HMS' ? -1 : b[0].toUpperCase() === 'HMS' ? 1 : b[1] - a[1] || a[0].localeCompare(b[0]),
+    )
+  }, [products])
+
+  const supplierFilterOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const v of vendors) if (v.name) set.add(String(v.name))
+    for (const p of products) for (const x of productSuppliers(p)) set.add(x)
+    return [
+      { value: '', label: 'All suppliers' },
+      ...[...set].sort((a, b) => a.localeCompare(b)).map((x) => ({ value: x, label: x })),
+    ]
+  }, [vendors, products])
 
   const catalogPaged = usePagedRows(
     catalogRows,
-    `${filterQ}|${listFilter}|${brandFilter}`,
+    `${filterQ}|${listFilter}|${brandFilter}|${supplierFilter}|${showHidden}`,
   )
   const stockPaged = usePagedRows(stockRows, `${filterQ}|${stockListFilter}`)
 
   const productOptions = useMemo(() => {
+    // brandId is a brand's id, or a typed new brand name (allowCreate)
+    const brandNeedle = String(brands.find((b) => String(b.id) === brandId)?.name ?? brandId)
+      .trim()
+      .toLowerCase()
     return products
       .filter((p) => !stockMachineType || productMatchesStockType(p, stockMachineType))
+      // Hidden (old) products only while they still have units in stock
+      .filter(
+        (p) =>
+          p.isActive !== false ||
+          units.some((u) => String(u.productId) === String(p.id) && String(u.status) === 'IN_STOCK'),
+      )
+      .filter((p) => {
+        if (!brandNeedle) return true
+        const pb = String(productAttrs(p).brand ?? '').trim().toLowerCase()
+        return !pb || pb === brandNeedle
+      })
       .map((p) => {
         const onHand = units.filter(
           (u) => String(u.productId) === String(p.id) && String(u.status) === 'IN_STOCK',
         ).length
+        const brand = String(productAttrs(p).brand ?? '').trim()
         return {
           value: String(p.id),
           label: String(p.name),
-          sublabel: `${p.sku ?? ''}${onHand ? ` · ${onHand} in stock` : ''}`,
+          sublabel: [String(p.sku ?? ''), brand, productSuppliers(p).join(', '), onHand ? `${onHand} in stock` : '']
+            .filter(Boolean)
+            .join(' · '),
         }
       })
-      .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
-  }, [products, stockMachineType, units])
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }))
+  }, [products, stockMachineType, units, brandId, brands])
 
   const spareOptions = useMemo(() => {
     const fam = stockMachineType ? spareFamilyFromStockType(stockMachineType) : sFamily
@@ -1265,10 +1371,6 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
       addToast({ type: 'error', message: 'Select machine type (Weighing / Billing / Touch POS…)' })
       return
     }
-    if (famNeedsIndustry && !mIndustry) {
-      addToast({ type: 'error', message: 'Select industry' })
-      return
-    }
     const fam = familyByCode(mFamily)
     if (!fam) return
     const name = mCustom.trim()
@@ -1300,7 +1402,15 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
     const fromCatalog = machineOptions(mFamily, mIndustry).find(
       (o) => o.label.toLowerCase() === name.toLowerCase(),
     )?.machine
+    const editingRow = editingProductId ? products.find((p) => String(p.id) === editingProductId) : null
+    const editingAttrs = editingRow ? productAttrs(editingRow) : null
+    // Editing without changing the machine type keeps its exact kind (cash counting, CCTV, biometric…)
+    const keptKind =
+      editingAttrs && String(editingAttrs.catalogFamily ?? '') === mFamily && editingAttrs.catalogKind
+        ? String(editingAttrs.catalogKind)
+        : null
     const catalogKind =
+      keptKind ??
       fromCatalog?.catalogKind ??
       (fam.code === 'WEIGHING_SCALES'
         ? 'WEIGHING'
@@ -1323,6 +1433,8 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
           requiresStamping: mStamp || catalogKind === 'WEIGHING',
         }),
         brand: mBrand.trim() || null,
+        suppliers: mSuppliers,
+        machineType: mSubType.trim() || null,
         model: name,
         gcApplicable: mGc,
         warrantyMonths: mGc && mWarranty ? Number(mWarranty) : null,
@@ -1332,6 +1444,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
         const existing = products.find((p) => String(p.id) === editingProductId)
         await api.updateProduct(editingProductId, {
           name: truncateProductName(name),
+          isActive: mActive,
           hsnSac: mHsn.trim() || null,
           description: mDesc.trim() || null,
           attributes: {
@@ -1503,7 +1616,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
         quantity: n,
         invoiceNo: invoiceNo.trim() || null,
         invoiceDate: invoiceDate || null,
-        receivedDate: invoiceDate || todayIso(),
+        receivedDate: receivedOn || invoiceDate || todayIso(),
         unitAmount: unitCost ? Number(unitCost) : 0,
         startSerial: isWeighingStock ? null : serialStart.trim() || null,
         units: Array.from({ length: n }, (_, i) => ({
@@ -1993,7 +2106,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
           <div className="flex flex-wrap items-center gap-2">
             <Input
               className="max-w-xs"
-              placeholder="Search name, SKU, brand…"
+              placeholder="Search Product ID, name, brand…"
               value={filterQ}
               onChange={(e) => setFilterQ(e.target.value)}
             />
@@ -2015,8 +2128,44 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                 options={brandFilterOptions}
               />
             </div>
+            <div className="w-[190px]">
+              <Select
+                value={supplierFilter}
+                onChange={(e) => setSupplierFilter(e.target.value)}
+                options={supplierFilterOptions}
+              />
+            </div>
+            <label className="flex items-center gap-2 text-xs text-text-secondary">
+              <Switch checked={showHidden} onChange={setShowHidden} /> Show hidden
+            </label>
             <span className="text-xs text-text-secondary">{catalogRows.length} items</span>
           </div>
+          <p className="text-xs text-text-secondary">
+            Wrong brand, type, model name or supplier? Click <span className="font-medium text-text-primary">Edit</span> on
+            the row and correct it — stock and customer machines keep pointing at the same product.
+          </p>
+          {brandCounts.length > 1 ? (
+            <div className="flex flex-wrap gap-1.5" aria-label="Brands">
+              {brandCounts.map(([b, n]) => {
+                const on = brandFilter.toLowerCase() === b.toLowerCase()
+                return (
+                  <button
+                    key={b}
+                    type="button"
+                    onClick={() => setBrandFilter(on ? '' : b)}
+                    aria-pressed={on}
+                    className={`rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+                      on
+                        ? 'border-accent-blue bg-accent-blue text-white'
+                        : 'border-border bg-surface text-text-secondary hover:border-accent-blue/50 hover:text-text-primary'
+                    }`}
+                  >
+                    {b} <span className={on ? 'text-white/80' : 'text-text-tertiary'}>{n}</span>
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
           {catalogRows.length === 0 ? (
             <EmptyState
               title="No products match"
@@ -2029,13 +2178,16 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
               <table className="w-full min-w-[720px] text-left text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/40 text-[11px] uppercase tracking-wide text-text-secondary">
-                    <th className="px-3 py-2.5 font-semibold">Name</th>
-                    <th className="px-3 py-2.5 font-semibold">Category</th>
+                    <th className="px-3 py-2.5 font-semibold">Product ID</th>
                     <th className="px-3 py-2.5 font-semibold">Brand</th>
+                    <th className="px-3 py-2.5 font-semibold">Model</th>
                     <th className="px-3 py-2.5 font-semibold">Type</th>
-                    <th className="px-3 py-2.5 font-semibold">SKU / code</th>
-                    <th className="px-3 py-2.5 font-semibold">Industry</th>
+                    <th className="px-3 py-2.5 font-semibold">Supplier(s)</th>
+                    <th className="px-3 py-2.5 font-semibold">Category</th>
                     <th className="px-3 py-2.5 font-semibold">Stamp</th>
+                    <th className="px-3 py-2.5 font-semibold">
+                      <span className="sr-only">Edit</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2058,19 +2210,38 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                       }}
                       className="cursor-pointer border-t border-border/70 hover:bg-accent-blue/5 focus-visible:bg-accent-blue/5 focus-visible:outline-none"
                     >
-                      <td className="px-3 py-2.5 font-medium text-text-primary">{row.name}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 font-mono text-xs font-semibold text-text-primary">{row.sku}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5 font-semibold text-text-primary">{row.brand}</td>
+                      <td className="px-3 py-2.5 font-medium text-text-primary">
+                        {row.name}
+                        {row.hidden ? (
+                          <Badge color="gray" className="ml-2">
+                            Hidden
+                          </Badge>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-2.5 text-text-secondary">{row.typeLabel}</td>
+                      <td className="max-w-[220px] px-3 py-2.5 text-text-secondary">{row.suppliers}</td>
                       <td className="px-3 py-2.5">
                         <Badge color={row.kind === 'MACHINE' ? 'blue' : 'purple'}>
                           {row.kind === 'MACHINE' ? 'Machine' : 'Spare'}
                         </Badge>
                       </td>
-                      <td className="px-3 py-2.5 text-text-secondary">{row.brand}</td>
-                      <td className="px-3 py-2.5 text-text-secondary">{row.typeLabel}</td>
-                      <td className="max-w-[180px] truncate px-3 py-2.5 font-mono text-xs text-text-secondary">
-                        {row.sku}
-                      </td>
-                      <td className="px-3 py-2.5 text-text-secondary">{row.industry}</td>
                       <td className="px-3 py-2.5 text-text-secondary">{row.stamp}</td>
+                      <td className="px-3 py-2.5 text-right">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          aria-label={`Edit ${row.name}`}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (row.kind === 'MACHINE') openEditMachine(row.raw)
+                            else openEditSpare(row.raw)
+                          }}
+                        >
+                          <Pencil size={13} /> Edit
+                        </Button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -2127,8 +2298,8 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                     onChange={(e) => {
                       setMFamily(e.target.value)
                       setMIndustry('')
-
-                      setMCustom('')
+                      // Keep the typed model when correcting the type of an existing product
+                      if (!editingProductId) setMCustom('')
                       setMStamp(e.target.value === 'WEIGHING_SCALES')
                     }}
                     options={[
@@ -2138,14 +2309,14 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                   />
                   {famNeedsIndustry ? (
                     <Select
-                      label="Industry *"
+                      label="Industry"
                       value={mIndustry}
                       onChange={(e) => {
                         setMIndustry(e.target.value)
-                        setMCustom('')
+                        if (!editingProductId) setMCustom('')
                       }}
                       options={[
-                        { value: '', label: 'Select industry…' },
+                        { value: '', label: 'Any / not set' },
                         ...industryOptions(mFamily),
                       ]}
                     />
@@ -2158,6 +2329,49 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                     options={brandOptions.map((b) => ({ value: b.label, label: b.label }))}
                     onChange={setMBrand}
                   />
+                  <div>
+                    <SearchableSelect
+                      label="Usual supplier(s)"
+                      value={mSupplierPick}
+                      allowCreate
+                      placeholder="Search or type supplier…"
+                      options={vendorOptions
+                        .filter((v) => !mSuppliers.some((x) => x.toLowerCase() === v.label.toLowerCase()))
+                        .map((v) => ({ value: v.label, label: v.label }))}
+                      onChange={(v) => {
+                        const name = v.trim()
+                        if (name && !mSuppliers.some((x) => x.toLowerCase() === name.toLowerCase())) {
+                          setMSuppliers((prev) => [...prev, name])
+                        }
+                        setMSupplierPick('')
+                      }}
+                    />
+                    {mSuppliers.length ? (
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {mSuppliers.map((x, i) => (
+                          <span
+                            key={x}
+                            className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs"
+                          >
+                            {i === 0 ? <span className="text-text-tertiary">Usual ·</span> : null}
+                            {x}
+                            <button
+                              type="button"
+                              aria-label={`Remove ${x}`}
+                              className="text-text-tertiary hover:text-red-600"
+                              onClick={() => setMSuppliers((prev) => prev.filter((y) => y !== x))}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-xs text-text-secondary">
+                        Who HMS buys this model from — the first one is filled in when stock is received.
+                      </p>
+                    )}
+                  </div>
                   <div>
                     <Input
                       label="Model name *"
@@ -2177,6 +2391,20 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                     <p className="mt-1 text-xs text-text-secondary">
                       Typeable — suggestions from catalog when available
                     </p>
+                  </div>
+                  <div>
+                    <Input
+                      label="Sub-type"
+                      value={mSubType}
+                      onChange={(e) => setMSubType(e.target.value)}
+                      list="hub-machine-subtypes"
+                      placeholder="e.g. Platform / floor scale"
+                    />
+                    <datalist id="hub-machine-subtypes">
+                      {subTypeOptions.map((t) => (
+                        <option key={t} value={t} />
+                      ))}
+                    </datalist>
                   </div>
                   <Input label="HSN" value={mHsn} onChange={(e) => setMHsn(e.target.value)} />
                   <Input
@@ -2211,6 +2439,11 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                     <label className="flex h-9 items-center gap-2 text-sm">
                       <Switch checked={mStamp} onChange={setMStamp} /> Requires stamping
                     </label>
+                    {editingProductId ? (
+                      <label className="flex h-9 items-center gap-2 text-sm">
+                        <Switch checked={mActive} onChange={setMActive} /> Show in stock &amp; sales pickers
+                      </label>
+                    ) : null}
                   </div>
                 </div>
               ) : (
@@ -2549,7 +2782,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                     <th className="px-3 py-2.5 font-semibold">In stock</th>
                     <th className="px-3 py-2.5 font-semibold">Demo</th>
                     <th className="px-3 py-2.5 font-semibold">Brand / type</th>
-                    <th className="px-3 py-2.5 font-semibold">SKU / code</th>
+                    <th className="px-3 py-2.5 font-semibold">Product ID</th>
                     <th className="px-3 py-2.5 font-semibold">Detail</th>
                     <th className="sticky right-0 z-[2] bg-muted/95 px-3 py-2.5 font-semibold shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.12)]">
                       Actions
@@ -2821,6 +3054,12 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                     onChange={(e) => setInvoiceDate(e.target.value)}
                   />
                   <Input
+                    label="Received date *"
+                    type="date"
+                    value={receivedOn}
+                    onChange={(e) => setReceivedOn(e.target.value)}
+                  />
+                  <Input
                     label="Qty received *"
                     inputMode="numeric"
                     value={qty}
@@ -2865,7 +3104,7 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                       </p>
                     ) : hmsPreviewDisplay.length === 1 ? (
                       <p className="mt-1 text-xs text-text-secondary">
-                        Next available ID for this machine type.
+                        Next HMS ID — year + month letter + running number for the year (e.g. 26K0001).
                       </p>
                     ) : (
                       <p className="mt-1 text-xs text-text-secondary">
@@ -2876,10 +3115,10 @@ export function InventoryHubPage({ section }: { section?: InventoryHubSection })
                   {!isWeighingStock ? (
                     <div>
                       <Input
-                        label="Serial number (start)"
+                        label="Serial number (start) — if the machine has one"
                         value={serialStart}
                         onChange={(e) => setSerialStart(e.target.value)}
-                        placeholder="Start serial — ending fills by qty"
+                        placeholder="Leave empty if no factory serial — HMS ID is used"
                       />
                       {serialPreviewEnd ? (
                         <p className="mt-1 text-xs text-text-secondary">

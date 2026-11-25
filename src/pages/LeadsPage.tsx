@@ -366,7 +366,7 @@ export function LeadsPage() {
       if (!silent) setLoading(false)
       if (!silent && lookups) {
         try {
-          const productPage = await api.products({ limit: 150 })
+          const productPage = await api.products({ limit: 500, includeInactive: 1 })
           const byId = new Map(
             (lookups.products ?? []).map((p) => [
               p.id,

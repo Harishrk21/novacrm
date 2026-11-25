@@ -179,7 +179,7 @@ export function LeadDetailPage() {
         api.getLead(id),
         needMeta ? api.lookups() : Promise.resolve(null),
         needMeta
-          ? api.products({ limit: 200 }).catch(() => ({ items: [] as Record<string, unknown>[] }))
+          ? api.products({ limit: 500 }).catch(() => ({ items: [] as Record<string, unknown>[] }))
           : Promise.resolve(null),
         api.getRequisitionByLead(id).catch(() => null),
         api.activities({ leadId: id, limit: 50 }).catch(() => ({ items: [] as Record<string, unknown>[] })),

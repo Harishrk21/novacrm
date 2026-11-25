@@ -1,5 +1,6 @@
+import { Link } from 'react-router-dom'
 import { useEffect, useMemo, useState } from 'react'
-import { FileSpreadsheet } from 'lucide-react'
+import { ClipboardCheck, FileSpreadsheet } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { api, ApiClientError, type ReportResult } from '@/lib/api'
 import { downloadXlsx } from '@/lib/reportExport'
@@ -36,11 +37,14 @@ export function StockRegisterCard({ year, month }: { year: number; month: number
   const rows = useMemo(
     () =>
       (data?.rows ?? []).filter(
-        (r) => (kind === 'all' || r.kind === kind) && (!moved || Number(r.received) || Number(r.out)),
+        (r) => (kind === 'all' || r.kind === kind) && (!moved || Number(r.received) || Number(r.out) || Number(r.countDiff)),
       ),
     [data, kind, moved],
   )
   const tot = (k: string) => rows.reduce((n, r) => n + (Number(r[k]) || 0), 0)
+  /** Month-end stock count corrections — shown only when there are any */
+  const hasCount = rows.some((r) => Number(r.countDiff))
+  const signed = (v: unknown) => (Number(v) > 0 ? `+${Number(v)}` : Number(v) < 0 ? `−${Math.abs(Number(v))}` : '0')
 
   function excel() {
     downloadXlsx(`HMS-stock-register-${MONTHS[month - 1]}-${year}.xlsx`, [
@@ -54,9 +58,10 @@ export function StockRegisterCard({ year, month }: { year: number; month: number
             [`Opening (1 ${MONTHS[month - 1].slice(0, 3)})`]: r.opening,
             Received: r.received,
             'Out (sold / issued)': r.out,
+            'Stock count +/−': Number(r.countDiff) || 0,
             [`Closing (${to.slice(8)} ${MONTHS[month - 1].slice(0, 3)})`]: r.closing,
           })),
-          { Type: 'Total', Item: '', Category: '', [`Opening (1 ${MONTHS[month - 1].slice(0, 3)})`]: tot('opening'), Received: tot('received'), 'Out (sold / issued)': tot('out'), [`Closing (${to.slice(8)} ${MONTHS[month - 1].slice(0, 3)})`]: tot('closing') },
+          { Type: 'Total', Item: '', Category: '', [`Opening (1 ${MONTHS[month - 1].slice(0, 3)})`]: tot('opening'), Received: tot('received'), 'Out (sold / issued)': tot('out'), 'Stock count +/−': tot('countDiff'), [`Closing (${to.slice(8)} ${MONTHS[month - 1].slice(0, 3)})`]: tot('closing') },
         ],
       },
     ])
@@ -70,8 +75,8 @@ export function StockRegisterCard({ year, month }: { year: number; month: number
             Opening &amp; closing stock — {MONTHS[month - 1]} {year}
           </h3>
           <p className="text-xs text-text-secondary">
-            Stock on 1 {MONTHS[month - 1].slice(0, 3)} + received − out (sold, demo, issued to engineers) = closing on {to.slice(8)}{' '}
-            {MONTHS[month - 1].slice(0, 3)}. Last month's closing is this month's opening.
+            Stock on 1 {MONTHS[month - 1].slice(0, 3)} + received − out (sold, demo, issued to engineers) ± stock count = closing
+            on {to.slice(8)} {MONTHS[month - 1].slice(0, 3)}. Last month's closing is this month's opening.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -87,6 +92,11 @@ export function StockRegisterCard({ year, month }: { year: number; month: number
           <label className="flex items-center gap-1.5 text-xs text-text-secondary">
             <input type="checkbox" checked={moved} onChange={(e) => setMoved(e.target.checked)} /> Only items that moved
           </label>
+          <Link to="/erp/stock/count">
+            <Button size="sm" variant="outline">
+              <ClipboardCheck size={14} /> Month-end count
+            </Button>
+          </Link>
           <Button size="sm" variant="outline" disabled={!rows.length} onClick={excel}>
             <FileSpreadsheet size={14} /> Excel
           </Button>
@@ -106,6 +116,7 @@ export function StockRegisterCard({ year, month }: { year: number; month: number
                 <th className="px-3 py-2 text-right">Opening</th>
                 <th className="px-3 py-2 text-right">Received</th>
                 <th className="px-3 py-2 text-right">Out</th>
+                {hasCount ? <th className="px-3 py-2 text-right">Stock count</th> : null}
                 <th className="px-3 py-2 text-right">Closing</th>
               </tr>
             </thead>
@@ -124,6 +135,11 @@ export function StockRegisterCard({ year, month }: { year: number; month: number
                   <td className={cn('px-3 py-1.5 text-right tabular-nums', Number(r.out) ? 'text-rose-600' : 'text-text-secondary')}>
                     {Number(r.out) ? `−${r.out}` : '0'}
                   </td>
+                  {hasCount ? (
+                    <td className={cn('px-3 py-1.5 text-right tabular-nums', Number(r.countDiff) ? 'text-amber-600' : 'text-text-secondary')}>
+                      {signed(r.countDiff)}
+                    </td>
+                  ) : null}
                   <td className={cn('px-3 py-1.5 text-right font-semibold tabular-nums', Number(r.closing) <= 0 ? 'text-rose-600' : 'text-text-primary')}>
                     {r.closing}
                   </td>
@@ -138,6 +154,7 @@ export function StockRegisterCard({ year, month }: { year: number; month: number
                 <td className="px-3 py-2 text-right tabular-nums">{tot('opening')}</td>
                 <td className="px-3 py-2 text-right tabular-nums">+{tot('received')}</td>
                 <td className="px-3 py-2 text-right tabular-nums">−{tot('out')}</td>
+                {hasCount ? <td className="px-3 py-2 text-right tabular-nums">{signed(tot('countDiff'))}</td> : null}
                 <td className="px-3 py-2 text-right tabular-nums">{tot('closing')}</td>
               </tr>
             </tfoot>

@@ -1,21 +1,92 @@
+import type { Prisma } from "@prisma/client";
+
 /**
- * Provisional HMS Unique ID: YYYY-{FAMILY}-{SEQ4}
- * e.g. 2026-BM-0001
- * Swap this module when final YEAR / MM-ABCD(L) / 0001 rules are confirmed.
+ * HMS Unique ID — HMS Enterprises' own machine tag (from their IT register):
+ *
+ *   26C0874  =  YY (26) + month letter (C = March) + running number (0874)
+ *
+ * - Month letters: A = Jan, B = Feb … L = Dec — the month the machine was tagged (received).
+ * - ONE running number for the whole year, shared by every brand and machine type.
+ *   It does not restart each month; it restarts at 0001 on 1 January.
+ * - Every machine gets one. Weighing machines usually have no factory serial, so the HMS ID is
+ *   their only identity (serialNo falls back to the HMS ID).
+ *
+ * Older test units may still carry the earlier provisional format `2026-WS-0030`; those are left alone.
  */
 
-const FAMILY_SHORT: Record<string, string> = {
-  WEIGHING_SCALES: "WS",
-  BILLING_MACHINE: "BM",
-  TOUCH_POS: "POS",
-  BILLING_SOFTWARE: "SW",
-  OFFICE_AUTOMATION: "OA",
-  WEIGHING: "WS",
-  BILLING: "BM",
-  CCTV: "OA",
-  CCM: "OA",
-  BIOMETRIC: "OA",
-};
+export const HMS_MONTH_LETTERS = "ABCDEFGHIJKL";
+export const HMS_ID_RE = /^(\d{2})([A-L])(\d{4})$/;
+
+/** Calendar date in India (HMS works in IST) — so a 1 a.m. receipt is not tagged with yesterday's month. */
+function istParts(date: Date) {
+  const ist = new Date(date.getTime() + 330 * 60 * 1000);
+  return { year: ist.getUTCFullYear(), month: ist.getUTCMonth() };
+}
+
+export function hmsYear(date: Date = new Date()) {
+  return istParts(date).year;
+}
+
+export function formatHmsUniqId(date: Date, seq: number) {
+  const { year, month } = istParts(date);
+  return `${String(year % 100).padStart(2, "0")}${HMS_MONTH_LETTERS[month]}${String(seq).padStart(4, "0")}`;
+}
+
+export function sequenceKeyForYear(year: number) {
+  return `HMS_UNIQ_${year}`;
+}
+
+export function isValidHmsUniqId(id: string | null | undefined) {
+  return HMS_ID_RE.test(String(id ?? "").trim().toUpperCase());
+}
+
+/** `26C0874` → 874 when it belongs to `year` (2026); otherwise null. */
+export function parseHmsUniqSeq(hmsUniqId: string | null | undefined, year: number): number | null {
+  const m = String(hmsUniqId ?? "").trim().toUpperCase().match(HMS_ID_RE);
+  if (!m || Number(m[1]) !== year % 100) return null;
+  const n = Number.parseInt(m[3]!, 10);
+  return n > 0 ? n : null;
+}
+
+export function maxHmsUniqSeqInList(ids: Array<string | null | undefined>, year: number): number {
+  let max = 0;
+  for (const id of ids) {
+    const n = parseHmsUniqSeq(id, year);
+    if (n != null && n > max) max = n;
+  }
+  return max;
+}
+
+type Db = Prisma.TransactionClient;
+
+/**
+ * Next free running number for the year: the stored counter, but never below the highest ID already
+ * on a unit (e.g. after HMS's existing register is imported). Deleted units count too — the ID column
+ * is unique even for removed rows.
+ */
+export async function nextHmsSeq(db: Db, tenantId: string, year: number) {
+  const seqKey = sequenceKeyForYear(year);
+  const yy = String(year % 100).padStart(2, "0");
+  const [seq, existing] = await Promise.all([
+    db.numberSequence.findUnique({ where: { tenantId_sequenceKey: { tenantId, sequenceKey: seqKey } } }),
+    db.stockUnit.findMany({
+      where: { tenantId, hmsUniqId: { startsWith: yy } },
+      select: { hmsUniqId: true },
+    }),
+  ]);
+  const dbMax = maxHmsUniqSeqInList(existing.map((x) => x.hmsUniqId), year);
+  return { seqKey, start: Math.max(seq?.nextValue ?? 1, dbMax + 1), hasRow: !!seq };
+}
+
+/** Store the counter so the next allocation starts at `nextValue`. */
+export async function saveHmsSeq(db: Db, tenantId: string, year: number, nextValue: number) {
+  const sequenceKey = sequenceKeyForYear(year);
+  await db.numberSequence.upsert({
+    where: { tenantId_sequenceKey: { tenantId, sequenceKey } },
+    create: { tenantId, sequenceKey, prefix: String(year % 100).padStart(2, "0"), nextValue, padding: 4 },
+    update: { nextValue },
+  });
+}
 
 /** Weighing machines typically have no supplier serial — identify by HMS Unique ID. */
 export function isWeighingProduct(attrs: unknown, sku?: string | null): boolean {
@@ -28,70 +99,6 @@ export function isWeighingProduct(attrs: unknown, sku?: string | null): boolean 
   }
   const s = String(sku ?? "").toUpperCase();
   return s.includes("-WS-") || s.startsWith("HMS-WS");
-}
-
-export function familyCodeFromProduct(attrs: unknown, sku?: string | null): string {
-  if (attrs && typeof attrs === "object") {
-    const a = attrs as Record<string, unknown>;
-    const family = String(a.familyCode ?? a.catalogFamily ?? "").toUpperCase();
-    if (family && FAMILY_SHORT[family]) return FAMILY_SHORT[family];
-    const kind = String(a.catalogKind ?? "").toUpperCase();
-    if (kind && FAMILY_SHORT[kind]) return FAMILY_SHORT[kind];
-  }
-  const s = String(sku ?? "").toUpperCase();
-  if (s.includes("-WS-") || s.startsWith("HMS-WS")) return "WS";
-  if (s.includes("-BM-") || s.startsWith("HMS-BM")) return "BM";
-  if (s.includes("-POS-") || s.startsWith("HMS-POS")) return "POS";
-  if (s.includes("-SW-") || s.startsWith("HMS-SW")) return "SW";
-  if (s.includes("-OA-") || s.startsWith("HMS-OA")) return "OA";
-  if (s.includes("-SP-")) return "SP";
-  return "GN";
-}
-
-export function formatHmsUniqId(year: number, familyShort: string, seq: number) {
-  return `${year}-${familyShort}-${String(seq).padStart(4, "0")}`;
-}
-
-export function sequenceKeyForFamily(year: number, familyShort: string) {
-  return `HMS_UNIQ_${year}_${familyShort}`;
-}
-
-/** Parse trailing seq from `2026-WS-0007` → 7 (null if pattern mismatch). */
-export function parseHmsUniqSeq(
-  hmsUniqId: string | null | undefined,
-  year: number,
-  familyShort: string,
-): number | null {
-  const raw = String(hmsUniqId ?? "")
-    .trim()
-    .toUpperCase();
-  if (!raw) return null;
-  const fam = familyShort.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const exact = raw.match(new RegExp(`^${year}-${fam}-(\\d+)$`, "i"));
-  if (exact?.[1]) {
-    const n = Number.parseInt(exact[1], 10);
-    return Number.isFinite(n) && n > 0 ? n : null;
-  }
-  // Prefixed / legacy IDs — use last YEAR-FAMILY-SEQ occurrence
-  const loose = [...raw.matchAll(new RegExp(`${year}-${fam}-(\\d+)`, "gi"))];
-  const last = loose[loose.length - 1];
-  if (!last?.[1]) return null;
-  const n = Number.parseInt(last[1], 10);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-
-/** Highest allocated seq for year+family among a list of HMS IDs. */
-export function maxHmsUniqSeqInList(
-  ids: Array<string | null | undefined>,
-  year: number,
-  familyShort: string,
-): number {
-  let max = 0;
-  for (const id of ids) {
-    const n = parseHmsUniqSeq(id, year, familyShort);
-    if (n != null && n > max) max = n;
-  }
-  return max;
 }
 
 /** Bump trailing digits on a serial: ABC1001 + 2 → ABC1003 */

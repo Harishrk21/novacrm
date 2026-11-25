@@ -561,6 +561,40 @@ function Panel({
   )
 }
 
+/** Customers + machines sold per industry (Retail, Industrial, Billing & POS…) — all time, top 8 */
+function IndustryPanel() {
+  const [data, setData] = useState<{ total: number; rows: Array<{ industry: string; customers: number; machines: number }> } | null>(null)
+  useEffect(() => {
+    void api.industrySummary().then(setData).catch(() => setData(null))
+  }, [])
+  if (!data || !data.rows.some((r) => r.industry !== 'Not set')) return null
+  const top = data.rows.slice(0, 8)
+  const max = Math.max(1, ...top.map((r) => r.customers))
+  return (
+    <Panel
+      title="Customers by industry"
+      subtitle={`All ${data.total} customers · machines sold to each industry`}
+      action={
+        <Link to="/reports?report=customers" className="text-xs font-medium text-accent-blue hover:underline">
+          Customer list
+        </Link>
+      }
+    >
+      <ul className="space-y-2.5">
+        {top.map((r) => (
+          <li key={r.industry} className="grid grid-cols-[minmax(0,9rem)_1fr_auto] items-center gap-3 text-sm">
+            <span className={`truncate ${r.industry === 'Not set' ? 'text-text-secondary' : 'font-medium text-text-primary'}`}>{r.industry}</span>
+            <ProgressTrack pct={(r.customers / max) * 100} color={r.industry === 'Not set' ? '#94a3b8' : '#10b981'} />
+            <span className="whitespace-nowrap text-right text-xs tabular-nums text-text-secondary">
+              <b className="text-text-primary">{r.customers}</b> customers · {r.machines} machines
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  )
+}
+
 /** True when a chart has nothing to draw (no rows, or every plotted value is 0). */
 function noData(rows: ReadonlyArray<object> | undefined | null, keys: string[]) {
   return !rows?.length || rows.every((r) => keys.every((k) => !Number((r as Record<string, unknown>)[k] ?? 0)))
@@ -1429,6 +1463,8 @@ function SalesPov({
           </table>
         </div>
       </Panel>
+
+      <IndustryPanel />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Panel title="Monthly sales mix" subtitle="Proforma + service paid (last 7 months)">

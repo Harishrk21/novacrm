@@ -15,6 +15,8 @@ import { accountsRouter } from '../modules/accounts/accounts.routes.js'
 import { ticketsRouter } from '../modules/tickets/tickets.routes.js'
 import { assetsRouter } from '../modules/assets/assets.routes.js'
 import { renewalsRouter } from '../modules/renewals/renewals.routes.js'
+import { registerImportRouter } from '../modules/registerImport/registerImport.routes.js'
+import { stockCountRouter } from '../modules/stockCount/stockCount.routes.js'
 import { fieldRouter } from '../modules/field/field.routes.js'
 import { purchaseOrdersRouter } from '../modules/purchaseOrders/purchaseOrders.routes.js'
 import { metaRouter } from '../modules/meta/meta.routes.js'
@@ -52,6 +54,8 @@ apiRouter.use('/deals', dealsRouter)
 apiRouter.use('/tickets', ticketsRouter)
 apiRouter.use('/assets', assetsRouter)
 apiRouter.use('/renewals', renewalsRouter)
+apiRouter.use('/register-import', registerImportRouter)
+apiRouter.use('/stock-count', stockCountRouter)
 apiRouter.use('/field', fieldRouter)
 apiRouter.use('/spare-parts', sparePartsRouter)
 apiRouter.use('/spare-stock', spareStockRouter)

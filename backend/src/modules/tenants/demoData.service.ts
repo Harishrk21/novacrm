@@ -7,9 +7,7 @@ import { ensureSpareStockTables } from "../spareStock/spareStock.service.js";
 import { ensureDefaultChannels, postTeamChatBySlug } from "../teamChat/teamChat.service.js";
 import { getWarehouseByCode } from "../inventory/warehouses.service.js";
 import {
-  familyCodeFromProduct,
   formatHmsUniqId,
-  sequenceKeyForFamily,
 } from "../inventory/hmsUniqId.js";
 
 /** Full Chennai demo pack for customer presentations */
@@ -680,28 +678,11 @@ async function ensureDemoStockUnits(tenantId: string, userId: string): Promise<n
   const wh = await getWarehouseByCode(tenantId, "MAIN");
   if (!wh) return 0;
 
-  const fam = familyCodeFromProduct(product.attributes, product.sku);
-  const year = new Date().getFullYear();
-  const seqKey = sequenceKeyForFamily(year, fam);
-  let seq = await prisma.numberSequence.findUnique({
-    where: { tenantId_sequenceKey: { tenantId, sequenceKey: seqKey } },
-  });
-  if (!seq) {
-    seq = await prisma.numberSequence.create({
-      data: {
-        tenantId,
-        sequenceKey: seqKey,
-        prefix: `${year}-${fam}-`,
-        nextValue: 9001,
-        padding: 4,
-      },
-    });
-  }
-
+  // Demo units get a DEMO- tag so they never use up the real yearly HMS running number
   const toCreate = 4 - existing;
+  const base = 9000 + (Date.now() % 900);
   for (let i = 0; i < toCreate; i++) {
-    const seqNo = seq.nextValue + i;
-    const hmsUniqId = formatHmsUniqId(year, fam, seqNo);
+    const hmsUniqId = `DEMO-${formatHmsUniqId(new Date(), base + existing + i)}`;
     const serialNo = `DEMO-HMS-${DEMO_PACK}-${hmsUniqId}`;
     try {
       await prisma.stockUnit.create({
@@ -721,10 +702,6 @@ async function ensureDemoStockUnits(tenantId: string, userId: string): Promise<n
       /* serial collision */
     }
   }
-  await prisma.numberSequence.update({
-    where: { tenantId_sequenceKey: { tenantId, sequenceKey: seqKey } },
-    data: { nextValue: seq.nextValue + toCreate },
-  });
   return prisma.stockUnit.count({ where: demoWhere(tenantId) });
 }
 

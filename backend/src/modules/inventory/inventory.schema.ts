@@ -31,7 +31,8 @@ export const addStockUnitSchema = z.object({
   body: z.object({
     productId: z.string().min(1).max(36),
     warehouseId: z.string().min(1).max(36),
-    serialNo: z.string().min(1).max(120),
+    /** Optional — weighing machines and many others have no factory serial; the HMS ID is used */
+    serialNo: z.string().max(120).optional().default(""),
     stampingDate: dateStr,
     notes: z.string().max(2000).nullable().optional(),
   }),
@@ -57,7 +58,7 @@ export const receiveBatchSchema = z.object({
     units: z
       .array(
         z.object({
-          /** Optional for weighing — server fills from HMS Unique ID */
+          /** Optional — server fills from the HMS Unique ID when the machine has no factory serial */
           serialNo: z.string().max(120).optional().default(""),
           hmsUniqId: z.string().max(40).nullable().optional(),
         }),
@@ -74,6 +75,8 @@ export const previewUniqSchema = z.object({
   body: z.object({
     productId: z.string().min(1).max(36),
     quantity: z.coerce.number().int().min(1).max(200),
+    /** Month letter of the HMS ID comes from the received date */
+    receivedDate: dateStr,
   }),
   query: z.any(),
   params: z.any(),
@@ -221,6 +224,8 @@ export const stockImportSchema = z.object({
   body: z.object({
     kind: z.enum(["machines", "sparesBilling", "sparesWeighing"]),
     rows: z.array(z.record(z.unknown())).min(1).max(2000),
+    /** Opening stock "as on" this date (spares) */
+    asOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   }),
   query: z.any(),
   params: z.any(),

@@ -59,6 +59,7 @@ const MACHINE_FIELDS: Array<{ value: string; label: string }> = [
 ]
 
 const SPARE_FIELDS: Array<{ value: string; label: string }> = [
+  { value: 'spareId', label: 'Spare ID (SP-001)' },
   { value: 'spareName', label: 'Spare name' },
   { value: 'opening', label: 'Opening (prev month closing)' },
   { value: 'newStock', label: 'New stock received' },
@@ -89,7 +90,8 @@ const MACHINE_SAMPLE = [
 
 const SPARE_SAMPLE = [
   {
-    'SPARE NAME': 'Battery',
+    'SPARE ID': 'SP-001',
+    'SPARE NAME': '6V Battery',
     OPENING: '10',
     'NEW STOCK': '15',
     GIVEN: '2',
@@ -145,6 +147,8 @@ export function StockImportPanel({ kinds, onImported, onClose }: Props) {
   const [usedAi, setUsedAi] = useState(false)
   const [mappingBusy, setMappingBusy] = useState(false)
   const [importing, setImporting] = useState(false)
+  /** Spares: opening stock "as on" this date — blank = old behaviour (top up only) */
+  const [asOn, setAsOn] = useState('')
   const [summary, setSummary] = useState<{
     created: number
     skipped: number
@@ -211,7 +215,8 @@ export function StockImportPanel({ kinds, onImported, onClose }: Props) {
         {
           name: 'Instructions',
           rows: [
-            { tip: 'OPENING = previous month closing (becomes this month opening)' },
+            { tip: 'SPARE ID (SP-001…) picks the exact spare — see the Spare parts list; SPARE NAME is used only without an ID' },
+            { tip: 'OPENING = stock counted on the "as on" date chosen on the import screen (sets the stock to exactly that number)' },
             { tip: 'NEW STOCK = quantity arrived; GIVEN = issued to service' },
             { tip: 'BALANCE is checked after import (warning only if mismatch)' },
             { tip: 'GC / NGC optional flags or counts' },
@@ -254,7 +259,7 @@ export function StockImportPanel({ kinds, onImported, onClose }: Props) {
     const mapped = applyMapping(rawRows, mapping)
     setImporting(true)
     try {
-      const res = await api.importStock({ kind, rows: mapped })
+      const res = await api.importStock({ kind, rows: mapped, asOn: kind === 'machines' ? null : asOn || null })
       setSummary(res)
       addToast({
         type: 'success',
@@ -321,6 +326,24 @@ export function StockImportPanel({ kinds, onImported, onClose }: Props) {
           </button>
         ))}
       </div>
+
+      {kind && kind !== 'machines' ? (
+        <div className="flex flex-wrap items-end gap-3 rounded-lg border border-border bg-muted/20 p-3">
+          <label className="text-sm">
+            <span className="mb-1 block font-medium text-text-primary">Opening stock as on</span>
+            <input
+              type="date"
+              className="h-9 rounded-md border border-border bg-card px-2 text-sm"
+              value={asOn}
+              onChange={(e) => setAsOn(e.target.value)}
+            />
+          </label>
+          <p className="max-w-md text-xs text-text-secondary">
+            Pick the date the spares were counted (e.g. 1 Dec). The OPENING column then sets each spare to exactly that
+            number on that date — it becomes that month's opening stock. Leave blank to only add stock.
+          </p>
+        </div>
+      ) : null}
 
       {kind ? (
         <div className="flex flex-wrap gap-2">

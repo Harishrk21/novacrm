@@ -223,7 +223,7 @@ export function RentalsPage() {
     if (!issueOpen) return
     void Promise.all([
       api.stockUnitsAll({ status: 'IN_STOCK' }),
-      api.products({ limit: 300 }),
+      api.products({ limit: 500, includeInactive: 1 }),
     ])
       .then(([u, p]) => {
         setUnits(u as Row[])

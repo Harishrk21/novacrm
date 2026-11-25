@@ -63,6 +63,8 @@ const parseDay = (v: unknown, end = false) => {
   return d;
 };
 
+const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "");
+
 function compare(a: unknown, op: Op, b: unknown) {
   const blank = a === null || a === undefined || a === "";
   if (blank && op !== "=" && op !== "!=" && op !== "not_contains") return false;
@@ -103,7 +105,14 @@ function applyPlan(result: ReportResult, plan: Plan): { columns: Column[]; rows:
   let rows: Row[] = result.rows as Row[];
   for (const w of plan.where ?? []) {
     const key = resolve(w.column);
-    if (key) rows = rows.filter((r) => compare(r[key], w.op, w.value));
+    if (!key) continue;
+    // Phones are written many ways (+91, spaces) — compare the last 10 digits
+    if (/phone|mobile/i.test(key) && digits(w.value).length >= 6 && (w.op === "contains" || w.op === "=")) {
+      const want = digits(w.value).slice(-10);
+      rows = rows.filter((r) => digits(r[key]).includes(want));
+      continue;
+    }
+    rows = rows.filter((r) => compare(r[key], w.op, w.value));
   }
 
   let columns = result.columns;
@@ -219,6 +228,10 @@ Rules:
 - To rank people/customers/products use groupBy on that column with metrics (count / sum / avg / min / max of a numeric column); "having" filters groups by a metric alias (e.g. more than 2 → {"column":"sales","op":">","value":2}).
 - "Completed / closed / converted leads" = rows of the "sales" report. "Top performer" = sort desc by the main metric.
 - Use sort + limit for top-N. Keep plans minimal.
+- Questions about one customer / phone number / HMS ID / serial, or "ever", "history", "all time", "which year": use from 2015-01-01 to today (old years were imported from HMS's registers). Filter with "contains" on the customer / phone / hmsId / machine column (phone: compare the last 10 digits).
+- "Bought / sold / purchased machines", "which customers bought X", "sales by executive / industry / year" = the "machines-sold" report (by sale date). A shop / firm name may be in "company" as well as "customer" — prefer the column the question names; for a business name use "company" only if the customer column is a person.
+- Service job status values: Open, In progress, Pending, Resolved, Closed. "Done / completed / finished jobs" = status Resolved or Closed — use a "!=" filter on "Open" etc. or no status filter, never the word "completed".
+- Copy phone numbers, HMS IDs and names from the question exactly — never replace them with placeholders. Service history, engineer work, GC/NGC/AMC jobs = "service-jobs". Industry / segment of customers = the "industry" column.
 Return JSON only:
 {"report":"sales","from":"YYYY-MM-DD","to":"YYYY-MM-DD","where":[],"groupBy":"salesperson","metrics":[{"op":"count","as":"sales"},{"op":"sum","column":"amount","as":"amount"}],"having":[{"column":"sales","op":">","value":2}],"sort":{"column":"sales","dir":"desc"},"limit":null,"title":"short title for the table","reason":"if report is null, one line why"}
 
@@ -229,6 +242,11 @@ Question: ${question}`;
     plan = parseJsonLoose<Plan>(await callGemini(prompt, { maxTokens: 500, timeoutMs: 20_000, retries: 1 }));
   } catch (e) {
     throw new AppError(e instanceof Error ? `AI is unavailable right now — ${e.message}` : "AI is unavailable right now", 503);
+  }
+  // Some models hide personal numbers as "[phone]" — put the number from the question back
+  const asked = question.match(/\+?\d[\d\s-]{8,}\d/)?.[0];
+  for (const w of plan.where ?? []) {
+    if (asked && /phone|mobile/i.test(w.column) && digits(w.value).length < 6) w.value = digits(asked).slice(-10);
   }
   const def = catalog.find((c) => c.key === plan.report);
   if (!plan.report || !def) {
@@ -266,7 +284,12 @@ Question: ${question}`;
           { maxTokens: 160, timeoutMs: 12_000, retries: 1 },
         ),
       );
-      if (said.answer?.trim()) answer = said.answer.trim();
+      if (said.answer?.trim()) {
+        answer = said.answer.trim();
+        // the model sometimes masks numbers it was given ("[phone]") — show the real one
+        if (asked) answer = answer.replace(/\[(phone|number|mobile)[^\]]*\]/gi, digits(asked).slice(-10));
+        else answer = answer.replace(/\s*(with|on)\s+(phone|number)\s+\[[^\]]+\]/gi, "");
+      }
     } catch {
       /* keep the plain sentence */
     }

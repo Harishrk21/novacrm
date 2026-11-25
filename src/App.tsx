@@ -72,6 +72,12 @@ const FieldTrackingPage = lazy(() =>
 const RenewalsPage = lazy(() =>
   import('@/pages/RenewalsPage').then((m) => ({ default: m.RenewalsPage })),
 )
+const StockCountPage = lazy(() =>
+  import('@/pages/erp/StockCountPage').then((m) => ({ default: m.StockCountPage })),
+)
+const RegisterImportPage = lazy(() =>
+  import('@/pages/RegisterImportPage').then((m) => ({ default: m.RegisterImportPage })),
+)
 const StampingPage = lazy(() =>
   import('@/pages/StampingPage').then((m) => ({ default: m.StampingPage })),
 )
@@ -273,6 +279,14 @@ export default function App() {
               }
             />
             <Route
+              path="import-registers"
+              element={
+                <RequirePermission permission="contacts:import" title="Importing registers is not available">
+                  <RegisterImportPage />
+                </RequirePermission>
+              }
+            />
+            <Route
               path="renewals"
               element={
                 <RequirePermission permission="renewals:view" title="Renewals not available">
@@ -349,6 +363,14 @@ export default function App() {
               element={
                 <RequireErpAccess>
                   <InventoryHubPage section="stock" />
+                </RequireErpAccess>
+              }
+            />
+            <Route
+              path="erp/stock/count"
+              element={
+                <RequireErpAccess>
+                  <StockCountPage />
                 </RequireErpAccess>
               }
             />

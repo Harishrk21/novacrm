@@ -46,6 +46,7 @@ import { Select } from '@/components/ui/Select'
 import { CatalogMachinePick } from '@/components/contacts/CatalogMachinePick'
 import { Switch } from '@/components/ui/Switch'
 import { api, ApiClientError, num } from '@/lib/api'
+import { INDUSTRY_OPTIONS } from '@/lib/industries'
 import { ASSET_ORIGIN_OPTIONS, isThirdPartyOrigin } from '@/lib/assetOrigin'
 import {
   GC_MONTH_OPTIONS,
@@ -137,6 +138,7 @@ export function ContactDetailPage() {
     whatsapp: '',
     landline: '',
     buildingName: '',
+    industry: '',
     street: '',
     doorNo: '',
     area: '',
@@ -250,7 +252,7 @@ export function ContactDetailPage() {
       if (needCatalog) {
         try {
           const [productPage, brandRows] = await Promise.all([
-            api.products({ limit: 200 }),
+            api.products({ limit: 500 }),
             api.inventoryBrands(),
           ])
           if (productPage.items?.length) {
@@ -283,6 +285,7 @@ export function ContactDetailPage() {
           whatsapp: indianMobileLocal(String(custom.whatsapp ?? '')),
           landline: String(custom.landline ?? ''),
           buildingName: String(custom.building_name ?? ''),
+          industry: String(custom.industry ?? ''),
           street: String(row.street ?? ''),
           doorNo: String(row.doorNo ?? ''),
           area: String(row.area ?? ''),
@@ -398,6 +401,7 @@ export function ContactDetailPage() {
         customFields: {
           ...prevCustom,
           building_name: form.buildingName.trim() || null,
+          industry: form.industry.trim() || null,
           landline: form.landline.trim() || null,
           mobile_2: toStoredIndianMobile(form.mobile2),
           mobile_3: toStoredIndianMobile(form.mobile3),
@@ -885,6 +889,20 @@ export function ContactDetailPage() {
             value={form.buildingName}
             onChange={(e) => setForm({ ...form, buildingName: e.target.value })}
           />
+          <div>
+            <Input
+              label="Industry"
+              value={form.industry}
+              onChange={(e) => setForm({ ...form, industry: e.target.value })}
+              list="customer-industries"
+              placeholder="e.g. Retail, Industrial, Hospital"
+            />
+            <datalist id="customer-industries">
+              {INDUSTRY_OPTIONS.map((x) => (
+                <option key={x} value={x} />
+              ))}
+            </datalist>
+          </div>
           <Input label="Area" value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
           <Input label="City" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
           <Input label="State" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />

@@ -485,6 +485,40 @@ export const api = {
     apiFetch<ReportResult>(`/inventory/stock-register?from=${from}&to=${to}`),
   /** Renewals tracker — stamping, AMC, guarantee ending, AMC offers (admin / sales / desk). */
   renewals: () => apiFetch<{ items: RenewalItem[]; today: string }>('/renewals'),
+  /** HMS Excel registers (sales / service) — preview reads only, commit writes one batch part */
+  registerPreview: (body: { kind: 'SALES' | 'SERVICE'; rows: unknown[]; unpaidAs?: 'DUE' | 'PAID' }) =>
+    apiFetch<RegisterPreview>('/register-import/preview', { method: 'POST', body: JSON.stringify(body) }),
+  registerCommit: (body: {
+    kind: 'SALES' | 'SERVICE'
+    rows: unknown[]
+    batchId: string
+    fileName: string
+    unpaidAs?: 'DUE' | 'PAID'
+  }) => apiFetch<RegisterCommitResult>('/register-import/commit', { method: 'POST', body: JSON.stringify(body) }),
+  industrySummary: () =>
+    apiFetch<{ total: number; rows: Array<{ industry: string; customers: number; machines: number }> }>('/contacts/industry-summary'),
+  registerAiMatch: (body: { kind: 'PRODUCT' | 'SPARE'; texts: string[] }) =>
+    apiFetch<Array<{ text: string; code: string | null; name: string | null; sure: 'high' | 'medium' | 'low' | null }>>(
+      '/register-import/ai-match',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  stockCountSpares: (date: string) => apiFetch<{ date: string; rows: SpareCountRow[] }>(`/stock-count/spares?date=${date}`),
+  saveStockCountSpares: (body: { date: string; note?: string | null; items: Array<{ sparePartId: string; counted: number; reason?: string | null }> }) =>
+    apiFetch<StockCountLog & { differences: NonNullable<StockCountLog['differences']>; matched: number }>('/stock-count/spares', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  stockCountMachinesCheck: (body: { warehouseId?: string | null; ids: string[] }) =>
+    apiFetch<MachineCountCheck>('/stock-count/machines/check', { method: 'POST', body: JSON.stringify(body) }),
+  saveStockCountMachines: (body: { date: string; warehouseId?: string | null; ids: string[] }) =>
+    apiFetch<{ expected: number; found: number; missing: unknown[] }>('/stock-count/machines', { method: 'POST', body: JSON.stringify(body) }),
+  stockCountHistory: () => apiFetch<StockCountLog[]>('/stock-count/history'),
+  registerBatches: () => apiFetch<RegisterBatch[]>('/register-import/batches'),
+  registerUndo: (batchId: string) =>
+    apiFetch<{ machinesRemoved: number; serviceJobsRemoved: number; customersRemoved: number }>('/register-import/undo', {
+      method: 'POST',
+      body: JSON.stringify({ batchId }),
+    }),
   renewalFollowUp: (
     id: string,
     body: { kind: RenewalKind; status: RenewalStatus; note?: string; nextFollowUp?: string | null },
@@ -584,6 +618,8 @@ export const api = {
   importStock: (body: {
     kind: 'machines' | 'sparesBilling' | 'sparesWeighing'
     rows: Array<Record<string, unknown>>
+    /** Spares: opening stock "as on" this date (YYYY-MM-DD) */
+    asOn?: string | null
   }) =>
     apiFetch<{
       created: number
@@ -1282,7 +1318,7 @@ export const api = {
     notifyStockChanged()
     return res
   },
-  previewHmsUniqIds: (body: { productId: string; quantity: number }) =>
+  previewHmsUniqIds: (body: { productId: string; quantity: number; receivedDate?: string | null }) =>
     apiFetch<string[]>('/inventory/uniq-ids/preview', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -1854,6 +1890,88 @@ export type RenewalFollowUp = {
   at: string
   history?: RenewalFollowUp[]
 }
+export type SpareCountRow = { id: string; spareId: string; name: string; group: string; family: string; system: number }
+export type StockCountLog = {
+  countId: string
+  kind: 'SPARES' | 'MACHINES'
+  date: string
+  at?: string
+  by?: string
+  counted?: number
+  matched?: number
+  differences?: Array<{ spareId: string; name: string; system: number; counted: number; diff: number; reason: string | null }>
+  expected?: number
+  found?: number
+  missing?: Array<{ hmsId: string | null; productId: string; product: string }>
+  notExpected?: Array<{ written: string }>
+}
+export type MachineCountCheck = {
+  expected: number
+  found: Array<{ unitId: string; hmsId: string | null; serialNo: string; productId: string; product: string; warehouse: string }>
+  missing: Array<{ unitId: string; hmsId: string | null; serialNo: string; productId: string; product: string; warehouse: string }>
+  notExpected: Array<{ written: string; hmsId: string | null; product: string | null; status: string; where: string | null }>
+  products: Array<{ productId: string; product: string; expected: number; found: number }>
+}
+
+export type RegisterPreviewRow = {
+  ref: string
+  customer: string
+  phone: string | null
+  contact: 'existing' | 'new' | 'same-file'
+  contactName?: string
+  product?: {
+    productId: string | null
+    productName: string | null
+    productCode?: string | null
+    confidence: 'exact' | 'likely' | 'check' | 'none'
+    brand: string
+    alternatives: Array<{ id: string; name: string }>
+  }
+  machine?: string
+  duplicate: boolean
+  skip: boolean
+  warnings: string[]
+  /** Product / spares filled in by AI */
+  ai?: boolean
+  spares?: Array<{ spareId: string | null; name: string; qty: number }>
+  status?: string
+}
+export type RegisterPreview = {
+  rows: RegisterPreviewRow[]
+  summary: {
+    total: number
+    toImport: number
+    duplicates: number
+    skipped: number
+    newCustomers: number
+    existingCustomers: number
+    matched: number
+    notMatched: number
+    withWarnings: number
+  }
+}
+export type RegisterCommitResult = {
+  batchId: string
+  customersCreated: number
+  customersUpdated: number
+  machinesAdded: number
+  serviceJobsAdded: number
+  duplicatesSkipped: number
+  rowsSkipped: number
+}
+export type RegisterBatch = {
+  batchId: string
+  kind: 'SALES' | 'SERVICE'
+  fileName: string
+  at: string
+  undone: boolean
+  rows: number
+  customersCreated: number
+  machinesAdded: number
+  serviceJobsAdded: number
+  duplicatesSkipped: number
+}
+
 export type RenewalItem = {
   id: string
   name: string

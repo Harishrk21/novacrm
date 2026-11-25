@@ -11,7 +11,7 @@ import { SearchableSelect } from '@/components/ui/SearchableSelect'
 import { Select } from '@/components/ui/Select'
 import { api, ApiClientError } from '@/lib/api'
 import { downloadXlsx } from '@/lib/reportExport'
-import { productAttrs } from '@/lib/productCatalog'
+import { productAttrs, productSuppliers } from '@/lib/productCatalog'
 import { expandSerialRange, bumpSerial } from '@/lib/stockSerial'
 import { preferMainWarehouseId, sortWarehousesForDropdown } from '@/lib/warehouseSort'
 import { filterServiceEngineers } from '@/lib/roles'
@@ -89,6 +89,8 @@ export function StockMovePage() {
   const [warehouseId, setWarehouseId] = useState('')
   const [qty, setQty] = useState('1')
   const [serialStart, setSerialStart] = useState('')
+  /** HMS ID month letter + year come from the date the machines were received / tagged */
+  const [receivedOn, setReceivedOn] = useState(() => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10))
   const [serialEnd, setSerialEnd] = useState('')
   const [hmsStart, setHmsStart] = useState('')
   const [previewHmsIds, setPreviewHmsIds] = useState<string[]>([])
@@ -308,7 +310,7 @@ export function StockMovePage() {
     }
     let cancelled = false
     void api
-      .previewHmsUniqIds({ productId, quantity: nQty })
+      .previewHmsUniqIds({ productId, quantity: nQty, receivedDate: receivedOn || null })
       .then((ids) => {
         if (cancelled) return
         const list = Array.isArray(ids) ? ids.map(String) : []
@@ -321,7 +323,25 @@ export function StockMovePage() {
     return () => {
       cancelled = true
     }
-  }, [mode, category, productId, nQty, hmsManual])
+  }, [mode, category, productId, nQty, hmsManual, receivedOn])
+
+  // Picking a model fills its brand and usual supplier (still editable)
+  useEffect(() => {
+    if (!productId || mode !== 'add' || category !== 'MACHINE') return
+    const p = products.find((x) => String(x.id) === productId)
+    if (!p) return
+    const brandName = String(productAttrs(p).brand ?? '').trim()
+    if (brandName) {
+      const b = brands.find((x) => String(x.name).toLowerCase() === brandName.toLowerCase())
+      setBrandId(b ? String(b.id) : brandName)
+    }
+    const usual = productSuppliers(p)[0]
+    if (usual) {
+      const v = vendors.find((x) => String(x.name).toLowerCase() === usual.toLowerCase())
+      setVendorId(v ? String(v.id) : usual)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productId])
 
   // Local expand when user typed HMS start manually
   useEffect(() => {
@@ -349,20 +369,38 @@ export function StockMovePage() {
   }, [spareUniqStart, nSpareQty])
 
   const productOptions = useMemo(() => {
+    // brandId is a brand's id, or a typed new brand name — show only that brand's models
+    const brandNeedle = String(brands.find((b) => String(b.id) === brandId)?.name ?? brandId)
+      .trim()
+      .toLowerCase()
     return products
       .filter((p) => !stockMachineType || productMatchesStockType(p, stockMachineType))
+      // Hidden (old) products only while they still have units in stock
+      .filter(
+        (p) =>
+          p.isActive !== false ||
+          units.some((u) => String(u.productId) === String(p.id) && String(u.status) === 'IN_STOCK'),
+      )
+      .filter((p) => {
+        if (!brandNeedle) return true
+        const pb = String(productAttrs(p).brand ?? '').trim().toLowerCase()
+        return !pb || pb === brandNeedle
+      })
       .map((p) => {
         const onHand = units.filter(
           (u) => String(u.productId) === String(p.id) && String(u.status) === 'IN_STOCK',
         ).length
+        const brand = String(productAttrs(p).brand ?? '').trim()
         return {
           value: String(p.id),
           label: String(p.name),
-          sublabel: `${p.sku ?? ''}${onHand ? ` · ${onHand} in stock` : ''}`,
+          sublabel: [String(p.sku ?? ''), brand, productSuppliers(p).join(', '), onHand ? `${onHand} in stock` : '']
+            .filter(Boolean)
+            .join(' · '),
         }
       })
-      .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }))
-  }, [products, stockMachineType, units])
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }))
+  }, [products, stockMachineType, units, brandId, brands])
 
   const spareOptions = useMemo(() => {
     const fam = stockMachineType ? spareFamilyFromStockType(stockMachineType) : null
@@ -478,10 +516,6 @@ export function StockMovePage() {
       addToast({ type: 'error', message: 'HMS Unique IDs are required — wait for preview or type a start ID' })
       return
     }
-    if (!isWeighingStock && !serialStart.trim()) {
-      addToast({ type: 'error', message: 'Enter starting serial number' })
-      return
-    }
     setSaving(true)
     try {
       const vId = await ensureVendorId(vendorId)
@@ -497,9 +531,9 @@ export function StockMovePage() {
         return
       }
       const hmsIds = hmsPreviewDisplay.slice(0, nQty)
-      const serials = isWeighingStock
-        ? hmsIds
-        : expandSerialRange(serialStart.trim(), nQty)
+      // No factory serial (weighing, LADA…) — the HMS ID is the identity
+      const serials =
+        isWeighingStock || !serialStart.trim() ? hmsIds : expandSerialRange(serialStart.trim(), nQty)
       await api.receiveStockBatch({
         productId,
         warehouseId,
@@ -508,7 +542,7 @@ export function StockMovePage() {
         quantity: nQty,
         invoiceNo: invoiceNo.trim() || null,
         invoiceDate: invoiceDate || null,
-        receivedDate: invoiceDate || todayIso(),
+        receivedDate: receivedOn || invoiceDate || todayIso(),
         unitAmount: unitCost ? Number(unitCost) : 0,
         startSerial: isWeighingStock ? null : serialStart.trim() || null,
         units: Array.from({ length: nQty }, (_, i) => ({
@@ -1005,6 +1039,12 @@ export function StockMovePage() {
                 onChange={(e) => setInvoiceDate(e.target.value)}
               />
               <Input
+                label="Received date *"
+                type="date"
+                value={receivedOn}
+                onChange={(e) => setReceivedOn(e.target.value)}
+              />
+              <Input
                 label="Qty received *"
                 inputMode="numeric"
                 value={qty}
@@ -1051,11 +1091,11 @@ export function StockMovePage() {
                   <p className="mt-1 text-xs text-text-secondary">
                     This batch: {hmsPreviewDisplay[0]} →{' '}
                     {hmsPreviewDisplay[hmsPreviewDisplay.length - 1]} ({hmsPreviewDisplay.length}{' '}
-                    IDs) — auto from latest + 1.
+                    IDs) — next numbers in the year's running series.
                   </p>
                 ) : hmsPreviewDisplay.length === 1 ? (
                   <p className="mt-1 text-xs text-text-secondary">
-                    Next available ID (latest for this machine type + 1).
+                    Next HMS ID — year + month letter + running number for the year (e.g. 26K0001).
                   </p>
                 ) : (
                   <p className="mt-1 text-xs text-text-secondary">
@@ -1072,10 +1112,10 @@ export function StockMovePage() {
               {!isWeighingStock ? (
                 <div className={nQty > 1 ? 'sm:col-span-2' : undefined}>
                   <Input
-                    label={nQty > 1 ? 'Serial number (first) *' : 'Serial number *'}
+                    label={nQty > 1 ? 'Serial number (first) — if any' : 'Serial number — if any'}
                     value={serialStart}
                     onChange={(e) => setSerialStart(e.target.value)}
-                    placeholder="Manufacturer serial"
+                    placeholder="Leave empty if no factory serial — HMS ID is used"
                   />
                   {serialEnd && nQty > 1 ? (
                     <p className="mt-1 text-xs text-text-secondary">

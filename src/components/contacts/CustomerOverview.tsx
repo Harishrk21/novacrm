@@ -149,20 +149,33 @@ function MachineTable({ rows, jobsOf, outside }: MachineTableProps) {
                 <td className={td}>
                   <div className="font-medium text-text-primary">{str(a.name)}</div>
                   {(() => {
-                    const sub = [a.model && str(a.model).toLowerCase() !== str(a.name).toLowerCase() ? a.model : null, a.capacity]
+                    const sub = [
+                      obj(a.customFields).productCode ? `Product ${str(obj(a.customFields).productCode)}` : null,
+                      a.model && str(a.model).toLowerCase() !== str(a.name).toLowerCase() ? a.model : null,
+                      a.capacity,
+                    ]
                       .filter(Boolean)
                       .map(str)
                       .join(' · ')
                     return sub ? <div className="text-xs text-text-secondary">{sub}</div> : null
                   })()}
                 </td>
-                <td className={cn(td, 'font-mono text-xs')}>{str(a.serialNo) || '—'}</td>
+                <td className={cn(td, 'font-mono text-xs')}>
+                  {obj(a.customFields).hmsUniqId ? <div>HMS {str(obj(a.customFields).hmsUniqId)}</div> : null}
+                  <div className={obj(a.customFields).hmsUniqId ? 'text-text-secondary' : undefined}>{str(a.serialNo) || (obj(a.customFields).hmsUniqId ? '' : '—')}</div>
+                </td>
                 <td className={cn(td, 'text-xs')}>
                   {outside ? (
                     <span className="text-text-secondary">{str(a.notes) || 'Bought elsewhere'}</span>
                   ) : (
                     <>
-                      <div className="whitespace-nowrap text-sm">{a.createdAt ? formatDate(str(a.createdAt)) : '—'}</div>
+                      <div className="whitespace-nowrap text-sm">
+                        {obj(a.customFields).saleDate
+                          ? formatDate(str(obj(a.customFields).saleDate))
+                          : a.createdAt
+                            ? formatDate(str(a.createdAt))
+                            : '—'}
+                      </div>
                       {a.notes ? <div className="text-text-secondary">{str(a.notes)}</div> : null}
                     </>
                   )}
@@ -200,7 +213,9 @@ function MachineTable({ rows, jobsOf, outside }: MachineTableProps) {
                             <span className="min-w-0 flex-1 text-text-primary/90">
                               {j.done ? `— ${j.done}` : `— ${str(t.subject)}`}
                             </span>
-                            <span className="text-text-secondary">{t.engineerName ? str(t.engineerName) : 'Not assigned'}</span>
+                            <span className="text-text-secondary">
+                              {t.engineerName ? str(t.engineerName) : str(obj(t.customFields).engineerName) || 'Not assigned'}
+                            </span>
                             {j.pay ? <span className={cn('tabular-nums', num(t.balanceDue) > 0 ? 'font-semibold text-rose-600' : 'text-emerald-600')}>{j.pay}</span> : null}
                             <Badge color={ticketStatusColor[str(t.status)] ?? 'gray'}>{str(t.status).replaceAll('_', ' ').toLowerCase()}</Badge>
                           </li>
@@ -432,6 +447,7 @@ export function CustomerOverview({ contact, custom, ownerName, account, tickets,
                 </a>
               </Field>
             ) : null}
+            {custom.industry ? <Field label="Industry">{str(custom.industry)}</Field> : null}
             <Field label="Owner">{ownerName ?? 'Unassigned'}</Field>
             <Field label="Customer since">{contact.createdAt ? formatDate(str(contact.createdAt)) : null}</Field>
           </div>

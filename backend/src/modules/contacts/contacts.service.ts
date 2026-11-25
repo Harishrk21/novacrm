@@ -403,7 +403,11 @@ export async function get(t: string, id: string) {
     deals,
     tickets: tickets.map((tk) => ({
       ...withTicketBalance(tk),
-      engineerName: tk.assignedToId ? oName.get(tk.assignedToId) ?? null : null,
+      engineerName: tk.assignedToId
+        ? oName.get(tk.assignedToId) ?? null
+        : (tk.customFields as Record<string, unknown> | null)?.engineerName
+          ? String((tk.customFields as Record<string, unknown>).engineerName)
+          : null,
     })),
     notes,
     invoices: invoicesDetailed,

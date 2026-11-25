@@ -230,7 +230,7 @@ export function StampingPage() {
       const [unitRes, assetRows, productPage] = await Promise.all([
         api.stockUnitsAll({ lite: 1 }),
         fetchAllAssets(),
-        api.products({ limit: 200 }),
+        api.products({ limit: 500, includeInactive: 1 }),
       ])
       // Sold units live on as customer machines — only our own stock here
       setUnits(((unitRes as StockRow[]) ?? []).filter((u) => u.status !== 'SOLD'))

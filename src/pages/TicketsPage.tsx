@@ -815,7 +815,7 @@ export function TicketsPage() {
     void (async () => {
       try {
         const [prods, brands] = await Promise.all([
-          api.products({ limit: 200 }),
+          api.products({ limit: 500 }),
           api.inventoryBrands(),
         ])
         setCatalogProducts(

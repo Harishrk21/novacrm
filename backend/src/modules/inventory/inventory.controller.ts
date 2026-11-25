@@ -59,7 +59,7 @@ export const previewUniqIds = async (q: Request, r: Response) => {
   await requireMachines(q);
   return success(
     r,
-    await s.previewHmsUniqIds(q.auth!.tenantId!, q.body.productId, q.body.quantity),
+    await s.previewHmsUniqIds(q.auth!.tenantId!, q.body.productId, q.body.quantity, q.body.receivedDate),
   );
 };
 
@@ -205,6 +205,7 @@ export const importStock = async (q: Request, r: Response) => {
       q.auth!.userId,
       kind,
       rows,
+      { asOn: q.body.asOn ?? null },
     ),
     "Spare stock import finished",
   );

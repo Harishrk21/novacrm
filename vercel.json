@@ -1,3 +1,6 @@
 {
+  "redirects": [
+    { "source": "/:path(.*)", "destination": "https://crm.askmeister.com/:path", "permanent": false }
+  ],
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
 }

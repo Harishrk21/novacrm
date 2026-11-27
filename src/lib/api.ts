@@ -1923,7 +1923,8 @@ export type RegisterPreviewRow = {
     productId: string | null
     productName: string | null
     productCode?: string | null
-    confidence: 'exact' | 'likely' | 'check' | 'none'
+    /** new = not on the product list — added as a new product with its own Product ID on import */
+    confidence: 'exact' | 'likely' | 'check' | 'none' | 'new'
     brand: string
     alternatives: Array<{ id: string; name: string }>
   }
@@ -1948,7 +1949,10 @@ export type RegisterPreview = {
     matched: number
     notMatched: number
     withWarnings: number
+    newProducts?: number
+    newProductRows?: number
   }
+  newProducts?: Array<{ name: string; brand: string; type: string; written: string }>
 }
 export type RegisterCommitResult = {
   batchId: string
@@ -1956,6 +1960,7 @@ export type RegisterCommitResult = {
   customersUpdated: number
   machinesAdded: number
   serviceJobsAdded: number
+  productsCreated?: number
   duplicatesSkipped: number
   rowsSkipped: number
 }
@@ -1969,6 +1974,7 @@ export type RegisterBatch = {
   customersCreated: number
   machinesAdded: number
   serviceJobsAdded: number
+  productsCreated?: number
   duplicatesSkipped: number
 }
 

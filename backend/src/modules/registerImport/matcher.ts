@@ -15,7 +15,8 @@ export type ProductMatch = {
   productName: string | null;
   /** The product's Product ID (HMS-012) */
   productCode?: string | null;
-  confidence: "exact" | "likely" | "check" | "none";
+  /** new = not on the product list — the import adds it as a new product with its own Product ID */
+  confidence: "exact" | "likely" | "check" | "none" | "new";
   brand: string;
   alternatives: Array<{ id: string; name: string }>;
 };
@@ -127,6 +128,7 @@ export function matchProduct(
   const none: ProductMatch = { productId: null, productName: null, confidence: "none", brand, alternatives: [] };
   const list = index.get(brand);
   if (!list?.length) return none;
+  if (!model.trim() && !specRaw.trim()) return none;
 
   // Numbers in the model must exist in the product; the serial / size column only adds weight
   const row = profile(`${model} ${specRaw}`);

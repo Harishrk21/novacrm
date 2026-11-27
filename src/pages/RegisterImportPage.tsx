@@ -39,11 +39,12 @@ const colName = (i: number) => XLSX.utils.encode_col(i)
 
 type Filter = 'all' | 'look' | 'new' | 'dup'
 
-const CONF: Record<string, { label: string; color: 'green' | 'teal' | 'amber' | 'gray' }> = {
+const CONF: Record<string, { label: string; color: 'green' | 'teal' | 'amber' | 'gray' | 'blue' }> = {
   exact: { label: 'Matched', color: 'green' },
   likely: { label: 'Likely', color: 'teal' },
   check: { label: 'Check', color: 'amber' },
   none: { label: 'As written', color: 'gray' },
+  new: { label: 'New product', color: 'blue' },
 }
 
 function errText(e: unknown) {
@@ -271,6 +272,7 @@ export function RegisterImportPage() {
       customersUpdated: 0,
       machinesAdded: 0,
       serviceJobsAdded: 0,
+      productsCreated: 0,
       duplicatesSkipped: 0,
       rowsSkipped: 0,
     }
@@ -509,7 +511,7 @@ export function RegisterImportPage() {
       {/* 2. preview */}
       {preview ? (
         <Card className="mb-4 space-y-3 p-4">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-7">
             {[
               { label: 'Will import', value: preview.summary.toImport, tone: 'text-emerald-600' },
               { label: 'New customers', value: preview.summary.newCustomers },
@@ -520,6 +522,7 @@ export function RegisterImportPage() {
                     { label: 'Saved as written', value: preview.summary.notMatched },
                   ]
                 : [{ label: 'Rows with a note', value: preview.summary.withWarnings }]),
+              { label: 'New products', value: preview.summary.newProducts ?? 0, tone: preview.summary.newProducts ? 'text-accent-blue' : undefined },
               { label: 'Already imported', value: preview.summary.duplicates, tone: 'text-text-secondary' },
             ].map((t) => (
               <div key={t.label} className="rounded-lg border border-border bg-surface p-3">
@@ -528,6 +531,26 @@ export function RegisterImportPage() {
               </div>
             ))}
           </div>
+
+          {preview.newProducts?.length ? (
+            <details className="rounded-lg border border-accent-blue/40 bg-accent-blue/5 p-3 text-sm">
+              <summary className="cursor-pointer font-medium text-text-primary">
+                {preview.newProducts.length} machine{preview.newProducts.length === 1 ? ' is' : 's are'} not on the product list — added as new
+                product{preview.newProducts.length === 1 ? '' : 's'} with their own Product ID when you import
+              </summary>
+              <p className="mt-1 text-xs text-text-secondary">
+                To use an existing product instead, click the machine in the row and pick it. Names can be corrected later in Products → Edit (the Product ID stays).
+              </p>
+              <ul className="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2 lg:grid-cols-3">
+                {preview.newProducts.map((n) => (
+                  <li key={n.name} className="truncate" title={`Written: ${n.written}`}>
+                    <span className="font-medium text-text-primary">{n.name}</span>{' '}
+                    <span className="text-text-secondary">· {n.type}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
 
           <div className="flex flex-wrap items-center gap-1.5">
             {(
@@ -611,6 +634,7 @@ export function RegisterImportPage() {
             <div className="text-text-secondary">
               {result.customersCreated} new customers · {result.customersUpdated} existing customers updated ·{' '}
               {result.machinesAdded ? `${result.machinesAdded} machines` : `${result.serviceJobsAdded} service jobs`} ·{' '}
+              {result.productsCreated ? `${result.productsCreated} new products added to the product list · ` : ''}
               {result.duplicatesSkipped} already there
             </div>
           </div>
@@ -634,6 +658,7 @@ export function RegisterImportPage() {
                 <span className="text-xs text-text-secondary">{formatDate(b.at)}</span>
                 <span className="text-xs text-text-secondary">
                   {b.customersCreated} new customers · {b.kind === 'SALES' ? `${b.machinesAdded} machines` : `${b.serviceJobsAdded} jobs`}
+                  {b.productsCreated ? ` · ${b.productsCreated} new products` : ''}
                 </span>
                 {b.undone ? (
                   <Badge color="gray">Undone</Badge>
@@ -666,8 +691,8 @@ export function RegisterImportPage() {
         }
       >
         <p className="text-sm text-text-secondary">
-          The machines and service jobs from this import are removed, and so are the customers it created — unless
-          something else has been added for them since.
+          The machines and service jobs from this import are removed, and so are the customers and products it
+          created — unless something else has been added for them since.
         </p>
       </Modal>
     </div>
@@ -722,7 +747,7 @@ function PreviewLine({
                 }}
               />
               <button type="button" className="text-[11px] text-accent-blue hover:underline" onClick={() => (onOverride(null), setEditing(false))}>
-                Save as written instead
+                Keep as written (no product)
               </button>
             </div>
           ) : (
@@ -749,7 +774,14 @@ function PreviewLine({
             </button>
           )
         ) : (
-          <span className="text-text-secondary">{r.machine}</span>
+          <>
+            <span className="text-text-secondary">{r.machine}</span>
+            {r.product?.confidence === 'new' ? (
+              <Badge color="blue" className="ml-1">
+                New product
+              </Badge>
+            ) : null}
+          </>
         )}
       </td>
       <td className="whitespace-nowrap px-3 py-2 font-mono text-xs">{kind === 'SALES' ? s('hmsId') || '—' : s('serviceNo') || '—'}</td>

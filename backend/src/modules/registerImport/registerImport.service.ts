@@ -15,7 +15,7 @@ import { newId } from "../../common/utils/id.js";
 import { normalizePhone } from "../../common/utils/phone.js";
 import { AppError } from "../../common/errors.js";
 import { formatCustomerCode } from "../contacts/customerIdentity.js";
-import { buildCatalogIndex, machineTypeOf, matchProduct, type CatalogProduct, type ProductMatch } from "./matcher.js";
+import { buildCatalogIndex, machineTypeOf, matchProduct, normBrand, type CatalogProduct, type ProductMatch } from "./matcher.js";
 
 export type SalesRow = {
   ref: string; // "BILLING!12" — sheet + row, shown back to the user
@@ -181,8 +181,15 @@ async function catalog(t: string) {
   };
   const active = products.filter((p) => p.isActive).map(toItem);
   const all = products.map(toItem);
+  // Products an earlier import added from a written text → the same text finds them again
+  const byWritten = new Map<string, CatalogProduct>();
+  for (const p of products) {
+    const w = cf(p.attributes).writtenAs;
+    if (Array.isArray(w)) for (const k of w) byWritten.set(String(k), toItem(p));
+  }
   return {
     list: all,
+    byWritten,
     byId: new Map(all.map((p) => [p.id, p])),
     byCode: new Map(all.filter((p) => p.code).map((p) => [p.code!.toUpperCase(), p])),
     index: buildCatalogIndex(active),
@@ -208,6 +215,108 @@ async function existingKeys(t: string, kind: Kind) {
 
 /** Words people write in the machine column that are not a machine */
 const NOT_A_MACHINE = /^(PENDING|BILLED|BILL|CANCELLED|OTHER BRAND|SALES\b.*|.*G ?PAY.*|NIL+|-)$/i;
+
+// ---------------------------------------------------------------- new products from the register
+/**
+ * A machine that is not on the product list becomes a new product with its own Product ID
+ * (brand code + running number, e.g. PNT-073), made when the import is saved. Staff see it in the
+ * preview as "New product" and can still pick an existing product or keep the row as written.
+ */
+export type NewProduct = {
+  id: string;
+  key: string;
+  name: string;
+  brand: string;
+  model: string;
+  family: "WEIGHING_SCALES" | "BILLING_MACHINE" | "TOUCH_POS" | "OFFICE_AUTOMATION" | "BILLING_SOFTWARE";
+  kind: string;
+  type: string;
+  written: string;
+};
+const FAMILY_NAME: Record<NewProduct["family"], string> = {
+  WEIGHING_SCALES: "Weighing Scales",
+  BILLING_MACHINE: "Billing Machine",
+  TOUCH_POS: "Touch POS",
+  OFFICE_AUTOMATION: "Office Automation",
+  BILLING_SOFTWARE: "Billing Software",
+};
+/** Words written after the model that are not part of it */
+const NOT_MODEL_WORD = /^(PO|DEMO|SERVICE|REPLACED|NEW|OLD|NOS|\d+NOS|[-–,.])$/i;
+/** First words of a service "machine" text that are not a brand */
+const NOT_A_BRAND = /^(OTHER|OTHERS|CCM|CCTV|CAMERA|BILLING|BABY|CHICKEN\w*|BENCH\w*|MOBILE|USB|PRINT|NGC|GC|AMC|CASH|HAND|WEIGHING|SCALE|MACHINE|PERSONAL|\d.*)$/i;
+
+const tidyText = (s: string) =>
+  title(s)
+    .replace(/(\d)\s*kgs?\b/gi, "$1 kg")
+    .replace(/(\d)\s*(gms?|g)\b/gi, "$1 g")
+    .replace(/(\d)\s*tons?\b/gi, "$1 ton")
+    .replace(/(\d)\s*mg\b/gi, "$1 mg")
+    .replace(/\b(\d+)t\b/g, "$1T") // 2T / 3T billing machines
+    .replace(/(\d)\s*[x×*]\s*(\d)/gi, "$1*$2")
+    .replace(/\s+/g, " ")
+    .trim();
+
+function familyOf(text: string): Pick<NewProduct, "family" | "kind" | "type"> {
+  const t = text.toUpperCase();
+  const mt = machineTypeOf(null, text);
+  if (mt === "WEIGHING") return { family: "WEIGHING_SCALES", kind: "WEIGHING", type: "Weighing scale" };
+  if (mt === "CCM") return { family: "OFFICE_AUTOMATION", kind: "CCM", type: "Note / cash counting machine" };
+  if (mt === "CCTV") return { family: "OFFICE_AUTOMATION", kind: "CCTV", type: "CCTV" };
+  if (mt === "BIOMETRIC") return { family: "OFFICE_AUTOMATION", kind: "BIOMETRIC", type: "Biometric attendance" };
+  if (mt === "BILLING") {
+    if (/SOFTWARE/.test(t)) return { family: "BILLING_SOFTWARE", kind: "SOFTWARE", type: "Billing software" };
+    if (/PRINTER/.test(t)) return { family: "TOUCH_POS", kind: "TOUCH_POS", type: "Printer" };
+    if (/SCANNER/.test(t)) return { family: "TOUCH_POS", kind: "TOUCH_POS", type: "Barcode scanner" };
+    if (/DRAWER/.test(t)) return { family: "TOUCH_POS", kind: "TOUCH_POS", type: "Cash drawer" };
+    if (/POS|TOUCH/.test(t)) return { family: "TOUCH_POS", kind: "TOUCH_POS", type: "Touch POS" };
+    return { family: "BILLING_MACHINE", kind: "BILLING", type: "Billing machine" };
+  }
+  return { family: "OFFICE_AUTOMATION", kind: "OTHER", type: "Other" };
+}
+
+/** The model as written, without serial numbers, bill numbers ("32445/03.02.2020") and filler */
+function modelAsWritten(model: string, spec: string) {
+  const extra = spec
+    .split(/\s+/)
+    .filter((w) => w && !looksSerial(w) && !/^\d+\/[\d.]+$/.test(w) && !/^\d{4,}$/.test(w) && !NOT_MODEL_WORD.test(w))
+    .join(" ");
+  return [model, extra].filter(Boolean).join(" ").trim();
+}
+
+/** Find (or plan) the product for a machine that is not on the list. Same text → same product. */
+function newProductFor(
+  cat: Awaited<ReturnType<typeof catalog>>,
+  planned: Map<string, NewProduct>,
+  brandRaw: string,
+  modelText: string,
+): { existing: CatalogProduct } | { planned: NewProduct } | null {
+  const brandWritten = clean(brandRaw);
+  const model = tidyText(clean(modelText));
+  if (!brandWritten && !model) return null;
+  // the brand as the product list spells it, when the brand is already there
+  const known = brandWritten ? cat.list.find((p) => p.brand && normBrand(p.brand) === normBrand(brandWritten)) : undefined;
+  const brand = known?.brand || (brandWritten ? tidyText(brandWritten) : "Generic");
+  const key = squash(`${brand} ${model}`);
+  const seen = cat.byWritten.get(key);
+  if (seen) return { existing: seen };
+  const already = planned.get(key);
+  if (already) return { planned: already };
+  const name = (brand === "Generic" ? model : `${brand} ${model || "(model not written)"}`).slice(0, 191);
+  const sameName = cat.list.find((p) => p.name.toUpperCase() === name.toUpperCase());
+  if (sameName) return { existing: sameName };
+  const np: NewProduct = {
+    id: newId(),
+    key,
+    name,
+    brand,
+    model: model || "(model not written)",
+    ...familyOf(`${brand} ${model}`),
+    written: [brandWritten, modelText].filter(Boolean).join(" | "),
+  };
+  planned.set(key, np);
+  return { planned: np };
+}
+const asCatalog = (n: NewProduct): CatalogProduct => ({ id: n.id, name: n.name, brand: n.brand, model: n.model, family: n.family, kind: n.kind });
 
 /** "HMS 2T", "JUNIOR STAR", "POINT 100 KG", "200 KG" → a product (brand written first, else HMS) */
 function productFromText(cat: Awaited<ReturnType<typeof catalog>>, text: string): CatalogProduct | null {
@@ -317,6 +426,8 @@ type Plan = {
   assets: Array<Record<string, unknown>>;
   tickets: Array<Record<string, unknown>>;
   spareChanges: Array<Record<string, unknown>>;
+  /** Machines not on the product list → added as new products when the import is saved */
+  newProducts: Map<string, NewProduct>;
 };
 
 async function plan(t: string, kind: Kind, rows: Array<SalesRow | ServiceRow>, batchId: string, opts: Options = {}): Promise<Plan> {
@@ -325,7 +436,7 @@ async function plan(t: string, kind: Kind, rows: Array<SalesRow | ServiceRow>, b
     existingKeys(t, kind),
     contactLookup(t, rows),
   ]);
-  const out: Plan = { preview: [], newContacts: [], contactFill: new Map(), assets: [], tickets: [], spareChanges: [] };
+  const out: Plan = { preview: [], newContacts: [], contactFill: new Map(), assets: [], tickets: [], spareChanges: [], newProducts: new Map() };
   const spareList = kind === "SERVICE" ? await spareCatalog(t) : [];
   const fileContacts = new Map<string, ContactRef>(); // phone or NAME:… → contact made earlier in this file
   const seenKeys = new Set<string>();
@@ -480,7 +591,7 @@ async function plan(t: string, kind: Kind, rows: Array<SalesRow | ServiceRow>, b
       // Hidden (old) products only when nothing on the current list fits
       if (auto.confidence === "none") {
         const old = matchProduct(cat!.hiddenIndex, brandRaw, modelRaw, specForMatch);
-        const rank = { exact: 3, likely: 2, check: 1, none: 0 } as const;
+        const rank = { exact: 3, likely: 2, check: 1, none: 0, new: 0 } as const;
         if (rank[old.confidence] > rank[auto.confidence]) auto = old;
       }
       const picked = r.productId !== undefined;
@@ -496,10 +607,26 @@ async function plan(t: string, kind: Kind, rows: Array<SalesRow | ServiceRow>, b
         brand: auto.brand,
         alternatives: auto.alternatives,
       });
-      const m: ProductMatch = picked ? as(pickedProd) : coded ? as(coded) : auto;
+      let m: ProductMatch = picked ? as(pickedProd) : coded ? as(coded) : auto;
+      let prod: CatalogProduct | null = m.productId ? cat!.byId.get(m.productId) ?? null : null;
+      // Not on the product list → it becomes a new product with its own Product ID — unless staff chose
+      // "keep as written", or there are close products to pick from (then staff pick, nothing is guessed)
+      if (!prod && !picked && (brandRaw || modelRaw)) {
+        if (auto.alternatives.length) {
+          warnings.push(`Not sure which product — click to pick (${auto.alternatives.slice(0, 2).map((a) => a.name).join(" / ")}); otherwise saved as written`);
+        } else {
+          const got = newProductFor(cat!, out.newProducts, brandRaw, modelAsWritten(modelRaw, spec));
+          if (got && "existing" in got) {
+            prod = got.existing;
+            m = as(prod);
+          } else if (got) {
+            prod = asCatalog(got.planned);
+            m = { productId: got.planned.id, productName: got.planned.name, productCode: null, confidence: "new", brand: got.planned.brand, alternatives: [] };
+          }
+        }
+      }
       p.product = m;
       if (r.aiProduct && m.productId) p.ai = true;
-      const prod = m.productId ? cat!.byId.get(m.productId) ?? null : null;
       const typed = title([brandRaw, modelRaw, looksSerial(spec) ? "" : spec].filter(Boolean).join(" "));
       p.machine = prod?.name ?? (typed || "Machine (not written)");
       if (!brandRaw && !modelRaw && !prod) warnings.push("No machine written");
@@ -601,12 +728,33 @@ async function plan(t: string, kind: Kind, rows: Array<SalesRow | ServiceRow>, b
       // Machine as written ("HMS 2T", "JUNIOR STAR") → a product → that customer's machine of it
       const written = clean(r.machine);
       let wProduct: CatalogProduct | null = null;
+      let wIsNew = false;
       if (!sProduct && written && !NOT_A_MACHINE.test(written)) {
         wProduct = productFromText(cat!, written);
         if (wProduct) {
           const same = machines.filter((x) => x.productId === wProduct!.id);
           if (!machine && same.length === 1) machine = same[0]!;
-        } else warnings.push(`Machine "${written}" not matched to a product`);
+        } else {
+          // "GLOBAL 50 KG", "POINT 10 TON" — a brand + a model / capacity that is not on the list → new product.
+          // Loose texts ("HMS 30 KG" when several fit, "300 KG", "CCM", two machines in one cell) stay as written.
+          const words = written.split(/\s+/);
+          const first = words[0] ?? "";
+          const rest = words.slice(1).join(" ");
+          const fits = cat!.index.has(normBrand(first)) ? matchProduct(cat!.index, first, rest) : null;
+          const several = !!fits && (!!fits.productId || fits.alternatives.length > 0);
+          if (!several && first.length >= 3 && !NOT_A_BRAND.test(first) && /\d/.test(rest) && !/[\/+]/.test(written)) {
+            const got = newProductFor(cat!, out.newProducts, first, rest);
+            if (got && "existing" in got) wProduct = got.existing;
+            else if (got) {
+              wProduct = asCatalog(got.planned);
+              wIsNew = true;
+            }
+          }
+          if (!wProduct) warnings.push(`Machine "${written}" not matched to a product${several ? " — several products fit" : ""} — kept as written`);
+        }
+      }
+      if (wIsNew && wProduct) {
+        p.product = { productId: wProduct.id, productName: wProduct.name, productCode: null, confidence: "new", brand: wProduct.brand, alternatives: [] };
       }
       if (!machine && !sHms && !sProduct && !wProduct && machines.length === 1) machine = machines[0]!;
       if (r.aiProduct && sProduct) p.ai = true;
@@ -614,7 +762,7 @@ async function plan(t: string, kind: Kind, rows: Array<SalesRow | ServiceRow>, b
       p.machine = machine
         ? machine.name + (machine.hmsId ? ` · ${machine.hmsId}` : "")
         : sProduct || wProduct
-          ? `${(sProduct ?? wProduct)!.name} (${(sProduct ?? wProduct)!.code ?? "—"}) — not on record as their machine`
+          ? `${(sProduct ?? wProduct)!.name} (${wIsNew ? "new product" : (sProduct ?? wProduct)!.code ?? "—"}) — not on record as their machine`
           : machines.length > 1
             ? `${machines.length} machines — job kept on the customer`
             : "No machine on record";
@@ -764,11 +912,98 @@ export async function preview(t: string, kind: Kind, rows: Array<SalesRow | Serv
       skipped: rowsOut.filter((r) => r.skip && !r.duplicate).length,
       newCustomers: p.newContacts.length,
       existingCustomers: new Set(rowsOut.filter((r) => r.contact === "existing").map((r) => r.contactName)).size,
-      matched: rowsOut.filter((r) => r.product?.productId).length,
+      matched: rowsOut.filter((r) => r.product?.productId && r.product.confidence !== "new").length,
       notMatched: rowsOut.filter((r) => r.product && !r.product.productId).length,
       withWarnings: rowsOut.filter((r) => r.warnings.length).length,
+      /** Machines not on the product list — added as new products with their own Product ID on import */
+      newProducts: p.newProducts.size,
+      newProductRows: rowsOut.filter((r) => !r.skip && r.product?.confidence === "new").length,
     },
+    newProducts: [...p.newProducts.values()].map((n) => ({ name: n.name, brand: n.brand, type: n.type, written: n.written })),
   };
+}
+
+/** Next free 3-letter brand code — same rule as products.service nextProductCode */
+function brandCodeFor(name: string, used: Set<string>) {
+  const letters = name.toUpperCase().replace(/[^A-Z]/g, "") || "GEN";
+  const candidates = [letters.slice(0, 3), `${letters[0]}${letters.slice(1).replace(/[AEIOU]/g, "").slice(0, 2)}`];
+  for (let i = 0; i < 26; i++) candidates.push(`${letters.slice(0, 2)}${String.fromCharCode(65 + i)}`);
+  const code = candidates.find((c) => c.length === 3 && /^[A-Z]{3}$/.test(c) && !used.has(c)) ?? `${letters.slice(0, 2)}X`;
+  used.add(code);
+  return code;
+}
+
+/** Make the planned new products (and new brands) with their Product IDs. Returns id → Product ID. */
+async function createNewProducts(t: string, batchId: string, list: NewProduct[]) {
+  const codes = new Map<string, string>();
+  if (!list.length) return codes;
+  const [brands, skus, cats] = await Promise.all([
+    prisma.brand.findMany({ where: { tenantId: t, deletedAt: null }, select: { id: true, name: true, code: true } }),
+    prisma.product.findMany({ where: { tenantId: t, sku: { contains: "-" } }, select: { sku: true } }),
+    prisma.productCategory.findMany({ where: { tenantId: t, deletedAt: null, parentId: null }, select: { id: true, name: true } }),
+  ]);
+  const used = new Set(brands.map((b) => b.code));
+  const brandOf = new Map(brands.map((b) => [b.name.toLowerCase(), b]));
+  for (const name of [...new Set(list.map((n) => n.brand))]) {
+    const b = brandOf.get(name.toLowerCase());
+    if (b && /^[A-Z]{3}$/.test(b.code)) continue;
+    const code = brandCodeFor(name, used);
+    if (b) {
+      await prisma.brand.update({ where: { id: b.id }, data: { code, isActive: true } });
+      brandOf.set(name.toLowerCase(), { ...b, code });
+    } else {
+      const id = newId();
+      await prisma.brand.create({ data: { id, tenantId: t, name, code, isActive: true } });
+      brandOf.set(name.toLowerCase(), { id, name, code });
+    }
+  }
+  const max = new Map<string, number>();
+  for (const s of skus) {
+    const m = s.sku.match(/^([A-Z]{3})-(\d+)$/);
+    if (m) max.set(m[1]!, Math.max(max.get(m[1]!) ?? 0, Number(m[2])));
+  }
+  const data = list.map((n) => {
+    const b = brandOf.get(n.brand.toLowerCase())!;
+    const next = (max.get(b.code) ?? 0) + 1;
+    max.set(b.code, next);
+    const code = `${b.code}-${String(next).padStart(3, "0")}`;
+    codes.set(n.id, code);
+    return {
+      id: n.id,
+      tenantId: t,
+      sku: code,
+      name: n.name,
+      categoryId: cats.find((c) => c.name.toLowerCase() === FAMILY_NAME[n.family].toLowerCase())?.id ?? null,
+      productType: "GOODS" as const,
+      unit: "NOS",
+      trackInventory: true,
+      isActive: true,
+      taxPercent: 18,
+      attributes: {
+        brand: n.brand,
+        brandId: b.id,
+        model: n.model,
+        machineType: n.type,
+        suppliers: [],
+        catalogFamily: n.family,
+        catalogFamilyName: FAMILY_NAME[n.family],
+        catalogKind: n.kind,
+        requiresStamping: n.family === "WEIGHING_SCALES",
+        gcApplicable: true,
+        warrantyMonths: 12,
+        amcApplicable: n.family === "WEIGHING_SCALES",
+        productCode: code,
+        source: "register-import",
+        createdByImport: true,
+        importBatch: batchId,
+        writtenAs: [n.key],
+        written: n.written,
+        needsReview: true,
+      },
+    };
+  });
+  for (let i = 0; i < data.length; i += 100) await prisma.product.createMany({ data: data.slice(i, i + 100) });
+  return codes;
 }
 
 /** Reserve a block of numbers from a counter in one round trip. */
@@ -862,6 +1097,16 @@ export async function commit(
     for (let i = 0; i < updates.length; i += 25) await Promise.all(updates.slice(i, i + 25));
   }
 
+  // Machines not on the product list → new products with their own Product ID (before the machines / jobs that use them)
+  const newCodes = await createNewProducts(t, batchId, [...p.newProducts.values()]);
+  if (newCodes.size) {
+    for (const x of [...p.assets, ...p.tickets]) {
+      const c = cf(x.customFields);
+      const id = String(c.productId ?? x.productId ?? "");
+      if (newCodes.has(id)) x.customFields = { ...c, productCode: newCodes.get(id), newProduct: true };
+    }
+  }
+
   if (p.assets.length) {
     for (let i = 0; i < p.assets.length; i += 200) {
       await prisma.customerAsset.createMany({ data: p.assets.slice(i, i + 200) as never });
@@ -886,6 +1131,7 @@ export async function commit(
     customersUpdated: p.contactFill.size,
     machinesAdded: p.assets.length,
     serviceJobsAdded: p.tickets.length,
+    productsCreated: newCodes.size,
     duplicatesSkipped: p.preview.filter((r) => r.duplicate).length,
     rowsSkipped: p.preview.filter((r) => r.skip && !r.duplicate).length,
   };
@@ -927,6 +1173,7 @@ export async function listBatches(t: string) {
       customersCreated: add("customersCreated"),
       machinesAdded: add("machinesAdded"),
       serviceJobsAdded: add("serviceJobsAdded"),
+      productsCreated: add("productsCreated"),
       duplicatesSkipped: add("duplicatesSkipped"),
     });
   }
@@ -963,7 +1210,41 @@ export async function undo(t: string, userId: string, batchId: string) {
     if (free.length) await prisma.contact.updateMany({ where: { id: { in: free } }, data: { deletedAt: now } });
     removedContacts = free.length;
   }
-  const result = { batchId, machinesRemoved: a.length, serviceJobsRemoved: k.length, customersRemoved: removedContacts };
+  // Products this import added — removed too, unless anything still uses them (machines, jobs, stock, bills…)
+  const madeProducts = (
+    await prisma.product.findMany({ where: { tenantId: t, deletedAt: null }, select: { id: true, attributes: true } })
+  )
+    .filter((x) => cf(x.attributes).createdByImport && cf(x.attributes).importBatch === batchId)
+    .map((x) => x.id);
+  let removedProducts = 0;
+  if (madeProducts.length) {
+    const where = { productId: { in: madeProducts } };
+    const refs = await Promise.all([
+      prisma.ticket.findMany({ where: { ...where, deletedAt: null }, select: { productId: true } }),
+      prisma.stockUnit.findMany({ where, select: { productId: true } }),
+      prisma.stockMovement.findMany({ where, select: { productId: true } }),
+      prisma.stockLevel.findMany({ where, select: { productId: true } }),
+      prisma.stockReceipt.findMany({ where, select: { productId: true } }),
+      prisma.invoiceLine.findMany({ where, select: { productId: true } }),
+      prisma.salesOrderLine.findMany({ where, select: { productId: true } }),
+      prisma.purchaseOrderLine.findMany({ where, select: { productId: true } }),
+      prisma.salesRequisition.findMany({ where, select: { productId: true } }),
+      prisma.rentalAgreement.findMany({ where, select: { productId: true } }),
+    ]);
+    const busy = new Set(refs.flat().map((x) => x.productId));
+    const stillMachines = await prisma.customerAsset.findMany({ where: { tenantId: t, deletedAt: null }, select: { customFields: true } });
+    for (const m of stillMachines) busy.add(String(cf(m.customFields).productId ?? ""));
+    const free = madeProducts.filter((id) => !busy.has(id));
+    if (free.length) await prisma.product.updateMany({ where: { id: { in: free } }, data: { deletedAt: now, isActive: false } });
+    removedProducts = free.length;
+  }
+  const result = {
+    batchId,
+    machinesRemoved: a.length,
+    serviceJobsRemoved: k.length,
+    customersRemoved: removedContacts,
+    productsRemoved: removedProducts,
+  };
   await prisma.auditLog.create({
     data: {
       id: newId(),

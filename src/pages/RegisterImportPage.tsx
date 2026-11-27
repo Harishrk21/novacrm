@@ -535,8 +535,9 @@ export function RegisterImportPage() {
           {preview.newProducts?.length ? (
             <details className="rounded-lg border border-accent-blue/40 bg-accent-blue/5 p-3 text-sm">
               <summary className="cursor-pointer font-medium text-text-primary">
-                {preview.newProducts.length} machine{preview.newProducts.length === 1 ? ' is' : 's are'} not on the product list — added as new
-                product{preview.newProducts.length === 1 ? '' : 's'} with their own Product ID when you import
+                {preview.newProducts.length === 1
+                  ? '1 machine is not on the product list — it is added as a new product with its own Product ID when you import'
+                  : `${preview.newProducts.length} machines are not on the product list — each is added as a new product with its own Product ID when you import`}
               </summary>
               <p className="mt-1 text-xs text-text-secondary">
                 To use an existing product instead, click the machine in the row and pick it. Names can be corrected later in Products → Edit (the Product ID stays).
